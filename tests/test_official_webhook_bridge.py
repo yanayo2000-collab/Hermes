@@ -233,3 +233,149 @@ def test_webhook_stats_separates_message_and_group_metrics_without_cross_number_
     assert sorted(body['phone_number_metrics']['shared_pnid']['display_phone_numbers']) == ['12345550001', '16505551111']
     assert body['phone_number_metrics']['shared_pnid']['message_event_count'] == 1
     assert body['phone_number_metrics']['shared_pnid']['group_event_count'] == 1
+
+
+def test_webhook_stats_exposes_commercial_grade_group_metrics_breakdown():
+    app = create_app({'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123'})
+    client = TestClient(app)
+
+    payloads = [
+        {
+            'object': 'whatsapp_business_account',
+            'entry': [
+                {
+                    'id': 'waba_lifecycle',
+                    'changes': [
+                        {
+                            'field': 'group_lifecycle_update',
+                            'value': {
+                                'metadata': {'display_phone_number': '12345550001', 'phone_number_id': 'shared_pnid'},
+                                'groups': [
+                                    {
+                                        'timestamp': 1695414936173,
+                                        'type': 'group_create',
+                                        'group_id': 'group_1',
+                                        'request_id': 'request_1',
+                                        'added_participants': [
+                                            {'wa_id': '1800555555'},
+                                            {'wa_id': '1800555556'},
+                                        ],
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+        {
+            'object': 'whatsapp_business_account',
+            'entry': [
+                {
+                    'id': 'waba_participants',
+                    'changes': [
+                        {
+                            'field': 'group_participants_update',
+                            'value': {
+                                'metadata': {'display_phone_number': '12345550001', 'phone_number_id': 'shared_pnid'},
+                                'groups': [
+                                    {
+                                        'timestamp': 1695414936173,
+                                        'type': 'group_participants_add',
+                                        'group_id': 'group_1',
+                                        'request_id': 'request_1',
+                                        'join_request_id': 'join_1',
+                                        'wa_id': '1800555555',
+                                        'added_participants': [
+                                            {'wa_id': '1800555555'},
+                                            {'wa_id': '1800555556'},
+                                        ],
+                                        'failed_participants': [
+                                            {'wa_id': '1800555565'},
+                                        ],
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+        {
+            'object': 'whatsapp_business_account',
+            'entry': [
+                {
+                    'id': 'waba_settings',
+                    'changes': [
+                        {
+                            'field': 'group_settings_update',
+                            'value': {
+                                'metadata': {'display_phone_number': '12345550001', 'phone_number_id': 'shared_pnid'},
+                                'groups': [
+                                    {
+                                        'timestamp': 1695414936174,
+                                        'type': 'group_settings_update',
+                                        'group_id': 'group_1',
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+        {
+            'object': 'whatsapp_business_account',
+            'entry': [
+                {
+                    'id': 'waba_status',
+                    'changes': [
+                        {
+                            'field': 'group_status_update',
+                            'value': {
+                                'metadata': {'display_phone_number': '12345550001', 'phone_number_id': 'shared_pnid'},
+                                'groups': [
+                                    {
+                                        'timestamp': 1695414936175,
+                                        'type': 'group_suspend',
+                                        'group_id': 'group_1',
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    ]
+
+    for payload in payloads:
+        assert client.post('/webhooks/whatsapp', json=payload).status_code == 200
+
+    stats = client.get('/ops/whatsapp-webhook/stats')
+    assert stats.status_code == 200
+    body = stats.json()
+    group_metrics = body['group_metrics']
+    assert group_metrics['unique_group_ids'] == 1
+    assert group_metrics['unique_group_participant_wa_ids'] == 3
+    assert group_metrics['participant_added_count'] == 4
+    assert group_metrics['participant_failed_count'] == 1
+    assert group_metrics['unique_added_participant_wa_ids'] == 2
+    assert group_metrics['unique_failed_participant_wa_ids'] == 1
+    assert group_metrics['group_create_count'] == 1
+    assert group_metrics['group_settings_update_count'] == 1
+    assert group_metrics['group_status_update_count'] == 1
+    assert group_metrics['group_suspend_count'] == 1
+    assert group_metrics['join_request_count'] == 1
+    assert group_metrics['request_count'] == 1
+    assert group_metrics['by_group_id']['group_1']['event_count'] == 4
+    assert group_metrics['by_group_id']['group_1']['participant_added_count'] == 4
+    assert group_metrics['by_group_id']['group_1']['participant_failed_count'] == 1
+    assert group_metrics['by_group_id']['group_1']['join_request_count'] == 1
+    assert group_metrics['by_group_id']['group_1']['request_count'] == 1
+    assert group_metrics['by_group_id']['group_1']['group_create_count'] == 1
+    assert group_metrics['by_group_id']['group_1']['group_settings_update_count'] == 1
+    assert group_metrics['by_group_id']['group_1']['group_suspend_count'] == 1
+    assert body['phone_number_metrics']['shared_pnid']['group_participant_added_count'] == 4
+    assert body['phone_number_metrics']['shared_pnid']['group_participant_failed_count'] == 1
+    assert body['phone_number_metrics']['shared_pnid']['join_request_count'] == 1

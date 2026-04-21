@@ -69,6 +69,8 @@ class WebhookState:
         request_ids: List[str] = []
         join_request_ids: List[str] = []
         wa_ids: List[str] = []
+        added_participant_wa_ids: List[str] = []
+        failed_participant_wa_ids: List[str] = []
         message_ids: List[str] = []
         message_senders: List[str] = []
         event_timestamps: List[str] = []
@@ -100,9 +102,13 @@ class WebhookState:
                     wa_ids.append(group.get('wa_id'))
                     event_timestamps.append(str(group.get('timestamp')) if group.get('timestamp') is not None else None)
                     for participant in group.get('added_participants') or []:
-                        wa_ids.append(participant.get('wa_id'))
+                        participant_wa_id = participant.get('wa_id')
+                        wa_ids.append(participant_wa_id)
+                        added_participant_wa_ids.append(participant_wa_id)
                     for participant in group.get('failed_participants') or []:
-                        wa_ids.append(participant.get('wa_id'))
+                        participant_wa_id = participant.get('wa_id')
+                        wa_ids.append(participant_wa_id)
+                        failed_participant_wa_ids.append(participant_wa_id)
 
         fields = _unique_preserving_order(fields)
         phone_number_ids = _unique_preserving_order(phone_number_ids)
@@ -112,6 +118,8 @@ class WebhookState:
         request_ids = _unique_preserving_order(request_ids)
         join_request_ids = _unique_preserving_order(join_request_ids)
         wa_ids = _unique_preserving_order(wa_ids)
+        added_participant_wa_ids = _unique_preserving_order(added_participant_wa_ids)
+        failed_participant_wa_ids = _unique_preserving_order(failed_participant_wa_ids)
         message_ids = _unique_preserving_order(message_ids)
         message_senders = _unique_preserving_order(message_senders)
         event_timestamps = _unique_preserving_order(event_timestamps)
@@ -144,6 +152,8 @@ class WebhookState:
             'request_ids': request_ids,
             'join_request_ids': join_request_ids,
             'wa_ids': wa_ids,
+            'added_participant_wa_ids': added_participant_wa_ids,
+            'failed_participant_wa_ids': failed_participant_wa_ids,
             'message_ids': message_ids,
             'message_senders': message_senders,
             'event_timestamps': event_timestamps,
@@ -174,7 +184,29 @@ class WebhookState:
         message_senders: Set[str] = set()
         group_ids: Set[str] = set()
         group_participant_wa_ids: Set[str] = set()
+        added_participant_wa_ids: Set[str] = set()
+        failed_participant_wa_ids: Set[str] = set()
+        request_ids: Set[str] = set()
+        join_request_ids: Set[str] = set()
         dedupe_keys: Set[str] = set()
+        group_metrics_by_type = Counter()
+        group_metrics_by_group_id: Dict[str, Dict[str, Any]] = defaultdict(
+            lambda: {
+                'event_count': 0,
+                'fields': set(),
+                'event_types': set(),
+                'participant_added_count': 0,
+                'participant_failed_count': 0,
+                'added_participant_wa_ids': set(),
+                'failed_participant_wa_ids': set(),
+                'request_ids': set(),
+                'join_request_ids': set(),
+                'group_create_count': 0,
+                'group_settings_update_count': 0,
+                'group_status_update_count': 0,
+                'group_suspend_count': 0,
+            }
+        )
         phone_number_metrics: Dict[str, Dict[str, Any]] = defaultdict(
             lambda: {
                 'event_count': 0,
@@ -182,31 +214,74 @@ class WebhookState:
                 'fields': set(),
                 'message_event_count': 0,
                 'group_event_count': 0,
+                'group_participant_added_count': 0,
+                'group_participant_failed_count': 0,
+                'request_ids': set(),
+                'join_request_ids': set(),
                 'dedupe_keys': set(),
             }
         )
 
         for record in records:
             normalized = record['normalized']
+            payload = record['payload'] or {}
             field = normalized.get('field') or 'unknown'
             by_field[field] += 1
             dedupe_keys.add(normalized['dedupe_key'])
             message_ids.update(normalized.get('message_ids') or [])
             message_senders.update(normalized.get('message_senders') or [])
             group_ids.update(normalized.get('group_ids') or [])
-            if field.startswith('group_'):
-                group_participant_wa_ids.update(normalized.get('wa_ids') or [])
+            group_participant_wa_ids.update(normalized.get('wa_ids') or []) if field.startswith('group_') else None
+            added_participant_wa_ids.update(normalized.get('added_participant_wa_ids') or [])
+            failed_participant_wa_ids.update(normalized.get('failed_participant_wa_ids') or [])
+            request_ids.update(normalized.get('request_ids') or [])
+            join_request_ids.update(normalized.get('join_request_ids') or [])
 
             phone_number_id = normalized.get('phone_number_id') or 'unknown'
-            bucket = phone_number_metrics[phone_number_id]
-            bucket['event_count'] += 1
-            bucket['display_phone_numbers'].update(normalized.get('display_phone_numbers') or [])
-            bucket['fields'].update(normalized.get('fields') or [])
-            bucket['dedupe_keys'].add(normalized['dedupe_key'])
+            phone_bucket = phone_number_metrics[phone_number_id]
+            phone_bucket['event_count'] += 1
+            phone_bucket['display_phone_numbers'].update(normalized.get('display_phone_numbers') or [])
+            phone_bucket['fields'].update(normalized.get('fields') or [])
+            phone_bucket['dedupe_keys'].add(normalized['dedupe_key'])
+            phone_bucket['request_ids'].update(normalized.get('request_ids') or [])
+            phone_bucket['join_request_ids'].update(normalized.get('join_request_ids') or [])
             if field == 'messages':
-                bucket['message_event_count'] += 1
+                phone_bucket['message_event_count'] += 1
             if field.startswith('group_'):
-                bucket['group_event_count'] += 1
+                phone_bucket['group_event_count'] += 1
+                phone_bucket['group_participant_added_count'] += len(normalized.get('added_participant_wa_ids') or [])
+                phone_bucket['group_participant_failed_count'] += len(normalized.get('failed_participant_wa_ids') or [])
+
+            for entry in payload.get('entry') or []:
+                for change in entry.get('changes') or []:
+                    change_field = change.get('field') or field
+                    value = change.get('value') or {}
+                    for group in value.get('groups') or []:
+                        group_id = group.get('group_id') or 'unknown'
+                        group_type = group.get('type') or 'unknown'
+                        added_ids = [p.get('wa_id') for p in group.get('added_participants') or [] if p.get('wa_id')]
+                        failed_ids = [p.get('wa_id') for p in group.get('failed_participants') or [] if p.get('wa_id')]
+                        group_bucket = group_metrics_by_group_id[group_id]
+                        group_bucket['event_count'] += 1
+                        group_bucket['fields'].add(change_field)
+                        group_bucket['event_types'].add(group_type)
+                        group_bucket['participant_added_count'] += len(added_ids)
+                        group_bucket['participant_failed_count'] += len(failed_ids)
+                        group_bucket['added_participant_wa_ids'].update(added_ids)
+                        group_bucket['failed_participant_wa_ids'].update(failed_ids)
+                        if group.get('request_id'):
+                            group_bucket['request_ids'].add(group.get('request_id'))
+                        if group.get('join_request_id'):
+                            group_bucket['join_request_ids'].add(group.get('join_request_id'))
+                        if change_field == 'group_lifecycle_update' and group_type == 'group_create':
+                            group_bucket['group_create_count'] += 1
+                        if change_field == 'group_settings_update':
+                            group_bucket['group_settings_update_count'] += 1
+                        if change_field == 'group_status_update':
+                            group_bucket['group_status_update_count'] += 1
+                        if group_type == 'group_suspend':
+                            group_bucket['group_suspend_count'] += 1
+                        group_metrics_by_type[group_type] += 1
 
         serializable_phone_metrics = {}
         for phone_number_id, bucket in phone_number_metrics.items():
@@ -216,7 +291,29 @@ class WebhookState:
                 'fields': sorted(bucket['fields']),
                 'message_event_count': bucket['message_event_count'],
                 'group_event_count': bucket['group_event_count'],
+                'group_participant_added_count': bucket['group_participant_added_count'],
+                'group_participant_failed_count': bucket['group_participant_failed_count'],
+                'request_count': len(bucket['request_ids']),
+                'join_request_count': len(bucket['join_request_ids']),
                 'dedupe_count': len(bucket['dedupe_keys']),
+            }
+
+        serializable_group_metrics_by_group_id = {}
+        for group_id, bucket in group_metrics_by_group_id.items():
+            serializable_group_metrics_by_group_id[group_id] = {
+                'event_count': bucket['event_count'],
+                'fields': sorted(bucket['fields']),
+                'event_types': sorted(bucket['event_types']),
+                'participant_added_count': bucket['participant_added_count'],
+                'participant_failed_count': bucket['participant_failed_count'],
+                'unique_added_participant_wa_ids': len(bucket['added_participant_wa_ids']),
+                'unique_failed_participant_wa_ids': len(bucket['failed_participant_wa_ids']),
+                'request_count': len(bucket['request_ids']),
+                'join_request_count': len(bucket['join_request_ids']),
+                'group_create_count': bucket['group_create_count'],
+                'group_settings_update_count': bucket['group_settings_update_count'],
+                'group_status_update_count': bucket['group_status_update_count'],
+                'group_suspend_count': bucket['group_suspend_count'],
             }
 
         return {
@@ -230,6 +327,17 @@ class WebhookState:
             'group_metrics': {
                 'unique_group_ids': len(group_ids),
                 'unique_group_participant_wa_ids': len(group_participant_wa_ids),
+                'participant_added_count': sum(bucket['participant_added_count'] for bucket in group_metrics_by_group_id.values()),
+                'participant_failed_count': sum(bucket['participant_failed_count'] for bucket in group_metrics_by_group_id.values()),
+                'unique_added_participant_wa_ids': len(added_participant_wa_ids),
+                'unique_failed_participant_wa_ids': len(failed_participant_wa_ids),
+                'request_count': len(request_ids),
+                'join_request_count': len(join_request_ids),
+                'group_create_count': group_metrics_by_type.get('group_create', 0),
+                'group_settings_update_count': by_field.get('group_settings_update', 0),
+                'group_status_update_count': by_field.get('group_status_update', 0),
+                'group_suspend_count': group_metrics_by_type.get('group_suspend', 0),
+                'by_group_id': serializable_group_metrics_by_group_id,
             },
             'phone_number_metrics': serializable_phone_metrics,
         }
