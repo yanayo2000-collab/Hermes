@@ -109,3 +109,127 @@ def test_webhook_recent_events_keeps_last_50_and_returns_latest_first():
     assert body['events'][0]['payload']['entry'][0]['changes'][0]['field'] == 'field_54'
     assert body['events'][-1]['summary']['display_phone_number'] == 'phone_5'
     assert body['events'][-1]['payload']['entry'][0]['changes'][0]['field'] == 'field_5'
+
+
+def test_webhook_recent_events_expose_normalized_identifiers_and_dedupe_key():
+    app = create_app({'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123'})
+    client = TestClient(app)
+
+    payload = {
+        'object': 'whatsapp_business_account',
+        'entry': [
+            {
+                'id': 'waba_1',
+                'changes': [
+                    {
+                        'field': 'group_participants_update',
+                        'value': {
+                            'metadata': {'display_phone_number': '12345550001', 'phone_number_id': 'pnid_1'},
+                            'groups': [
+                                {
+                                    'timestamp': 1695414936173,
+                                    'type': 'group_participants_add',
+                                    'group_id': 'group_1',
+                                    'request_id': 'request_1',
+                                    'join_request_id': 'join_1',
+                                    'wa_id': '1800555555',
+                                    'added_participants': [
+                                        {'input': '+1(800)-555-5555', 'wa_id': '1800555555'},
+                                        {'input': '+1(800)-555-5556', 'wa_id': '1800555556'},
+                                    ],
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    response = client.post('/webhooks/whatsapp', json=payload)
+    assert response.status_code == 200
+
+    recent = client.get('/ops/whatsapp-webhook/recent')
+    assert recent.status_code == 200
+    event = recent.json()['events'][0]
+    normalized = event['normalized']
+    assert normalized['field'] == 'group_participants_update'
+    assert normalized['phone_number_id'] == 'pnid_1'
+    assert normalized['display_phone_number'] == '12345550001'
+    assert normalized['group_ids'] == ['group_1']
+    assert normalized['group_event_types'] == ['group_participants_add']
+    assert normalized['request_ids'] == ['request_1']
+    assert normalized['join_request_ids'] == ['join_1']
+    assert normalized['wa_ids'] == ['1800555555', '1800555556']
+    assert normalized['message_ids'] == []
+    assert normalized['payload_hash']
+    assert normalized['dedupe_key'].startswith('group_participants_update|pnid_1|group_1|group_participants_add|join_1')
+
+
+def test_webhook_stats_separates_message_and_group_metrics_without_cross_number_merge():
+    app = create_app({'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123'})
+    client = TestClient(app)
+
+    message_payload = {
+        'object': 'whatsapp_business_account',
+        'entry': [
+            {
+                'id': 'waba_message',
+                'changes': [
+                    {
+                        'field': 'messages',
+                        'value': {
+                            'metadata': {'display_phone_number': '16505551111', 'phone_number_id': 'shared_pnid'},
+                            'contacts': [{'wa_id': '16315551181'}],
+                            'messages': [{'id': 'wamid-1', 'from': '16315551181', 'timestamp': '1504902988', 'type': 'text'}],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    group_payload = {
+        'object': 'whatsapp_business_account',
+        'entry': [
+            {
+                'id': 'waba_group',
+                'changes': [
+                    {
+                        'field': 'group_participants_update',
+                        'value': {
+                            'metadata': {'display_phone_number': '12345550001', 'phone_number_id': 'shared_pnid'},
+                            'groups': [
+                                {
+                                    'timestamp': 1695414936173,
+                                    'type': 'group_participants_add',
+                                    'group_id': 'group_1',
+                                    'added_participants': [
+                                        {'wa_id': '1800555555'},
+                                        {'wa_id': '1800555556'},
+                                    ],
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    assert client.post('/webhooks/whatsapp', json=message_payload).status_code == 200
+    assert client.post('/webhooks/whatsapp', json=group_payload).status_code == 200
+
+    stats = client.get('/ops/whatsapp-webhook/stats')
+    assert stats.status_code == 200
+    body = stats.json()
+    assert body['total_events'] == 2
+    assert body['by_field']['messages'] == 1
+    assert body['by_field']['group_participants_update'] == 1
+    assert body['message_metrics']['unique_message_ids'] == 1
+    assert body['message_metrics']['unique_message_senders'] == 1
+    assert body['group_metrics']['unique_group_ids'] == 1
+    assert body['group_metrics']['unique_group_participant_wa_ids'] == 2
+    assert body['phone_number_metrics']['shared_pnid']['event_count'] == 2
+    assert sorted(body['phone_number_metrics']['shared_pnid']['display_phone_numbers']) == ['12345550001', '16505551111']
+    assert body['phone_number_metrics']['shared_pnid']['message_event_count'] == 1
+    assert body['phone_number_metrics']['shared_pnid']['group_event_count'] == 1
