@@ -3721,6 +3721,954 @@ def test_group_join_result_success_closes_group_join_flow():
     assert body["next_action"] == "close_or_education"
 
 
+
+def test_official_group_approval_decision_executes_executor_and_closes_group_join_flow():
+    from app.main import create_app
+
+    class StubOfficialGroupApprovalExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def approve(self, *, target_group, lead, crm_snapshot, task):
+            self.calls.append({
+                "target_group": target_group,
+                "lead_id": lead.get("lead_id"),
+                "crm_snapshot": crm_snapshot,
+                "task_id": task.get("task_id"),
+            })
+            return {
+                "status": "success",
+                "result_code": "approval_ok",
+                "result_reason": "approved by automation executor",
+                "raw_result": {
+                    "target_group": target_group,
+                    "executor": "stub_official_group_executor",
+                },
+            }
+
+    crm = StubCrmAdapter()
+    crm.record = {
+        "id": "crm_decision_1",
+        "mobile": "89999999995",
+        "ywId": "66778895",
+        "appId": "app_1",
+        "appName": "Linky",
+        "deptId": "dept_1",
+        "deptName": "Piso",
+        "pendaftaranGroup": "Piso-5",
+        "wa": "",
+        "joinGroup": 0,
+    }
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    executor = StubOfficialGroupApprovalExecutor()
+    app = create_app({
+        "DB_PATH": ":memory:",
+        "CRM_ADAPTER": crm,
+        "OFFICIAL_GROUP_APPROVAL_EXECUTOR": executor,
+    })
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-official-decision",
+            "source_platform": "meta",
+            "source_page_id": "page-official-decision",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999995",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "66778895",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:15:00Z",
+        },
+    ).json()
+    bind_result = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:17:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    ).json()
+
+    response = client.post(
+        "/api/official-groups/approval-decisions",
+        json={
+            "lead_id": lead["lead_id"],
+            "target_group": "official-group-a",
+            "decision": "approve",
+            "decided_at": "2026-04-14T12:18:00Z",
+            "decided_by": "operator_1",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["executed"] is True
+    assert body["eligible"] is True
+    assert body["task_id"] == bind_result["group_join_task_id"]
+    assert body["decision_result"]["lead_status"] == "group_join_success"
+    assert executor.calls[0]["task_id"] == bind_result["group_join_task_id"]
+    assert executor.calls[0]["target_group"] == "official-group-a"
+
+    timeline = client.get(f"/api/leads/{lead['lead_id']}/timeline").json()
+    group_sync = [row for row in timeline['sync_logs'] if row['sync_type'] == 'official_group_update']
+    assert group_sync[-1]['status'] == 'success'
+    audit_rows = client.get('/api/ops/operator-audit-log').json()['rows']
+    assert any(row['event_type'] == 'official_group_approval_decision_executed' for row in audit_rows)
+
+
+
+def test_official_group_approval_decision_skips_executor_when_not_eligible():
+    from app.main import create_app
+
+    class StubOfficialGroupApprovalExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def approve(self, *, target_group, lead, crm_snapshot, task):
+            self.calls.append({"target_group": target_group, "lead_id": lead.get("lead_id")})
+            return {"status": "success", "result_code": "approval_ok", "result_reason": "ok", "raw_result": {"target_group": target_group}}
+
+    crm = StubCrmAdapter()
+    crm.record = {
+        "id": "crm_decision_2",
+        "mobile": "89999999994",
+        "ywId": "66778894",
+        "appId": "app_1",
+        "appName": "Linky",
+        "deptId": "dept_1",
+        "deptName": "Piso",
+        "pendaftaranGroup": "Piso-5",
+        "wa": "official-group-a",
+        "joinGroup": 1,
+    }
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    executor = StubOfficialGroupApprovalExecutor()
+    app = create_app({
+        "DB_PATH": ":memory:",
+        "CRM_ADAPTER": crm,
+        "OFFICIAL_GROUP_APPROVAL_EXECUTOR": executor,
+    })
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-official-skip",
+            "source_platform": "meta",
+            "source_page_id": "page-official-skip",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999994",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "66778894",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:15:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:17:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    )
+    crm.record["wa"] = "official-group-a"
+    crm.record["joinGroup"] = 1
+
+    response = client.post(
+        "/api/official-groups/approval-decisions",
+        json={
+            "lead_id": lead["lead_id"],
+            "target_group": "official-group-a",
+            "decision": "approve",
+            "decided_at": "2026-04-14T12:18:00Z",
+            "decided_by": "operator_1",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["executed"] is False
+    assert body["eligible"] is False
+    assert body["reason_code"] == "already_in_target_group"
+    assert executor.calls == []
+
+
+
+def test_official_group_approval_decision_marks_retryable_follow_up_when_executor_requests_retry():
+    from app.main import create_app
+
+    class StubOfficialGroupApprovalExecutor:
+        def approve(self, *, target_group, lead, crm_snapshot, task):
+            return {
+                "status": "failed",
+                "result_code": "upstream_timeout",
+                "result_reason": "bridge timeout",
+                "raw_result": {
+                    "target_group": target_group,
+                    "execution_disposition": "retryable_failed",
+                    "retryable": True,
+                },
+            }
+
+    crm = StubCrmAdapter()
+    crm.record = {
+        "id": "crm_decision_retry",
+        "mobile": "89999999989",
+        "ywId": "66778889",
+        "appId": "app_1",
+        "appName": "Linky",
+        "deptId": "dept_1",
+        "deptName": "Piso",
+        "pendaftaranGroup": "Piso-5",
+        "wa": "",
+        "joinGroup": 0,
+    }
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    app = create_app({
+        "DB_PATH": ":memory:",
+        "CRM_ADAPTER": crm,
+        "OFFICIAL_GROUP_APPROVAL_EXECUTOR": StubOfficialGroupApprovalExecutor(),
+    })
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-official-retry",
+            "source_platform": "meta",
+            "source_page_id": "page-official-retry",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999989",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "66778889",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:15:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:17:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    )
+
+    response = client.post(
+        "/api/official-groups/approval-decisions",
+        json={
+            "lead_id": lead["lead_id"],
+            "target_group": "official-group-a",
+            "decision": "approve",
+            "decided_at": "2026-04-14T12:18:00Z",
+            "decided_by": "operator_1",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["executed"] is True
+    assert body["follow_up_action"] == "retry_official_group_approval"
+    assert body["retryable"] is True
+    assert body["requires_human_action"] is False
+    assert body["decision_result"]["lead_status"] == "group_join_failed"
+
+
+
+def test_official_group_approval_decision_marks_manual_follow_up_when_executor_requires_human_action():
+    from app.main import create_app
+
+    class StubOfficialGroupApprovalExecutor:
+        def approve(self, *, target_group, lead, crm_snapshot, task):
+            return {
+                "status": "failed",
+                "result_code": "captcha_required",
+                "result_reason": "captcha required",
+                "raw_result": {
+                    "target_group": target_group,
+                    "execution_disposition": "manual_required",
+                    "requires_human_action": True,
+                },
+            }
+
+    crm = StubCrmAdapter()
+    crm.record = {
+        "id": "crm_decision_manual",
+        "mobile": "89999999988",
+        "ywId": "66778888",
+        "appId": "app_1",
+        "appName": "Linky",
+        "deptId": "dept_1",
+        "deptName": "Piso",
+        "pendaftaranGroup": "Piso-5",
+        "wa": "",
+        "joinGroup": 0,
+    }
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    app = create_app({
+        "DB_PATH": ":memory:",
+        "CRM_ADAPTER": crm,
+        "OFFICIAL_GROUP_APPROVAL_EXECUTOR": StubOfficialGroupApprovalExecutor(),
+    })
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-official-manual",
+            "source_platform": "meta",
+            "source_page_id": "page-official-manual",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999988",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "66778888",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:15:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:17:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    )
+
+    response = client.post(
+        "/api/official-groups/approval-decisions",
+        json={
+            "lead_id": lead["lead_id"],
+            "target_group": "official-group-a",
+            "decision": "approve",
+            "decided_at": "2026-04-14T12:18:00Z",
+            "decided_by": "operator_1",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["executed"] is True
+    assert body["follow_up_action"] == "manual_continue_official_group_approval"
+    assert body["retryable"] is False
+    assert body["requires_human_action"] is True
+    assert body["human_action_type"] == "captcha_required"
+    assert body["decision_result"]["lead_status"] == "group_join_failed"
+
+
+
+def test_official_group_approval_executor_health_reports_configured_executor():
+    from app.main import create_app
+
+    class StubOfficialGroupApprovalExecutor:
+        def health(self):
+            return {
+                "status": "healthy",
+                "provider": "stub-whatsapp",
+                "supports": ["approve"],
+            }
+
+    app = create_app({
+        "DB_PATH": ":memory:",
+        "OFFICIAL_GROUP_APPROVAL_EXECUTOR": StubOfficialGroupApprovalExecutor(),
+    })
+    client = TestClient(app)
+
+    response = client.get('/api/ops/official-group-approval-executor-health')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['configured'] is True
+    assert body['status'] == 'healthy'
+    assert body['provider'] == 'stub-whatsapp'
+    assert body['supports'] == ['approve']
+
+
+
+def test_runtime_health_includes_official_group_approval_executor_snapshot():
+    from app.main import create_app
+
+    class StubOfficialGroupApprovalExecutor:
+        def health(self):
+            return {
+                'status': 'healthy',
+                'provider': 'stub-whatsapp',
+                'supports': ['approve'],
+                'schema_version': 'official-group-webhook-v1',
+            }
+
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'OFFICIAL_GROUP_APPROVAL_EXECUTOR': StubOfficialGroupApprovalExecutor(),
+    })
+    client = TestClient(app)
+
+    health = client.get('/api/ops/runtime-health')
+    assert health.status_code == 200
+    body = health.json()
+    assert body['official_group_approval']['configured'] is True
+    assert body['official_group_approval']['provider'] == 'stub-whatsapp'
+    assert body['official_group_approval']['schema_version'] == 'official-group-webhook-v1'
+
+
+
+def test_official_group_approval_summary_counts_pending_approved_and_skipped_duplicates():
+    from app.main import create_app
+
+    class StubOfficialGroupApprovalExecutor:
+        def approve(self, *, target_group, lead, crm_snapshot, task):
+            mobile = str(lead.get('mobile') or '')
+            if mobile == '89999999990':
+                return {
+                    "status": "failed",
+                    "result_code": "upstream_timeout",
+                    "result_reason": "bridge timeout",
+                    "raw_result": {
+                        "target_group": target_group,
+                        "execution_disposition": "retryable_failed",
+                        "retryable": True,
+                    },
+                }
+            if mobile == '89999999987':
+                return {
+                    "status": "failed",
+                    "result_code": "captcha_required",
+                    "result_reason": "captcha required",
+                    "raw_result": {
+                        "target_group": target_group,
+                        "execution_disposition": "manual_required",
+                        "requires_human_action": True,
+                    },
+                }
+            return {
+                "status": "success",
+                "result_code": "approval_ok",
+                "result_reason": "approved by automation executor",
+                "raw_result": {
+                    "target_group": target_group,
+                },
+            }
+
+    crm = StubCrmAdapter()
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    app = create_app({
+        "DB_PATH": ":memory:",
+        "CRM_ADAPTER": crm,
+        "OFFICIAL_GROUP_APPROVAL_EXECUTOR": StubOfficialGroupApprovalExecutor(),
+    })
+    client = TestClient(app)
+
+    def create_bound_lead(trace_id: str, mobile: str, account_id: str, *, current_wa: str = ""):
+        crm.record = {
+            "id": f"crm_{account_id}",
+            "mobile": mobile,
+            "ywId": account_id,
+            "appId": "app_1",
+            "appName": "Linky",
+            "deptId": "dept_1",
+            "deptName": "Piso",
+            "pendaftaranGroup": "Piso-5",
+            "wa": current_wa,
+            "joinGroup": 1 if current_wa else 0,
+        }
+        lead = client.post(
+            "/api/leads/upsert",
+            json={
+                "trace_id": trace_id,
+                "source_platform": "meta",
+                "source_page_id": f"page-{trace_id}",
+                "country": "Indonesia",
+                "area_code": 62,
+                "mobile": mobile,
+                "app_name": "Linky",
+                "dept_name": "Piso",
+                "pendaftaran_group": "Piso-5",
+            },
+        ).json()
+        submission = client.post(
+            "/api/account-submissions",
+            json={
+                "lead_id": lead["lead_id"],
+                "submission_type": "account_id",
+                "account_id": account_id,
+                "account_id_type": "platform_uid",
+                "source_channel": "whatsapp",
+                "submitted_by": "customer_service",
+                "submitted_at": "2026-04-14T12:15:00Z",
+            },
+        ).json()
+        bind_result = client.post(
+            f"/api/tasks/{submission['task_id']}/bind-check-result",
+            json={
+                "status": "success",
+                "result_code": "bind_ok",
+                "result_reason": "manual backend bind success",
+                "finished_at": "2026-04-14T12:17:00Z",
+                "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+            },
+        ).json()
+        return lead, bind_result
+
+    create_bound_lead('trace-og-pending', '89999999993', '66778893')
+
+    lead_approved, _ = create_bound_lead('trace-og-approved', '89999999992', '66778892')
+    client.post(
+        "/api/official-groups/approval-decisions",
+        json={
+            "lead_id": lead_approved['lead_id'],
+            "target_group": "official-group-a",
+            "decision": "approve",
+            "decided_at": "2026-04-14T12:18:00Z",
+            "decided_by": "operator_1",
+        },
+    )
+
+    lead_skipped, _ = create_bound_lead('trace-og-skipped', '89999999991', '66778891', current_wa='official-group-a')
+    crm.record['wa'] = 'official-group-a'
+    crm.record['joinGroup'] = 1
+    client.post(
+        "/api/official-groups/approval-decisions",
+        json={
+            "lead_id": lead_skipped['lead_id'],
+            "target_group": "official-group-a",
+            "decision": "approve",
+            "decided_at": "2026-04-14T12:18:00Z",
+            "decided_by": "operator_1",
+        },
+    )
+
+    lead_retry, _ = create_bound_lead('trace-og-retry', '89999999990', '66778890')
+    client.post(
+        "/api/official-groups/approval-decisions",
+        json={
+            "lead_id": lead_retry['lead_id'],
+            "target_group": "official-group-a",
+            "decision": "approve",
+            "decided_at": "2026-04-14T12:18:00Z",
+            "decided_by": "operator_1",
+        },
+    )
+
+    lead_manual, _ = create_bound_lead('trace-og-manual', '89999999987', '66778887')
+    client.post(
+        "/api/official-groups/approval-decisions",
+        json={
+            "lead_id": lead_manual['lead_id'],
+            "target_group": "official-group-a",
+            "decision": "approve",
+            "decided_at": "2026-04-14T12:18:00Z",
+            "decided_by": "operator_1",
+        },
+    )
+
+    response = client.get('/api/ops/official-group-approval-summary')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['pending_count'] >= 1
+    assert body['approved_count'] >= 1
+    assert body['skipped_duplicate_count'] >= 1
+    assert body['retryable_failed_count'] >= 1
+    assert body['manual_required_count'] >= 1
+    assert body['by_target_group']['official-group-a']['approved_count'] >= 1
+
+
+
+def test_exception_queue_surfaces_retryable_and_manual_group_join_follow_up_actions():
+    from app.main import create_app
+
+    class StubOfficialGroupApprovalExecutor:
+        def approve(self, *, target_group, lead, crm_snapshot, task):
+            mobile = str(lead.get('mobile') or '')
+            if mobile == '89999999986':
+                return {
+                    'status': 'failed',
+                    'result_code': 'upstream_timeout',
+                    'result_reason': 'bridge timeout',
+                    'raw_result': {
+                        'target_group': target_group,
+                        'execution_disposition': 'retryable_failed',
+                        'retryable': True,
+                    },
+                }
+            return {
+                'status': 'failed',
+                'result_code': 'captcha_required',
+                'result_reason': 'captcha required',
+                'raw_result': {
+                    'target_group': target_group,
+                    'execution_disposition': 'manual_required',
+                    'requires_human_action': True,
+                },
+            }
+
+    crm = StubCrmAdapter()
+    crm.apps = [{'id': 'app_1', 'name': 'Linky'}]
+    crm.depts = [{'deptId': 'dept_1', 'deptName': 'Piso'}]
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'OFFICIAL_GROUP_APPROVAL_EXECUTOR': StubOfficialGroupApprovalExecutor(),
+    })
+    client = TestClient(app)
+
+    def create_and_fail(trace_id: str, mobile: str, account_id: str):
+        crm.record = {
+            'id': f'crm_{account_id}',
+            'mobile': mobile,
+            'ywId': account_id,
+            'appId': 'app_1',
+            'appName': 'Linky',
+            'deptId': 'dept_1',
+            'deptName': 'Piso',
+            'pendaftaranGroup': 'Piso-5',
+            'wa': '',
+            'joinGroup': 0,
+        }
+        lead = client.post('/api/leads/upsert', json={
+            'trace_id': trace_id,
+            'source_platform': 'meta',
+            'source_page_id': f'page-{trace_id}',
+            'country': 'Indonesia',
+            'area_code': 62,
+            'mobile': mobile,
+            'app_name': 'Linky',
+            'dept_name': 'Piso',
+            'pendaftaran_group': 'Piso-5',
+        }).json()
+        submission = client.post('/api/account-submissions', json={
+            'lead_id': lead['lead_id'],
+            'submission_type': 'account_id',
+            'account_id': account_id,
+            'account_id_type': 'platform_uid',
+            'source_channel': 'whatsapp',
+            'submitted_by': 'customer_service',
+            'submitted_at': '2026-04-14T12:15:00Z',
+        }).json()
+        client.post(f"/api/tasks/{submission['task_id']}/bind-check-result", json={
+            'status': 'success',
+            'result_code': 'bind_ok',
+            'result_reason': 'manual backend bind success',
+            'finished_at': '2026-04-14T12:17:00Z',
+            'raw_result': {'guild_code': 'Piso', 'deptName': 'Piso', 'deptId': 'dept_1'},
+        })
+        client.post('/api/official-groups/approval-decisions', json={
+            'lead_id': lead['lead_id'],
+            'target_group': 'official-group-a',
+            'decision': 'approve',
+            'decided_at': '2026-04-14T12:18:00Z',
+            'decided_by': 'operator_1',
+        })
+        return lead
+
+    retry_lead = create_and_fail('trace-og-exc-retry', '89999999986', '66778886')
+    manual_lead = create_and_fail('trace-og-exc-manual', '89999999985', '66778885')
+
+    rows = client.get('/api/ops/exception-queue').json()['rows']
+    retry_row = next(row for row in rows if row['lead_id'] == retry_lead['lead_id'])
+    manual_row = next(row for row in rows if row['lead_id'] == manual_lead['lead_id'])
+    assert retry_row['latest_action'] == 'retry_official_group_approval'
+    assert manual_row['latest_action'] == 'manual_continue_official_group_approval'
+
+
+
+def test_retry_official_group_approval_reuses_latest_failed_group_join_task_and_executes_again():
+    from app.main import create_app
+
+    class CountingExecutor:
+        def __init__(self):
+            self.calls = 0
+        def approve(self, *, target_group, lead, crm_snapshot, task):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    'status': 'failed',
+                    'result_code': 'upstream_timeout',
+                    'result_reason': 'bridge timeout',
+                    'raw_result': {'target_group': target_group, 'execution_disposition': 'retryable_failed', 'retryable': True},
+                }
+            return {
+                'status': 'success',
+                'result_code': 'approval_ok',
+                'result_reason': 'approved on retry',
+                'raw_result': {'target_group': target_group},
+            }
+
+    crm = StubCrmAdapter()
+    crm.record = {
+        'id': 'crm_retry_approval_1',
+        'mobile': '89999999984',
+        'ywId': '66778884',
+        'appId': 'app_1',
+        'appName': 'Linky',
+        'deptId': 'dept_1',
+        'deptName': 'Piso',
+        'pendaftaranGroup': 'Piso-5',
+        'wa': '',
+        'joinGroup': 0,
+    }
+    crm.apps = [{'id': 'app_1', 'name': 'Linky'}]
+    crm.depts = [{'deptId': 'dept_1', 'deptName': 'Piso'}]
+    executor = CountingExecutor()
+    app = create_app({'DB_PATH': ':memory:', 'CRM_ADAPTER': crm, 'OFFICIAL_GROUP_APPROVAL_EXECUTOR': executor})
+    client = TestClient(app)
+
+    lead = client.post('/api/leads/upsert', json={
+        'trace_id': 'trace-retry-official-api',
+        'source_platform': 'meta',
+        'source_page_id': 'page-retry-official-api',
+        'country': 'Indonesia',
+        'area_code': 62,
+        'mobile': '89999999984',
+        'app_name': 'Linky',
+        'dept_name': 'Piso',
+        'pendaftaran_group': 'Piso-5',
+    }).json()
+    submission = client.post('/api/account-submissions', json={
+        'lead_id': lead['lead_id'],
+        'submission_type': 'account_id',
+        'account_id': '66778884',
+        'account_id_type': 'platform_uid',
+        'source_channel': 'whatsapp',
+        'submitted_by': 'customer_service',
+        'submitted_at': '2026-04-14T12:15:00Z',
+    }).json()
+    client.post(f"/api/tasks/{submission['task_id']}/bind-check-result", json={
+        'status': 'success',
+        'result_code': 'bind_ok',
+        'result_reason': 'manual backend bind success',
+        'finished_at': '2026-04-14T12:17:00Z',
+        'raw_result': {'guild_code': 'Piso', 'deptName': 'Piso', 'deptId': 'dept_1'},
+    })
+    first = client.post('/api/official-groups/approval-decisions', json={
+        'lead_id': lead['lead_id'],
+        'target_group': 'official-group-a',
+        'decision': 'approve',
+        'decided_at': '2026-04-14T12:18:00Z',
+        'decided_by': 'operator_1',
+    }).json()
+    assert first['follow_up_action'] == 'retry_official_group_approval'
+
+    retried = client.post(f"/api/ops/leads/{lead['lead_id']}/retry-official-group-approval", json={
+        'target_group': 'official-group-a',
+        'decided_at': '2026-04-14T12:19:00Z',
+        'decided_by': 'operator_2',
+    })
+    assert retried.status_code == 200
+    body = retried.json()
+    assert body['executed'] is True
+    assert body['decision_result']['lead_status'] == 'group_join_success'
+    assert executor.calls == 2
+
+
+
+def test_create_app_can_build_webhook_official_group_executor_from_settings():
+    from app.main import create_app
+
+    class StubWebhookSession:
+        pass
+
+    app = create_app({
+        "DB_PATH": ":memory:",
+        "OFFICIAL_GROUP_APPROVAL_EXECUTOR_KIND": "webhook",
+        "OFFICIAL_GROUP_APPROVAL_WEBHOOK_URL": "https://example.test/approve",
+        "OFFICIAL_GROUP_APPROVAL_WEBHOOK_TOKEN": "secret-token",
+        "OFFICIAL_GROUP_APPROVAL_WEBHOOK_SESSION": StubWebhookSession(),
+    })
+    client = TestClient(app)
+
+    response = client.get('/api/ops/official-group-approval-executor-health')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['configured'] is True
+    assert body['provider'] == 'webhook'
+    assert 'approve' in body['supports']
+
+
+
+def test_webhook_official_group_executor_posts_expected_payload():
+    from app.official_group_executor import WebhookOfficialGroupApprovalExecutor
+
+    class StubResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class StubWebhookSession:
+        def __init__(self):
+            self.calls = []
+
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.calls.append({
+                'url': url,
+                'json': json,
+                'headers': headers,
+                'timeout': timeout,
+            })
+            return StubResponse({
+                'status': 'success',
+                'result_code': 'approval_ok',
+                'result_reason': 'approved by webhook',
+                'raw_result': {'target_group': json['target_group']},
+            })
+
+    session = StubWebhookSession()
+    executor = WebhookOfficialGroupApprovalExecutor(
+        webhook_url='https://example.test/approve',
+        token='secret-token',
+        session=session,
+    )
+    result = executor.approve(
+        target_group='official-group-a',
+        lead={'lead_id': 'lead_123', 'mobile': '89999999990'},
+        crm_snapshot={'id': 'crm_123', 'wa': ''},
+        task={'task_id': 'task_123'},
+    )
+
+    assert result['status'] == 'success'
+    call = session.calls[0]
+    assert call['url'] == 'https://example.test/approve'
+    assert call['headers']['Authorization'] == 'Bearer secret-token'
+    assert call['json']['target_group'] == 'official-group-a'
+    assert call['json']['lead']['lead_id'] == 'lead_123'
+    assert call['json']['task']['task_id'] == 'task_123'
+
+
+
+def test_webhook_official_group_executor_normalizes_retryable_failed_response():
+    from app.official_group_executor import WebhookOfficialGroupApprovalExecutor
+
+    class StubResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class StubWebhookSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return StubResponse({
+                'status': 'retryable_failed',
+                'result_code': 'upstream_timeout',
+                'result_reason': 'webhook upstream timeout',
+                'raw_result': {'target_group': json['target_group']},
+            })
+
+    executor = WebhookOfficialGroupApprovalExecutor(
+        webhook_url='https://example.test/approve',
+        session=StubWebhookSession(),
+    )
+    result = executor.approve(
+        target_group='official-group-a',
+        lead={'lead_id': 'lead_123'},
+        crm_snapshot={},
+        task={'task_id': 'task_123'},
+    )
+
+    assert result['status'] == 'failed'
+    assert result['result_code'] == 'upstream_timeout'
+    assert result['raw_result']['execution_disposition'] == 'retryable_failed'
+    assert result['raw_result']['retryable'] is True
+
+
+
+def test_webhook_official_group_executor_normalizes_manual_required_response():
+    from app.official_group_executor import WebhookOfficialGroupApprovalExecutor
+
+    class StubResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class StubWebhookSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return StubResponse({
+                'status': 'manual_required',
+                'result_code': 'captcha_required',
+                'result_reason': 'captcha required by upstream bridge',
+                'raw_result': {'target_group': json['target_group']},
+            })
+
+    executor = WebhookOfficialGroupApprovalExecutor(
+        webhook_url='https://example.test/approve',
+        session=StubWebhookSession(),
+    )
+    result = executor.approve(
+        target_group='official-group-a',
+        lead={'lead_id': 'lead_123'},
+        crm_snapshot={},
+        task={'task_id': 'task_123'},
+    )
+
+    assert result['status'] == 'failed'
+    assert result['result_code'] == 'captcha_required'
+    assert result['raw_result']['execution_disposition'] == 'manual_required'
+    assert result['raw_result']['requires_human_action'] is True
+
+
+
 def test_group_join_result_success_updates_crm_official_group_only_after_join():
     from app.main import create_app
 
@@ -3798,6 +4746,172 @@ def test_group_join_result_success_updates_crm_official_group_only_after_join():
     assert update_payload["id"] == "crm_1"
     assert update_payload["pendaftaranGroup"] == "Piso-5"
     assert update_payload["wa"] == "official-group-a"
+
+
+
+def test_official_group_approval_check_returns_eligible_when_crm_verified_and_target_group_not_yet_joined():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    crm.record = {
+        "id": "crm_join_eligible_1",
+        "mobile": "89999999997",
+        "ywId": "66778897",
+        "appId": "app_1",
+        "appName": "Linky",
+        "deptId": "dept_1",
+        "deptName": "Piso",
+        "pendaftaranGroup": "Piso-5",
+        "wa": "",
+        "joinGroup": 0,
+    }
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    app = create_app({"DB_PATH": ":memory:", "CRM_ADAPTER": crm})
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-official-eligible",
+            "source_platform": "meta",
+            "source_page_id": "page-official-eligible",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999997",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "66778897",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:15:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:17:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    )
+
+    response = client.post(
+        "/api/official-groups/approval-checks",
+        json={
+            "lead_id": lead["lead_id"],
+            "target_group": "official-group-a",
+            "checked_at": "2026-04-14T12:18:00Z",
+            "checked_by": "operator_1",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["eligible"] is True
+    assert body["reason_code"] == "eligible"
+    assert body["next_action"] == "approve_official_group"
+    assert body["crm_customer_found"] is True
+    assert body["crm_verified"] is True
+    assert body["crm_snapshot"]["id"] == "crm_1"
+    assert body["crm_snapshot"]["wa"] == ""
+
+    audit_rows = client.get('/api/ops/operator-audit-log').json()['rows']
+    assert any(
+        row['event_type'] == 'official_group_approval_eligibility_checked'
+        and row['lead_id'] == lead['lead_id']
+        and '"eligible": true' in row['payload']
+        for row in audit_rows
+    )
+
+
+
+def test_official_group_approval_check_rejects_when_crm_already_points_to_target_group():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    crm.record = {
+        "id": "crm_join_already_1",
+        "mobile": "89999999996",
+        "ywId": "66778896",
+        "appId": "app_1",
+        "appName": "Linky",
+        "deptId": "dept_1",
+        "deptName": "Piso",
+        "pendaftaranGroup": "Piso-5",
+        "wa": "official-group-a",
+        "joinGroup": 1,
+    }
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    app = create_app({"DB_PATH": ":memory:", "CRM_ADAPTER": crm})
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-official-already",
+            "source_platform": "meta",
+            "source_page_id": "page-official-already",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999996",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "66778896",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:15:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:17:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    )
+    crm.record["wa"] = "official-group-a"
+    crm.record["joinGroup"] = 1
+
+    response = client.post(
+        "/api/official-groups/approval-checks",
+        json={
+            "lead_id": lead["lead_id"],
+            "target_group": "official-group-a",
+            "checked_at": "2026-04-14T12:18:00Z",
+            "checked_by": "operator_1",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["eligible"] is False
+    assert body["reason_code"] == "already_in_target_group"
+    assert body["next_action"] == "skip_duplicate_group_approval"
+    assert body["crm_customer_found"] is True
+    assert body["crm_snapshot"]["wa"] == "official-group-a"
 
 
 

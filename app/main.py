@@ -1495,6 +1495,45 @@ class RegistrationGroupApprovalBatchRequest(BaseModel):
     remark: Optional[str] = None
 
 
+class OfficialGroupApprovalCheckRequest(BaseModel):
+    lead_id: str
+    target_group: str
+    checked_at: str
+    checked_by: Optional[str] = None
+    checked_by_name: Optional[str] = None
+    source_platform: Optional[str] = None
+    source_campaign: Optional[str] = None
+    source_adset: Optional[str] = None
+    source_ad: Optional[str] = None
+    remark: Optional[str] = None
+
+
+class OfficialGroupApprovalDecisionRequest(BaseModel):
+    lead_id: str
+    target_group: str
+    decision: str = 'approve'
+    decided_at: str
+    decided_by: Optional[str] = None
+    decided_by_name: Optional[str] = None
+    source_platform: Optional[str] = None
+    source_campaign: Optional[str] = None
+    source_adset: Optional[str] = None
+    source_ad: Optional[str] = None
+    remark: Optional[str] = None
+
+
+class OfficialGroupApprovalRetryRequest(BaseModel):
+    target_group: str
+    decided_at: str
+    decided_by: Optional[str] = None
+    decided_by_name: Optional[str] = None
+    source_platform: Optional[str] = None
+    source_campaign: Optional[str] = None
+    source_adset: Optional[str] = None
+    source_ad: Optional[str] = None
+    remark: Optional[str] = None
+
+
 class NotificationReadRequest(BaseModel):
     read_by: Optional[str] = None
 
@@ -1984,7 +2023,7 @@ class LiveLarkReplyAdapter:
 
 
 class Service:
-    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False) -> None:
+    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, official_group_approval_executor: Any = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False) -> None:
         self.db = db
         self.crm_adapter = crm_adapter
         self.ocr_adapter = ocr_adapter
@@ -2000,6 +2039,7 @@ class Service:
         self.auto_bind_simulation = auto_bind_simulation
         self.bind_simulator = bind_simulator
         self.real_bind_executor = real_bind_executor
+        self.official_group_approval_executor = official_group_approval_executor
         self.auto_bind_simulation_success_rate = max(0.0, min(1.0, float(auto_bind_simulation_success_rate or 0.5)))
         self._bind_random = random.Random(auto_bind_simulation_seed) if auto_bind_simulation_seed is not None else random.Random()
         self.media_cache_dir = Path(media_cache_dir or './data/lark_media_cache')
@@ -2565,6 +2605,7 @@ class Service:
             ingress_processing = conn.execute("SELECT COUNT(*) FROM ingress_jobs WHERE status = 'processing'").fetchone()[0]
             pending_bind_tasks = conn.execute("SELECT COUNT(*) FROM automation_tasks WHERE task_type = 'bind_check' AND status = 'pending'").fetchone()[0]
             processing_bind_tasks = conn.execute("SELECT COUNT(*) FROM automation_tasks WHERE task_type = 'bind_check' AND status = 'processing'").fetchone()[0]
+        official_group_approval_health = self.official_group_approval_executor_health()
         return {
             'crm': {
                 'enabled': self.crm_adapter is not None,
@@ -2587,6 +2628,7 @@ class Service:
                 'success_rate': self.auto_bind_simulation_success_rate,
                 'mode': 'simulated' if self.auto_bind_simulation else 'live',
             },
+            'official_group_approval': official_group_approval_health,
             'ingress': {
                 'async_default': self.ingress_async_default,
                 'worker_enabled': self.ingress_worker_enabled,
@@ -5678,6 +5720,400 @@ class Service:
             'crm_response': crm_response,
         }
 
+    def _latest_group_join_task(self, conn: sqlite3.Connection, *, lead_id: str) -> Optional[Dict[str, Any]]:
+        row = conn.execute(
+            """
+            SELECT task_id, lead_id, task_type, status, payload, result_code, result_reason, created_at, finished_at
+            FROM automation_tasks
+            WHERE lead_id = ? AND task_type = 'group_join'
+            ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'failed' THEN 1 WHEN 'running' THEN 2 ELSE 3 END,
+                     created_at DESC
+            LIMIT 1
+            """,
+            (lead_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def official_group_approval_decision(self, payload: OfficialGroupApprovalDecisionRequest) -> Dict[str, Any]:
+        decision = str(payload.decision or 'approve').strip().lower() or 'approve'
+        if decision != 'approve':
+            raise HTTPException(status_code=400, detail='unsupported decision')
+        check_result = self.official_group_approval_check(
+            OfficialGroupApprovalCheckRequest(
+                lead_id=payload.lead_id,
+                target_group=payload.target_group,
+                checked_at=payload.decided_at,
+                checked_by=payload.decided_by,
+                checked_by_name=payload.decided_by_name,
+                source_platform=payload.source_platform,
+                source_campaign=payload.source_campaign,
+                source_adset=payload.source_adset,
+                source_ad=payload.source_ad,
+                remark=payload.remark,
+            )
+        )
+        if not check_result.get('eligible'):
+            with self.db.connect() as conn:
+                self._record_audit_event(
+                    conn,
+                    event_type='official_group_approval_decision_skipped',
+                    event_source='official_group_approval_decision',
+                    payload={
+                        **check_result,
+                        'decision': decision,
+                        'decided_by': payload.decided_by,
+                        'decided_by_name': payload.decided_by_name,
+                        'remark': payload.remark,
+                    },
+                    lead_id=str(payload.lead_id or '').strip() or None,
+                )
+                conn.commit()
+            return {
+                'lead_id': payload.lead_id,
+                'target_group': payload.target_group,
+                'decision': decision,
+                'executed': False,
+                **check_result,
+            }
+        if self.official_group_approval_executor is None:
+            raise HTTPException(status_code=400, detail='official group approval executor not configured')
+        decided_at = parse_iso_datetime(payload.decided_at).isoformat()
+        with self.db.connect() as conn:
+            lead_row = conn.execute("SELECT * FROM leads WHERE lead_id = ?", (payload.lead_id,)).fetchone()
+            if not lead_row:
+                raise HTTPException(status_code=404, detail='lead not found')
+            lead = dict(lead_row)
+            task = self._latest_group_join_task(conn, lead_id=str(payload.lead_id or '').strip())
+            if not task:
+                raise HTTPException(status_code=400, detail='group_join task not found for lead')
+        executor_result = self.official_group_approval_executor.approve(
+            target_group=str(payload.target_group or '').strip(),
+            lead=lead,
+            crm_snapshot=check_result.get('crm_snapshot') or {},
+            task=task,
+        ) or {}
+        executor_raw_result = dict(executor_result.get('raw_result') or {})
+        execution_disposition = str(executor_raw_result.get('execution_disposition') or '').strip().lower()
+        retryable = bool(executor_raw_result.get('retryable'))
+        requires_human_action = bool(executor_raw_result.get('requires_human_action'))
+        human_action_type = None
+        if execution_disposition == 'retryable_failed' or retryable:
+            follow_up_action = 'retry_official_group_approval'
+            retryable = True
+            requires_human_action = False
+        elif execution_disposition == 'manual_required' or requires_human_action:
+            follow_up_action = 'manual_continue_official_group_approval'
+            requires_human_action = True
+            retryable = False
+            lowered_reason = f"{executor_result.get('result_code') or ''} {executor_result.get('result_reason') or ''}".lower()
+            if 'captcha' in lowered_reason:
+                human_action_type = 'captcha_required'
+            elif 'auth' in lowered_reason or 'login' in lowered_reason:
+                human_action_type = 'auth_required'
+            elif 'session' in lowered_reason or 'expired' in lowered_reason:
+                human_action_type = 'session_expired'
+            else:
+                human_action_type = 'manual_continue_required'
+        else:
+            follow_up_action = 'close_or_education' if str(executor_result.get('status') or '').strip().lower() == 'success' else 'queue_reengagement'
+        group_join_payload = GroupJoinResultRequest(
+            status=str(executor_result.get('status') or 'failed'),
+            result_code=executor_result.get('result_code'),
+            result_reason=executor_result.get('result_reason'),
+            finished_at=decided_at,
+            raw_result={
+                **dict(executor_result.get('raw_result') or {}),
+                'target_group': str(payload.target_group or '').strip(),
+                'decision': decision,
+                'decided_by': payload.decided_by,
+                'decided_by_name': payload.decided_by_name,
+            },
+        )
+        decision_result = self.group_join_result(task['task_id'], group_join_payload)
+        with self.db.connect() as conn:
+            self._record_audit_event(
+                conn,
+                event_type='official_group_approval_decision_executed',
+                event_source='official_group_approval_decision',
+                payload={
+                    'lead_id': payload.lead_id,
+                    'target_group': payload.target_group,
+                    'decision': decision,
+                    'task_id': task['task_id'],
+                    'eligibility': check_result,
+                    'executor_result': executor_result,
+                    'decision_result': decision_result,
+                    'follow_up_action': follow_up_action,
+                    'retryable': retryable,
+                    'requires_human_action': requires_human_action,
+                    'human_action_type': human_action_type,
+                    'remark': payload.remark,
+                },
+                lead_id=str(payload.lead_id or '').strip() or None,
+            )
+            conn.commit()
+        return {
+            'lead_id': payload.lead_id,
+            'target_group': payload.target_group,
+            'decision': decision,
+            'executed': True,
+            'task_id': task['task_id'],
+            'eligible': True,
+            'reason_code': check_result.get('reason_code'),
+            'next_action': decision_result.get('next_action'),
+            'follow_up_action': follow_up_action,
+            'retryable': retryable,
+            'requires_human_action': requires_human_action,
+            'human_action_type': human_action_type,
+            'executor_result': executor_result,
+            'decision_result': decision_result,
+        }
+
+    def retry_official_group_approval(self, lead_id: str, payload: OfficialGroupApprovalRetryRequest) -> Dict[str, Any]:
+        normalized_lead_id = str(lead_id or '').strip()
+        if not normalized_lead_id:
+            raise HTTPException(status_code=400, detail='lead_id is required')
+        return self.official_group_approval_decision(
+            OfficialGroupApprovalDecisionRequest(
+                lead_id=normalized_lead_id,
+                target_group=payload.target_group,
+                decision='approve',
+                decided_at=payload.decided_at,
+                decided_by=payload.decided_by,
+                decided_by_name=payload.decided_by_name,
+                source_platform=payload.source_platform,
+                source_campaign=payload.source_campaign,
+                source_adset=payload.source_adset,
+                source_ad=payload.source_ad,
+                remark=payload.remark,
+            )
+        )
+
+    def official_group_approval_executor_health(self) -> Dict[str, Any]:
+        executor = self.official_group_approval_executor
+        if executor is None:
+            return {
+                'configured': False,
+                'status': 'unconfigured',
+                'provider': None,
+                'supports': [],
+            }
+        health_fn = getattr(executor, 'health', None)
+        if callable(health_fn):
+            snapshot = health_fn() or {}
+            return {
+                'configured': True,
+                'status': str(snapshot.get('status') or 'unknown'),
+                'provider': snapshot.get('provider'),
+                'supports': list(snapshot.get('supports') or []),
+                'schema_version': snapshot.get('schema_version'),
+                'details': snapshot,
+            }
+        return {
+            'configured': True,
+            'status': 'unknown',
+            'provider': executor.__class__.__name__,
+            'supports': ['approve'] if hasattr(executor, 'approve') else [],
+        }
+
+    def official_group_approval_summary(self) -> Dict[str, Any]:
+        with self.db.connect() as conn:
+            pending_count = conn.execute(
+                "SELECT COUNT(*) FROM leads WHERE current_status IN ('bind_success', 'group_join_pending', 'group_join_failed')"
+            ).fetchone()[0]
+            skipped_duplicate_count = conn.execute(
+                """
+                SELECT COUNT(*) FROM operator_audit_log
+                WHERE event_type = 'official_group_approval_decision_skipped'
+                  AND payload LIKE '%"reason_code": "already_in_target_group"%'
+                """
+            ).fetchone()[0]
+            by_target_group: Dict[str, Dict[str, int]] = {}
+            approved_count = 0
+            failed_count = 0
+            retryable_failed_count = 0
+            manual_required_count = 0
+            group_rows = conn.execute(
+                "SELECT target_group, status, raw_result FROM group_join_jobs WHERE join_type = 'official_group'"
+            ).fetchall()
+            for row in group_rows:
+                target_group = str(row['target_group'] or '').strip()
+                if not target_group:
+                    try:
+                        parsed_raw = json.loads(row['raw_result'] or '{}')
+                    except Exception:
+                        parsed_raw = {}
+                    target_group = str(parsed_raw.get('target_group') or '').strip()
+                if not target_group:
+                    continue
+                by_target_group.setdefault(target_group, {
+                    'approved_count': 0,
+                    'skipped_duplicate_count': 0,
+                    'retryable_failed_count': 0,
+                    'manual_required_count': 0,
+                })
+                status = str(row['status'] or '').strip().lower()
+                try:
+                    parsed_raw = json.loads(row['raw_result'] or '{}')
+                except Exception:
+                    parsed_raw = {}
+                disposition = str(parsed_raw.get('execution_disposition') or '').strip().lower()
+                if status == 'success':
+                    approved_count += 1
+                    by_target_group[target_group]['approved_count'] += 1
+                elif status == 'failed':
+                    failed_count += 1
+                    if disposition == 'retryable_failed':
+                        retryable_failed_count += 1
+                        by_target_group[target_group]['retryable_failed_count'] += 1
+                    elif disposition == 'manual_required':
+                        manual_required_count += 1
+                        by_target_group[target_group]['manual_required_count'] += 1
+            skipped_rows = conn.execute(
+                """
+                SELECT payload FROM operator_audit_log
+                WHERE event_type = 'official_group_approval_decision_skipped'
+                ORDER BY created_at DESC
+                """
+            ).fetchall()
+            for row in skipped_rows:
+                try:
+                    payload = json.loads(row['payload'] or '{}')
+                except Exception:
+                    payload = {}
+                if str(payload.get('reason_code') or '') != 'already_in_target_group':
+                    continue
+                target_group = str(payload.get('target_group') or '').strip()
+                if not target_group:
+                    continue
+                by_target_group.setdefault(target_group, {
+                    'approved_count': 0,
+                    'skipped_duplicate_count': 0,
+                    'retryable_failed_count': 0,
+                    'manual_required_count': 0,
+                })
+                by_target_group[target_group]['skipped_duplicate_count'] += 1
+            return {
+                'pending_count': int(pending_count or 0),
+                'approved_count': int(approved_count or 0),
+                'failed_count': int(failed_count or 0),
+                'skipped_duplicate_count': int(skipped_duplicate_count or 0),
+                'retryable_failed_count': int(retryable_failed_count or 0),
+                'manual_required_count': int(manual_required_count or 0),
+                'by_target_group': by_target_group,
+            }
+
+    def official_group_approval_check(self, payload: OfficialGroupApprovalCheckRequest) -> Dict[str, Any]:
+        lead_id = str(payload.lead_id or '').strip()
+        target_group = str(payload.target_group or '').strip()
+        if not lead_id:
+            raise HTTPException(status_code=400, detail='lead_id is required')
+        if not target_group:
+            raise HTTPException(status_code=400, detail='target_group is required')
+        checked_at = parse_iso_datetime(payload.checked_at)
+        checked_at_iso = checked_at.isoformat()
+        with self.db.connect() as conn:
+            lead_row = conn.execute("SELECT * FROM leads WHERE lead_id = ?", (lead_id,)).fetchone()
+            if not lead_row:
+                raise HTTPException(status_code=404, detail='lead not found')
+            lead = dict(lead_row)
+            current_status = str(lead.get('current_status') or '')
+            crm_verified = bool(
+                lead.get('crm_verified_at')
+                or lead.get('crm_verified_payload')
+                or lead.get('crm_verified_app_name')
+                or lead.get('crm_verified_registration_group')
+            )
+            result: Dict[str, Any] = {
+                'lead_id': lead_id,
+                'target_group': target_group,
+                'checked_at': checked_at_iso,
+                'checked_by': payload.checked_by,
+                'checked_by_name': payload.checked_by_name,
+                'current_status': current_status,
+                'crm_verified': crm_verified,
+                'crm_customer_found': False,
+                'crm_snapshot': None,
+                'eligible': False,
+                'reason_code': 'unknown',
+                'reason_detail': None,
+                'next_action': 'manual_review_official_group_approval',
+            }
+            if current_status not in {'bind_success', 'group_join_pending', 'group_join_failed'}:
+                result.update({
+                    'reason_code': 'lead_not_ready_for_official_group',
+                    'reason_detail': 'Lead has not reached the official-group approval stage.',
+                    'next_action': 'wait_for_bind_and_crm',
+                })
+            elif not crm_verified:
+                result.update({
+                    'reason_code': 'crm_verification_missing',
+                    'reason_detail': 'Current submission has not been CRM-verified yet.',
+                    'next_action': 'retry_crm_sync',
+                })
+            elif self.crm_adapter is None:
+                result.update({
+                    'reason_code': 'crm_adapter_not_configured',
+                    'reason_detail': 'CRM adapter is unavailable.',
+                    'next_action': 'manual_review_official_group_approval',
+                })
+            else:
+                crm_row = self._find_existing_customer_with_fallback(
+                    yw_id=lead.get('yw_id'),
+                    mobile=lead.get('mobile'),
+                    app_name=lead.get('crm_verified_app_name') or lead.get('app_name'),
+                    dept_name=lead.get('crm_verified_dept_name') or lead.get('dept_name'),
+                    registration_group=lead.get('crm_verified_registration_group') or lead.get('pendaftaran_group'),
+                    official_group=None,
+                )
+                result['crm_customer_found'] = bool(crm_row)
+                if crm_row:
+                    result['crm_snapshot'] = {
+                        'id': crm_row.get('id'),
+                        'mobile': crm_row.get('mobile'),
+                        'ywId': crm_row.get('ywId'),
+                        'appName': crm_row.get('appName'),
+                        'deptName': crm_row.get('deptName'),
+                        'pendaftaranGroup': crm_row.get('pendaftaranGroup'),
+                        'wa': crm_row.get('wa'),
+                        'joinGroup': crm_row.get('joinGroup'),
+                    }
+                if not crm_row:
+                    result.update({
+                        'reason_code': 'crm_customer_not_found',
+                        'reason_detail': 'No matching CRM customer was found for approval gating.',
+                        'next_action': 'manual_review_official_group_approval',
+                    })
+                elif str(crm_row.get('wa') or '').strip() == target_group:
+                    result.update({
+                        'reason_code': 'already_in_target_group',
+                        'reason_detail': 'CRM already points to the requested official group.',
+                        'next_action': 'skip_duplicate_group_approval',
+                    })
+                else:
+                    result.update({
+                        'eligible': True,
+                        'reason_code': 'eligible',
+                        'reason_detail': 'CRM verification passed for official-group approval.',
+                        'next_action': 'approve_official_group',
+                    })
+            self._record_audit_event(
+                conn,
+                event_type='official_group_approval_eligibility_checked',
+                event_source='official_group_approval_check',
+                payload={
+                    **result,
+                    'source_platform': payload.source_platform,
+                    'source_campaign': payload.source_campaign,
+                    'source_adset': payload.source_adset,
+                    'source_ad': payload.source_ad,
+                    'remark': payload.remark,
+                },
+                lead_id=lead_id,
+            )
+            conn.commit()
+            return result
+
     def ops_bind_queue(self) -> Dict[str, Any]:
         statuses = ('account_submitted', 'recognition_pending', 'bind_check_pending', 'bind_failed')
         with self.db.connect() as conn:
@@ -6245,7 +6681,7 @@ class Service:
                 })
             group_rows = [dict(r) for r in conn.execute(
                 """
-                SELECT t.task_id, t.lead_id, t.result_reason, COALESCE(t.finished_at, t.created_at) AS created_at,
+                SELECT t.task_id, t.lead_id, t.result_reason, t.raw_result, COALESCE(t.finished_at, t.created_at) AS created_at,
                        COALESCE(l.mobile, '') AS mobile, COALESCE(l.yw_id, '') AS account_id,
                        COALESCE(l.pendaftaran_group, '') AS registration_group, COALESCE(l.dept_name, '') AS guild_name,
                        COALESCE(l.current_status, '') AS current_status
@@ -6257,6 +6693,16 @@ class Service:
                 """
             ).fetchall()]
             for row in group_rows:
+                latest_action = 'retry_group_join'
+                try:
+                    raw_result = json.loads(row.get('raw_result') or '{}')
+                except Exception:
+                    raw_result = {}
+                disposition = str(raw_result.get('execution_disposition') or '').strip().lower()
+                if disposition == 'retryable_failed':
+                    latest_action = 'retry_official_group_approval'
+                elif disposition == 'manual_required':
+                    latest_action = 'manual_continue_official_group_approval'
                 rows.append({
                     'lead_id': row['lead_id'],
                     'submission_id': None,
@@ -6264,7 +6710,7 @@ class Service:
                     'current_status': row['current_status'],
                     'exception_type': 'group_join_failure',
                     'reason': row['result_reason'],
-                    'latest_action': 'retry_group_join',
+                    'latest_action': latest_action,
                     'guild_name': row['guild_name'],
                     'mobile': row['mobile'],
                     'account_id': row['account_id'],
@@ -6878,6 +7324,12 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     lark_media_adapter = cfg.get('LARK_MEDIA_ADAPTER')
     lark_reply_adapter = cfg.get('LARK_REPLY_ADAPTER')
     lark_reply_adapter_by_app_id = cfg.get('LARK_REPLY_ADAPTER_BY_APP_ID') or {}
+    official_group_approval_executor = cfg.get('OFFICIAL_GROUP_APPROVAL_EXECUTOR')
+    official_group_approval_executor_kind = cfg.get('OFFICIAL_GROUP_APPROVAL_EXECUTOR_KIND') or os.getenv('OFFICIAL_GROUP_APPROVAL_EXECUTOR_KIND')
+    official_group_approval_webhook_url = cfg.get('OFFICIAL_GROUP_APPROVAL_WEBHOOK_URL') or os.getenv('OFFICIAL_GROUP_APPROVAL_WEBHOOK_URL')
+    official_group_approval_webhook_token = cfg.get('OFFICIAL_GROUP_APPROVAL_WEBHOOK_TOKEN') or os.getenv('OFFICIAL_GROUP_APPROVAL_WEBHOOK_TOKEN')
+    official_group_approval_webhook_session = cfg.get('OFFICIAL_GROUP_APPROVAL_WEBHOOK_SESSION')
+    official_group_approval_webhook_timeout_seconds = cfg.get('OFFICIAL_GROUP_APPROVAL_WEBHOOK_TIMEOUT_SECONDS') or os.getenv('OFFICIAL_GROUP_APPROVAL_WEBHOOK_TIMEOUT_SECONDS') or 20
     media_cache_dir = cfg.get('MEDIA_CACHE_DIR')
     lark_default_app_name = cfg.get('LARK_DEFAULT_APP_NAME') or os.getenv('LARK_DEFAULT_APP_NAME')
     lark_default_dept_name = cfg.get('LARK_DEFAULT_DEPT_NAME') or os.getenv('LARK_DEFAULT_DEPT_NAME')
@@ -6948,6 +7400,14 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             print(f'CRM login degraded at startup: {crm_login_error}')
     if ocr_adapter is None and ((cfg.get('ENABLE_RAPIDOCR') is True) or str(cfg.get('ENABLE_RAPIDOCR') or os.getenv('ENABLE_RAPIDOCR') or '').strip().lower() in {'1', 'true', 'yes', 'on'}):
         ocr_adapter = RapidOcrAdapter()
+    if official_group_approval_executor is None and str(official_group_approval_executor_kind or '').strip().lower() == 'webhook' and official_group_approval_webhook_url:
+        from app.official_group_executor import WebhookOfficialGroupApprovalExecutor
+        official_group_approval_executor = WebhookOfficialGroupApprovalExecutor(
+            webhook_url=official_group_approval_webhook_url,
+            token=official_group_approval_webhook_token,
+            session=official_group_approval_webhook_session,
+            timeout_seconds=float(official_group_approval_webhook_timeout_seconds or 20),
+        )
     auto_lark_reply = cfg.get('AUTO_LARK_REPLY', True)
     if auto_lark_reply and lark_reply_adapter is None and app_id and app_secret:
         lark_reply_adapter = LiveLarkReplyAdapter(app_id=app_id, app_secret=app_secret, domain=app_domain)
@@ -6965,6 +7425,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         auto_bind_simulation=auto_bind_simulation,
         bind_simulator=bind_simulator,
         real_bind_executor=real_bind_executor,
+        official_group_approval_executor=official_group_approval_executor,
         auto_bind_simulation_success_rate=auto_bind_simulation_success_rate,
         auto_bind_simulation_seed=auto_bind_simulation_seed,
         crm_base_url=crm_base_url,
@@ -7077,6 +7538,26 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     @app.post("/api/registration-groups/approval-batches")
     def registration_group_approval_batches(payload: RegistrationGroupApprovalBatchRequest):
         return service.create_registration_group_approval_batch(payload)
+
+    @app.post("/api/official-groups/approval-checks")
+    def official_group_approval_checks(payload: OfficialGroupApprovalCheckRequest):
+        return service.official_group_approval_check(payload)
+
+    @app.post("/api/official-groups/approval-decisions")
+    def official_group_approval_decisions(payload: OfficialGroupApprovalDecisionRequest):
+        return service.official_group_approval_decision(payload)
+
+    @app.post('/api/ops/leads/{lead_id}/retry-official-group-approval')
+    def ops_retry_official_group_approval(lead_id: str, payload: OfficialGroupApprovalRetryRequest):
+        return service.retry_official_group_approval(lead_id, payload)
+
+    @app.get('/api/ops/official-group-approval-executor-health')
+    def ops_official_group_approval_executor_health():
+        return service.official_group_approval_executor_health()
+
+    @app.get('/api/ops/official-group-approval-summary')
+    def ops_official_group_approval_summary():
+        return service.official_group_approval_summary()
 
     @app.get("/api/ops/manual-review-queue")
     def ops_manual_review_queue():

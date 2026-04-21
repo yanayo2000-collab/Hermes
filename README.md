@@ -9,6 +9,27 @@ P0 automation service for lead ingestion, event collection, task orchestration, 
 uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8011
 ```
 
+## Minimal WhatsApp webhook service
+
+Use this if you need a real callback URL for Meta/WhatsApp webhook verification before wiring the full official-group approval bridge.
+
+```bash
+export WHATSAPP_WEBHOOK_VERIFY_TOKEN=replace-with-your-token
+uvicorn app.official_webhook_bridge_app:create_app --factory --host 0.0.0.0 --port 8091
+```
+
+After deployment, your webhook URL looks like:
+- `https://your-domain.com/webhooks/whatsapp`
+
+Verification endpoint:
+- `GET /webhooks/whatsapp`
+
+Event receiver endpoint:
+- `POST /webhooks/whatsapp`
+
+Latest received event (for ops/debug):
+- `GET /ops/whatsapp-webhook/latest`
+
 ## Multi-worker web service
 
 ```bash
@@ -65,6 +86,61 @@ Output summary:
 - `REAL_SUCCESS_CONFIRMED` = parse/bind/CRM create/CRM verify all passed
 - `REAL_SUCCESS_NOT_CONFIRMED` = at least one stage failed
 - `LEAD_NOT_FOUND` = no matching lead resolved from the query
+
+## Official-group bridge readiness verifier
+
+Use this before real-scene testing to verify that the official-group approval executor is configured and exposed in runtime health.
+
+```bash
+. .venv/bin/activate
+python scripts/verify_official_group_bridge_ready.py
+```
+
+Expected summary values:
+- `OFFICIAL_GROUP_BRIDGE_READY`
+- `OFFICIAL_GROUP_BRIDGE_NOT_READY`
+- `OFFICIAL_GROUP_BRIDGE_UNREACHABLE`
+
+Key readiness checks:
+- runtime health exposes `official_group_approval`
+- CRM is enabled and healthy
+- executor is configured
+- executor status is `healthy`
+- schema version is present
+- official-group summary endpoint is available
+
+## Official-group local smoke test
+
+You can use the mock bridge first, then run a full approval smoke test against a local service instance wired to that bridge.
+
+Start mock bridge:
+```bash
+python scripts/mock_official_group_bridge.py --port 55801 --mode success
+```
+
+Start service with webhook executor config:
+```bash
+export OFFICIAL_GROUP_APPROVAL_EXECUTOR_KIND=webhook
+export OFFICIAL_GROUP_APPROVAL_WEBHOOK_URL=http://127.0.0.1:55801
+export OFFICIAL_GROUP_APPROVAL_WEBHOOK_TOKEN=test-token
+uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8011
+```
+
+Run smoke verifier:
+```bash
+python scripts/verify_official_group_smoke.py --base-url http://127.0.0.1:8011
+```
+
+Expected summary values:
+- `OFFICIAL_GROUP_SMOKE_SUCCESS`
+- `OFFICIAL_GROUP_SMOKE_FAILED`
+
+If it fails, inspect:
+- `failure_reason_code`
+- `failure_next_action`
+
+A common pre-prod failure is:
+- `crm_verification_missing` -> means the current service was started without a healthy live CRM adapter, so the official-group gate correctly blocks execution.
 
 ## New async ingress endpoints
 
