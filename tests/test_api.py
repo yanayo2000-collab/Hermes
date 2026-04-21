@@ -1,11 +1,1183 @@
+import json
+
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 
-from app.main import create_app
+from app.main import create_app, parse_manual_cs_message, extract_invalid_group_candidate, LiveLarkReplyAdapter, format_display_phone
 
 
-def make_client():
-    app = create_app({"DB_PATH": ":memory:"})
+class StubLarkMediaAdapter:
+    def __init__(self, payload: bytes = b'test-image-bytes'):
+        self.payload = payload
+        self.calls = []
+
+    def download_image(self, message_id: str, file_key: str) -> bytes:
+        self.calls.append((message_id, file_key))
+        return self.payload
+
+
+class StubLarkReplyAdapter:
+    def __init__(self):
+        self.calls = []
+
+    def reply_text(self, *, message_id: str, text: str) -> dict:
+        self.calls.append({'message_id': message_id, 'text': text})
+        return {'ok': True}
+
+
+class StubOcrAdapter:
+    def __init__(self, raw_text: str = ""):
+        self.raw_text = raw_text
+        self.calls = []
+
+    def extract_text(self, image_ref: str) -> dict:
+        self.calls.append(image_ref)
+        return {"raw_text": self.raw_text, "engine": "stub_ocr"}
+
+
+class StubCrmDropdownAdapter:
+    def __init__(self, apps=None, depts=None, error=None):
+        self.apps = apps or []
+        self.depts = depts or []
+        self.error = error
+
+    def get_apps(self):
+        if self.error:
+            raise RuntimeError(self.error)
+        return list(self.apps)
+
+    def get_depts(self):
+        if self.error:
+            raise RuntimeError(self.error)
+        return list(self.depts)
+
+
+def make_client(settings=None):
+    cfg = {"DB_PATH": ":memory:", "AUTO_LARK_REPLY": False}
+    if settings:
+        cfg.update(settings)
+    app = create_app(cfg)
     return TestClient(app)
+
+
+def test_live_lark_reply_adapter_normalizes_markdown_bold_to_lark_text_tags():
+    adapter = LiveLarkReplyAdapter(app_id='cli_test', app_secret='secret_test')
+    normalized = adapter._normalize_text_markup('**❌ Device Duplicate Registration**\nPhone: 123')
+    assert normalized.startswith('<b>❌ Device Duplicate Registration</b>')
+    assert '**' not in normalized
+
+
+
+def test_format_display_phone_normalizes_variants_to_area_code_space_number():
+    assert format_display_phone('85249519581', area_code=62) == '+62 85249519581'
+    assert format_display_phone('+6285249519581') == '+62 85249519581'
+    assert format_display_phone('+62 852-4951-9581') == '+62 85249519581'
+    assert format_display_phone('0852-4951-9581', area_code=62) == '+62 085249519581'
+    assert format_display_phone('+621****9911') == '+621****9911'
+
+
+
+def test_create_app_enables_rapidocr_from_env(monkeypatch):
+    monkeypatch.setenv('ENABLE_RAPIDOCR', 'true')
+    app = create_app({'DB_PATH': ':memory:', 'AUTO_LARK_REPLY': False})
+    assert app.state.service.ocr_adapter is not None
+
+
+def test_create_app_degrades_gracefully_when_live_crm_login_fails():
+    class FailingLiveCrmAdapter:
+        def __init__(self, *, base_url, username, password, session=None):
+            self.base_url = base_url
+            self.username = username
+            self.password = password
+        def login(self):
+            raise RuntimeError('CRM login returned non-JSON response: status=502 body=')
+
+    with patch('app.main.LiveCrmAdapter', FailingLiveCrmAdapter):
+        app = create_app({
+            'DB_PATH': ':memory:',
+            'AUTO_LARK_REPLY': False,
+            'CRM_BASE_URL': 'http://crm.example.test',
+            'CRM_USERNAME': 'Hermes',
+            'CRM_PASSWORD': 'secret',
+        })
+
+    runtime = app.state.service.runtime_health()
+    assert runtime['crm']['enabled'] is True
+    assert runtime['crm']['status'] == 'degraded'
+    assert runtime['crm']['base_url'] == 'http://crm.example.test'
+    assert runtime['crm']['username'] == 'Hermes'
+    assert 'status=502' in (runtime['crm']['login_error'] or '')
+
+
+
+def test_create_app_refuses_live_bind_simulation_without_explicit_override(tmp_path):
+    app = create_app({
+        'DB_PATH': str(tmp_path / 'live.db'),
+        'AUTO_LARK_REPLY': False,
+        'AUTO_BIND_SIMULATION': True,
+    })
+    runtime = app.state.service.runtime_health()
+    assert runtime['simulation']['auto_bind_simulation'] is False
+    assert runtime['simulation']['mode'] == 'live'
+
+
+
+def test_file_backed_app_enables_async_ingress_queue_and_worker_controls(tmp_path):
+    app = create_app({
+        'DB_PATH': str(tmp_path / 'async-live.db'),
+        'AUTO_LARK_REPLY': False,
+        'INGRESS_WORKER_ENABLED': False,
+    })
+    runtime = app.state.service.runtime_health()
+    assert runtime['ingress']['async_default'] is True
+    assert runtime['ingress']['worker_enabled'] is False
+
+
+
+def test_parse_manual_cs_message_supports_labeled_form():
+    parsed = parse_manual_cs_message(
+        text="手机号：+62 81234567890\nID：45678901\n注册群组：Piso-5\n应用：Linky\n公会：Piso"
+    )
+
+    assert parsed["mobile"] == "81234567890"
+    assert parsed["area_code"] == 62
+    assert parsed["country"] == "Indonesia"
+    assert parsed["account_id"] == "45678901"
+    assert parsed["registration_group"] == "Piso-5"
+    assert parsed["app_name"] == "Linky"
+    assert parsed["dept_name"] == "Piso"
+
+
+
+def test_parse_manual_cs_message_supports_messy_free_text_form():
+    parsed = parse_manual_cs_message(
+        text="Linky 的用户，Piso组，公会Piso，手机号 081234567891，id是 56789012，麻烦处理"
+    )
+
+    assert parsed["mobile"] == "081234567891"
+    assert parsed["account_id"] == "56789012"
+    assert parsed["registration_group"] == "Piso"
+    assert parsed["app_name"] == "Linky"
+    assert parsed["dept_name"] == "Piso"
+
+
+
+def test_parse_manual_cs_message_does_not_infer_dept_from_registration_group_token():
+    parsed = parse_manual_cs_message(
+        text='88909200\n+62 18812321188\nPERMATA-88'
+    )
+
+    assert parsed['registration_group'] == 'PERMATA-88'
+    assert parsed['dept_name'] is None
+
+
+
+def test_parse_manual_cs_message_supports_text_plus_image_hint_form():
+    parsed = parse_manual_cs_message(
+        text="手机号 081234567892，Linky，注册群组 Piso-9，截图里有ID和公会",
+        image_ocr_text="UID 67890123\nAgensi saya Permata-7"
+    )
+
+    assert parsed["mobile"] == "081234567892"
+    assert parsed["account_id"] == "67890123"
+    assert parsed["registration_group"] == "Piso-9"
+    assert parsed["app_name"] == "Linky"
+    assert parsed["dept_name"] == "Permata-7"
+    assert parsed["evidence"]["image_ocr_used"] is True
+
+
+
+def test_parse_manual_cs_message_reports_missing_fields_and_conflicts():
+    parsed = parse_manual_cs_message(
+        text="手机号 081234567893，Linky，公会Permata，注册群组 Piso-18，ID 88888888",
+        image_ocr_text="UID 99999999\nGroup Piso-18"
+    )
+
+    assert parsed["account_id"] == "99999999"
+    assert parsed["confidence"] < 1
+    assert "account_id_conflict" in parsed["conflicts"]
+    assert parsed["missing_fields"] == ["invite_code"]
+
+
+
+def test_parse_manual_cs_message_reports_missing_required_fields():
+    parsed = parse_manual_cs_message(text="只有 Linky，没有别的信息")
+
+    assert parsed["app_name"] == "Linky"
+    assert "mobile" in parsed["missing_fields"]
+    assert "account_id" in parsed["missing_fields"]
+    assert "invite_code" in parsed["missing_fields"]
+    assert parsed["confidence"] < 0.5
+
+
+
+def test_parse_manual_cs_message_extracts_personal_invite_code_from_text():
+    parsed = parse_manual_cs_message(
+        text="手机号：+62 81234567890\nID：45678901\n注册群组：Piso-5\n应用：Linky\n公会：Piso\n个人邀请码：EKVFGQ"
+    )
+
+    assert parsed["invite_code"] == "EKVFGQ"
+    assert "invite_code" not in parsed["missing_fields"]
+
+
+
+def test_parse_manual_cs_message_extracts_bare_multiline_invite_code():
+    parsed = parse_manual_cs_message(
+        text="+62 12312966899\n89008911\nPERMATA-88\nGMJY7O"
+    )
+
+    assert parsed["mobile"] == "12312966899"
+    assert parsed["account_id"] == "89008911"
+    assert parsed["registration_group"] == "PERMATA-88"
+    assert parsed["invite_code"] == "GMJY7O"
+    assert "invite_code" not in parsed["missing_fields"]
+
+
+
+def test_parse_manual_cs_message_extracts_bare_multiline_all_letter_invite_code():
+    parsed = parse_manual_cs_message(
+        text='+62 12312966899\n89008911\nPERMATA-88\nGMJHJK',
+        image_ocr_text=None,
+    )
+
+    assert parsed["invite_code"] == "GMJHJK"
+    assert "invite_code" not in parsed["missing_fields"]
+
+
+
+def test_parse_manual_cs_message_normalizes_hyphenated_phone_input():
+    parsed = parse_manual_cs_message(
+        text='Phone: +62 852-4951-9581\nGroup: PERMATA-909\nID: 51669366\nCode: EKVFGQ',
+        image_ocr_text=None,
+    )
+
+    assert parsed['mobile'] == '85249519581'
+    assert parsed['area_code'] == 62
+    assert parsed['country'] == 'Indonesia'
+    assert parsed['invite_code'] == 'EKVFGQ'
+
+
+
+def test_parse_manual_cs_message_normalizes_homoglyph_invite_code_from_text():
+    parsed = parse_manual_cs_message(
+        text='Phone: +62 85249519581\nGroup: PERMATA-909\nID: 51669366\nCode: 7ЕНТ9N',
+        image_ocr_text=None,
+    )
+
+    assert parsed['invite_code'] == '7EHT9N'
+    assert parsed['evidence']['text_invite_code'] == '7EHT9N'
+    assert parsed['evidence']['invite_code_had_homoglyphs'] is True
+    assert parsed['evidence']['invite_code_raw_input'] == '7ЕНТ9N'
+
+
+
+def test_lark_event_rejects_invite_code_with_unsupported_non_latin_characters():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': StubLarkReplyAdapter(),
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_bad_code'}},
+            'message': {
+                'message_id': 'om_bad_code',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 85249519581\\nPERMATA-909\\n51669366\\nCode 7ЕНЖ9N"}'
+            }
+        }
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'invalid_invite_code_format'
+    assert body['reply_text'].startswith('**🚫 Invalid Code. Use 6 English letters or letters+digits only.**')
+
+
+
+def test_parse_manual_cs_message_rejects_bare_multiline_invite_code_shorter_than_6():
+    parsed = parse_manual_cs_message(
+        text="+62 12312966899\n89008911\nPERMATA-88\nGMJHK"
+    )
+
+    assert parsed["invite_code"] is None
+    assert "invite_code" in parsed["missing_fields"]
+
+
+
+def test_parse_manual_cs_message_rejects_bare_multiline_invite_code_longer_than_6():
+    parsed = parse_manual_cs_message(
+        text="+62 12312966899\n89008911\nPERMATA-88\nGMJHJKL"
+    )
+
+    assert parsed["invite_code"] is None
+    assert "invite_code" in parsed["missing_fields"]
+
+
+
+def test_registration_group_batching_ready_when_reaches_30():
+    client = make_client()
+    response = client.post(
+        "/api/ops/approval-batches/evaluate",
+        json={
+            "approval_type": "registration_group",
+            "registration_group": "Piso-30",
+            "pending_count": 30,
+            "oldest_pending_at": "2026-04-15T10:00:00Z",
+            "now": "2026-04-15T10:19:00Z",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["release_count"] == 30
+    assert body["reason_code"] == "batch_size_reached"
+
+
+
+def test_registration_group_batching_flushes_after_20_minutes_even_if_under_30():
+    client = make_client()
+    response = client.post(
+        "/api/ops/approval-batches/evaluate",
+        json={
+            "approval_type": "registration_group",
+            "registration_group": "Piso-31",
+            "pending_count": 12,
+            "oldest_pending_at": "2026-04-15T10:00:00Z",
+            "now": "2026-04-15T10:21:00Z",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["release_count"] == 12
+    assert body["reason_code"] == "timeout_flush"
+
+
+
+def test_official_group_batching_ready_when_reaches_10():
+    client = make_client()
+    response = client.post(
+        "/api/ops/approval-batches/evaluate",
+        json={
+            "approval_type": "official_group",
+            "registration_group": "Official-A",
+            "pending_count": 10,
+            "oldest_pending_at": "2026-04-15T10:00:00Z",
+            "now": "2026-04-15T10:15:00Z",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["release_count"] == 10
+    assert body["reason_code"] == "batch_size_reached"
+
+
+
+def test_official_group_batching_flushes_after_30_minutes_even_if_under_10():
+    client = make_client()
+    response = client.post(
+        "/api/ops/approval-batches/evaluate",
+        json={
+            "approval_type": "official_group",
+            "registration_group": "Official-B",
+            "pending_count": 4,
+            "oldest_pending_at": "2026-04-15T10:00:00Z",
+            "now": "2026-04-15T10:31:00Z",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["release_count"] == 4
+    assert body["reason_code"] == "timeout_flush"
+
+
+
+def test_approval_batching_not_ready_before_threshold_or_timeout():
+    client = make_client()
+    response = client.post(
+        "/api/ops/approval-batches/evaluate",
+        json={
+            "approval_type": "official_group",
+            "registration_group": "Official-C",
+            "pending_count": 3,
+            "oldest_pending_at": "2026-04-15T10:00:00Z",
+            "now": "2026-04-15T10:20:00Z",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is False
+    assert body["release_count"] == 0
+    assert body["reason_code"] == "waiting_for_batch"
+
+
+
+def test_ops_approval_batch_queue_returns_ready_and_waiting_groups():
+    client = make_client()
+    response = client.get('/api/ops/approval-batch-queue')
+    assert response.status_code == 200
+    body = response.json()
+    assert 'registration_groups' in body
+    assert 'official_groups' in body
+    reg_ready = next(row for row in body['registration_groups'] if row['registration_group'] == 'Piso-30')
+    off_waiting = next(row for row in body['official_groups'] if row['registration_group'] == 'Official-C')
+    assert reg_ready['ready'] is True
+    assert reg_ready['release_count'] == 30
+    assert off_waiting['ready'] is False
+    assert off_waiting['reason_code'] == 'waiting_for_batch'
+
+
+
+def test_ops_page_includes_approval_batch_queue_section():
+    client = make_client()
+    response = client.get('/ops')
+    assert response.status_code == 200
+    body = response.text
+    assert '/api/ops/approval-batch-queue' in body
+    assert '审批批次队列' in body
+    assert '注册群批次' in body
+    assert '官方群批次' in body
+
+
+
+def test_intake_bot_presets_page_loads():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    response = client.get('/ops/intake-bot-presets')
+    assert response.status_code == 200
+    body = response.text
+    assert '收口机器人配置中心' in body
+    assert '/api/ops/intake-bot-presets' in body
+    assert '/api/ops/guild-executors' in body
+    assert 'robot_name' in body
+    assert 'default_app' in body
+    assert 'default_guild' in body
+    assert '编辑名称' in body
+    assert '公会执行器配置' in body
+    assert '代理地区（proxy_region）' in body
+    assert 'password_secret_ref' in body
+    assert '保存公会执行器' in body
+    assert '回填编辑' in body
+    assert '后台地址' in body
+    assert '登录账号' in body
+    assert 'new_executor_proxy_region' in body
+    assert 'renderExecutorProxyRegionOptions' in body
+    assert '先按 15 个大型城市预置' in body
+    assert '历史值（待改）' in body
+    assert '已分配给' in body
+    assert '删除执行器' in body
+    assert 'deleteExecutor' in body
+    assert 'default_agency' not in body
+
+
+
+def test_guild_executor_api_returns_proxy_region_dropdown_options_and_validates_values():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+
+    listed = client.get('/api/ops/guild-executors')
+    assert listed.status_code == 200
+    body = listed.json()
+    assert body['rows'] == []
+    assert len(body['proxy_region_options']) == 15
+    assert body['proxy_region_options'][0] == {'value': '北京', 'label': '北京'}
+    assert {'value': '厦门', 'label': '厦门'} in body['proxy_region_options']
+    assert {'value': '福州', 'label': '福州'} in body['proxy_region_options']
+
+    invalid = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_region': 'Xiamen',
+    })
+    assert invalid.status_code == 400
+    assert invalid.json()['detail'] == 'proxy_region must be one of the configured city options'
+
+
+
+def test_guild_executor_api_enforces_unique_proxy_region_per_guild():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+
+    first = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_region': '厦门',
+    })
+    assert first.status_code == 200
+
+    duplicate = client.post('/api/ops/guild-executors/Piso', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'piso@example.com',
+        'password_secret_ref': 'secret_piso',
+        'proxy_region': '厦门',
+    })
+    assert duplicate.status_code == 400
+    assert duplicate.json()['detail'] == 'proxy_region is already assigned to guild Permata'
+
+
+
+def test_guild_executor_api_deletes_executor_and_releases_proxy_region():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+
+    created = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_region': '厦门',
+    })
+    assert created.status_code == 200
+
+    deleted = client.delete('/api/ops/guild-executors/Permata')
+    assert deleted.status_code == 200
+    assert deleted.json() == {'deleted': True, 'guild_name': 'Permata'}
+
+    missing = client.get('/api/ops/guild-executors/Permata')
+    assert missing.status_code == 404
+
+    reused = client.post('/api/ops/guild-executors/Piso', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'piso@example.com',
+        'password_secret_ref': 'secret_piso',
+        'proxy_region': '厦门',
+    })
+    assert reused.status_code == 200
+    assert reused.json()['proxy_region'] == '厦门'
+
+
+
+def test_guild_executors_api_lists_and_updates_executor_config():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+
+    initial = client.get('/api/ops/guild-executors')
+    assert initial.status_code == 200
+    body = initial.json()
+    assert body['rows'] == []
+
+    saved = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_url': 'http://proxy-xm:8080',
+        'proxy_region': '厦门',
+        'proxy_type': 'http',
+        'enabled': True,
+        'browser_profile_key': 'permata-profile',
+        'bind_concurrency': 3,
+        'request_timeout_seconds': 45,
+        'notes': 'permata executor',
+    })
+    assert saved.status_code == 200
+    saved_body = saved.json()
+    assert saved_body['saved'] is True
+    assert saved_body['guild_name'] == 'Permata'
+    assert saved_body['proxy_region'] == '厦门'
+    assert saved_body['password_configured'] is True
+    assert 'password_secret_ref' not in saved_body
+
+    saved_minimal = client.post('/api/ops/guild-executors/Piso', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'piso@example.com',
+        'password_secret_ref': 'secret_piso',
+    })
+    assert saved_minimal.status_code == 200
+    saved_minimal_body = saved_minimal.json()
+    assert saved_minimal_body['guild_name'] == 'Piso'
+    assert saved_minimal_body['proxy_url'] == ''
+    assert saved_minimal_body['proxy_region'] == ''
+    assert saved_minimal_body['proxy_type'] == 'http'
+    assert saved_minimal_body['browser_profile_key'] == 'guild-piso'
+    assert saved_minimal_body['bind_concurrency'] == 1
+    assert saved_minimal_body['request_timeout_seconds'] == 30
+    assert saved_minimal_body['enabled'] is True
+
+    resolved = client.get('/api/ops/guild-executors/Permata')
+    assert resolved.status_code == 200
+    resolved_body = resolved.json()
+    assert resolved_body['guild_name'] == 'Permata'
+    assert resolved_body['backend_url'] == 'https://guild.linke.ai/guild/addAnchor'
+    assert resolved_body['login_username'] == 'permata@example.com'
+    assert resolved_body['proxy_url'] == 'http://proxy-xm:8080'
+    assert resolved_body['proxy_region'] == '厦门'
+    assert resolved_body['password_configured'] is True
+    assert 'password_secret_ref' not in resolved_body
+
+    refreshed = client.get('/api/ops/guild-executors')
+    assert refreshed.status_code == 200
+    rows = refreshed.json()['rows']
+    assert len(rows) == 2
+    assert rows[0]['guild_name'] == 'Permata'
+    assert rows[0]['backend_url'] == 'https://guild.linke.ai/guild/addAnchor'
+    assert rows[0]['login_username'] == 'permata@example.com'
+    assert rows[0]['proxy_url'] == 'http://proxy-xm:8080'
+    assert rows[0]['proxy_region'] == '厦门'
+    assert rows[0]['proxy_type'] == 'http'
+    assert rows[0]['browser_profile_key'] == 'permata-profile'
+    assert rows[0]['bind_concurrency'] == 3
+    assert rows[0]['request_timeout_seconds'] == 45
+    assert rows[0]['password_configured'] is True
+
+
+
+def test_guild_executor_health_api_returns_latest_bind_status_and_human_action_flag():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+
+    created = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_region': '厦门',
+        'proxy_type': 'http',
+        'enabled': True,
+        'browser_profile_key': 'permata-profile',
+        'bind_concurrency': 2,
+    })
+    assert created.status_code == 200
+
+    lead = client.post('/api/leads/upsert', json={
+        'trace_id': 'trace-health-1',
+        'source_platform': 'meta',
+        'source_page_id': 'page-health-1',
+        'country': 'Indonesia',
+        'area_code': 62,
+        'mobile': '81230001111',
+        'pendaftaran_group': 'PERMATA-909',
+        'app_name': 'Linky',
+        'dept_name': 'Permata',
+        'inviter_id': 'ABCDEF',
+    }).json()
+    submission = client.post('/api/account-submissions', json={
+        'lead_id': lead['lead_id'],
+        'submission_type': 'account_id',
+        'account_id': '55667788',
+        'account_id_type': 'platform_uid',
+        'source_channel': 'manual_cs_lark',
+        'submitted_by': 'customer_service',
+        'submitted_at': '2026-04-21T12:10:00Z',
+    }).json()
+    with client.app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE automation_tasks SET status='failed', result_code=?, result_reason=?, raw_result=?, started_at=?, finished_at=? WHERE task_id=?",
+            ('bind_unauthorized', 'HTTP 401: please re-login', json.dumps({'guild_code': 'Permata', 'auth_required': True}), '2026-04-21T12:10:05Z', '2026-04-21T12:10:10Z', submission['task_id'])
+        )
+        conn.commit()
+
+    health = client.get('/api/ops/guild-executors/health')
+    assert health.status_code == 200
+    row = health.json()['rows'][0]
+    assert row['guild_name'] == 'Permata'
+    assert row['bind_concurrency'] == 2
+    assert row['proxy_region'] == '厦门'
+    assert row['last_bind_task_id'] == submission['task_id']
+    assert row['last_bind_status'] == 'failed'
+    assert row['last_bind_result_code'] == 'bind_unauthorized'
+    assert row['requires_human_action'] is True
+    assert row['human_action_type'] == 'auth_required'
+
+
+
+def test_intake_bot_presets_api_reports_unavailable_options_when_crm_is_not_ready():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+
+    initial = client.get('/api/ops/intake-bot-presets')
+    assert initial.status_code == 200
+    body = initial.json()
+    rows = body['rows']
+    assert len(rows) == 1
+    assert rows[0]['app_id'] == 'cli_test_app'
+    assert rows[0]['default_app'] == 'Linky'
+    assert rows[0]['default_guild'] == 'Piso'
+    assert body['app_options'] == []
+    assert body['guild_options'] == []
+    assert body['app_options_source'] == 'unavailable'
+    assert body['guild_options_source'] == 'unavailable'
+
+
+
+def test_intake_bot_presets_api_reads_live_dropdown_options_and_updates_defaults():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}, {'id': 'app_2', 'name': 'FUMI'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}, {'id': 'dept_2', 'deptName': 'Permata'}],
+    )
+
+    initial = client.get('/api/ops/intake-bot-presets')
+    assert initial.status_code == 200
+    body = initial.json()
+    assert body['app_options_source'] == 'live'
+    assert body['guild_options_source'] == 'live'
+    assert {'label': 'Linky', 'value': 'Linky'} in body['app_options']
+    assert {'label': 'FUMI', 'value': 'FUMI'} in body['app_options']
+    assert {'label': 'Piso', 'value': 'Piso'} in body['guild_options']
+    assert {'label': 'Permata', 'value': 'Permata'} in body['guild_options']
+
+    saved = client.post('/api/ops/intake-bot-presets/current', json={
+        'robot_name': '旧机器人A',
+        'default_app': 'FUMI',
+        'default_guild': 'Permata',
+    })
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body['saved'] is True
+    assert body['robot_name'] == '旧机器人A'
+    assert body['default_app'] == 'FUMI'
+    assert body['default_guild'] == 'Permata'
+
+    refreshed = client.get('/api/ops/intake-bot-presets/resolve?app_id=cli_test_app')
+    assert refreshed.status_code == 200
+    row = refreshed.json()
+    assert row['robot_name'] == '旧机器人A'
+    assert row['default_app'] == 'FUMI'
+    assert row['default_guild'] == 'Permata'
+
+
+
+def test_intake_bot_preset_update_rejects_values_outside_known_dropdown_options():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}],
+    )
+
+    saved = client.post('/api/ops/intake-bot-presets/current', json={
+        'default_app': 'BADAPP',
+        'default_guild': 'BADGUILD',
+    })
+
+    assert saved.status_code == 400
+    assert 'default_app must be selected from CRM dropdown options' in saved.text
+
+
+
+def test_intake_bot_presets_api_can_create_additional_bot_preset_and_resolve_by_app_id():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}, {'id': 'app_2', 'name': 'FUMI'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}, {'id': 'dept_2', 'deptName': 'Permata'}],
+    )
+
+    created = client.post('/api/ops/intake-bot-presets/intake-a96f1cec', json={
+        'robot_name': 'Permata Intake Bot',
+        'app_id': 'cli_a96f1cec1a789e15',
+        'default_app': 'FUMI',
+        'default_guild': 'Permata',
+    })
+    assert created.status_code == 200
+    body = created.json()
+    assert body['saved'] is True
+    assert body['profile_name'] == 'intake-a96f1cec'
+    assert body['robot_name'] == 'Permata Intake Bot'
+    assert body['app_id'] == 'cli_a96f1cec1a789e15'
+    assert body['default_app'] == 'FUMI'
+    assert body['default_guild'] == 'Permata'
+
+    listing = client.get('/api/ops/intake-bot-presets')
+    assert listing.status_code == 200
+    rows = listing.json()['rows']
+    assert len(rows) == 1
+    assert rows[0]['profile_name'] == 'intake-a96f1cec'
+    assert rows[0]['robot_name'] == 'Permata Intake Bot'
+    assert rows[0]['app_id'] == 'cli_a96f1cec1a789e15'
+
+    resolved = client.get('/api/ops/intake-bot-presets/resolve?app_id=cli_a96f1cec1a789e15')
+    assert resolved.status_code == 200
+    resolved_body = resolved.json()
+    assert resolved_body['profile_name'] == 'intake-a96f1cec'
+    assert resolved_body['robot_name'] == 'Permata Intake Bot'
+    assert resolved_body['default_app'] == 'FUMI'
+    assert resolved_body['default_guild'] == 'Permata'
+    assert resolved_body['matched_by'] == 'app_id'
+
+    fallback = client.get('/api/ops/intake-bot-presets/resolve?app_id=cli_unknown')
+    assert fallback.status_code == 200
+    fallback_body = fallback.json()
+    assert fallback_body['profile_name'] == 'current'
+    assert fallback_body['default_app'] == 'Linky'
+    assert fallback_body['default_guild'] == 'Piso'
+    assert fallback_body['matched_by'] == 'fallback_current'
+
+
+
+def test_intake_bot_presets_api_uses_cached_dropdown_options_when_live_crm_is_unavailable(tmp_path):
+    client = make_client({
+        'DB_PATH': str(tmp_path / 'preset-cache.db'),
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    service = client.app.state.service
+    service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}, {'id': 'app_2', 'name': 'FUMI'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}, {'id': 'dept_2', 'deptName': 'Permata'}],
+    )
+
+    seeded = client.get('/api/ops/intake-bot-presets')
+    assert seeded.status_code == 200
+    assert seeded.json()['app_options_source'] == 'live'
+
+    service.crm_adapter = None
+
+    cached = client.get('/api/ops/intake-bot-presets')
+    assert cached.status_code == 200
+    body = cached.json()
+    assert body['app_options_source'] == 'cache'
+    assert body['guild_options_source'] == 'cache'
+    assert {'label': 'FUMI', 'value': 'FUMI'} in body['app_options']
+    assert {'label': 'Permata', 'value': 'Permata'} in body['guild_options']
+
+    saved = client.post('/api/ops/intake-bot-presets/current', json={
+        'default_app': 'FUMI',
+        'default_guild': 'Permata',
+    })
+    assert saved.status_code == 200
+
+
+def test_persisted_current_preset_overrides_env_defaults_after_restart(tmp_path):
+    db_path = str(tmp_path / 'persisted-presets.db')
+    first = make_client({'DB_PATH': db_path, 'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    first.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}, {'id': 'app_2', 'name': 'FUMI'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}, {'id': 'dept_2', 'deptName': 'Permata'}],
+    )
+    saved = first.post('/api/ops/intake-bot-presets/current', json={
+        'default_app': 'FUMI',
+        'default_guild': 'Permata',
+    })
+    assert saved.status_code == 200
+
+    restarted = make_client({'DB_PATH': db_path, 'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    runtime = restarted.get('/api/ops/runtime-health')
+    assert runtime.status_code == 200
+    body = runtime.json()
+    assert body['lark']['default_app'] == 'FUMI'
+    assert body['lark']['default_guild'] == 'Permata'
+
+    response = restarted.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_restart_preset'}},
+            'message': {
+                'message_id': 'om_restart_preset',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                    'content': '{"text":"+62 784522998\n77889900\nPermata-31\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    payload = response.json()['parsed_payload']
+    assert payload['app_name'] == 'FUMI'
+    assert payload['dept_name'] == 'Permata'
+
+
+
+def test_lark_event_uses_bot_specific_preset_when_gateway_passes_bot_app_id():
+    client = make_client({'LARK_APP_ID': 'cli_default_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}, {'id': 'app_2', 'name': 'FUMI'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}, {'id': 'dept_2', 'deptName': 'Permata'}],
+    )
+    created = client.post('/api/ops/intake-bot-presets/intake-a96f1cec', json={
+        'app_id': 'cli_a96f1cec1a789e15',
+        'default_app': 'FUMI',
+        'default_guild': 'Permata',
+    })
+    assert created.status_code == 200
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_a96f1cec1a789e15',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_multi_bot'}},
+            'message': {
+                'message_id': 'om_multi_bot',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234560000\nPermata-31\n77889900\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['parsed_payload']['app_name'] == 'FUMI'
+    assert body['parsed_payload']['dept_name'] == 'Permata'
+
+
+
+def test_bind_check_result_rejects_backend_guild_that_does_not_match_current_bot_preset():
+    client = make_client({'LARK_APP_ID': 'cli_default_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}, {'id': 'app_2', 'name': 'FUMI'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}, {'id': 'dept_2', 'deptName': 'Permata'}],
+    )
+    created = client.post('/api/ops/intake-bot-presets/intake-a96f1cec', json={
+        'app_id': 'cli_a96f1cec1a789e15',
+        'default_app': 'FUMI',
+        'default_guild': 'Permata',
+    })
+    assert created.status_code == 200
+
+    intake = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_a96f1cec1a789e15',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_bind_mismatch'}},
+            'message': {
+                'message_id': 'om_bind_mismatch',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234561111\nPermata-31\n77889901\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert intake.status_code == 200
+    intake_body = intake.json()
+    assert intake_body['accepted'] is True
+    assert intake_body['task_id']
+    client.app.state.service.crm_adapter = None
+
+    bind = client.post(
+        f"/api/tasks/{intake_body['task_id']}/bind-check-result",
+        json={
+            'status': 'success',
+            'result_code': 'bind_ok',
+            'result_reason': 'guild accepted',
+            'finished_at': '2026-04-20T15:00:00Z',
+            'raw_result': {'guild_code': 'Piso', 'deptName': 'Piso', 'deptId': 'dept_1'},
+        },
+    )
+    assert bind.status_code == 200
+    bind_body = bind.json()
+    assert bind_body['lead_status'] == 'bind_failed'
+    assert bind_body['next_action'] == 'queue_reengagement'
+    assert bind_body['reason'] == 'bind_backend_guild_mismatch'
+    assert 'Permata' in bind_body['result_reason']
+    assert 'Piso' in bind_body['result_reason']
+
+    timeline = client.get(f"/api/leads/{intake_body['lead_id']}/timeline").json()
+    assert not [task for task in timeline['tasks'] if task['task_type'] == 'group_join']
+
+
+
+def test_bind_check_result_uses_current_bot_preset_guild_after_preset_change_before_callback():
+    client = make_client({'LARK_APP_ID': 'cli_default_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}, {'id': 'app_2', 'name': 'FUMI'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}, {'id': 'dept_2', 'deptName': 'Permata'}],
+    )
+    created = client.post('/api/ops/intake-bot-presets/intake-a96f1cec', json={
+        'app_id': 'cli_a96f1cec1a789e15',
+        'default_app': 'FUMI',
+        'default_guild': 'Permata',
+    })
+    assert created.status_code == 200
+
+    intake = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_a96f1cec1a789e15',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_bind_current_preset'}},
+            'message': {
+                'message_id': 'om_bind_current_preset',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234562222\nPermata-31\n77889902\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert intake.status_code == 200
+    intake_body = intake.json()
+    assert intake_body['parsed_payload']['dept_name'] == 'Permata'
+
+    changed = client.post('/api/ops/intake-bot-presets/intake-a96f1cec', json={
+        'app_id': 'cli_a96f1cec1a789e15',
+        'default_app': 'FUMI',
+        'default_guild': 'Piso',
+    })
+    assert changed.status_code == 200
+    client.app.state.service.crm_adapter = None
+
+    bind = client.post(
+        f"/api/tasks/{intake_body['task_id']}/bind-check-result",
+        json={
+            'status': 'success',
+            'result_code': 'bind_ok',
+            'result_reason': 'guild accepted',
+            'finished_at': '2026-04-20T15:10:00Z',
+            'raw_result': {'guild_code': 'Piso', 'deptName': 'Piso', 'deptId': 'dept_1'},
+        },
+    )
+    assert bind.status_code == 200
+    bind_body = bind.json()
+    assert bind_body['lead_status'] == 'bind_success'
+    assert bind_body['next_action'] == 'queue_group_join'
+
+
+
+def test_lark_reply_templates_include_code_field_for_irrelevant_and_missing_cases():
+    client = make_client()
+    service = client.app.state.service
+
+    irrelevant = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'irrelevant_message',
+        'reply_phone': '-',
+        'reply_id': '-',
+        'reply_group': '-',
+        'reply_code': '-',
+    })
+    assert 'Code:' in irrelevant
+    assert '**📮Send:**' in irrelevant
+    assert 'Phone:' in irrelevant
+    assert 'ID:' in irrelevant
+    assert 'Group:' in irrelevant
+
+    missing = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'missing_required_fields',
+        'reply_phone': '81234567890',
+        'reply_area_code': 62,
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': '-',
+        'reply_missing_fields': ['Code'],
+    })
+    assert 'Phone: +62 81234567890' in missing
+    assert 'Code: -' in missing
+    assert '**🚫 Missing: Code**' in missing
+
+
+
+def test_lark_reply_templates_include_code_field_for_success_and_failures():
+    client = make_client()
+    service = client.app.state.service
+
+    pending = service._format_lark_reply_text({
+        'accepted': True,
+        'next_action': 'queue_bind_check',
+        'lead_status': 'bind_check_pending',
+        'reply_phone': '+62 81234567890',
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': 'EKVFGQ',
+    })
+    assert pending.startswith('**❌ Failed**')
+    assert 'Code: EKVFGQ' in pending
+
+    final_success = service._format_lark_reply_text({
+        'accepted': True,
+        'next_action': 'queue_group_join',
+        'lead_status': 'bind_success',
+        'crm_verified': True,
+        'reply_phone': '81234567890',
+        'reply_area_code': 62,
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': 'EKVFGQ',
+    })
+    assert final_success.startswith('**✅ Success**')
+    assert 'Phone: +62 81234567890' in final_success
+    assert 'Code: EKVFGQ' in final_success
+
+    not_verified_yet = service._format_lark_reply_text({
+        'accepted': True,
+        'next_action': 'queue_group_join',
+        'lead_status': 'bind_success',
+        'crm_verified': False,
+        'reply_phone': '81234567890',
+        'reply_area_code': 62,
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': 'EKVFGQ',
+    })
+    assert not_verified_yet.startswith('**❌ Failed**')
+
+    bind_failed = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'simulated_bind_failed',
+        'result_reason': 'manual retry needed',
+        'reply_phone': '+62 81234567890',
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': 'EKVFGQ',
+    })
+    assert 'Code: EKVFGQ' in bind_failed
+
+    device_duplicate = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'bind_check_failed',
+        'result_reason': 'Perangkat ini telah mencapai batas maksimum guild yang dapat diikuti.',
+        'reply_phone': '+62 81234567890',
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': 'EKVFGQ',
+    })
+    assert device_duplicate.startswith('**❌ Device Duplicate Registration**')
+    assert 'Code: EKVFGQ' in device_duplicate
+
+    bind_failed_401 = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'simulated_bind_failed',
+        'result_reason': 'AxiosError: Request failed with status code 401',
+        'reply_phone': '+62 81234567890',
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': 'EKVFGQ',
+    })
+    assert bind_failed_401.startswith('**❌ Failed：Error Code Unable to Bind**')
+    assert 'Code: EKVFGQ' in bind_failed_401
+
+    bind_backend_guild_mismatch = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'bind_backend_guild_mismatch',
+        'result_reason': 'Configured guild Permata does not match backend guild Piso.',
+        'reply_phone': '+62 81234567890',
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': 'EKVFGQ',
+    })
+    assert bind_backend_guild_mismatch.startswith('**🚫 I do not handle this app/agency.**')
+    assert 'Code: EKVFGQ' in bind_backend_guild_mismatch
+
+    bind_profile_unconfigured = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'bind_check_failed',
+        'result_code': 'bind_executor_profile_not_configured',
+        'result_reason': 'No Chrome profile mapping configured for browser_profile_key=',
+        'reply_phone': '+62 81234567890',
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': 'EKVFGQ',
+    })
+    assert bind_profile_unconfigured.startswith('**🚫 I do not handle this app/agency.**')
+    assert 'Code: EKVFGQ' in bind_profile_unconfigured
+
+    generic_failed = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'unsupported_message_type',
+        'reply_phone': '-',
+        'reply_id': '-',
+        'reply_group': '-',
+        'reply_code': '-',
+    })
+    assert 'Code: -' in generic_failed
+
 
 
 def test_lead_upsert_creates_lead_and_customer_stub():
@@ -33,6 +1205,61 @@ def test_lead_upsert_creates_lead_and_customer_stub():
     assert body["current_status"] == "new"
     assert body["matched_customer_id"] is not None
     assert body["lead_id"] is not None
+
+
+def test_lead_upsert_auto_detects_area_code_and_country_from_phone_prefix():
+    client = make_client()
+
+    response = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-1b",
+            "source_platform": "meta",
+            "source_campaign": "camp-auto-prefix",
+            "source_page_id": "LK_ID/fb_auto_prefix",
+            "country": "",
+            "area_code": 0,
+            "mobile": "+62 81234567890",
+            "pendaftaran_group": "Piso-5",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    timeline = client.get(f"/api/leads/{body['lead_id']}/timeline")
+    assert timeline.status_code == 200
+    lead = timeline.json()["lead"]
+    assert lead["country"] == "Indonesia"
+    assert lead["area_code"] == 62
+    assert lead["mobile"] == "81234567890"
+
+
+def test_lead_upsert_fills_country_from_known_area_code_when_country_missing():
+    client = make_client()
+
+    response = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-1c",
+            "source_platform": "meta",
+            "source_campaign": "camp-auto-country",
+            "source_page_id": "LK_ID/fb_auto_country",
+            "country": "",
+            "area_code": 55,
+            "mobile": "11987654321",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    timeline = client.get(f"/api/leads/{body['lead_id']}/timeline")
+    assert timeline.status_code == 200
+    lead = timeline.json()["lead"]
+    assert lead["country"] == "Brazil"
+    assert lead["area_code"] == 55
+    assert lead["mobile"] == "11987654321"
 
 
 def test_event_collect_persists_event_and_returns_event_id():
@@ -221,3 +1448,5391 @@ def test_daily_summary_returns_aggregated_counts():
     assert body["success_count"] == 1
     assert body["failed_count"] == 0
     assert body["pending_count"] == 0
+
+
+def test_manual_cs_submission_creates_submission_and_followup_task():
+    client = make_client()
+
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81234567890",
+            "registration_group": "Piso-5",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "invite_code": "EKVFGQ",
+            "submission_type": "account_id",
+            "account_id": "45678901",
+            "file_url": None,
+            "submitted_by": "dewi01",
+            "source_channel": "manual_cs_lark",
+            "remark": "用户已确认",
+            "submitted_at": "2026-04-14T18:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] is True
+    assert body["lead_id"] is not None
+    assert body["submission_id"] is not None
+    assert body["task_id"] is not None
+    assert body["next_action"] == "queue_bind_check"
+    assert body["parsed_payload"]["mobile"] == "81234567890"
+    assert body["parsed_payload"]["account_id"] == "45678901"
+    assert body["parsed_payload"]["registration_group"] == "Piso-5"
+    assert body["parsed_payload"]["app_name"] == "Linky"
+    assert body["parsed_payload"]["dept_name"] == "Piso"
+    assert body["parsed_payload"]["invite_code"] == "EKVFGQ"
+    assert body["parsed_payload"]["confidence"] == 1.0
+
+
+
+def test_manual_cs_submission_without_invite_code_still_accepts_structured_api_for_backward_compatibility():
+    client = make_client()
+
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81234567890",
+            "registration_group": "Piso-5",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "account_id",
+            "account_id": "45678901",
+            "submitted_by": "dewi01",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "2026-04-14T18:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+
+def test_manual_cs_submission_rejects_explicit_app_guild_mismatch_against_current_preset():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81234567891",
+            "registration_group": "Piso-5",
+            "app_name": "FUMI",
+            "dept_name": "Permata",
+            "submission_type": "account_id",
+            "account_id": "45678902",
+            "app_name_explicit": True,
+            "dept_name_explicit": True,
+            "submitted_by": "dewi01",
+            "source_channel": "manual_cs_lark",
+            "remark": "explicit mismatch test",
+            "submitted_at": "2026-04-14T18:00:10Z",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'app_agency_mismatch'
+    assert body['reply_phone'] == '81234567891'
+    assert body['reply_id'] == '45678902'
+    assert body['reply_group'] == 'Piso-5'
+
+
+
+def test_manual_cs_submission_rejects_explicit_app_guild_mismatch_found_in_remark_even_if_payload_uses_defaults():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 12312332",
+            "registration_group": "Piso-44",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "account_id",
+            "account_id": "131111211",
+            "submitted_by": "dewi01",
+            "source_channel": "manual_cs_lark",
+            "remark": "Phone:+62 12312332\nID:131111211\nGroup:Piso-44\nApp:Fumi\nAgency:PERMATA",
+            "submitted_at": "2026-04-14T18:00:15Z",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'app_agency_mismatch'
+    assert body['reply_id'] == '131111211'
+    assert body['reply_group'] == 'Piso-44'
+
+
+
+def test_manual_cs_submission_allows_case_insensitive_app_guild_match_against_current_preset():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81234567892",
+            "registration_group": "Piso-5",
+            "app_name": "linky",
+            "dept_name": "pIsO",
+            "app_name_explicit": True,
+            "dept_name_explicit": True,
+            "submission_type": "account_id",
+            "account_id": "45678903",
+            "submitted_by": "dewi01",
+            "source_channel": "manual_cs_lark",
+            "remark": "case insensitive match test",
+            "submitted_at": "2026-04-14T18:00:20Z",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['next_action'] == 'queue_bind_check'
+
+
+
+def test_manual_cs_submission_non_explicit_payload_uses_current_preset_immediately():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'FUMI',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+    })
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'FUMI'}, {'id': 'app_2', 'name': 'Linky'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Permata'}, {'id': 'dept_2', 'deptName': 'Piso'}],
+    )
+    saved = client.post('/api/ops/intake-bot-presets/current', json={
+        'default_app': 'Linky',
+        'default_guild': 'Piso',
+    })
+    assert saved.status_code == 200
+
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81234567892",
+            "registration_group": "Piso-5",
+            "app_name": "FUMI",
+            "dept_name": "Permata",
+            "submission_type": "account_id",
+            "account_id": "45678903",
+            "submitted_by": "bridge01",
+            "source_channel": "manual_cs_feishu",
+            "submitted_at": "2026-04-14T18:00:20Z",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['parsed_payload']['app_name'] == 'Linky'
+    assert body['parsed_payload']['dept_name'] == 'Piso'
+
+
+
+def test_manual_cs_submission_dedupes_cross_channel_duplicate_and_reuses_first_success():
+    class CountingCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            return {
+                "ywId": yw_id,
+                "mobile": mobile,
+                "appName": "Linky",
+                "deptName": "Piso",
+                "pendaftaranGroup": "Piso-5",
+            }
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            return {"code": 0, "msg": "success", "data": None}
+        def get_apps(self):
+            self.calls.append(("get_apps", {}))
+            return list(self.apps)
+        def get_depts(self):
+            self.calls.append(("get_depts", {}))
+            return list(self.depts)
+
+    crm = CountingCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "AUTO_BIND_SIMULATION": True,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"], "deptId": "dept_1"},
+        },
+    })
+
+    first = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81234567890",
+            "registration_group": "Piso-5",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "account_id",
+            "account_id": "55667788",
+            "submitted_by": "lark:ou_first",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "2026-04-14T18:00:20Z",
+        },
+    )
+    assert first.status_code == 200
+    assert first.json()['accepted'] is True
+
+    second = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81234567890",
+            "registration_group": "Piso-5",
+            "app_name": "FUMI",
+            "dept_name": "Permata",
+            "submission_type": "account_id",
+            "account_id": "55667788",
+            "submitted_by": "bridge01",
+            "source_channel": "manual_cs_feishu",
+            "submitted_at": "2026-04-14T18:01:00Z",
+        },
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body['accepted'] is True
+    assert second_body['reply_text'].startswith('**✅ Success**')
+    assert second_body['parsed_payload']['app_name'] == 'Linky'
+    assert second_body['parsed_payload']['dept_name'] == 'Piso'
+    assert second_body['deduped'] is True
+
+    create_calls = [payload for name, payload in crm.calls if name == 'create_customer']
+    assert len(create_calls) == 1
+
+
+
+def test_manual_cs_submission_short_circuits_verified_duplicate_with_fast_failure():
+    class CountingCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_perm", "deptName": "Permata"}]
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            return {
+                "ywId": yw_id,
+                "mobile": mobile,
+                "appName": "Linky",
+                "deptName": "Permata",
+                "pendaftaranGroup": "Permata-88",
+            }
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            return {"code": 0, "msg": "success", "data": None}
+        def get_apps(self):
+            self.calls.append(("get_apps", {}))
+            return list(self.apps)
+        def get_depts(self):
+            self.calls.append(("get_depts", {}))
+            return list(self.depts)
+
+    crm = CountingCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "AUTO_BIND_SIMULATION": True,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Permata",
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": 'Permata', "deptName": 'Permata', "deptId": "dept_perm"},
+        },
+    })
+
+    first = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 18812321188",
+            "registration_group": "Permata-88",
+            "app_name": "Linky",
+            "dept_name": "Permata",
+            "app_name_explicit": True,
+            "dept_name_explicit": True,
+            "submission_type": "account_id",
+            "account_id": "88909200",
+            "submitted_by": "lark:first",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "2026-04-14T18:00:20Z",
+        },
+    )
+    assert first.status_code == 200
+    assert first.json()['accepted'] is True
+
+    second = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 18812321188",
+            "registration_group": "Permata-88",
+            "app_name": "Linky",
+            "dept_name": "Permata",
+            "app_name_explicit": True,
+            "dept_name_explicit": True,
+            "submission_type": "account_id",
+            "account_id": "88909200",
+            "submitted_by": "lark:second",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "2026-04-14T18:10:20Z",
+        },
+    )
+    assert second.status_code == 200
+    body = second.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'crm_sync_failed'
+    assert body['result_reason'] == 'Data duplication.'
+    assert body['deduped'] is True
+
+    create_calls = [payload for name, payload in crm.calls if name == 'create_customer']
+    assert len(create_calls) == 1
+
+
+
+def test_manual_cs_submission_verified_duplicate_does_not_short_circuit_when_dept_differs():
+    class CountingCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.record = None
+            self.apps = [{"id": "app_linky", "name": "Linky"}]
+            self.depts = [
+                {"deptId": "dept_piso", "deptName": "Piso"},
+                {"deptId": "dept_permata", "deptName": "Permata"},
+            ]
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            return dict(self.record) if self.record else None
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", dict(payload)))
+            self.record = dict(payload)
+            return {"code": 0, "msg": "success", "data": None}
+        def get_apps(self):
+            self.calls.append(("get_apps", {}))
+            return list(self.apps)
+        def get_depts(self):
+            self.calls.append(("get_depts", {}))
+            return list(self.depts)
+
+    crm = CountingCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "AUTO_BIND_SIMULATION": True,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"]},
+        },
+    })
+
+    first = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 18812320001",
+            "registration_group": "Piso-88",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "account_id",
+            "account_id": "88990011",
+            "submitted_by": "lark:first",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "2026-04-14T18:00:20Z",
+        },
+    )
+    assert first.status_code == 200
+    assert first.json()['accepted'] is True
+
+    second = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 18812320001",
+            "registration_group": "Piso-88",
+            "app_name": "Linky",
+            "dept_name": "Permata",
+            "submission_type": "account_id",
+            "account_id": "88990011",
+            "submitted_by": "lark:second",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "2026-04-14T18:10:20Z",
+        },
+    )
+    assert second.status_code == 200
+    body = second.json()
+    assert body['accepted'] is True
+    assert body.get('deduped') is not True
+    create_calls = [payload for name, payload in crm.calls if name == 'create_customer']
+    assert len(create_calls) == 2
+    assert create_calls[-1]['deptName'] == 'Permata'
+
+
+
+def test_bind_check_success_auto_resolves_prior_failed_notifications_for_same_lead():
+    class SequenceCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+            self.responses = [
+                {"code": 500, "msg": "crm rejected write", "data": None},
+                {"code": 0, "msg": "success", "data": None},
+            ]
+            self.created_success = False
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            if self.created_success:
+                return {"ywId": yw_id, "mobile": mobile, "appName": "Linky", "deptName": "Piso", "pendaftaranGroup": "Piso-77"}
+            return None
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            response = self.responses.pop(0)
+            if response.get('code') == 0:
+                self.created_success = True
+            return response
+        def get_apps(self):
+            return list(self.apps)
+        def get_depts(self):
+            return list(self.depts)
+
+    crm = SequenceCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "AUTO_BIND_SIMULATION": True,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"], "deptId": "dept_1"},
+        },
+    })
+
+    first = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81110000071",
+            "registration_group": "Piso-77",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "account_id",
+            "account_id": "71717171",
+            "submitted_by": "lark:first",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "2026-04-14T18:00:20Z",
+        },
+    )
+    assert first.status_code == 200
+    assert first.json()['accepted'] is False
+
+    second = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81110000071",
+            "registration_group": "Piso-77",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "account_id",
+            "account_id": "71717171",
+            "submitted_by": "lark:second",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "2026-04-14T18:10:20Z",
+        },
+    )
+    assert second.status_code == 200
+    assert second.json()['accepted'] is True
+
+    rows = client.get('/api/ops/operator-notifications').json()['rows']
+    success_row = next(row for row in rows if row['notification_type'] == 'crm_record_success')
+    failed_row = next(row for row in rows if row['notification_type'] == 'crm_record_failed')
+    assert success_row['is_read'] is False
+    assert failed_row['is_read'] is True
+    assert failed_row['read_by'] == 'system:auto_resolved'
+
+
+
+def test_manual_cs_submission_can_auto_simulate_bind_success_and_sync_crm():
+    crm = StubCrmAdapter()
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "AUTO_BIND_SIMULATION": True,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"]},
+        },
+    })
+
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81234567890",
+            "registration_group": "Piso-5",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "account_id",
+            "account_id": "45678901",
+            "submitted_by": "dewi01",
+            "source_channel": "manual_cs_lark",
+            "remark": "用户已确认",
+            "submitted_at": "2026-04-14T18:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] is True
+    assert body["simulation_applied"] is True
+    assert body["simulated_bind_status"] == "success"
+    assert body["lead_status"] == "bind_success"
+    assert body["next_action"] == "queue_group_join"
+    create_payload = next(payload for name, payload in crm.calls if name == "create_customer")
+    assert create_payload["ywId"] == "45678901"
+    assert create_payload["appId"] == "app_1"
+    assert create_payload["deptId"] == "dept_1"
+
+
+
+def test_manual_cs_submission_default_reply_text_is_submitted_not_success_before_crm_success():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        "LARK_APP_ID": "cli_test",
+        "LARK_REPLY_ADAPTER": reply,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+    })
+
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_queue_only'}},
+            'message': {
+                'message_id': 'om_queue_only',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nPiso-19\\n45678901"}'
+            }
+        }
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['next_action'] == 'queue_bind_check'
+    assert body.get('reply_text', '') == ''
+    assert reply.calls == []
+
+
+
+def test_lark_event_does_not_reply_success_when_crm_sync_fails_after_bind_success():
+    class FailingCreateCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.record = None
+            self.apps = []
+            self.depts = []
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            return self.record
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            return {"code": 500, "msg": "crm rejected write", "data": None}
+        def update_customer(self, payload):
+            self.calls.append(("update_customer", payload))
+            self.record = payload
+            return {"code": 0, "msg": "success", "data": None}
+        def get_apps(self):
+            return list(self.apps)
+        def get_depts(self):
+            return list(self.depts)
+
+    reply = StubLarkReplyAdapter()
+    crm = FailingCreateCrmAdapter()
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "LARK_APP_ID": "cli_test",
+        "LARK_REPLY_ADAPTER": reply,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "AUTO_BIND_SIMULATION": True,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"], "deptId": "dept_1"},
+        },
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_crm_fail'}},
+            'message': {
+                'message_id': 'om_text_crm_fail',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nPiso-25\\n45678901"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'crm_sync_failed'
+    assert body['next_action'] == 'retry_crm_sync'
+    assert reply.calls
+    assert reply.calls[0]['text'].startswith('**❌ CRM sync failed: CRM write was rejected.**')
+
+
+
+def test_process_next_automation_task_executes_pending_bind_task_and_updates_result():
+    client = make_client({
+        "LARK_APP_ID": "cli_test",
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "AUTO_BIND_SIMULATION": False,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "failed",
+            "result_code": "bind_unauthorized",
+            "result_reason": "AxiosError: Request failed with status code 401",
+            "raw_result": {"guild_code": context["dept_name"]},
+        },
+    })
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_bind_worker'}},
+            'message': {
+                'message_id': 'om_bind_worker',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nPiso-25\\n45678901\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['next_action'] == 'queue_bind_check'
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed is not None
+    assert processed['lead_status'] == 'bind_failed'
+    assert processed['result_reason'] == 'AxiosError: Request failed with status code 401'
+
+    timeline = client.get(f"/api/leads/{body['lead_id']}/timeline").json()
+    bind_task = next(task for task in timeline['tasks'] if task['task_id'] == body['task_id'])
+    assert bind_task['status'] == 'failed'
+    assert bind_task['result_reason'] == 'AxiosError: Request failed with status code 401'
+
+
+
+def test_process_next_automation_task_device_limit_failure_uses_duplicate_registration_template():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_default_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+        'AUTO_BIND_SIMULATION': False,
+        'BIND_SIMULATOR': lambda context: {
+            'status': 'failed',
+            'result_code': 'bind_backend_http_error',
+            'result_reason': 'HTTP 400: {"error":{"code":-1,"message":"Perangkat ini telah mencapai batas maksimum guild yang dapat diikuti."}}',
+            'raw_result': {'guild_code': context['dept_name']},
+        },
+        'LARK_REPLY_ADAPTER': reply,
+    })
+    executor = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_region': '厦门',
+        'proxy_type': 'http',
+        'enabled': True,
+        'browser_profile_key': 'permata-profile',
+    })
+    assert executor.status_code == 200
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_bind_device_limit'}},
+            'message': {
+                'message_id': 'om_bind_device_limit',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 85220623938\\nPERMATA-909\\n51654982\\nCode QFHVFL"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed is not None
+    assert processed['lead_status'] == 'bind_failed'
+    assert processed['result_reason'].startswith('HTTP 400:')
+    assert processed['reply_text'].startswith('**❌ Device Duplicate Registration**')
+    assert reply.calls[0]['text'].startswith('**❌ Device Duplicate Registration**')
+
+
+
+def test_process_next_automation_task_uses_bot_specific_reply_adapter_when_app_id_provided():
+    default_reply = StubLarkReplyAdapter()
+    permata_reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_default_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+        'AUTO_BIND_SIMULATION': False,
+        'BIND_SIMULATOR': lambda context: {
+            'status': 'failed',
+            'result_code': 'bind_backend_http_error',
+            'result_reason': 'HTTP 400: {"error":{"code":-1,"message":"Perangkat ini telah mencapai batas maksimum guild yang dapat diikuti."}}',
+            'raw_result': {'guild_code': context['dept_name']},
+        },
+        'LARK_REPLY_ADAPTER': default_reply,
+        'LARK_REPLY_ADAPTER_BY_APP_ID': {
+            'cli_a96f1cec1a789e15': permata_reply,
+        },
+    })
+    executor = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_region': '厦门',
+        'proxy_type': 'http',
+        'enabled': True,
+        'browser_profile_key': 'permata-profile',
+    })
+    assert executor.status_code == 200
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_a96f1cec1a789e15',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_bind_device_limit_bot_specific'}},
+            'message': {
+                'message_id': 'om_bind_device_limit_bot_specific',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 85220623938\\nPERMATA-909\\n51654982\\nCode QFHVFL"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed is not None
+    assert processed['reply_text'].startswith('**❌ Device Duplicate Registration**')
+    assert default_reply.calls == []
+    assert permata_reply.calls
+    assert permata_reply.calls[0]['message_id'] == 'om_bind_device_limit_bot_specific'
+
+
+
+def test_process_next_automation_task_flags_auth_required_for_human_action_and_runtime_health_exposes_it():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+        'AUTO_BIND_SIMULATION': False,
+        'BIND_SIMULATOR': lambda context: {
+            'status': 'failed',
+            'result_code': 'bind_unauthorized',
+            'result_reason': 'HTTP 401: please re-login',
+            'raw_result': {'guild_code': context['dept_name'], 'auth_required': True},
+        },
+    })
+    executor = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_region': '厦门',
+        'proxy_type': 'http',
+        'enabled': True,
+        'browser_profile_key': 'permata-profile',
+    })
+    assert executor.status_code == 200
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_auth_required'}},
+            'message': {
+                'message_id': 'om_auth_required',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567123\\nPERMATA-909\\n55667788\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed is not None
+    assert processed['requires_human_action'] is True
+    assert processed['human_action_type'] == 'auth_required'
+
+    health = client.get('/api/ops/runtime-health').json()
+    assert health['ingress']['pending_bind_human_action_count'] >= 1
+    assert health['ingress']['pending_bind_human_actions'][0]['human_action_type'] == 'auth_required'
+    assert health['ingress']['pending_bind_human_actions'][0]['task_id'] == processed['task_id']
+
+
+
+def test_process_next_automation_task_uses_real_bind_executor_when_configured():
+    captured = {}
+
+    def real_bind_executor(context):
+        captured.update(context)
+        return {
+            'status': 'success',
+            'result_code': 'bind_success',
+            'result_reason': 'live bind ok',
+            'raw_result': {'guild_code': context['dept_name'], 'executor_mode': 'real'},
+        }
+
+    client = make_client({
+        'LARK_APP_ID': 'cli_default_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+        'AUTO_BIND_SIMULATION': False,
+        'REAL_BIND_EXECUTOR': real_bind_executor,
+    })
+    executor = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_url': 'http://proxy-xm:8080',
+        'proxy_region': '厦门',
+        'proxy_type': 'http',
+        'enabled': True,
+        'browser_profile_key': 'permata-profile',
+        'bind_concurrency': 3,
+        'request_timeout_seconds': 45,
+        'notes': 'permata executor',
+    })
+    assert executor.status_code == 200
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_bind_executor_real'}},
+            'message': {
+                'message_id': 'om_bind_executor_real',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nPermata-25\\n45678901\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed is not None
+    assert captured['dept_name'] == 'Permata'
+    assert captured['invite_code'] == 'EKVFGQ'
+    assert captured['executor_browser_profile_key'] == 'permata-profile'
+    assert processed['lead_status'] == 'bind_success'
+
+    timeline = client.get(f"/api/leads/{response.json()['lead_id']}/timeline").json()
+    bind_task = next(task for task in timeline['tasks'] if task['task_id'] == response.json()['task_id'])
+    assert bind_task['status'] == 'success'
+    assert bind_task['result_reason'] == 'live bind ok'
+
+
+
+def test_process_next_automation_task_resolves_matching_guild_executor_config():
+    captured = {}
+
+    def bind_simulator(context):
+        captured.update(context)
+        return {
+            'status': 'failed',
+            'result_code': 'bind_unauthorized',
+            'result_reason': 'AxiosError: Request failed with status code 401',
+            'raw_result': {'guild_code': context['dept_name']},
+        }
+
+    client = make_client({
+        'LARK_APP_ID': 'cli_default_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'AUTO_BIND_SIMULATION': False,
+        'BIND_SIMULATOR': bind_simulator,
+    })
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}, {'id': 'app_2', 'name': 'FUMI'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}, {'id': 'dept_2', 'deptName': 'Permata'}],
+    )
+    created = client.post('/api/ops/intake-bot-presets/intake-a96f1cec', json={
+        'app_id': 'cli_a96f1cec1a789e15',
+        'default_app': 'FUMI',
+        'default_guild': 'Permata',
+    })
+    assert created.status_code == 200
+    executor = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_url': 'http://proxy-xm:8080',
+        'proxy_region': '厦门',
+        'proxy_type': 'http',
+        'enabled': True,
+        'browser_profile_key': 'permata-profile',
+        'bind_concurrency': 3,
+        'request_timeout_seconds': 45,
+        'notes': 'permata executor',
+    })
+    assert executor.status_code == 200
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_a96f1cec1a789e15',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_bind_executor'}},
+            'message': {
+                'message_id': 'om_bind_executor',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nPermata-25\\n45678901\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed is not None
+    assert captured['dept_name'] == 'Permata'
+    assert captured['invite_code'] == 'EKVFGQ'
+    assert captured['executor_backend_url'] == 'https://guild.linke.ai/guild/addAnchor'
+    assert captured['executor_login_username'] == 'permata@example.com'
+    assert captured['executor_proxy_url'] == 'http://proxy-xm:8080'
+    assert captured['executor_proxy_region'] == '厦门'
+    assert captured['executor_browser_profile_key'] == 'permata-profile'
+    assert captured['executor_bind_concurrency'] == 3
+    assert captured['executor_request_timeout_seconds'] == 45
+    assert processed['executor']['guild_name'] == 'Permata'
+    assert processed['executor']['proxy_region'] == '厦门'
+    assert processed['executor']['password_configured'] is True
+
+
+
+def test_bind_success_crm_failure_does_not_create_group_join_task():
+    class RejectingCrmAdapter:
+        def __init__(self):
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+        def get_apps(self):
+            return list(self.apps)
+        def get_depts(self):
+            return list(self.depts)
+        def create_customer(self, payload):
+            return {"code": 500, "msg": "crm rejected write", "data": None}
+        def find_customer(self, *, yw_id=None, mobile=None):
+            return None
+
+    client = make_client({"CRM_ADAPTER": RejectingCrmAdapter()})
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-no-group-task-on-crm-fail",
+            "source_platform": "manual_cs",
+            "source_campaign": "lark",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000999",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-99",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "99990011",
+            "account_id_type": "platform_uid",
+            "source_channel": "manual_cs_lark",
+            "submitted_by": "cs_bind",
+            "submitted_at": "2026-04-15T09:10:00Z",
+        },
+    ).json()
+
+    body = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "guild accepted",
+            "finished_at": "2026-04-15T09:12:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    ).json()
+
+    assert body['reason'] == 'crm_sync_failed'
+    assert body['next_action'] == 'retry_crm_sync'
+    assert body['group_join_task_type'] is None
+    timeline = client.get(f"/api/leads/{lead['lead_id']}/timeline").json()
+    assert not [task for task in timeline['tasks'] if task['task_type'] == 'group_join']
+
+
+
+def test_ops_retry_bind_requeues_bind_without_creating_new_submission():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-retry-bind-1",
+            "source_platform": "manual_cs",
+            "source_campaign": "lark",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000888",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-88",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "88880011",
+            "account_id_type": "platform_uid",
+            "source_channel": "manual_cs_lark",
+            "submitted_by": "cs_retry",
+            "submitted_at": "2026-04-15T10:10:00Z",
+        },
+    ).json()
+
+    retried = client.post(f"/api/ops/submissions/{submission['submission_id']}/retry-bind")
+    assert retried.status_code == 200
+    body = retried.json()
+    assert body['accepted'] is True
+    assert body['retry_type'] == 'bind'
+    assert body['created_new_submission'] is False
+    assert body['next_action'] == 'queue_bind_check'
+
+    timeline = client.get(f"/api/leads/{lead['lead_id']}/timeline").json()
+    assert len(timeline['account_submissions']) == 1
+    bind_tasks = [task for task in timeline['tasks'] if task['task_type'] == 'bind_check']
+    assert len(bind_tasks) == 2
+    assert bind_tasks[-1]['task_id'] == body['task_id']
+    assert bind_tasks[-1]['status'] == 'pending'
+
+
+
+def test_ops_retry_crm_replays_crm_sync_and_queues_group_join_after_success():
+    class FlakyCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+            self.create_attempts = 0
+        def get_apps(self):
+            return list(self.apps)
+        def get_depts(self):
+            return list(self.depts)
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            self.create_attempts += 1
+            if self.create_attempts == 1:
+                return {"code": 500, "msg": "crm rejected write", "data": None}
+            return {"code": 0, "msg": "success", "data": None}
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            if self.create_attempts >= 2:
+                return {
+                    "id": "crm_retry_ok_1",
+                    "ywId": yw_id,
+                    "mobile": mobile,
+                    "appName": "Linky",
+                    "deptName": "Piso",
+                    "pendaftaranGroup": "Piso-66",
+                }
+            return None
+
+    crm = FlakyCrmAdapter()
+    client = make_client({"CRM_ADAPTER": crm})
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-retry-crm-1",
+            "source_platform": "manual_cs",
+            "source_campaign": "lark",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000777",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-66",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "77770011",
+            "account_id_type": "platform_uid",
+            "source_channel": "manual_cs_lark",
+            "submitted_by": "cs_retry_crm",
+            "submitted_at": "2026-04-15T11:10:00Z",
+        },
+    ).json()
+    first = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "guild accepted",
+            "finished_at": "2026-04-15T11:12:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    ).json()
+    assert first['reason'] == 'crm_sync_failed'
+    assert first['next_action'] == 'retry_crm_sync'
+
+    retried = client.post(f"/api/ops/submissions/{submission['submission_id']}/retry-crm")
+    assert retried.status_code == 200
+    body = retried.json()
+    assert body['accepted'] is True
+    assert body['retry_type'] == 'crm'
+    assert body['created_new_submission'] is False
+    assert body['crm_verified'] is True
+    assert body['group_join_task_id'] is not None
+
+    timeline = client.get(f"/api/leads/{lead['lead_id']}/timeline").json()
+    assert len(timeline['account_submissions']) == 1
+    assert any(task['task_type'] == 'group_join' and task['task_id'] == body['group_join_task_id'] for task in timeline['tasks'])
+
+
+
+def test_ops_resubmit_creates_new_submission_and_correction_history():
+    client = make_client({'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    first = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81234560001",
+            "registration_group": "Piso-10",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "invite_code": "ABCDEF",
+            "submission_type": "account_id",
+            "account_id": "12345678",
+            "submitted_by": "cs_original",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "2026-04-15T12:00:00Z",
+            "remark": "orig",
+        },
+    ).json()
+    resubmitted = client.post(f"/api/ops/submissions/{first['submission_id']}/resubmit", json={
+        'corrected_by': 'ops_fix',
+        'submitted_at': '2026-04-15T12:05:00Z',
+        'mobile': '+62 81234560009',
+        'registration_group': 'Piso-11',
+        'invite_code': 'ZZZZZZ',
+        'account_id': '87654321',
+        'remark': 'fixed',
+    })
+    assert resubmitted.status_code == 200
+    body = resubmitted.json()
+    assert body['created_new_submission'] is True
+    assert body['original_submission_id'] == first['submission_id']
+    assert body['submission_id'] != first['submission_id']
+
+    timeline = client.get(f"/api/leads/{body['lead_id']}/timeline").json()
+    assert len(timeline['account_submissions']) == 1
+    assert len(timeline['correction_history']) >= 1
+    field_names = {row['field_name'] for row in timeline['correction_history']}
+    assert {'mobile', 'registration_group', 'invite_code', 'account_id'} <= field_names
+
+    original_timeline = client.get(f"/api/leads/{first['lead_id']}/timeline").json()
+    assert len(original_timeline['account_submissions']) == 1
+
+
+
+def test_ops_exception_queue_and_sla_summary_aggregate_core_failures():
+    client = make_client()
+    lead = client.post('/api/leads/upsert', json={
+        'trace_id': 'trace-exc-1',
+        'source_platform': 'manual_cs',
+        'source_campaign': 'lark',
+        'source_page_id': 'lark',
+        'country': 'Indonesia',
+        'area_code': 62,
+        'mobile': '81115550001',
+        'app_name': 'Linky',
+        'dept_name': 'Permata',
+        'pendaftaran_group': 'Permata-1',
+    }).json()
+    submission = client.post('/api/account-submissions', json={
+        'lead_id': lead['lead_id'],
+        'submission_type': 'account_id',
+        'account_id': '11112222',
+        'account_id_type': 'platform_uid',
+        'source_channel': 'manual_cs_lark',
+        'submitted_by': 'ops',
+        'submitted_at': '2026-04-15T12:10:00Z',
+    }).json()
+    with client.app.state.service.db.connect() as conn:
+        conn.execute("UPDATE leads SET current_status = ? WHERE lead_id = ?", ('bind_failed', lead['lead_id']))
+        conn.execute("UPDATE automation_tasks SET status='failed', result_code=?, result_reason=?, finished_at=? WHERE task_id=?", ('bind_unauthorized', 'HTTP 401: please re-login', '2026-04-15T12:12:00Z', submission['task_id']))
+        conn.execute("INSERT INTO operator_notifications (notification_id, lead_id, notification_type, mobile, yw_id, write_result, reason, is_read, read_at, read_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ('notify_exc_1', lead['lead_id'], 'crm_record_failed', '81115550001', '11112222', 'failed', 'CRM write was rejected.', 0, None, None, '2026-04-15T12:13:00Z'))
+        conn.commit()
+    exc = client.get('/api/ops/exception-queue')
+    assert exc.status_code == 200
+    exception_types = {row['exception_type'] for row in exc.json()['rows']}
+    assert 'crm_failure' in exception_types
+    assert 'auth_required' in exception_types or 'session_expired' in exception_types or 'bind_failure' in exception_types
+
+    sla = client.get('/api/ops/sla-summary')
+    assert sla.status_code == 200
+    body = sla.json()
+    assert body['submission_total'] >= 1
+    assert body['failed_count'] >= 1
+    assert isinstance(body['top_failure_reasons'], list)
+
+
+
+def test_lark_event_does_not_reply_success_when_crm_create_returns_success_but_query_back_finds_nothing():
+    class UnverifiableCreateCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            return None
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            return {"code": 0, "msg": "success", "data": None}
+        def update_customer(self, payload):
+            self.calls.append(("update_customer", payload))
+            return {"code": 0, "msg": "success", "data": None}
+        def get_apps(self):
+            return list(self.apps)
+        def get_depts(self):
+            return list(self.depts)
+
+    reply = StubLarkReplyAdapter()
+    crm = UnverifiableCreateCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "LARK_APP_ID": "cli_test",
+        "LARK_REPLY_ADAPTER": reply,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "AUTO_BIND_SIMULATION": True,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"], "deptId": "dept_1"},
+        },
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_crm_unverified'}},
+            'message': {
+                'message_id': 'om_text_crm_unverified',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567895\\nPiso-29\\n45678905"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'crm_sync_failed'
+    assert body['result_reason'] == 'CRM write could not be verified.'
+    assert reply.calls[0]['text'].startswith('**❌ CRM sync failed: CRM write could not be verified.**')
+
+
+def test_lark_event_does_not_treat_mismatched_query_back_row_as_verified_success():
+    class MismatchedQueryBackCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            return {
+                'id': 'crm_other_1',
+                'ywId': yw_id,
+                'mobile': mobile,
+                'appName': 'FUMI',
+                'deptName': 'Permata',
+                'pendaftaranGroup': 'Permata-99',
+            }
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            return {"code": 0, "msg": "success", "data": None}
+        def update_customer(self, payload):
+            self.calls.append(("update_customer", payload))
+            return {"code": 0, "msg": "success", "data": None}
+        def get_apps(self):
+            return list(self.apps)
+        def get_depts(self):
+            return list(self.depts)
+
+    reply = StubLarkReplyAdapter()
+    crm = MismatchedQueryBackCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "LARK_APP_ID": "cli_test",
+        "LARK_REPLY_ADAPTER": reply,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "AUTO_BIND_SIMULATION": True,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"], "deptId": "dept_1"},
+        },
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_crm_mismatch'}},
+            'message': {
+                'message_id': 'om_text_crm_mismatch',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567896\\nPiso-30\\n45678906"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'crm_sync_failed'
+    assert body['result_reason'] == 'CRM write could not be verified.'
+    assert reply.calls[0]['text'].startswith('**❌ CRM sync failed: CRM write could not be verified.**')
+
+
+def test_lark_event_uses_english_duplicate_conflict_message_when_crm_reports_duplicate_without_lookup_hit():
+    class DuplicateConflictCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.record = None
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            return None
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            return {"code": 10002, "msg": "数据库中已存在该记录", "data": None}
+        def update_customer(self, payload):
+            self.calls.append(("update_customer", payload))
+            return {"code": 0, "msg": "success", "data": None}
+        def get_apps(self):
+            return list(self.apps)
+        def get_depts(self):
+            return list(self.depts)
+
+    reply = StubLarkReplyAdapter()
+    crm = DuplicateConflictCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "LARK_APP_ID": "cli_test",
+        "LARK_REPLY_ADAPTER": reply,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "AUTO_BIND_SIMULATION": True,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"], "deptId": "dept_1"},
+        },
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_crm_dup'}},
+            'message': {
+                'message_id': 'om_text_crm_dup',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567891\\nPiso-26\\n45678902"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'crm_sync_failed'
+    assert body['result_reason'] == 'Data duplication.'
+    assert reply.calls[0]['text'].startswith('**❌ CRM sync failed: Data duplication.**')
+
+
+def test_lark_event_reuses_cached_crm_app_mapping_when_get_apps_temporarily_fails():
+    class FlakyAppsCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.record = None
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+            self.fail_next_get_apps = False
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            return None
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            return {"code": 0, "msg": "success", "data": None}
+        def update_customer(self, payload):
+            self.calls.append(("update_customer", payload))
+            return {"code": 0, "msg": "success", "data": None}
+        def get_apps(self):
+            self.calls.append(("get_apps", {}))
+            if self.fail_next_get_apps:
+                self.fail_next_get_apps = False
+                raise RuntimeError('CRM get_apps returned non-JSON response: status=502 body=')
+            return list(self.apps)
+        def get_depts(self):
+            self.calls.append(("get_depts", {}))
+            return list(self.depts)
+
+    crm = FlakyAppsCrmAdapter()
+    app = create_app({"DB_PATH": ":memory:", "CRM_ADAPTER": crm})
+    service = app.state.service
+
+    first = service._resolve_crm_app_mapping('Linky')
+    assert first['appId'] == 'app_1'
+
+    crm.fail_next_get_apps = True
+    second = service._resolve_crm_app_mapping('Linky')
+    assert second['appId'] == 'app_1'
+    assert second.get('mapping_source') == 'cache'
+
+
+def test_list_intake_bot_presets_warms_crm_mapping_cache_for_later_write_path():
+    class FlakyPresetCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.apps = [{"id": "app_fumi", "appName": "FUMI"}]
+            self.depts = [{"id": "dept_perm", "name": "Permata"}]
+            self.fail_next_get_apps = False
+            self.fail_next_get_depts = False
+        def get_apps(self):
+            self.calls.append(("get_apps", {}))
+            if self.fail_next_get_apps:
+                self.fail_next_get_apps = False
+                raise RuntimeError('CRM get_apps returned non-JSON response: status=502 body=')
+            return list(self.apps)
+        def get_depts(self):
+            self.calls.append(("get_depts", {}))
+            if self.fail_next_get_depts:
+                self.fail_next_get_depts = False
+                raise RuntimeError('CRM get_depts returned non-JSON response: status=502 body=')
+            return list(self.depts)
+
+    app = create_app({
+        "DB_PATH": ":memory:",
+        "CRM_ADAPTER": FlakyPresetCrmAdapter(),
+        "LARK_DEFAULT_APP_NAME": "FUMI",
+        "LARK_DEFAULT_DEPT_NAME": "Permata",
+    })
+    service = app.state.service
+    crm = service.crm_adapter
+
+    presets = service.list_intake_bot_presets()
+    assert any(item['value'] == 'FUMI' for item in presets['app_options'])
+    assert any(item['value'] == 'Permata' for item in presets['guild_options'])
+
+    crm.fail_next_get_apps = True
+    crm.fail_next_get_depts = True
+    app_mapping = service._resolve_crm_app_mapping('FUMI')
+    dept_mapping = service._resolve_crm_dept_mapping('Permata')
+
+    assert app_mapping['appId'] == 'app_fumi'
+    assert app_mapping['mapping_source'] == 'cache'
+    assert dept_mapping['deptId'] == 'dept_perm'
+    assert dept_mapping['mapping_source'] == 'cache'
+
+
+
+def test_persisted_crm_mapping_cache_survives_restart(tmp_path):
+    db_path = str(tmp_path / 'crm-cache.db')
+
+    class FirstCrmAdapter:
+        def get_apps(self):
+            return [{"id": "app_fumi", "appName": "FUMI"}]
+        def get_depts(self):
+            return [{"id": "dept_perm", "name": "Permata"}]
+
+    first = create_app({
+        "DB_PATH": db_path,
+        "CRM_ADAPTER": FirstCrmAdapter(),
+        "LARK_DEFAULT_APP_NAME": "FUMI",
+        "LARK_DEFAULT_DEPT_NAME": "Permata",
+    })
+    first.state.service.list_intake_bot_presets()
+
+    class FailingCrmAdapter:
+        def get_apps(self):
+            raise RuntimeError('CRM get_apps returned non-JSON response: status=502 body=')
+        def get_depts(self):
+            raise RuntimeError('CRM get_depts returned non-JSON response: status=502 body=')
+
+    restarted = create_app({
+        "DB_PATH": db_path,
+        "CRM_ADAPTER": FailingCrmAdapter(),
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+    })
+    service = restarted.state.service
+
+    app_mapping = service._resolve_crm_app_mapping('FUMI')
+    dept_mapping = service._resolve_crm_dept_mapping('Permata')
+
+    assert app_mapping['appId'] == 'app_fumi'
+    assert app_mapping['mapping_source'] == 'cache'
+    assert dept_mapping['deptId'] == 'dept_perm'
+    assert dept_mapping['mapping_source'] == 'cache'
+
+
+
+def test_lark_event_replies_in_english_retry_once_when_crm_app_mapping_is_temporarily_unavailable():
+    class AlwaysFailAppsCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.record = None
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            return None
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            return {"code": 0, "msg": "success", "data": None}
+        def update_customer(self, payload):
+            self.calls.append(("update_customer", payload))
+            return {"code": 0, "msg": "success", "data": None}
+        def get_apps(self):
+            self.calls.append(("get_apps", {}))
+            raise RuntimeError('CRM get_apps returned non-JSON response: status=502 body=')
+        def get_depts(self):
+            self.calls.append(("get_depts", {}))
+            return list(self.depts)
+
+    reply = StubLarkReplyAdapter()
+    crm = AlwaysFailAppsCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "LARK_APP_ID": "cli_test",
+        "LARK_REPLY_ADAPTER": reply,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "AUTO_BIND_SIMULATION": True,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"], "deptId": "dept_1"},
+        },
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_crm_app_retry'}},
+            'message': {
+                'message_id': 'om_text_crm_app_retry',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567892\\nPiso-27\\n45678903"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'crm_sync_failed'
+    assert body['result_reason'] == 'Please retry once.'
+    assert reply.calls[0]['text'].startswith('**❌ CRM sync failed: Please retry once.**')
+    assert not [name for name, _ in crm.calls if name == 'create_customer']
+
+
+def test_lark_event_can_auto_simulate_bind_failure_and_reply_reason():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        "LARK_APP_ID": "cli_test",
+        "LARK_REPLY_ADAPTER": reply,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "AUTO_BIND_SIMULATION": True,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "failed",
+            "result_code": "already_joined_other_guild",
+            "result_reason": "already joined another guild",
+            "raw_result": {"guild_code": context["dept_name"]},
+        },
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_sim_1'}},
+            'message': {
+                'message_id': 'om_text_sim_fail_1',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"手机号 +62 81234567890\\n注册群组 Piso-25\\nID 55667788\\nCode EKVFGQ"}'
+            }
+        }
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'simulated_bind_failed'
+    assert body['simulation_applied'] is True
+    assert body['lead_status'] == 'bind_failed'
+    assert body['next_action'] == 'queue_reengagement'
+    assert reply.calls[0]['text'] == (
+        '**❌ Bind failed: already joined another guild**\n'
+        'Phone: +62 81234567890\n'
+        'ID: 55667788\n'
+        'Group: Piso-25\n'
+        'Code: EKVFGQ'
+    )
+
+    translated = client.app.state.service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'bind_check_failed',
+        'result_reason': 'HTTP 400: {"error":{"code":-1,"message":"The streamer was in other guild "}}',
+        'reply_phone': '+62 81234567890',
+        'reply_id': '55667788',
+        'reply_group': 'Piso-25',
+        'reply_code': 'EKVFGQ',
+    })
+    assert translated == (
+        '**❌ Bind failed: The streamer was in another agency**\n'
+        'Phone: +62 81234567890\n'
+        'ID: 55667788\n'
+        'Group: Piso-25\n'
+        'Code: EKVFGQ'
+    )
+
+
+
+def test_manual_cs_submission_returns_parser_conflicts_and_routes_to_manual_review():
+    client = make_client()
+
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "081234567893",
+            "registration_group": "Piso-18",
+            "app_name": "Linky",
+            "dept_name": "Permata",
+            "submission_type": "screenshot",
+            "account_id": None,
+            "file_url": "https://cdn.example.com/ocr-shot.png",
+            "file_type": "image/png",
+            "submitted_by": "dewi02",
+            "source_channel": "manual_cs_lark",
+            "remark": "手机号 081234567893，Linky，公会Permata，注册群组 Piso-18，ID 88888888",
+            "submitted_at": "2026-04-14T18:05:00Z",
+            "image_ocr_text": "UID 99999999\nGroup Piso-18",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] is True
+    assert body["next_action"] == "manual_review"
+    assert body["routing_decision"] == "manual_review"
+    assert "account_id_conflict" in body["parsed_payload"]["conflicts"]
+    assert body["parsed_payload"]["account_id"] == "99999999"
+    assert body["parsed_payload"]["dept_name"] == "Permata"
+
+    timeline = client.get(f"/api/leads/{body['lead_id']}/timeline")
+    assert timeline.status_code == 200
+    lead = timeline.json()["lead"]
+    assert lead["parser_confidence"] > 0
+    assert "account_id_conflict" in lead["parser_conflicts"]
+    assert "account_id_conflict" in lead["review_reason_codes"]
+    assert lead["routing_decision"] == "manual_review"
+    assert lead["parser_missing_fields"] == ["invite_code"]
+    assert "UID 99999999" in lead["parser_raw_ocr_text"]
+
+
+
+def test_ops_bind_queue_exposes_parser_summary_fields():
+    client = make_client()
+    body = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "081234567894",
+            "registration_group": "Piso-19",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "screenshot",
+            "file_url": "https://cdn.example.com/ocr-shot-2.png",
+            "file_type": "image/png",
+            "submitted_by": "dewi03",
+            "source_channel": "manual_cs_lark",
+            "remark": "Linky，Piso组，截图里有ID",
+            "submitted_at": "2026-04-14T18:06:00Z",
+            "image_ocr_text": "UID 77778888\nGroup Piso-19",
+        },
+    ).json()
+
+    queue = client.get('/api/ops/bind-queue')
+    assert queue.status_code == 200
+    row = next(r for r in queue.json()['rows'] if r['lead_id'] == body['lead_id'])
+    assert row['parser_confidence'] > 0
+    assert row['parser_missing_fields'] == ['invite_code']
+    assert row['parser_conflicts'] == []
+    assert row['current_status'] == 'recognition_pending'
+
+
+def test_registration_group_batching_ready_when_reaches_30():
+    client = make_client()
+    response = client.post(
+        "/api/ops/approval-batches/evaluate",
+        json={
+            "approval_type": "registration_group",
+            "registration_group": "Piso-30",
+            "pending_count": 30,
+            "oldest_pending_at": "2026-04-15T10:00:00Z",
+            "now": "2026-04-15T10:19:00Z",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["release_count"] == 30
+    assert body["reason_code"] == "batch_size_reached"
+
+
+
+def test_registration_group_batching_flushes_after_20_minutes_even_if_under_30():
+    client = make_client()
+    response = client.post(
+        "/api/ops/approval-batches/evaluate",
+        json={
+            "approval_type": "registration_group",
+            "registration_group": "Piso-31",
+            "pending_count": 12,
+            "oldest_pending_at": "2026-04-15T10:00:00Z",
+            "now": "2026-04-15T10:21:00Z",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["release_count"] == 12
+    assert body["reason_code"] == "timeout_flush"
+
+
+
+def test_official_group_batching_ready_when_reaches_10():
+    client = make_client()
+    response = client.post(
+        "/api/ops/approval-batches/evaluate",
+        json={
+            "approval_type": "official_group",
+            "registration_group": "Official-A",
+            "pending_count": 10,
+            "oldest_pending_at": "2026-04-15T10:00:00Z",
+            "now": "2026-04-15T10:15:00Z",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["release_count"] == 10
+    assert body["reason_code"] == "batch_size_reached"
+
+
+
+def test_official_group_batching_flushes_after_30_minutes_even_if_under_10():
+    client = make_client()
+    response = client.post(
+        "/api/ops/approval-batches/evaluate",
+        json={
+            "approval_type": "official_group",
+            "registration_group": "Official-B",
+            "pending_count": 4,
+            "oldest_pending_at": "2026-04-15T10:00:00Z",
+            "now": "2026-04-15T10:31:00Z",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["release_count"] == 4
+    assert body["reason_code"] == "timeout_flush"
+
+
+
+def test_approval_batching_not_ready_before_threshold_or_timeout():
+    client = make_client()
+    response = client.post(
+        "/api/ops/approval-batches/evaluate",
+        json={
+            "approval_type": "official_group",
+            "registration_group": "Official-C",
+            "pending_count": 3,
+            "oldest_pending_at": "2026-04-15T10:00:00Z",
+            "now": "2026-04-15T10:20:00Z",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is False
+    assert body["release_count"] == 0
+    assert body["reason_code"] == "waiting_for_batch"
+
+
+
+def test_ops_approval_batch_queue_returns_ready_and_waiting_groups():
+    client = make_client()
+    for idx in range(30):
+        client.post(
+            "/api/leads/upsert",
+            json={
+                "trace_id": f"trace-batch-old-{idx}",
+                "source_platform": "manual_cs",
+                "source_page_id": "lark",
+                "country": "Indonesia",
+                "area_code": 62,
+                "mobile": f"8999900{idx:04d}",
+                "app_name": "Linky",
+                "dept_name": "Piso",
+                "pendaftaran_group": "Piso-30",
+            },
+        )
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-batch-official-old",
+            "source_platform": "manual_cs",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999111111",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Official-A",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "90909090",
+            "account_id_type": "platform_uid",
+            "source_channel": "manual_cs_lark",
+            "submitted_by": "ops_batch_old",
+            "submitted_at": "2026-04-15T11:00:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "bind success",
+            "finished_at": "2026-04-15T11:01:00Z",
+            "raw_result": {"guild_code": "Piso"},
+        },
+    )
+
+    response = client.get('/api/ops/approval-batch-queue')
+    assert response.status_code == 200
+    body = response.json()
+    registration = next(row for row in body['registration_groups'] if row['registration_group'] == 'Piso-30')
+    assert registration['ready'] is True
+    assert registration['pending_count'] == 30
+    assert registration['reason_code'] == 'batch_size_reached'
+    official = next(row for row in body['official_groups'] if row['registration_group'] == 'Official-A')
+    assert official['pending_count'] == 1
+
+
+
+def test_ops_page_includes_approval_batch_queue_section():
+    client = make_client()
+    response = client.get('/ops')
+    assert response.status_code == 200
+    body = response.text
+    assert '/api/ops/approval-batch-queue' in body
+    assert '审批批次队列' in body
+    assert '注册群批次' in body
+    assert '官方群批次' in body
+
+
+
+def test_manual_cs_submission_rejects_account_id_type_without_account_id():
+    client = make_client()
+
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81234567891",
+            "registration_group": "Piso-5",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "account_id",
+            "submitted_by": "dewi01",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "2026-04-14T18:01:00Z",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "account_id is required when submission_type=account_id"
+
+
+
+def test_manual_cs_submission_rejects_screenshot_without_file_url():
+    client = make_client()
+
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81234567892",
+            "registration_group": "Piso-5",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "screenshot",
+            "submitted_by": "dewi01",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "2026-04-14T18:02:00Z",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "file_url is required when submission_type=screenshot"
+
+
+def test_manual_cs_submission_rejects_screenshot_without_file_type():
+    client = make_client()
+
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "+62 81234567893",
+            "registration_group": "Piso-5",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "screenshot",
+            "file_url": "https://cdn.example.com/shot.png",
+            "submitted_by": "dewi01",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "2026-04-14T18:03:00Z",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "file_type is required when submission_type=screenshot"
+
+
+def test_manual_cs_submission_rejects_blank_required_fields():
+    client = make_client()
+
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "   ",
+            "registration_group": "",
+            "app_name": "",
+            "dept_name": "",
+            "submission_type": "account_id",
+            "account_id": "12345678",
+            "submitted_by": "",
+            "source_channel": "manual_cs_lark",
+            "submitted_at": "",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "mobile, registration_group, app_name, dept_name, submitted_by, submitted_at are required"
+
+def test_account_submission_numeric_id_queues_bind_check():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-6",
+            "source_platform": "meta",
+            "source_page_id": "page-6",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "85555555555",
+        },
+    ).json()
+
+    response = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "45772164",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:00:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] is True
+    assert body["normalized_account_id"] == "45772164"
+    assert body["next_action"] == "queue_bind_check"
+    assert body["task_type"] == "bind_check"
+    assert body["recognition_status"] == "not_needed"
+
+
+def test_account_submission_screenshot_queues_recognition():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-7",
+            "source_platform": "meta",
+            "source_page_id": "page-7",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "86666666666",
+        },
+    ).json()
+
+    response = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "screenshot",
+            "file_url": "https://cdn.example.com/account-shot/abc.png",
+            "file_type": "image/png",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:03:00Z",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] is True
+    assert body["next_action"] == "queue_account_recognition"
+    assert body["task_type"] == "account_recognition"
+    assert body["recognition_status"] == "pending"
+
+
+def test_recognition_result_success_promotes_submission_and_queues_bind_check():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-8",
+            "source_platform": "meta",
+            "source_page_id": "page-8",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "87777777777",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "screenshot",
+            "file_url": "https://cdn.example.com/account-shot/ocr.png",
+            "file_type": "image/png",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:03:00Z",
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/tasks/{submission['task_id']}/recognition-result",
+        json={
+            "status": "success",
+            "recognized_account_id": "77889911",
+            "result_code": "recognized",
+            "result_reason": "ocr success",
+            "finished_at": "2026-04-14T12:05:00Z",
+            "raw_result": {"confidence": 0.98},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["lead_status"] == "account_submitted"
+    assert body["next_action"] == "queue_bind_check"
+    assert body["bind_task_type"] == "bind_check"
+    assert body["recognized_account_id"] == "77889911"
+
+
+def test_bind_check_result_success_promotes_to_group_join_pending():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-9",
+            "source_platform": "meta",
+            "source_page_id": "page-9",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "88888888888",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "55667788",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:10:00Z",
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:12:00Z",
+            "raw_result": {"guild_code": "MCN-11"},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["lead_status"] == "bind_success"
+    assert body["next_action"] == "queue_group_join"
+    assert body["group_join_task_type"] == "group_join"
+
+
+def test_group_join_result_success_closes_group_join_flow():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-10",
+            "source_platform": "meta",
+            "source_page_id": "page-10",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999999",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "66778899",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:15:00Z",
+        },
+    ).json()
+    bind_result = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:17:00Z",
+            "raw_result": {"guild_code": "MCN-11"},
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/tasks/{bind_result['group_join_task_id']}/group-join-result",
+        json={
+            "status": "success",
+            "result_code": "join_ok",
+            "result_reason": "joined official group",
+            "finished_at": "2026-04-14T12:18:00Z",
+            "raw_result": {"target_group": "official-group-a"},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["lead_status"] == "group_join_success"
+    assert body["next_action"] == "close_or_education"
+
+
+def test_group_join_result_success_updates_crm_official_group_only_after_join():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    crm.record = {
+        "id": "crm_join_1",
+        "mobile": "89999999999",
+        "ywId": "66778899",
+        "appId": "app_1",
+        "appName": "Linky",
+        "deptId": "dept_1",
+        "deptName": "Piso",
+        "pendaftaranGroup": "Piso-5",
+        "wa": "",
+        "joinGroup": 0,
+        "qbType": "",
+        "qbAccout": "",
+        "dbHolder": "",
+    }
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    app = create_app({"DB_PATH": ":memory:", "CRM_ADAPTER": crm})
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-10b",
+            "source_platform": "meta",
+            "source_page_id": "page-10b",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999999",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "66778899",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:15:00Z",
+        },
+    ).json()
+    bind_result = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:17:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    ).json()
+
+    crm.calls.clear()
+    response = client.post(
+        f"/api/tasks/{bind_result['group_join_task_id']}/group-join-result",
+        json={
+            "status": "success",
+            "result_code": "join_ok",
+            "result_reason": "joined official group",
+            "finished_at": "2026-04-14T12:18:00Z",
+            "raw_result": {"target_group": "official-group-a"},
+        },
+    )
+    assert response.status_code == 200
+    update_payload = next(payload for name, payload in crm.calls if name == "update_customer")
+    assert update_payload["id"] == "crm_1"
+    assert update_payload["pendaftaranGroup"] == "Piso-5"
+    assert update_payload["wa"] == "official-group-a"
+
+
+
+def test_group_join_result_records_failed_crm_sync_when_update_cannot_be_verified():
+    from app.main import create_app
+
+    class UnverifiableUpdateCrmAdapter(StubCrmAdapter):
+        def __init__(self):
+            super().__init__()
+            self.find_calls = 0
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.find_calls += 1
+            if self.find_calls == 1:
+                return dict(self.record) if self.record else None
+            return {
+                "id": "crm_join_2",
+                "mobile": mobile,
+                "ywId": yw_id,
+                "appId": "app_1",
+                "appName": "Linky",
+                "deptId": "dept_1",
+                "deptName": "Piso",
+                "pendaftaranGroup": "Piso-5",
+                "wa": "",
+            }
+
+    crm = UnverifiableUpdateCrmAdapter()
+    crm.record = {
+        "id": "crm_join_2",
+        "mobile": "89999999998",
+        "ywId": "66778898",
+        "appId": "app_1",
+        "appName": "Linky",
+        "deptId": "dept_1",
+        "deptName": "Piso",
+        "pendaftaranGroup": "Piso-5",
+        "wa": "",
+    }
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    app = create_app({"DB_PATH": ":memory:", "CRM_ADAPTER": crm})
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-10c",
+            "source_platform": "meta",
+            "source_page_id": "page-10c",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999998",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "66778898",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:15:00Z",
+        },
+    ).json()
+    bind_result = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:17:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/tasks/{bind_result['group_join_task_id']}/group-join-result",
+        json={
+            "status": "success",
+            "result_code": "join_ok",
+            "result_reason": "joined official group",
+            "finished_at": "2026-04-14T12:18:00Z",
+            "raw_result": {"target_group": "official-group-b"},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body['lead_status'] == 'group_join_success'
+    assert body['crm_sync_status'] == 'failed'
+    assert body['crm_result_reason'] == 'CRM write could not be verified.'
+
+    timeline = client.get(f"/api/leads/{lead['lead_id']}/timeline").json()
+    group_sync = [row for row in timeline['sync_logs'] if row['sync_type'] == 'official_group_update']
+    assert group_sync[-1]['status'] == 'failed'
+
+
+
+def test_lead_timeline_returns_events_and_tasks():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-11",
+            "source_platform": "meta",
+            "source_page_id": "page-11",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81112223333",
+        },
+    ).json()
+    client.post(
+        "/api/events/collect",
+        json={
+            "trace_id": "trace-11",
+            "lead_id": lead["lead_id"],
+            "event_type": "contact_clicked",
+            "event_source": "landing_page",
+            "event_value": "wa",
+            "page_id": "page-11",
+            "session_id": "sess-11",
+            "happened_at": "2026-04-14T12:20:00Z",
+        },
+    )
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "99112233",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:21:00Z",
+        },
+    ).json()
+
+    response = client.get(f"/api/leads/{lead['lead_id']}/timeline")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["lead"]["lead_id"] == lead["lead_id"]
+    assert len(body["events"]) >= 1
+    assert len(body["tasks"]) >= 1
+    assert len(body["status_history"]) >= 2
+    assert body["tasks"][0]["task_id"] == submission["task_id"]
+
+
+def test_funnel_report_aggregates_by_platform_campaign_country():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-12",
+            "source_platform": "meta",
+            "source_campaign": "camp-a",
+            "source_page_id": "page-12",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "82223334444",
+        },
+    ).json()
+    client.post(
+        "/api/events/collect",
+        json={
+            "trace_id": "trace-12",
+            "lead_id": lead["lead_id"],
+            "event_type": "contact_clicked",
+            "event_source": "landing_page",
+            "event_value": "wa",
+            "page_id": "page-12",
+            "session_id": "sess-12",
+            "happened_at": "2026-04-14T12:30:00Z",
+        },
+    )
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "12345678",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:31:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:32:00Z",
+            "raw_result": {"guild_code": "MCN-11"},
+        },
+    )
+
+    response = client.get("/api/reports/funnel")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["rows"]) >= 1
+    row = body["rows"][0]
+    assert row["source_platform"] == "meta"
+    assert row["source_campaign"] == "camp-a"
+    assert row["country"] == "Indonesia"
+    assert row["lead_count"] == 1
+    assert row["engaged_count"] == 1
+    assert row["account_submitted_count"] == 1
+    assert row["bind_success_count"] == 1
+
+
+class StubCrmAdapter:
+    def __init__(self):
+        self.calls = []
+        self.record = None
+        self.apps = []
+        self.depts = []
+
+    def find_customer(self, *, yw_id=None, mobile=None):
+        self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+        return self.record
+
+    def create_customer(self, payload):
+        self.calls.append(("create_customer", payload))
+        self.record = {"id": "crm_1", **payload}
+        return {"code": 0, "msg": "success", "data": None}
+
+    def update_customer(self, payload):
+        self.calls.append(("update_customer", payload))
+        self.record = payload
+        return {"code": 0, "msg": "success", "data": None}
+
+    def create_registration_group_batch(self, payload):
+        self.calls.append(("create_registration_group_batch", payload))
+        return {"code": 0, "msg": "success", "data": None}
+
+    def get_apps(self):
+        self.calls.append(("get_apps", {}))
+        return list(self.apps)
+
+    def get_depts(self):
+        self.calls.append(("get_depts", {}))
+        return list(self.depts)
+
+    def upload_voucher(self, *, customer_id, image_path):
+        self.calls.append(("upload_voucher", {"customer_id": customer_id, "image_path": image_path}))
+        return "http://oss/test.png"
+
+    def attach_voucher(self, record, image_url, *, remark_suffix=None):
+        payload = dict(record)
+        payload["fileUrl"] = image_url
+        payload["pzStatus"] = 1
+        if remark_suffix:
+            payload["remark"] = f"{payload.get('remark','')} | {remark_suffix}".strip(" |")
+        self.calls.append(("attach_voucher", {"record": record, "image_url": image_url, "remark_suffix": remark_suffix}))
+        self.record = payload
+        return {"code": 0, "msg": "success", "data": None}
+
+
+def test_service_syncs_bind_success_to_crm_create():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    crm.apps = [
+        {"id": "app_1", "name": "Linky"},
+        {"id": "app_2", "ywName": "FUMI"},
+    ]
+    crm.depts = [
+        {"deptId": "dept_1", "deptName": "Piso"},
+        {"id": "dept_2", "name": "Permata"},
+    ]
+    app = create_app({"DB_PATH": ":memory:", "CRM_ADAPTER": crm})
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-13",
+            "source_platform": "meta",
+            "source_campaign": "camp-b",
+            "source_page_id": "page-13",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "83334445555",
+            "app_name": "Linky",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "88889999",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:00:00Z",
+        },
+    ).json()
+    bind = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T13:01:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "2010885372469563394"},
+        },
+    )
+    assert bind.status_code == 200
+    call_names = [name for name, _ in crm.calls]
+    assert "create_customer" in call_names
+    create_payload = next(payload for name, payload in crm.calls if name == "create_customer")
+    assert create_payload["appName"] == "Linky"
+    assert create_payload["appId"] == "app_1"
+    assert create_payload["deptName"] == "Piso"
+    assert create_payload["deptId"] == "2010885372469563394"
+    assert create_payload["pendaftaranGroup"] == "Piso-5"
+    assert create_payload["wa"] == ""
+
+    timeline = client.get(f"/api/leads/{lead['lead_id']}/timeline")
+    assert timeline.status_code == 200
+    sync_logs = timeline.json()["sync_logs"]
+    assert len(sync_logs) == 1
+    assert sync_logs[0]["target_system"] == "crm"
+    assert sync_logs[0]["sync_type"] == "customer_upsert"
+    assert sync_logs[0]["status"] == "success"
+    assert '88889999' in sync_logs[0]["request_snapshot"]
+
+
+def test_service_always_uses_create_customer_for_bind_success_even_if_find_customer_returns_existing_record():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    crm.record = {
+        "id": "crm_9",
+        "mobile": "83334445556",
+        "ywId": "88889998",
+        "appId": "old_app",
+        "joinGroup": 0,
+        "qbType": "",
+        "qbAccout": "",
+        "dbHolder": "",
+    }
+    crm.apps = [
+        {"id": "app_1", "name": "Linky"},
+        {"id": "app_2", "ywName": "FUMI"},
+    ]
+    crm.depts = [
+        {"deptId": "dept_1", "deptName": "Piso"},
+        {"id": "dept_2", "name": "Permata"},
+    ]
+    app = create_app({"DB_PATH": ":memory:", "CRM_ADAPTER": crm})
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-13b",
+            "source_platform": "meta",
+            "source_campaign": "camp-b",
+            "source_page_id": "page-13b",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "83334445556",
+            "app_name": "FUMI",
+            "dept_name": "Permata",
+            "pendaftaran_group": "Permata-7",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "88889998",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:00:00Z",
+        },
+    ).json()
+    bind = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T13:01:00Z",
+            "raw_result": {"guild_code": "Permata", "deptName": "Permata"},
+        },
+    )
+    assert bind.status_code == 200
+    create_payload = next(payload for name, payload in crm.calls if name == "create_customer")
+    assert create_payload["appName"] == "FUMI"
+    assert create_payload["appId"] == "app_2"
+    assert create_payload["deptName"] == "Permata"
+    assert create_payload["deptId"] == "dept_2"
+    assert create_payload["pendaftaranGroup"] == "Permata-7"
+    assert create_payload["wa"] == ""
+    assert not [payload for name, payload in crm.calls if name == "update_customer"]
+
+    timeline = client.get(f"/api/leads/{lead['lead_id']}/timeline")
+    assert timeline.status_code == 200
+    sync_logs = timeline.json()["sync_logs"]
+    assert len(sync_logs) == 1
+    assert sync_logs[0]["target_system"] == "crm"
+    assert sync_logs[0]["sync_type"] == "customer_upsert"
+    assert sync_logs[0]["status"] == "success"
+    assert '"action": "create"' in sync_logs[0]["response_snapshot"]
+
+
+def test_service_returns_crm_failure_when_repeated_submission_create_is_rejected_as_duplicate():
+    from app.main import create_app
+
+    class DuplicateCreateCrmAdapter(StubCrmAdapter):
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            return {"code": 10002, "msg": "数据库中已存在该记录", "data": None}
+
+    crm = DuplicateCreateCrmAdapter()
+    crm.record = {
+        "id": "crm_dup_1",
+        "joinGroup": 0,
+        "qbType": "",
+        "qbAccout": "",
+        "dbHolder": "",
+    }
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    app = create_app({"DB_PATH": ":memory:", "CRM_ADAPTER": crm})
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-13c",
+            "source_platform": "meta",
+            "source_campaign": "camp-c",
+            "source_page_id": "page-13c",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "83334445557",
+            "app_name": "Linky",
+            "pendaftaran_group": "Piso-8",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "88889997",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:00:00Z",
+        },
+    ).json()
+    bind = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T13:01:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    )
+    assert bind.status_code == 200
+    body = bind.json()
+    assert body["next_action"] == "retry_crm_sync"
+    assert body["reason"] == "crm_sync_failed"
+    assert body["result_reason"] == "Data duplication."
+    assert not [payload for name, payload in crm.calls if name == "update_customer"]
+
+    timeline = client.get(f"/api/leads/{lead['lead_id']}/timeline")
+    assert timeline.status_code == 200
+    sync_logs = timeline.json()["sync_logs"]
+    assert len(sync_logs) == 1
+    assert sync_logs[0]["status"] == "failed"
+    assert '"action": "create"' in sync_logs[0]["response_snapshot"]
+
+
+def test_service_attaches_voucher_to_existing_crm_record():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    crm.record = {
+        "id": "crm_2",
+        "mobile": "84445556666",
+        "ywId": "99990000",
+        "fileUrl": "",
+        "pzStatus": 0,
+        "remark": ""
+    }
+    app = create_app({"DB_PATH": ":memory:", "CRM_ADAPTER": crm})
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-14",
+            "source_platform": "meta",
+            "source_page_id": "page-14",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "84445556666",
+            "app_name": "Linky",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "99990000",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:02:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T13:03:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "2010885372469563394"},
+        },
+    )
+    response = client.post(
+        f"/api/leads/{lead['lead_id']}/voucher-attach",
+        json={
+            "image_path": "/tmp/proof.png",
+            "remark_suffix": "uploaded by flow"
+        },
+    )
+
+    assert response.status_code == 200
+    names = [name for name, _ in crm.calls]
+    assert "upload_voucher" in names
+    assert "attach_voucher" in names
+
+
+def test_registration_group_approval_batch_syncs_to_crm():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    app = create_app({"DB_PATH": ":memory:", "CRM_ADAPTER": crm})
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/registration-groups/approval-batches",
+        json={
+            "registration_group": "Piso-5",
+            "approved_count": 30,
+            "approved_by": "cs_001",
+            "approved_by_name": "注册客服A",
+            "source_platform": "meta",
+            "source_campaign": "indo-campaign-1",
+            "source_adset": "adset-a",
+            "source_ad": "creative-3",
+            "approved_at": "2026-04-14T16:59:03Z",
+            "area": "Indonesia",
+            "remark": "manual approval batch"
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["accepted"] is True
+    assert body["crm_sync_status"] == "success"
+    assert body["crm_payload"] == {
+        "area": "Indonesia",
+        "groupNo": "Piso-5",
+        "groupPeopleNum": "30"
+    }
+    assert ("create_registration_group_batch", {"area": "Indonesia", "groupNo": "Piso-5", "groupPeopleNum": "30"}) in crm.calls
+
+
+def test_ops_bind_queue_returns_bind_related_leads():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-15",
+            "source_platform": "meta",
+            "source_page_id": "page-15",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "85556667777",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "15151515",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:10:00Z",
+        },
+    ).json()
+
+    response = client.get('/api/ops/bind-queue')
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body['rows']) >= 1
+    row = body['rows'][0]
+    assert row['lead_id'] == lead['lead_id']
+    assert row['current_status'] == 'account_submitted'
+    assert row['task_id'] == submission['task_id']
+
+
+def test_ops_group_queue_returns_bind_success_leads():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-16",
+            "source_platform": "meta",
+            "source_page_id": "page-16",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "86667778888",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-6",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "16161616",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:11:00Z",
+        },
+    ).json()
+    bind = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T13:12:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "2010885372469563394"},
+        },
+    ).json()
+
+    response = client.get('/api/ops/group-queue')
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body['rows']) >= 1
+    row = body['rows'][0]
+    assert row['lead_id'] == lead['lead_id']
+    assert row['current_status'] == 'bind_success'
+    assert row['task_id'] == bind['group_join_task_id']
+
+
+def test_ops_dashboard_summary_counts_core_states():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-17",
+            "source_platform": "meta",
+            "source_page_id": "page-17",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "87778889999",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-7",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "17171717",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:13:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T13:14:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "2010885372469563394"},
+        },
+    )
+
+    response = client.get('/api/ops/dashboard/summary')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['bind_queue_count'] >= 0
+    assert body['group_queue_count'] >= 1
+    assert body['bind_success_count'] >= 1
+
+
+def test_ops_page_serves_minimal_console_html():
+    client = make_client()
+    response = client.get('/ops')
+    assert response.status_code == 200
+    assert 'text/html' in response.headers['content-type']
+    body = response.text
+    assert '运营操作台 MVP' in body
+    assert '/api/ops/bind-queue' in body
+    assert '/api/ops/group-queue' in body
+    assert '/api/ops/dashboard/summary' in body
+    assert '/api/ops/operator-notifications' in body
+    assert '绑定成功' in body
+    assert '绑定失败' in body
+    assert '入群成功' in body
+    assert '入群失败' in body
+    assert '查看详情' in body
+    assert '客服通知列表' in body
+
+
+def test_ops_next_bind_task_returns_top_bind_item():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-18",
+            "source_platform": "meta",
+            "source_page_id": "page-18",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000001",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-8",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "18181818",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:20:00Z",
+        },
+    ).json()
+
+    response = client.get('/api/ops/next-bind-task')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['row']['lead_id'] == lead['lead_id']
+    assert body['row']['task_id'] == submission['task_id']
+    assert body['kind'] == 'bind'
+
+
+def test_ops_next_group_task_returns_top_group_item():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-19",
+            "source_platform": "meta",
+            "source_page_id": "page-19",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000002",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-9",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "19191919",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:21:00Z",
+        },
+    ).json()
+    bind = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T13:22:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "2010885372469563394"},
+        },
+    ).json()
+
+    response = client.get('/api/ops/next-group-task')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['row']['lead_id'] == lead['lead_id']
+    assert body['row']['task_id'] == bind['group_join_task_id']
+    assert body['kind'] == 'group'
+
+
+def test_ops_next_action_prefers_bind_before_group():
+    client = make_client()
+    lead_bind = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-20",
+            "source_platform": "meta",
+            "source_page_id": "page-20",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000003",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-10",
+        },
+    ).json()
+    client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead_bind['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "20202020",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:23:00Z",
+        },
+    )
+    lead_group = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-21",
+            "source_platform": "meta",
+            "source_page_id": "page-21",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000004",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-11",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead_group['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "21212121",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:24:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T13:25:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "2010885372469563394"},
+        },
+    )
+
+    response = client.get('/api/ops/next-action')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['kind'] == 'bind'
+    assert body['row']['lead_id'] == lead_bind['lead_id']
+    assert body['reason']
+    assert body['score'] > 0
+
+
+def test_ops_next_action_prefers_bind_failed_before_plain_bind_pending():
+    client = make_client()
+    failed_lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-24",
+            "source_platform": "meta",
+            "source_page_id": "page-24",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000007",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-14",
+        },
+    ).json()
+    failed_submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": failed_lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "24242424",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:31:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{failed_submission['task_id']}/bind-check-result",
+        json={
+            "status": "failed",
+            "result_code": "bind_failed",
+            "result_reason": "id invalid or already in other guild",
+            "finished_at": "2026-04-14T13:32:00Z",
+            "raw_result": {}
+        },
+    )
+
+    pending_lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-25",
+            "source_platform": "meta",
+            "source_page_id": "page-25",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000008",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-15",
+        },
+    ).json()
+    client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": pending_lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "25252525",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:33:00Z",
+        },
+    )
+
+    response = client.get('/api/ops/next-action')
+    body = response.json()
+    assert body['kind'] == 'bind'
+    assert body['row']['lead_id'] == failed_lead['lead_id']
+    assert '失败' in body['reason'] or 'failed' in body['reason'].lower()
+
+
+def test_ops_next_action_prefers_crm_sync_after_bind_success_without_crm_record():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-22",
+            "source_platform": "meta",
+            "source_page_id": "page-22",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000005",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-12",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "22222222",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:26:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T13:27:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "2010885372469563394"},
+        },
+    )
+
+    response = client.get('/api/ops/next-action')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['kind'] == 'crm_sync'
+    assert body['row']['lead_id'] == lead['lead_id']
+    assert 'CRM' in body['reason']
+
+def test_ops_next_action_falls_back_to_group_when_no_bind_or_crm_sync_needed():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-next-action-group",
+            "source_platform": "manual_cs",
+            "source_campaign": "lark",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000006",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-13",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "23232323",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:28:00Z",
+        },
+    ).json()
+    bind = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T13:29:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "2010885372469563394"},
+        },
+    ).json()
+    # mark CRM synced so group becomes the next actionable item
+    client.post(
+        "/api/crm/customer-sync",
+        json={
+            "lead_id": lead['lead_id'],
+            "task_id": bind['task_id'],
+            "yw_id": "23232323",
+            "mobile": "81110000006",
+            "area_code": 62,
+            "crm_patch": {"file_url": "http://oss/test.png", "pz_status": 1},
+            "sync_mode": "upsert"
+        },
+    )
+    client.post(
+        f"/api/tasks/{bind['group_join_task_id']}/group-join-result",
+        json={
+            "status": "failed",
+            "result_code": "join_failed",
+            "result_reason": "pending admin approval",
+            "finished_at": "2026-04-14T13:30:00Z",
+            "raw_result": {}
+        },
+    )
+
+    response = client.get('/api/ops/next-action')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['kind'] == 'group'
+
+
+def test_ops_operator_notifications_returns_success_after_crm_sync():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-notify-success",
+            "source_platform": "manual_cs",
+            "source_campaign": "lark",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000007",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-14",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "24242424",
+            "account_id_type": "platform_uid",
+            "source_channel": "manual_cs_lark",
+            "submitted_by": "cs_a",
+            "submitted_at": "2026-04-15T09:00:00Z",
+        },
+    ).json()
+    bind = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "bind success",
+            "finished_at": "2026-04-15T09:02:00Z",
+            "raw_result": {"guild_code": "Piso"},
+        },
+    ).json()
+    client.post(
+        "/api/crm/customer-sync",
+        json={
+            "lead_id": lead['lead_id'],
+            "task_id": bind['task_id'],
+            "yw_id": "24242424",
+            "mobile": "81110000007",
+            "area_code": 62,
+            "crm_patch": {"pz_status": 1},
+            "sync_mode": "upsert"
+        },
+    )
+
+    response = client.get('/api/ops/operator-notifications')
+    assert response.status_code == 200
+    rows = response.json()['rows']
+    assert rows[0]['notification_type'] == 'crm_record_success'
+    assert rows[0]['mobile'] == '81110000007'
+    assert rows[0]['yw_id'] == '24242424'
+    assert rows[0]['write_result'] == 'success'
+    assert rows[0]['message_text'] == '用户手机: 81110000007\n用户ID: 24242424\n写入结果: success'
+    assert rows[0]['message_title'] == 'Lark收口通知'
+
+
+
+def test_success_notification_auto_resolves_prior_failed_notification_for_same_lead():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-notify-reconcile",
+            "source_platform": "manual_cs",
+            "source_campaign": "lark",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000070",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-70",
+        },
+    ).json()
+    service = client.app.state.service
+    with service.db.connect() as conn:
+        service._queue_operator_notification(
+            conn,
+            lead_id=lead['lead_id'],
+            notification_type='crm_record_failed',
+            mobile='81110000070',
+            yw_id='70707070',
+            write_result='failed',
+            reason='old crm failure',
+        )
+        conn.commit()
+
+    client.post(
+        "/api/crm/customer-sync",
+        json={
+            "lead_id": lead['lead_id'],
+            "task_id": "task_reconcile",
+            "yw_id": "70707070",
+            "mobile": "81110000070",
+            "area_code": 62,
+            "crm_patch": {"pz_status": 1},
+            "sync_mode": "upsert"
+        },
+    )
+
+    rows = client.get('/api/ops/operator-notifications').json()['rows']
+    success_row = next(row for row in rows if row['notification_type'] == 'crm_record_success')
+    failed_row = next(row for row in rows if row['reason'] == 'old crm failure')
+    assert success_row['is_read'] is False
+    assert failed_row['is_read'] is True
+    assert failed_row['read_by'] == 'system:auto_resolved'
+
+
+
+def test_ops_operator_notifications_returns_bind_failure_reason():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-notify-failed",
+            "source_platform": "manual_cs",
+            "source_campaign": "lark",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000008",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-15",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "25252525",
+            "account_id_type": "platform_uid",
+            "source_channel": "manual_cs_lark",
+            "submitted_by": "cs_b",
+            "submitted_at": "2026-04-15T09:10:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "failed",
+            "result_code": "bind_failed",
+            "result_reason": "guild rejected",
+            "finished_at": "2026-04-15T09:12:00Z",
+            "raw_result": {},
+        },
+    )
+
+    response = client.get('/api/ops/operator-notifications')
+    assert response.status_code == 200
+    rows = response.json()['rows']
+    assert rows[0]['notification_type'] == 'bind_check_failed'
+    assert rows[0]['mobile'] == '81110000008'
+    assert rows[0]['yw_id'] == '25252525'
+    assert rows[0]['write_result'] == 'failed'
+    assert rows[0]['reason'] == 'guild rejected'
+    assert rows[0]['is_read'] is False
+    assert rows[0]['message_text'] == '用户手机: 81110000008\n用户ID: 25252525\n写入结果: failed\n失败原因: guild rejected'
+
+
+
+def test_operator_notifications_dedupe_same_lead_type_and_reason_within_window():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-notify-dedupe",
+            "source_platform": "manual_cs",
+            "source_campaign": "lark",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000018",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-18",
+        },
+    ).json()
+    service = client.app.state.service
+    with service.db.connect() as conn:
+        service._queue_operator_notification(
+            conn,
+            lead_id=lead['lead_id'],
+            notification_type='crm_record_failed',
+            mobile='81110000018',
+            yw_id='18181818',
+            write_result='failed',
+            reason='Data duplication.',
+        )
+        service._queue_operator_notification(
+            conn,
+            lead_id=lead['lead_id'],
+            notification_type='crm_record_failed',
+            mobile='81110000018',
+            yw_id='18181818',
+            write_result='failed',
+            reason='Data duplication.',
+        )
+        conn.commit()
+
+    rows = client.get('/api/ops/operator-notifications').json()['rows']
+    deduped = [row for row in rows if row['lead_id'] == lead['lead_id']]
+    assert len(deduped) == 1
+
+
+
+def test_ops_operator_notifications_supports_unread_filter_and_mark_read():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-notify-read",
+            "source_platform": "manual_cs",
+            "source_campaign": "lark",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000009",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-16",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "26262626",
+            "account_id_type": "platform_uid",
+            "source_channel": "manual_cs_lark",
+            "submitted_by": "cs_c",
+            "submitted_at": "2026-04-15T09:20:00Z",
+        },
+    ).json()
+    bind = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "bind success",
+            "finished_at": "2026-04-15T09:21:00Z",
+            "raw_result": {"guild_code": "Piso"},
+        },
+    ).json()
+    client.post(
+        "/api/crm/customer-sync",
+        json={
+            "lead_id": lead['lead_id'],
+            "task_id": bind['task_id'],
+            "yw_id": "26262626",
+            "mobile": "81110000009",
+            "area_code": 62,
+            "crm_patch": {"pz_status": 1},
+            "sync_mode": "upsert"
+        },
+    )
+
+    unread = client.get('/api/ops/operator-notifications?status=unread')
+    assert unread.status_code == 200
+    rows = unread.json()['rows']
+    target = next(row for row in rows if row['mobile'] == '81110000009')
+    assert target['is_read'] is False
+
+    marked = client.post(f"/api/ops/operator-notifications/{target['notification_id']}/read", json={"read_by": "ops_a"})
+    assert marked.status_code == 200
+    assert marked.json()['updated'] is True
+
+    unread_after = client.get('/api/ops/operator-notifications?status=unread').json()['rows']
+    assert all(row['notification_id'] != target['notification_id'] for row in unread_after)
+
+    read_rows = client.get('/api/ops/operator-notifications?status=read').json()['rows']
+    marked_row = next(row for row in read_rows if row['notification_id'] == target['notification_id'])
+    assert marked_row['is_read'] is True
+    assert marked_row['read_by'] == 'ops_a'
+
+
+def test_ops_operator_notifications_supports_search_keyword():
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-notify-search",
+            "source_platform": "manual_cs",
+            "source_campaign": "lark",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000010",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-17",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "27272727",
+            "account_id_type": "platform_uid",
+            "source_channel": "manual_cs_lark",
+            "submitted_by": "cs_d",
+            "submitted_at": "2026-04-15T09:30:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "failed",
+            "result_code": "bind_failed",
+            "result_reason": "duplicate guild member",
+            "finished_at": "2026-04-15T09:32:00Z",
+            "raw_result": {},
+        },
+    )
+
+    by_mobile = client.get('/api/ops/operator-notifications?query=81110000010')
+    assert by_mobile.status_code == 200
+    assert by_mobile.json()['rows'][0]['mobile'] == '81110000010'
+
+    by_yw_id = client.get('/api/ops/operator-notifications?query=27272727')
+    assert by_yw_id.status_code == 200
+    assert by_yw_id.json()['rows'][0]['yw_id'] == '27272727'
+
+
+def test_manual_cs_conflict_routes_to_manual_review_queue_before_account_submission():
+    client = make_client()
+    response = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "081234567899",
+            "registration_group": "Piso-20",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "screenshot",
+            "file_url": "https://cdn.example.com/review-shot.png",
+            "file_type": "image/png",
+            "submitted_by": "cs_review_a",
+            "source_channel": "manual_cs_lark",
+            "remark": "手机号 081234567899，Linky，Piso，ID 88888888",
+            "submitted_at": "2026-04-15T10:00:00Z",
+            "image_ocr_text": "UID 99999999\nGroup Piso-20",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["next_action"] == "manual_review"
+    assert body["routing_decision"] == "manual_review"
+    assert "account_id_conflict" in body["review_reason_codes"]
+
+    queue = client.get('/api/ops/manual-review-queue')
+    assert queue.status_code == 200
+    row = next(r for r in queue.json()['rows'] if r['lead_id'] == body['lead_id'])
+    assert row['current_status'] == 'manual_review_pending'
+    assert row['routing_decision'] == 'manual_review'
+    assert 'account_id_conflict' in row['review_reason_codes']
+    assert row['recommended_next_action']
+
+    timeline = client.get(f"/api/leads/{body['lead_id']}/timeline")
+    assert timeline.status_code == 200
+    lead = timeline.json()['lead']
+    assert lead['parser_status'] == 'conflict'
+    assert lead['routing_decision'] == 'manual_review'
+    assert 'account_id_conflict' in lead['review_reason_codes']
+
+
+def test_manual_review_resolution_creates_bind_task_and_correction_history():
+    client = make_client()
+    intake = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "081234567898",
+            "registration_group": "Piso-21",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "screenshot",
+            "file_url": "https://cdn.example.com/review-fix.png",
+            "file_type": "image/png",
+            "submitted_by": "cs_review_b",
+            "source_channel": "manual_cs_lark",
+            "remark": "手机号 081234567898，Linky，Piso，ID 66666666",
+            "submitted_at": "2026-04-15T10:05:00Z",
+            "image_ocr_text": "UID 77777777\nGroup Piso-21",
+        },
+    ).json()
+
+    resolved = client.post(
+        f"/api/ops/manual-review/{intake['lead_id']}/resolve",
+        json={
+            "decision": "approve_bind",
+            "reviewed_by": "ops_reviewer_a",
+            "review_note": "采用人工确认 ID",
+            "account_id": "66666666",
+            "dept_name": "Piso",
+            "app_name": "Linky",
+            "registration_group": "Piso-21",
+            "submitted_at": "2026-04-15T10:08:00Z"
+        },
+    )
+
+    assert resolved.status_code == 200
+    body = resolved.json()
+    assert body['accepted'] is True
+    assert body['decision'] == 'approve_bind'
+    assert body['next_action'] == 'queue_bind_check'
+    assert body['task_id']
+    assert body['correction_count'] >= 1
+
+    bind_queue = client.get('/api/ops/bind-queue').json()['rows']
+    bind_row = next(r for r in bind_queue if r['lead_id'] == intake['lead_id'])
+    assert bind_row['current_status'] == 'account_submitted'
+
+    timeline = client.get(f"/api/leads/{intake['lead_id']}/timeline").json()
+    assert timeline['lead']['review_status'] == 'approved'
+    assert timeline['lead']['correction_count'] >= 1
+    assert len(timeline['review_history']) >= 1
+    assert len(timeline['correction_history']) >= 1
+    assert timeline['correction_history'][0]['field_name'] == 'account_id'
+
+
+def test_ops_approval_batch_queue_aggregates_real_pending_data():
+    client = make_client()
+    for idx in range(30):
+        client.post(
+            "/api/leads/upsert",
+            json={
+                "trace_id": f"trace-reg-{idx}",
+                "source_platform": "manual_cs",
+                "source_page_id": "lark",
+                "country": "Indonesia",
+                "area_code": 62,
+                "mobile": f"8123400{idx:04d}",
+                "app_name": "Linky",
+                "dept_name": "Piso",
+                "pendaftaran_group": "Piso-30",
+                "parser_confidence": 0.95,
+                "parser_missing_fields": [],
+                "parser_conflicts": [],
+            },
+        )
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-official-1",
+            "source_platform": "manual_cs",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "82220000001",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Official-A",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "30303030",
+            "account_id_type": "platform_uid",
+            "source_channel": "manual_cs_lark",
+            "submitted_by": "cs_batch",
+            "submitted_at": "2026-04-15T10:10:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "bind success",
+            "finished_at": "2026-04-15T10:11:00Z",
+            "raw_result": {"guild_code": "Piso"},
+        },
+    )
+
+    queue = client.get('/api/ops/approval-batch-queue')
+    assert queue.status_code == 200
+    body = queue.json()
+    registration = next(row for row in body['registration_groups'] if row['registration_group'] == 'Piso-30')
+    assert registration['pending_count'] == 30
+    assert registration['ready'] is True
+    assert registration['reason_code'] == 'batch_size_reached'
+    official = next(row for row in body['official_groups'] if row['registration_group'] == 'Official-A')
+    assert official['pending_count'] == 1
+    assert official['reason_code'] in {'waiting_for_batch', 'timeout_flush'}
+
+
+def test_ops_parser_quality_summary_counts_reviews_conflicts_and_corrections():
+    client = make_client()
+    intake = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "081234567897",
+            "registration_group": "Piso-22",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "screenshot",
+            "file_url": "https://cdn.example.com/quality-shot.png",
+            "file_type": "image/png",
+            "submitted_by": "cs_quality",
+            "source_channel": "manual_cs_lark",
+            "remark": "手机号 081234567897，Linky，Piso，ID 11112222",
+            "submitted_at": "2026-04-15T10:20:00Z",
+            "image_ocr_text": "UID 33334444\nGroup Piso-22",
+        },
+    ).json()
+    client.post(
+        f"/api/ops/manual-review/{intake['lead_id']}/resolve",
+        json={
+            "decision": "approve_bind",
+            "reviewed_by": "ops_quality",
+            "review_note": "人工确认文本 ID",
+            "account_id": "11112222",
+            "submitted_at": "2026-04-15T10:21:00Z"
+        },
+    )
+
+    summary = client.get('/api/ops/parser-quality-summary')
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body['manual_review_count'] >= 1
+    assert body['parser_conflict_count'] >= 1
+    assert body['correction_count'] >= 1
+    assert body['approved_review_count'] >= 1
+
+
+def test_manual_review_can_request_recognition_retry_and_requeue_recognition_task():
+    client = make_client()
+    intake = client.post(
+        "/api/intake/manual-cs-submissions",
+        json={
+            "mobile": "081234567896",
+            "registration_group": "Piso-23",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "submission_type": "screenshot",
+            "file_url": "https://cdn.example.com/retry-shot.png",
+            "file_type": "image/png",
+            "submitted_by": "cs_retry",
+            "source_channel": "manual_cs_lark",
+            "remark": "手机号 081234567896，Linky，Piso，ID 44445555",
+            "submitted_at": "2026-04-15T10:30:00Z",
+            "image_ocr_text": "UID 99990000\nGroup Piso-23",
+        },
+    ).json()
+
+    resolved = client.post(
+        f"/api/ops/manual-review/{intake['lead_id']}/resolve",
+        json={
+            "decision": "request_recognition_retry",
+            "reviewed_by": "ops_retry",
+            "review_note": "截图需要重新识别",
+            "submitted_at": "2026-04-15T10:31:00Z"
+        },
+    )
+
+    assert resolved.status_code == 200
+    body = resolved.json()
+    assert body['accepted'] is True
+    assert body['decision'] == 'request_recognition_retry'
+    assert body['next_action'] == 'queue_account_recognition'
+    assert body['task_id']
+
+    timeline = client.get(f"/api/leads/{intake['lead_id']}/timeline").json()
+    assert timeline['lead']['current_status'] == 'recognition_pending'
+    assert timeline['lead']['review_status'] == 'retry_requested'
+    assert any(task['task_type'] == 'account_recognition' for task in timeline['tasks'])
+    assert any(item['decision'] == 'request_recognition_retry' for item in timeline['review_history'])
+
+
+def test_ops_page_includes_manual_review_action_controls():
+    client = make_client()
+    response = client.get('/ops')
+    assert response.status_code == 200
+    body = response.text
+    assert '/api/ops/manual-review-queue' in body
+    assert '/api/ops/manual-review/' in body
+    assert '/api/tasks/' in body
+    assert '人工复核队列' in body
+    assert 'approveManualReview' in body
+    assert 'retryRecognition' in body
+    assert 'rejectManualReview' in body
+    assert 'runNativeOcr' in body
+    assert 'review-field' in body
+    assert 'manualReviewFieldValue' in body
+    assert 'manualReviewNote' in body
+    assert 'renderManualReviewEditor' in body
+    assert 'renderRecognitionCodeSummary' in body
+    assert 'renderLeadDetail' in body
+    assert '用户个人绑定码' in body
+    assert '公会固定邀请码' in body
+    assert 'reloadManualReviewQueue' in body
+    assert 'showToast' in body
+    assert 'manualReviewToast' in body
+
+
+def test_native_ocr_run_executes_screenshot_task_and_queues_bind_check():
+    ocr = StubOcrAdapter(raw_text='SID Saya 45691735\nkode gabung agensi EKVFGQ\nAgensi saya Permata')
+    client = make_client({'OCR_ADAPTER': ocr})
+    lead = client.post(
+        '/api/leads/upsert',
+        json={
+            'trace_id': 'trace-ocr-1',
+            'source_platform': 'manual_cs',
+            'source_page_id': 'lark',
+            'country': 'Indonesia',
+            'area_code': 62,
+            'mobile': '81119990001',
+            'app_name': 'Linky',
+            'dept_name': 'Permata',
+            'pendaftaran_group': 'Permata',
+        },
+    ).json()
+    submission = client.post(
+        '/api/account-submissions',
+        json={
+            'lead_id': lead['lead_id'],
+            'submission_type': 'screenshot',
+            'file_url': 'https://cdn.example.com/ocr-1.png',
+            'file_type': 'image/png',
+            'source_channel': 'manual_cs_lark',
+            'submitted_by': 'cs_ocr',
+            'submitted_at': '2026-04-15T18:00:00Z',
+        },
+    ).json()
+
+    response = client.post(f"/api/tasks/{submission['task_id']}/native-ocr-run")
+    assert response.status_code == 200
+    body = response.json()
+    assert body['status'] == 'success'
+    assert body['recognized_account_id'] == '45691735'
+    assert body['person_code'] == 'EKVFGQ'
+    assert body['guild_invite_code'] is None
+    assert body['next_action'] == 'queue_bind_check'
+    assert ocr.calls == ['https://cdn.example.com/ocr-1.png']
+
+    timeline = client.get(f"/api/leads/{lead['lead_id']}/timeline").json()
+    assert timeline['lead']['current_status'] == 'account_submitted'
+    assert any(task['task_type'] == 'bind_check' for task in timeline['tasks'])
+    recognized = next(sub for sub in timeline['account_submissions'] if sub['recognition_status'] == 'success')
+    assert recognized['recognition_raw']['person_code'] == 'EKVFGQ'
+    assert recognized['recognition_raw']['guild_invite_code'] is None
+
+
+def test_native_ocr_run_returns_guild_invite_code_for_invite_success_toast():
+    ocr = StubOcrAdapter(raw_text='Isi kode undangan\nKode Undangan KK9J8D\nSelamat datang! Kamu berhasil bergabung!\nSID kamu: 45689309, Nama Guild: Permata')
+    client = make_client({'OCR_ADAPTER': ocr})
+    lead = client.post(
+        '/api/leads/upsert',
+        json={
+            'trace_id': 'trace-ocr-1b',
+            'source_platform': 'manual_cs',
+            'source_page_id': 'lark',
+            'country': 'Indonesia',
+            'area_code': 62,
+            'mobile': '81119990003',
+            'app_name': 'Linky',
+            'dept_name': 'Permata',
+            'pendaftaran_group': 'Permata',
+        },
+    ).json()
+    submission = client.post(
+        '/api/account-submissions',
+        json={
+            'lead_id': lead['lead_id'],
+            'submission_type': 'screenshot',
+            'file_url': 'https://cdn.example.com/ocr-1b.png',
+            'file_type': 'image/png',
+            'source_channel': 'manual_cs_lark',
+            'submitted_by': 'cs_ocr',
+            'submitted_at': '2026-04-15T18:05:00Z',
+        },
+    ).json()
+
+    response = client.post(f"/api/tasks/{submission['task_id']}/native-ocr-run")
+    assert response.status_code == 200
+    body = response.json()
+    assert body['recognized_account_id'] == '45689309'
+    assert body['guild_invite_code'] == 'KK9J8D'
+    assert body['person_code'] is None
+
+    timeline = client.get(f"/api/leads/{lead['lead_id']}/timeline").json()
+    recognized = next(sub for sub in timeline['account_submissions'] if sub['recognition_status'] == 'success')
+    assert recognized['recognition_raw']['guild_invite_code'] == 'KK9J8D'
+    assert recognized['recognition_raw']['person_code'] is None
+
+
+def test_manual_review_queue_exposes_distinct_recognition_codes():
+    client = make_client()
+    response = client.post(
+        '/api/intake/manual-cs-submissions',
+        json={
+            'mobile': '081119990004',
+            'registration_group': 'Permata-1',
+            'app_name': 'Linky',
+            'dept_name': 'Permata',
+            'submission_type': 'screenshot',
+            'file_url': 'https://cdn.example.com/manual-review-ocr.png',
+            'file_type': 'image/png',
+            'source_channel': 'manual_cs_lark',
+            'submitted_by': 'cs_ops',
+            'submitted_at': '2026-04-15T18:20:00Z',
+            'account_id': '99999999',
+            'image_ocr_text': 'ID: 45691735\nkode gabung agensi EKVFGQ\nAgensi saya Permata',
+            'remark': '人工录入ID与OCR识别不一致，触发复核',
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body['routing_decision'] == 'manual_review'
+
+    queue = client.get('/api/ops/manual-review-queue')
+    assert queue.status_code == 200
+    row = next(r for r in queue.json()['rows'] if r['lead_id'] == body['lead_id'])
+    assert row['person_code'] == 'EKVFGQ'
+    assert row['guild_invite_code'] is None
+
+
+def test_native_ocr_run_returns_503_when_ocr_adapter_missing():
+    client = make_client()
+    lead = client.post(
+        '/api/leads/upsert',
+        json={
+            'trace_id': 'trace-ocr-2',
+            'source_platform': 'manual_cs',
+            'source_page_id': 'lark',
+            'country': 'Indonesia',
+            'area_code': 62,
+            'mobile': '81119990002',
+        },
+    ).json()
+    submission = client.post(
+        '/api/account-submissions',
+        json={
+            'lead_id': lead['lead_id'],
+            'submission_type': 'screenshot',
+            'file_url': 'https://cdn.example.com/ocr-2.png',
+            'file_type': 'image/png',
+            'source_channel': 'manual_cs_lark',
+            'submitted_by': 'cs_ocr',
+            'submitted_at': '2026-04-15T18:10:00Z',
+        },
+    ).json()
+
+    response = client.post(f"/api/tasks/{submission['task_id']}/native-ocr-run")
+    assert response.status_code == 503
+    assert response.json()['detail'] == 'ocr adapter not configured'
+
+
+def test_lark_image_event_downloads_once_and_reuses_cache(tmp_path):
+    media = StubLarkMediaAdapter(payload=b'image-1')
+    client = make_client({'LARK_MEDIA_ADAPTER': media, 'MEDIA_CACHE_DIR': str(tmp_path)})
+    payload = {
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_test'}},
+            'message': {
+                'message_id': 'om_test_1',
+                'chat_type': 'p2p',
+                'message_type': 'image',
+                'content': '{"image_key":"img_key_1"}'
+            }
+        }
+    }
+
+    first = client.post('/api/intake/lark/events', json=payload)
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body['accepted'] is True
+    assert first_body['cached'] is True
+    assert first_body['downloaded'] is True
+    assert first_body['next_action'] == 'await_text_context'
+
+    second = client.post('/api/intake/lark/events', json=payload)
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body['cached'] is True
+    assert second_body['downloaded'] is False
+    assert media.calls == [('om_test_1', 'img_key_1')]
+    assert second_body['cached_file_url'] == first_body['cached_file_url']
+
+
+def test_lark_event_callback_supports_url_verification():
+    client = make_client({'LARK_APP_ID': 'cli_test'})
+    response = client.post('/api/intake/lark/events', json={
+        'type': 'url_verification',
+        'challenge': 'abc123challenge',
+        'token': 'token-test'
+    })
+    assert response.status_code == 200
+    assert response.json()['challenge'] == 'abc123challenge'
+
+
+def test_lark_private_message_bridges_to_manual_intake():
+    reply = StubLarkReplyAdapter()
+    client = make_client({'LARK_APP_ID': 'cli_test', 'LARK_REPLY_ADAPTER': reply})
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_1'}},
+            'message': {
+                'message_id': 'om_text_1',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"手机号 +62 81234567890\n注册群组 Piso-25\n应用 Linky\n公会 Piso\nID 55667788\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['source'] == 'lark_event_bridge'
+    assert body['next_action'] == 'queue_bind_check'
+    assert body.get('reply_text', '') == ''
+    assert reply.calls == []
+
+
+def test_lark_group_at_message_bridges_to_manual_intake():
+    reply = StubLarkReplyAdapter()
+    client = make_client({'LARK_APP_ID': 'cli_test', 'LARK_REPLY_ADAPTER': reply})
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_2'}},
+            'message': {
+                'message_id': 'om_text_2',
+                'message_type': 'text',
+                'chat_type': 'group',
+                'mentions': [{'name': '收口机器人', 'id': {'open_id': 'ou_bot_x'}}],
+                'content': '{"text":"@收口机器人 手机号 +62 81234567891 注册群组 Piso-26 应用 Linky 公会 Piso ID 66778899 Code EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['source'] == 'lark_event_bridge'
+    assert body['next_action'] == 'queue_bind_check'
+    assert body.get('reply_text', '') == ''
+    assert reply.calls == []
+
+
+def test_lark_event_replies_with_failure_template_when_required_fields_missing():
+    reply = StubLarkReplyAdapter()
+    client = make_client({'LARK_APP_ID': 'cli_test', 'LARK_REPLY_ADAPTER': reply})
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_3'}},
+            'message': {
+                'message_id': 'om_text_3',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"只有手机号 +62 81234567892"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'missing_required_fields'
+    assert body['reply_text'] == (
+        '**🚫 Missing: Group, ID**\n'
+        'Phone: +62 81234567892\n'
+        'ID: -\n'
+        'Group: -\n'
+        'Code: -'
+    )
+    assert reply.calls
+    assert reply.calls[0]['message_id'] == 'om_text_3'
+    assert reply.calls[0]['text'] == body['reply_text']
+
+
+def test_lark_event_uses_host_registration_template_for_irrelevant_text():
+    reply = StubLarkReplyAdapter()
+    client = make_client({'LARK_APP_ID': 'cli_test', 'LARK_REPLY_ADAPTER': reply})
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_irrelevant'}},
+            'message': {
+                'message_id': 'om_text_irrelevant',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"今天你吃吗烤鱼"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'irrelevant_message'
+    assert body['reply_text'] == (
+        '**🚫I only register host information**\n'
+        '**📮Send:**\n'
+        'Phone:\n'
+        'ID:\n'
+        'Group:\n'
+        'Code:\n'
+        '**📌Example:**\n'
+        'Phone: +62 13800000000  ID: 123456  Group: Group-1  Code: EKVFGQ'
+    )
+    assert reply.calls
+    assert reply.calls[0]['text'] == body['reply_text']
+
+
+def test_lark_event_returns_reply_text_without_sending_when_gateway_direct_mode_enabled():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_direct'}},
+            'message': {
+                'message_id': 'om_text_direct',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 126165399\\nPiso-4\\n901124"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'invalid_account_id_format'
+    assert body['reply_text'] == (
+        '**🚫 Invalid ID. Linky requires exactly 8 digits.**\n'
+        'Phone: +62 126165399\n'
+        'ID: 901124\n'
+        'Group: Piso-4\n'
+        'Code: -'
+    )
+    assert reply.calls == []
+
+
+def test_lark_event_keeps_id_first_line_as_id_not_phone_candidate():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_id_first_phone_second'}},
+            'message': {
+                'message_id': 'om_text_id_first_phone_second',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"3886115721\\n+62 724411989\\nPermata-12"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'invalid_account_id_format'
+    assert body['reply_text'] == (
+        '**🚫 Invalid ID. Linky requires exactly 8 digits.**\n'
+        'Phone: +62 724411989\n'
+        'ID: 3886115721\n'
+        'Group: Permata-12\n'
+        'Code: -'
+    )
+    assert reply.calls == []
+
+
+def test_lark_text_event_with_media_urls_uses_ocr_text_for_image_recognition():
+    ocr = StubOcrAdapter(raw_text='SID Saya 45691735\nAgensi saya Permata-7')
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'OCR_ADAPTER': ocr,
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_media_text'}},
+            'message': {
+                'message_id': 'om_text_media',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 7898998989\\nPiso-21\\n[Image]","media_urls":["/tmp/fake-image.png"]}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['reply_id'] == '45691735'
+    assert body['reply_group'] == 'Piso-21'
+    assert body['parsed_payload']['dept_name'] == 'Permata-7'
+    assert body['parsed_payload']['account_id'] == '45691735'
+    assert ocr.calls == ['/tmp/fake-image.png']
+
+
+def test_lark_post_text_unescapes_group_and_phone_before_parsing():
+    ocr = StubOcrAdapter(raw_text='SID Saya 45691735\nAgensi saya Permata-7')
+    client = make_client({
+        'OCR_ADAPTER': ocr,
+        'LARK_APP_ID': 'cli_test',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_media_text_escaped'}},
+            'message': {
+                'message_id': 'om_text_media_escaped',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"[Image]\\n\\\\+62 784498989\\nPiso\\\\-22","media_urls":["/tmp/fake-image.png"]}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['reply_phone'] == '+62 784498989'
+    assert body['reply_group'] == 'Piso-22'
+    assert body['reply_id'] == '45691735'
+
+
+def test_lark_event_rejects_phone_without_country_code_space_before_bind():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'AUTO_BIND_SIMULATION': True,
+        'AUTO_BIND_SIMULATION_SUCCESS_RATE': 1.0,
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_phone'}},
+            'message': {
+                'message_id': 'om_text_phone_invalid',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"Phone: +621****9911\nGroup: Piso-4\nID: 90144211"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'invalid_phone_format'
+    assert reply.calls[0]['text'].startswith('**🚫 Invalid phone format. Use +<country code> <number>.**\n')
+    assert 'Phone:' in reply.calls[0]['text']
+    assert 'ID: 90144211' in reply.calls[0]['text']
+    assert 'Group: Piso-4' in reply.calls[0]['text']
+    assert reply.calls[0]['text'].endswith('Code: -')
+
+
+def test_lark_event_rejects_linky_id_that_is_not_8_digits_before_bind():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'AUTO_BIND_SIMULATION': True,
+        'AUTO_BIND_SIMULATION_SUCCESS_RATE': 1.0,
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_id'}},
+            'message': {
+                'message_id': 'om_text_id_invalid',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"Phone: +62 1235539911\nGroup: Piso-4\nID: 9014421"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'invalid_account_id_format'
+    assert reply.calls[0]['text'] == (
+        '**🚫 Invalid ID. Linky requires exactly 8 digits.**\n'
+        'Phone: +62 1235539911\n'
+        'ID: 9014421\n'
+        'Group: Piso-4\n'
+        'Code: -'
+    )
+
+
+def test_lark_event_understands_bare_multiline_fields_and_then_rejects_invalid_linky_id():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'AUTO_BIND_SIMULATION': True,
+        'AUTO_BIND_SIMULATION_SUCCESS_RATE': 1.0,
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_bare_invalid'}},
+            'message': {
+                'message_id': 'om_text_bare_invalid',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 1261215399\nPiso-4\n9011211"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'invalid_account_id_format'
+    assert reply.calls[0]['text'] == (
+        '**🚫 Invalid ID. Linky requires exactly 8 digits.**\n'
+        'Phone: +62 1261215399\n'
+        'ID: 9011211\n'
+        'Group: Piso-4\n'
+        'Code: -'
+    )
+
+
+def test_lark_event_understands_bare_multiline_fields_and_accepts_valid_input():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_bare_valid'}},
+            'message': {
+                'message_id': 'om_text_bare_valid',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 1261215399\nPiso-4\n90112111"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['next_action'] == 'queue_bind_check'
+    assert body.get('reply_text', '') == ''
+    assert reply.calls == []
+
+
+def test_lark_event_exact_user_case_returns_invalid_id_not_irrelevant():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'AUTO_BIND_SIMULATION': True,
+        'AUTO_BIND_SIMULATION_SUCCESS_RATE': 1.0,
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_exact_case'}},
+            'message': {
+                'message_id': 'om_text_exact_case',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 126165399\nPiso-4\n901124"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'invalid_account_id_format'
+    assert reply.calls[0]['text'] == (
+        '**🚫 Invalid ID. Linky requires exactly 8 digits.**\n'
+        'Phone: +62 126165399\n'
+        'ID: 901124\n'
+        'Group: Piso-4\n'
+        'Code: -'
+    )
+
+
+def test_lark_event_missing_group_does_not_merge_id_into_phone():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_missing_group'}},
+            'message': {
+                'message_id': 'om_text_missing_group',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 1261215399\n90112111"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'missing_required_fields'
+    assert body['reply_phone'] == '+62 1261215399'
+    assert body['reply_id'] == '90112111'
+    assert body['reply_group'] == '-'
+
+
+def test_lark_event_recognizes_generic_english_dash_number_group_names():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_generic_group'}},
+            'message': {
+                'message_id': 'om_text_generic_group',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 1261215399\nWhisky-7\n90112111"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['reply_group'] == 'Whisky-7'
+    assert body.get('reply_text', '') == ''
+    assert reply.calls == []
+
+
+def test_lark_event_does_not_treat_plain_english_word_as_group_name():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_plain_english'}},
+            'message': {
+                'message_id': 'om_text_plain_english',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 1261215399\nWhisky\n90112111"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'missing_required_fields'
+    assert body['reply_group'] == '-'
+
+
+def test_lark_event_replies_with_invalid_group_format_when_group_candidate_misses_dash():
+    assert extract_invalid_group_candidate('90965721\n+62 784311989\nPiso12') == 'Piso12'
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'LARK_APP_ID': 'cli_test',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    result = app.state.service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'invalid_group_format',
+        'reply_phone': '+62 784311989',
+        'reply_id': '90965721',
+        'reply_group': 'Piso12',
+    })
+    assert result == (
+        '**🚫 Invalid group format. Use English-Number, e.g. Piso-12.**\n'
+        'Phone: +62 784311989\n'
+        'ID: 90965721\n'
+        'Group: Piso12\n'
+        'Code: -'
+    )
+
+
+def test_lark_event_rejects_fumi_id_when_not_exactly_8_digits():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'FUMI',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_fumi_invalid_id'}},
+            'message': {
+                'message_id': 'om_text_fumi_invalid_id',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 711122233\nPermata-12\n1234567"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'invalid_account_id_format'
+    assert body['reply_text'] == (
+        '**🚫 Invalid ID. FUMI requires exactly 8 digits.**\n'
+        'Phone: +62 711122233\n'
+        'ID: 1234567\n'
+        'Group: Permata-12\n'
+        'Code: -'
+    )
+    assert reply.calls == []
+
+
+def test_lark_event_replies_with_app_guild_mismatch_when_explicit_values_conflict_with_preset():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_4'}},
+            'message': {
+                'message_id': 'om_text_4',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"手机号 +62 81234567893 注册群组 Piso-25 应用 FUMI 公会 Permata ID 55667788"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'app_guild_mismatch'
+    assert reply.calls
+    assert reply.calls[0]['message_id'] == 'om_text_4'
+    assert reply.calls[0]['text'] == (
+        '**🚫 I do not handle this app/agency.**\n'
+        'Phone: +62 81234567893\n'
+        'ID: 55667788\n'
+        'Group: Piso-25\n'
+        'Code: -'
+    )
+
+
+def test_lark_event_rejects_bare_multiline_explicit_agency_conflict_against_preset():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_5'}},
+            'message': {
+                'message_id': 'om_text_5',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 4261833388\\n90142228\\nPiso-6\\nLinky\\nPERMATA"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'app_guild_mismatch'
+    assert reply.calls
+    assert reply.calls[0]['message_id'] == 'om_text_5'
+    assert reply.calls[0]['text'] == (
+        '**🚫 I do not handle this app/agency.**\n'
+        'Phone: +62 4261833388\n'
+        'ID: 90142228\n'
+        'Group: Piso-6\n'
+        'Code: -'
+    )
+
+
+def test_lark_event_replies_missing_when_invite_code_absent():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'REQUIRE_INVITE_CODE': True,
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_missing_code'}},
+            'message': {
+                'message_id': 'om_missing_code',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567893\\nPiso-25\\n55667788"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'missing_required_fields'
+    assert 'Code' in body['reply_missing_fields']
+
+
+
+def test_lark_event_uses_default_app_and_guild_when_not_provided():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_4'}},
+            'message': {
+                'message_id': 'om_text_4',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"手机号 +62 81234567893\\n注册群组 Piso-25\\nID 55667788\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['next_action'] == 'queue_bind_check'
+    assert body.get('reply_text', '') == ''
+    assert reply.calls == []
+
+
+def test_intake_bot_presets_api_returns_crm_dropdown_options():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    crm.apps = [
+        {'id': 'app_1', 'name': 'Linky'},
+        {'id': 'app_2', 'ywName': 'FUMI'},
+    ]
+    crm.depts = [
+        {'deptId': 'dept_1', 'deptName': 'Piso'},
+        {'id': 'dept_2', 'name': 'Permata'},
+    ]
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    client = TestClient(app)
+
+    response = client.get('/api/ops/intake-bot-presets')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['app_options'] == [
+        {'label': 'FUMI', 'value': 'FUMI'},
+        {'label': 'Linky', 'value': 'Linky'},
+    ]
+    assert body['guild_options'] == [
+        {'label': 'Permata', 'value': 'Permata'},
+        {'label': 'Piso', 'value': 'Piso'},
+    ]
+
+
+def test_intake_bot_presets_page_uses_dropdown_selects_for_app_and_guild():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    crm.apps = [{'id': 'app_1', 'name': 'Linky'}]
+    crm.depts = [{'deptId': 'dept_1', 'deptName': 'Piso'}]
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    client = TestClient(app)
+
+    response = client.get('/ops/intake-bot-presets')
+
+    assert response.status_code == 200
+    body = response.text
+    assert 'presetFieldHtml(' in body
+    assert 'data.app_options' in body
+    assert 'data.guild_options' in body
+    assert 'data.app_options_source' in body
+    assert 'data.guild_options_source' in body
+    assert 'setInterval(() => {' in body
+    assert 'reloadPresets().catch(err => showToast(err.message, \'error\'))' in body
+    assert 'Using live CRM dropdown options only.' in body
+    assert 'placeholder="手动输入"' not in body
+
+
+def test_intake_bot_presets_page_disables_save_when_crm_options_unavailable():
+    from app.main import create_app
+
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    client = TestClient(app)
+
+    response = client.get('/ops/intake-bot-presets')
+
+    assert response.status_code == 200
+    body = response.text
+    assert 'CRM dropdown options are currently unavailable. Saving is disabled.' in body
+    assert 'throw new Error(\'CRM dropdown options are unavailable. Saving is disabled.\')' in body
+    assert 'placeholder="手动输入"' not in body
+    assert 'const manualInput = document.getElementById(`default_app_manual_${profileName}`);' not in body
+    assert 'const manualGuildInput = document.getElementById(`default_guild_manual_${profileName}`);' not in body
+    assert 'default_app: appField.value.trim(),' in body
+    assert 'default_guild: guildField.value.trim(),' in body
+
+
+def test_intake_bot_presets_api_rejects_manual_fallback_values_when_crm_options_unavailable():
+    from app.main import create_app
+
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    client = TestClient(app)
+
+    saved = client.post('/api/ops/intake-bot-presets/current', json={
+        'default_app': 'ManualApp',
+        'default_guild': 'ManualGuild',
+    })
+    assert saved.status_code == 400
+    assert 'CRM dropdown options are unavailable' in saved.text
+
+    response = client.get('/api/ops/intake-bot-presets')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['app_options'] == []
+    assert body['guild_options'] == []
+    assert body['rows'][0]['default_app'] == 'Linky'
+    assert body['rows'][0]['default_guild'] == 'Piso'
+
+
+def test_intake_bot_presets_api_reflects_live_crm_option_updates_without_restart():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    crm.apps = [{'id': 'app_1', 'name': 'Linky'}]
+    crm.depts = [{'deptId': 'dept_1', 'deptName': 'Piso'}]
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    client = TestClient(app)
+
+    initial = client.get('/api/ops/intake-bot-presets')
+    assert initial.status_code == 200
+    assert initial.json()['app_options'] == [{'label': 'Linky', 'value': 'Linky'}]
+    assert initial.json()['guild_options'] == [{'label': 'Piso', 'value': 'Piso'}]
+
+    crm.apps = [{'id': 'app_9', 'name': 'Halo'}]
+    crm.depts = [{'deptId': 'dept_9', 'deptName': 'Garuda'}]
+
+    refreshed = client.get('/api/ops/intake-bot-presets')
+    assert refreshed.status_code == 200
+    assert {'label': 'Halo', 'value': 'Halo'} in refreshed.json()['app_options']
+    assert {'label': 'Garuda', 'value': 'Garuda'} in refreshed.json()['guild_options']
+
+
+def test_runtime_health_reports_crm_and_simulation_status():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'CRM_BASE_URL': 'http://47.236.9.71:8310/enterprise-admin',
+        'CRM_USERNAME': 'Hermes',
+        'CRM_PASSWORD': '@Hermes123',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'AUTO_BIND_SIMULATION': True,
+        'AUTO_BIND_SIMULATION_SUCCESS_RATE': 1.0,
+    })
+    client = TestClient(app)
+
+    response = client.get('/api/ops/runtime-health')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['crm']['enabled'] is True
+    assert body['crm']['base_url'] == 'http://47.236.9.71:8310/enterprise-admin'
+    assert body['crm']['username'] == 'Hermes'
+    assert body['lark']['default_app'] == 'Linky'
+    assert body['lark']['default_guild'] == 'Piso'
+    assert body['simulation']['auto_bind_simulation'] is True
+    assert body['simulation']['success_rate'] == 1.0
+
+
+
+def test_async_lark_ingress_queues_and_run_next_processes_job(tmp_path):
+    reply = StubLarkReplyAdapter()
+    app = create_app({
+        'DB_PATH': str(tmp_path / 'async-queue.db'),
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test',
+        'LARK_REPLY_ADAPTER': reply,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'INGRESS_WORKER_ENABLED': False,
+    })
+    client = TestClient(app)
+
+    payload = {
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_async_1'}},
+            'message': {
+                'message_id': 'om_async_1',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567999\\nPiso-31\\n55667789\\nCode EKVFGQ"}'
+            }
+        }
+    }
+    queued = client.post('/api/intake/lark/events', json=payload)
+    assert queued.status_code == 200
+    queued_body = queued.json()
+    assert queued_body['accepted'] is True
+    assert queued_body['queued'] is True
+    assert queued_body['next_action'] == 'queued_for_processing'
+
+    queue_rows = client.get('/api/ops/ingress-queue').json()['rows']
+    assert queue_rows[0]['ingress_type'] == 'lark_event'
+    assert queue_rows[0]['status'] == 'queued'
+
+    processed = client.post('/api/ops/ingress-queue/run-next').json()
+    assert processed['status'] == 'done'
+    assert processed['result']['accepted'] is True
+    assert processed['result']['next_action'] == 'queue_bind_check'
+
+    audit_rows = client.get('/api/ops/operator-audit-log').json()['rows']
+    assert any(row['event_type'] == 'ingress_event_enqueued' for row in audit_rows)
+    assert any(row['event_type'] == 'ingress_event_processed' for row in audit_rows)
+
+
+
+def test_async_lark_ingress_reuses_idempotent_event(tmp_path):
+    app = create_app({
+        'DB_PATH': str(tmp_path / 'async-idempotent.db'),
+        'AUTO_LARK_REPLY': False,
+        'INGRESS_WORKER_ENABLED': False,
+    })
+    client = TestClient(app)
+    payload = {
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_async_dup'}},
+            'message': {
+                'message_id': 'om_async_dup',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567001\\nPiso-32\\n55667790"}'
+            }
+        }
+    }
+    first = client.post('/api/intake/lark/events', json=payload).json()
+    second = client.post('/api/intake/lark/events', json=payload).json()
+    assert first['ingress_event_id'] == second['ingress_event_id']
+    assert second['duplicate'] is True
+
+
+
+def test_runtime_health_reports_configured_ingress_worker_count(tmp_path):
+    app = create_app({
+        'DB_PATH': str(tmp_path / 'async-workers.db'),
+        'AUTO_LARK_REPLY': False,
+        'INGRESS_WORKER_ENABLED': True,
+        'INGRESS_WORKER_COUNT': 3,
+    })
+    client = TestClient(app)
+
+    health = client.get('/api/ops/runtime-health').json()
+    assert health['ingress']['worker_enabled'] is True
+    assert health['ingress']['worker_count'] == 3
+    assert health['ingress']['active_worker_threads'] >= 1
+
+
+
+def test_process_next_automation_task_respects_guild_bind_concurrency_limits():
+    captured = []
+
+    def bind_simulator(context):
+        captured.append(context)
+        return {
+            'status': 'failed',
+            'result_code': 'bind_unauthorized',
+            'result_reason': f"simulated for {context['dept_name']}",
+            'raw_result': {'guild_code': context['dept_name']},
+        }
+
+    client = make_client({
+        'LARK_APP_ID': 'cli_default_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+        'AUTO_BIND_SIMULATION': False,
+        'BIND_SIMULATOR': bind_simulator,
+    })
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Permata'}, {'id': 'dept_2', 'deptName': 'Piso'}],
+    )
+    created = client.post('/api/ops/intake-bot-presets/intake-piso', json={
+        'app_id': 'cli_piso_app',
+        'default_app': 'Linky',
+        'default_guild': 'Piso',
+    })
+    assert created.status_code == 200
+    for guild_name, bind_concurrency in [('Permata', 1), ('Piso', 2)]:
+        executor = client.post(f'/api/ops/guild-executors/{guild_name}', json={
+            'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+            'login_username': f'{guild_name.lower()}@example.com',
+            'password_secret_ref': f'secret_{guild_name.lower()}',
+            'proxy_region': '厦门' if guild_name == 'Permata' else '福州',
+            'proxy_type': 'http',
+            'enabled': True,
+            'browser_profile_key': f'{guild_name.lower()}-profile',
+            'bind_concurrency': bind_concurrency,
+        })
+        assert executor.status_code == 200
+
+    def submit(message_id: str, bot_app_id=None, phone_suffix='90', account_id='45678901', registration_group='Permata-25'):
+        payload = {
+            '_gateway_direct': True,
+            'schema': '2.0',
+            'header': {'event_type': 'im.message.receive_v1'},
+            'event': {
+                'sender': {'sender_id': {'open_id': f'ou_{message_id}'}},
+                'message': {
+                    'message_id': message_id,
+                    'message_type': 'text',
+                    'chat_type': 'p2p',
+                    'content': json.dumps({'text': f'+62 812345678{phone_suffix}\n{registration_group}\n{account_id}\nCode EKVFGQ'})
+                }
+            }
+        }
+        if bot_app_id:
+            payload['_bot_app_id'] = bot_app_id
+        response = client.post('/api/intake/lark/events', json=payload)
+        assert response.status_code == 200
+        return response.json()
+
+    first_perm = submit('om_perm_1', phone_suffix='90', account_id='45678901', registration_group='Permata-25')
+    second_perm = submit('om_perm_2', phone_suffix='91', account_id='45678902', registration_group='Permata-25')
+    piso = submit('om_piso_1', 'cli_piso_app', phone_suffix='92', account_id='45678903', registration_group='Piso-25')
+    assert 'task_id' in first_perm, first_perm
+    assert 'task_id' in second_perm, second_perm
+    assert 'task_id' in piso, piso
+
+    with client.app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE automation_tasks SET status = 'processing', started_at = ? WHERE task_id = ?",
+            ('2026-04-20T10:00:05+00:00', first_perm['task_id']),
+        )
+        conn.commit()
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed is not None
+    assert captured[-1]['dept_name'] == 'Piso'
+    assert processed['result_reason'] == 'simulated for Piso'
+
+    timeline = client.get(f"/api/leads/{second_perm['lead_id']}/timeline").json()
+    second_perm_task = next(task for task in timeline['tasks'] if task['task_id'] == second_perm['task_id'])
+    assert second_perm_task['status'] == 'pending'
+
+
+
+def test_runtime_health_reports_bind_latency_metrics(tmp_path):
+    db_path = tmp_path / 'bind-latency.db'
+    app = create_app({
+        'DB_PATH': str(db_path),
+        'AUTO_LARK_REPLY': False,
+        'INGRESS_WORKER_ENABLED': False,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+    })
+    client = TestClient(app)
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_latency_metrics'}},
+            'message': {
+                'message_id': 'om_latency_metrics',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 85220623938\\nPERMATA-909\\n51654982\\nCode QFHVFL"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    task_id = response.json()['task_id']
+    lead_id = response.json()['lead_id']
+
+    with client.app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE automation_tasks SET status = 'failed', created_at = ?, started_at = ?, finished_at = ?, result_code = ?, result_reason = ? WHERE task_id = ?",
+            ('2026-04-20T10:00:00+00:00', '2026-04-20T10:00:05+00:00', '2026-04-20T10:00:11+00:00', 'bind_unauthorized', 'simulated', task_id),
+        )
+        conn.execute(
+            "INSERT INTO sync_logs (sync_log_id, lead_id, task_id, sync_type, target_system, status, request_snapshot, response_snapshot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                'sync_test_1',
+                lead_id,
+                task_id,
+                'customer_upsert',
+                'crm',
+                'success',
+                json.dumps({'appName': 'Linky', 'deptName': 'Permata', 'pendaftaranGroup': 'PERMATA-909'}),
+                json.dumps({'action': 'create', 'verified_after_write': True, 'crm_response': {'code': 0}}),
+                '2026-04-20T10:00:12+00:00',
+            ),
+        )
+        conn.commit()
+
+    health = client.get('/api/ops/runtime-health').json()
+    bind_metrics = health['ingress']['bind_metrics']
+    assert bind_metrics['recent_completed_count'] >= 1
+    assert bind_metrics['avg_queue_wait_seconds'] == 5.0
+    assert bind_metrics['avg_execution_seconds'] == 6.0
+    assert bind_metrics['avg_end_to_end_seconds'] == 11.0
+    recent_bind = health['ingress']['recent_bind_traces'][0]
+    assert recent_bind['task_id'] == task_id
+    assert recent_bind['queue_wait_seconds'] == 5.0
+    assert recent_bind['execution_seconds'] == 6.0
+    recent_crm = health['ingress']['recent_crm_traces'][0]
+    assert recent_crm['lead_id'] == lead_id
+    assert recent_crm['verified_after_write'] is True
+    assert recent_crm['crm_response_code'] == 0
+
+
+
+def test_async_lark_ingress_rate_limits_by_sender(tmp_path):
+    app = create_app({
+        'DB_PATH': str(tmp_path / 'async-rate.db'),
+        'AUTO_LARK_REPLY': False,
+        'INGRESS_WORKER_ENABLED': False,
+        'INGRESS_RATE_LIMIT_PER_MINUTE': 1,
+    })
+    client = TestClient(app)
+    payload = {
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_async_rate'}},
+            'message': {
+                'message_id': 'om_async_rate_1',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567011\\nPiso-33\\n55667791"}'
+            }
+        }
+    }
+    first = client.post('/api/intake/lark/events', json=payload)
+    assert first.status_code == 200
+    payload['event']['message']['message_id'] = 'om_async_rate_2'
+    second = client.post('/api/intake/lark/events', json=payload)
+    assert second.status_code == 429

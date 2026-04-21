@@ -1,0 +1,12 @@
+worker_class = 'uvicorn.workers.UvicornWorker'
+workers = 4
+bind = '127.0.0.1:8011'
+backlog = 2048
+keepalive = 30
+timeout = 120
+graceful_timeout = 30
+max_requests = 5000
+max_requests_jitter = 500
+accesslog = '-'
+errorlog = '-'
+proc_name = 'mcn-intake-web'
