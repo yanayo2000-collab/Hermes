@@ -70,3 +70,42 @@ def test_webhook_post_accepts_payload_and_exposes_latest_event_summary():
     assert body['summary']['entry_count'] == 1
     assert body['summary']['message_count'] == 1
     assert body['summary']['display_phone_number'] == '12345'
+
+
+def test_webhook_recent_events_keeps_last_50_and_returns_latest_first():
+    app = create_app({'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123'})
+    client = TestClient(app)
+
+    for idx in range(55):
+        payload = {
+            'object': 'whatsapp_business_account',
+            'entry': [
+                {
+                    'id': f'waba_{idx}',
+                    'changes': [
+                        {
+                            'field': f'field_{idx}',
+                            'value': {
+                                'metadata': {
+                                    'display_phone_number': f'phone_{idx}',
+                                    'phone_number_id': f'pnid_{idx}',
+                                },
+                                'messages': [],
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        response = client.post('/webhooks/whatsapp', json=payload)
+        assert response.status_code == 200
+
+    recent = client.get('/ops/whatsapp-webhook/recent')
+    assert recent.status_code == 200
+    body = recent.json()
+    assert body['event_count'] == 50
+    assert len(body['events']) == 50
+    assert body['events'][0]['summary']['display_phone_number'] == 'phone_54'
+    assert body['events'][0]['payload']['entry'][0]['changes'][0]['field'] == 'field_54'
+    assert body['events'][-1]['summary']['display_phone_number'] == 'phone_5'
+    assert body['events'][-1]['payload']['entry'][0]['changes'][0]['field'] == 'field_5'

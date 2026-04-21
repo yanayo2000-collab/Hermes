@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, Optional
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 
 
 class WebhookState:
-    def __init__(self) -> None:
+    def __init__(self, max_events: int = 50) -> None:
+        self.max_events = max_events
         self.latest_event: Optional[Dict[str, Any]] = None
+        self.recent_events: Deque[Dict[str, Any]] = deque(maxlen=max_events)
 
     def record(self, payload: Dict[str, Any]) -> None:
         self.latest_event = payload
+        self.recent_events.append(payload)
 
-    def latest_summary(self) -> Dict[str, Any]:
-        payload = self.latest_event or {}
+    def summarize(self, payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        payload = payload or {}
         entries = payload.get('entry') or []
         changes = []
         for entry in entries:
@@ -39,6 +43,12 @@ class WebhookState:
             'display_phone_number': display_phone_number,
             'phone_number_id': phone_number_id,
         }
+
+    def latest_summary(self) -> Dict[str, Any]:
+        return self.summarize(self.latest_event)
+
+    def recent_payloads(self) -> List[Dict[str, Any]]:
+        return list(reversed(self.recent_events))
 
 
 def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
@@ -87,6 +97,21 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             'has_event': state.latest_event is not None,
             'summary': state.latest_summary() if state.latest_event is not None else None,
             'payload': state.latest_event,
+        }
+
+    @app.get('/ops/whatsapp-webhook/recent')
+    def recent_events() -> Dict[str, Any]:
+        events = [
+            {
+                'summary': state.summarize(payload),
+                'payload': payload,
+            }
+            for payload in state.recent_payloads()
+        ]
+        return {
+            'event_count': len(events),
+            'max_events': state.max_events,
+            'events': events,
         }
 
     return app
