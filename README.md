@@ -9,12 +9,16 @@ P0 automation service for lead ingestion, event collection, task orchestration, 
 uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8011
 ```
 
-## Minimal WhatsApp webhook service
+## Minimal WhatsApp webhook service + official-group bridge service
 
-Use this if you need a real callback URL for Meta/WhatsApp webhook verification before wiring the full official-group approval bridge.
+Use this if you need:
+- a real callback URL for Meta/WhatsApp webhook verification
+- and/or a deployable official-group approval bridge service body (A2)
 
 ```bash
-export WHATSAPP_WEBHOOK_VERIFY_TOKEN=replace-with-your-token
+export WHATSAPP_WEBHOOK_VERIFY_TOKEN=replac...oken
+export OFFICIAL_GROUP_BRIDGE_TOKEN=replace-with-bridge-token
+export OFFICIAL_GROUP_BRIDGE_MODE=mock_success
 uvicorn app.official_webhook_bridge_app:create_app --factory --host 0.0.0.0 --port 8091
 ```
 
@@ -29,6 +33,27 @@ Event receiver endpoint:
 
 Latest received event (for ops/debug):
 - `GET /ops/whatsapp-webhook/latest`
+
+Recent webhook history:
+- `GET /ops/whatsapp-webhook/recent`
+
+Layered webhook stats:
+- `GET /ops/whatsapp-webhook/stats`
+
+Official-group bridge health:
+- `GET /ops/official-group-bridge/health`
+
+Official-group bridge request history:
+- `GET /ops/official-group-bridge/requests`
+
+Official-group approve endpoint for Hermes executor:
+- `POST /official-group/approve`
+
+Bridge modes:
+- `mock_success`
+- `mock_retryable_failed`
+- `manual_queue`
+- `passthrough_webhook`
 
 ## Multi-worker web service
 

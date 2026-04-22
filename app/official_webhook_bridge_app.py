@@ -3,10 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
+import uuid
 from collections import Counter, defaultdict, deque
 from typing import Any, Deque, Dict, Iterable, List, Optional, Set
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
+
+try:
+    import requests
+except ImportError:  # pragma: no cover
+    requests = None
 
 
 def _unique_preserving_order(values: Iterable[Any]) -> List[Any]:
@@ -231,7 +238,8 @@ class WebhookState:
             message_ids.update(normalized.get('message_ids') or [])
             message_senders.update(normalized.get('message_senders') or [])
             group_ids.update(normalized.get('group_ids') or [])
-            group_participant_wa_ids.update(normalized.get('wa_ids') or []) if field.startswith('group_') else None
+            if field.startswith('group_'):
+                group_participant_wa_ids.update(normalized.get('wa_ids') or [])
             added_participant_wa_ids.update(normalized.get('added_participant_wa_ids') or [])
             failed_participant_wa_ids.update(normalized.get('failed_participant_wa_ids') or [])
             request_ids.update(normalized.get('request_ids') or [])
@@ -343,10 +351,218 @@ class WebhookState:
         }
 
 
+class OfficialGroupBridgeState:
+    def __init__(
+        self,
+        *,
+        token: Optional[str] = None,
+        mode: str = 'mock_success',
+        max_requests: int = 200,
+        upstream_url: Optional[str] = None,
+        upstream_token: Optional[str] = None,
+        timeout_seconds: float = 20.0,
+    ) -> None:
+        self.token = str(token or '').strip() or None
+        self.mode = str(mode or 'mock_success').strip().lower() or 'mock_success'
+        self.max_requests = max(10, int(max_requests or 200))
+        self.recent_requests: Deque[Dict[str, Any]] = deque(maxlen=self.max_requests)
+        self.timeout_seconds = max(3.0, float(timeout_seconds or 20.0))
+        self.upstream_url = str(upstream_url or '').strip() or None
+        self.upstream_token = str(upstream_token or '').strip() or None
+        self.session = requests.Session() if requests is not None else None
+
+    def _require_auth(self, authorization: Optional[str]) -> None:
+        if not self.token:
+            return
+        expected = f'Bearer {self.token}'
+        if (authorization or '').strip() != expected:
+            raise HTTPException(status_code=401, detail='unauthorized official-group bridge request')
+
+    def _new_request_id(self, lead: Dict[str, Any]) -> str:
+        lead_id = str(lead.get('lead_id') or 'unknown').strip() or 'unknown'
+        return f'bridge_{lead_id}_{uuid.uuid4().hex[:10]}'
+
+    def _store(self, record: Dict[str, Any]) -> None:
+        self.recent_requests.append(record)
+
+    def _find(self, request_id: str) -> Optional[Dict[str, Any]]:
+        for record in reversed(self.recent_requests):
+            if record.get('request_id') == request_id:
+                return record
+        return None
+
+    def health(self) -> Dict[str, Any]:
+        supports = ['approve', 'ops_history', 'manual_resolution']
+        if self.mode == 'passthrough_webhook':
+            supports.append('upstream_passthrough')
+        return {
+            'provider': 'official-group-bridge',
+            'status': 'healthy' if self.mode != 'passthrough_webhook' or bool(self.upstream_url) else 'misconfigured',
+            'mode': self.mode,
+            'has_token': bool(self.token),
+            'supports': supports,
+            'schema_version': 'official-group-webhook-v1',
+            'recent_request_count': len(self.recent_requests),
+            'upstream_url_configured': bool(self.upstream_url),
+            'timeout_seconds': self.timeout_seconds,
+        }
+
+    def _mock_response(self, *, request_id: str, target_group: str) -> Dict[str, Any]:
+        if self.mode == 'mock_retryable_failed':
+            return {
+                'status': 'retryable_failed',
+                'result_code': 'bridge_timeout',
+                'result_reason': 'mock upstream timeout',
+                'raw_result': {'target_group': target_group, 'bridge_request_id': request_id},
+            }
+        if self.mode == 'manual_queue':
+            return {
+                'status': 'manual_required',
+                'result_code': 'manual_queue_pending',
+                'result_reason': 'queued for manual bridge resolution',
+                'raw_result': {'target_group': target_group, 'bridge_request_id': request_id},
+            }
+        return {
+            'status': 'success',
+            'result_code': 'approval_ok',
+            'result_reason': 'mock bridge approved official group request',
+            'raw_result': {'target_group': target_group, 'bridge_request_id': request_id},
+        }
+
+    def _passthrough_response(self, payload: Dict[str, Any], *, request_id: str) -> Dict[str, Any]:
+        if not self.upstream_url:
+            return {
+                'status': 'manual_required',
+                'result_code': 'upstream_not_configured',
+                'result_reason': 'upstream webhook url is not configured',
+                'raw_result': {'target_group': payload.get('target_group'), 'bridge_request_id': request_id},
+            }
+        if self.session is None:
+            return {
+                'status': 'manual_required',
+                'result_code': 'requests_unavailable',
+                'result_reason': 'requests package unavailable for passthrough mode',
+                'raw_result': {'target_group': payload.get('target_group'), 'bridge_request_id': request_id},
+            }
+        headers = {'Content-Type': 'application/json'}
+        if self.upstream_token:
+            headers['Authorization'] = f'Bearer {self.upstream_token}'
+        response = self.session.post(self.upstream_url, json=payload, headers=headers, timeout=self.timeout_seconds)
+        try:
+            body = response.json()
+        except Exception as exc:
+            return {
+                'status': 'manual_required',
+                'result_code': 'upstream_invalid_response',
+                'result_reason': f'upstream returned non-json response: {exc}',
+                'raw_result': {'target_group': payload.get('target_group'), 'bridge_request_id': request_id},
+            }
+        if not isinstance(body, dict):
+            return {
+                'status': 'manual_required',
+                'result_code': 'upstream_invalid_response',
+                'result_reason': 'upstream returned non-object response',
+                'raw_result': {'target_group': payload.get('target_group'), 'bridge_request_id': request_id},
+            }
+        raw_result = dict(body.get('raw_result') or {})
+        raw_result.setdefault('bridge_request_id', request_id)
+        raw_result.setdefault('target_group', payload.get('target_group'))
+        body['raw_result'] = raw_result
+        body.setdefault('status', 'failed')
+        body.setdefault('result_code', 'upstream_failed')
+        body.setdefault('result_reason', '')
+        return body
+
+    def approve(self, payload: Dict[str, Any], *, authorization: Optional[str]) -> Dict[str, Any]:
+        self._require_auth(authorization)
+        target_group = str(payload.get('target_group') or '').strip()
+        if not target_group:
+            raise HTTPException(status_code=400, detail='target_group is required')
+        lead = payload.get('lead') or {}
+        crm_snapshot = payload.get('crm_snapshot') or {}
+        task = payload.get('task') or {}
+        if not isinstance(lead, dict) or not isinstance(crm_snapshot, dict) or not isinstance(task, dict):
+            raise HTTPException(status_code=400, detail='lead, crm_snapshot, and task must be objects')
+        request_id = self._new_request_id(lead)
+        now = int(time.time())
+        request_payload = {
+            'schema_version': 'official-group-webhook-v1',
+            'target_group': target_group,
+            'lead': dict(lead),
+            'crm_snapshot': dict(crm_snapshot),
+            'task': dict(task),
+        }
+        if self.mode == 'passthrough_webhook':
+            response_payload = self._passthrough_response(request_payload, request_id=request_id)
+            status = 'resolved'
+        else:
+            response_payload = self._mock_response(request_id=request_id, target_group=target_group)
+            status = 'pending' if self.mode == 'manual_queue' else 'resolved'
+        record = {
+            'request_id': request_id,
+            'created_at': now,
+            'updated_at': now,
+            'status': status,
+            'mode': self.mode,
+            'request': request_payload,
+            'response': response_payload,
+            'resolution': None,
+        }
+        self._store(record)
+        return response_payload
+
+    def list_requests(self, *, status: Optional[str] = None) -> Dict[str, Any]:
+        records = list(reversed(self.recent_requests))
+        if status:
+            records = [record for record in records if str(record.get('status') or '') == str(status)]
+        return {
+            'request_count': len(records),
+            'requests': records,
+        }
+
+    def resolve_request(self, request_id: str, resolution: Dict[str, Any]) -> Dict[str, Any]:
+        record = self._find(request_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail='bridge request not found')
+        status = str(resolution.get('status') or '').strip().lower()
+        if status not in {'success', 'retryable_failed', 'manual_required', 'failed'}:
+            raise HTTPException(status_code=400, detail='resolution status must be success|retryable_failed|manual_required|failed')
+        record['status'] = 'resolved'
+        record['updated_at'] = int(time.time())
+        record['resolution'] = {
+            'status': status,
+            'result_code': str(resolution.get('result_code') or '').strip(),
+            'result_reason': str(resolution.get('result_reason') or '').strip(),
+        }
+        record['response'] = {
+            'status': status,
+            'result_code': record['resolution']['result_code'] or 'manual_resolution',
+            'result_reason': record['resolution']['result_reason'],
+            'raw_result': {
+                'target_group': record['request']['target_group'],
+                'bridge_request_id': request_id,
+                'resolution_source': 'ops_manual_resolution',
+            },
+        }
+        return {
+            'request_id': request_id,
+            'status': 'resolved',
+            'resolution': record['resolution'],
+        }
+
+
 def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     cfg = dict(settings or {})
     verify_token = cfg.get('WHATSAPP_WEBHOOK_VERIFY_TOKEN') or os.getenv('WHATSAPP_WEBHOOK_VERIFY_TOKEN')
-    state = WebhookState()
+    webhook_state = WebhookState()
+    bridge_state = OfficialGroupBridgeState(
+        token=cfg.get('OFFICIAL_GROUP_BRIDGE_TOKEN') or os.getenv('OFFICIAL_GROUP_BRIDGE_TOKEN'),
+        mode=cfg.get('OFFICIAL_GROUP_BRIDGE_MODE') or os.getenv('OFFICIAL_GROUP_BRIDGE_MODE') or 'mock_success',
+        max_requests=int(cfg.get('OFFICIAL_GROUP_BRIDGE_MAX_REQUESTS') or os.getenv('OFFICIAL_GROUP_BRIDGE_MAX_REQUESTS') or 200),
+        upstream_url=cfg.get('OFFICIAL_GROUP_BRIDGE_UPSTREAM_URL') or os.getenv('OFFICIAL_GROUP_BRIDGE_UPSTREAM_URL'),
+        upstream_token=cfg.get('OFFICIAL_GROUP_BRIDGE_UPSTREAM_TOKEN') or os.getenv('OFFICIAL_GROUP_BRIDGE_UPSTREAM_TOKEN'),
+        timeout_seconds=float(cfg.get('OFFICIAL_GROUP_BRIDGE_TIMEOUT_SECONDS') or os.getenv('OFFICIAL_GROUP_BRIDGE_TIMEOUT_SECONDS') or 20.0),
+    )
 
     app = FastAPI(title='WhatsApp Webhook Bridge')
 
@@ -355,7 +571,8 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         return {
             'ok': True,
             'verify_token_configured': bool(verify_token),
-            'has_latest_event': state.latest_event is not None,
+            'has_latest_event': webhook_state.latest_event is not None,
+            'official_group_bridge': bridge_state.health(),
         }
 
     @app.get('/webhooks/whatsapp')
@@ -375,35 +592,57 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         payload = await request.json()
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail='payload must be a JSON object')
-        state.record(payload)
+        webhook_state.record(payload)
         entries = payload.get('entry') or []
         return {
             'received': True,
             'event_count': len(entries),
-            'summary': state.latest_summary(),
-            'normalized': state.normalize(payload),
+            'summary': webhook_state.latest_summary(),
+            'normalized': webhook_state.normalize(payload),
         }
 
     @app.get('/ops/whatsapp-webhook/latest')
     def latest_event() -> Dict[str, Any]:
         return {
-            'has_event': state.latest_event is not None,
-            'summary': state.latest_summary() if state.latest_event is not None else None,
-            'normalized': state.normalize(state.latest_event) if state.latest_event is not None else None,
-            'payload': state.latest_event,
+            'has_event': webhook_state.latest_event is not None,
+            'summary': webhook_state.latest_summary() if webhook_state.latest_event is not None else None,
+            'normalized': webhook_state.normalize(webhook_state.latest_event) if webhook_state.latest_event is not None else None,
+            'payload': webhook_state.latest_event,
         }
 
     @app.get('/ops/whatsapp-webhook/recent')
     def recent_events() -> Dict[str, Any]:
-        events = state.recent_records()
+        events = webhook_state.recent_records()
         return {
             'event_count': len(events),
-            'max_events': state.max_events,
+            'max_events': webhook_state.max_events,
             'events': events,
         }
 
     @app.get('/ops/whatsapp-webhook/stats')
     def webhook_stats() -> Dict[str, Any]:
-        return state.stats()
+        return webhook_state.stats()
+
+    @app.post('/official-group/approve')
+    async def official_group_approve(request: Request, authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail='payload must be a JSON object')
+        return bridge_state.approve(payload, authorization=authorization)
+
+    @app.get('/ops/official-group-bridge/health')
+    def official_group_bridge_health() -> Dict[str, Any]:
+        return bridge_state.health()
+
+    @app.get('/ops/official-group-bridge/requests')
+    def official_group_bridge_requests(status: Optional[str] = None) -> Dict[str, Any]:
+        return bridge_state.list_requests(status=status)
+
+    @app.post('/ops/official-group-bridge/requests/{request_id}/resolve')
+    async def official_group_bridge_resolve(request_id: str, request: Request) -> Dict[str, Any]:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail='payload must be a JSON object')
+        return bridge_state.resolve_request(request_id, payload)
 
     return app

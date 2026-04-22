@@ -379,3 +379,98 @@ def test_webhook_stats_exposes_commercial_grade_group_metrics_breakdown():
     assert body['phone_number_metrics']['shared_pnid']['group_participant_added_count'] == 4
     assert body['phone_number_metrics']['shared_pnid']['group_participant_failed_count'] == 1
     assert body['phone_number_metrics']['shared_pnid']['join_request_count'] == 1
+
+
+def test_official_group_bridge_approve_endpoint_supports_mock_success_and_ops_history():
+    app = create_app({
+        'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123',
+        'OFFICIAL_GROUP_BRIDGE_TOKEN': 'bridge-token',
+        'OFFICIAL_GROUP_BRIDGE_MODE': 'mock_success',
+    })
+    client = TestClient(app)
+
+    payload = {
+        'target_group': 'official-group-a',
+        'lead': {'lead_id': 'lead_1', 'mobile': '85200011122'},
+        'crm_snapshot': {'id': 'crm_1'},
+        'task': {'task_id': 'task_1', 'status': 'pending'},
+    }
+    response = client.post(
+        '/official-group/approve',
+        json=payload,
+        headers={'Authorization': 'Bearer bridge-token'},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body['status'] == 'success'
+    assert body['result_code'] == 'approval_ok'
+    assert body['raw_result']['target_group'] == 'official-group-a'
+    assert body['raw_result']['bridge_request_id']
+
+    history = client.get('/ops/official-group-bridge/requests')
+    assert history.status_code == 200
+    history_body = history.json()
+    assert history_body['request_count'] == 1
+    assert history_body['requests'][0]['request']['target_group'] == 'official-group-a'
+    assert history_body['requests'][0]['response']['status'] == 'success'
+    assert history_body['requests'][0]['mode'] == 'mock_success'
+
+
+def test_official_group_bridge_manual_queue_supports_manual_resolution():
+    app = create_app({
+        'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123',
+        'OFFICIAL_GROUP_BRIDGE_TOKEN': 'bridge-token',
+        'OFFICIAL_GROUP_BRIDGE_MODE': 'manual_queue',
+    })
+    client = TestClient(app)
+
+    payload = {
+        'target_group': 'official-group-b',
+        'lead': {'lead_id': 'lead_2'},
+        'crm_snapshot': {'id': 'crm_2'},
+        'task': {'task_id': 'task_2', 'status': 'pending'},
+    }
+    response = client.post(
+        '/official-group/approve',
+        json=payload,
+        headers={'Authorization': 'Bearer bridge-token'},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body['status'] == 'manual_required'
+    request_id = body['raw_result']['bridge_request_id']
+
+    pending = client.get('/ops/official-group-bridge/requests?status=pending')
+    assert pending.status_code == 200
+    pending_body = pending.json()
+    assert pending_body['request_count'] == 1
+    assert pending_body['requests'][0]['request_id'] == request_id
+    assert pending_body['requests'][0]['status'] == 'pending'
+
+    resolution = client.post(
+        f'/ops/official-group-bridge/requests/{request_id}/resolve',
+        json={'status': 'success', 'result_code': 'approved_by_operator', 'result_reason': 'manual pass'},
+    )
+    assert resolution.status_code == 200
+    resolved = resolution.json()
+    assert resolved['request_id'] == request_id
+    assert resolved['status'] == 'resolved'
+    assert resolved['resolution']['status'] == 'success'
+
+
+def test_official_group_bridge_health_exposes_mode_and_token_requirement():
+    app = create_app({
+        'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123',
+        'OFFICIAL_GROUP_BRIDGE_TOKEN': 'bridge-token',
+        'OFFICIAL_GROUP_BRIDGE_MODE': 'mock_retryable_failed',
+    })
+    client = TestClient(app)
+
+    response = client.get('/ops/official-group-bridge/health')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['provider'] == 'official-group-bridge'
+    assert body['mode'] == 'mock_retryable_failed'
+    assert body['has_token'] is True
+    assert body['schema_version'] == 'official-group-webhook-v1'
+    assert 'approve' in body['supports']
