@@ -12,6 +12,44 @@ REQUEST_JOIN_PATTERN = re.compile(r'(?P<name>[^\n]+)\s*\n\s*请求加入。点�
 PHONE_PATTERN = re.compile(r'\+\d[\d\s-]{6,}')
 
 
+def load_monitor_state(state_path: Path) -> Dict[str, Any]:
+    if state_path.exists():
+        try:
+            return json.loads(state_path.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def save_monitor_state(state: Dict[str, Any], state_path: Path) -> None:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+
+
+def update_first_seen_at(
+    state: Dict[str, Any],
+    *,
+    group_name: str,
+    pending_count: int,
+    now: datetime,
+    state_path: Path,
+) -> Optional[datetime]:
+    bucket = state.setdefault(group_name, {})
+    if pending_count <= 0:
+        bucket['first_seen_at'] = None
+        save_monitor_state(state, state_path)
+        return None
+    first_seen_raw = bucket.get('first_seen_at')
+    if first_seen_raw:
+        try:
+            return datetime.fromisoformat(first_seen_raw)
+        except Exception:
+            pass
+    bucket['first_seen_at'] = now.isoformat()
+    save_monitor_state(state, state_path)
+    return now
+
+
 def parse_pending_requests(body_text: str) -> Dict[str, Any]:
     text = str(body_text or '')
     has_pending_section = '待处理请求' in text

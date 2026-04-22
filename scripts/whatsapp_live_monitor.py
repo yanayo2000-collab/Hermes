@@ -13,7 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.whatsapp_live_monitor import summarize_monitor_result
+from app.whatsapp_live_monitor import (
+    load_monitor_state,
+    summarize_monitor_result,
+    update_first_seen_at,
+)
 from playwright.async_api import async_playwright
 
 
@@ -43,6 +47,8 @@ async def inspect_group(page, *, list_item_index: int) -> dict:
 async def run(args) -> int:
     src_root = Path(args.chrome_user_data_root).expanduser()
     dst_root = Path(args.temp_user_data_dir).expanduser()
+    state_path = Path(args.state_path).expanduser()
+    state = load_monitor_state(state_path)
     if dst_root.exists():
         shutil.rmtree(dst_root)
     dst_root.mkdir(parents=True)
@@ -68,11 +74,20 @@ async def run(args) -> int:
         await page.wait_for_timeout(1500)
 
         reg = await inspect_group(page, list_item_index=args.registration_list_item_index)
+        reg_now = datetime.now(timezone.utc)
+        reg_probe = summarize_monitor_result(args.registration_group_name, reg['body_text'], first_seen_at=None, now=reg_now)
+        reg_first_seen = update_first_seen_at(
+            state,
+            group_name=args.registration_group_name,
+            pending_count=reg_probe['pending']['pending_count'],
+            now=reg_now,
+            state_path=state_path,
+        )
         reg_result = summarize_monitor_result(
             args.registration_group_name,
             reg['body_text'],
-            first_seen_at=datetime.now(timezone.utc),
-            now=datetime.now(timezone.utc),
+            first_seen_at=reg_first_seen,
+            now=reg_now,
         )
         reg_result['title'] = reg['title']
         reg_result['subtitle'] = reg['subtitle']
@@ -81,11 +96,20 @@ async def run(args) -> int:
         await page.get_by_role('tab', name='群组').click(timeout=5000)
         await page.wait_for_timeout(1200)
         off = await inspect_group(page, list_item_index=args.official_list_item_index)
+        off_now = datetime.now(timezone.utc)
+        off_probe = summarize_monitor_result(args.official_group_name, off['body_text'], first_seen_at=None, now=off_now)
+        off_first_seen = update_first_seen_at(
+            state,
+            group_name=args.official_group_name,
+            pending_count=off_probe['pending']['pending_count'],
+            now=off_now,
+            state_path=state_path,
+        )
         off_result = summarize_monitor_result(
             args.official_group_name,
             off['body_text'],
-            first_seen_at=datetime.now(timezone.utc),
-            now=datetime.now(timezone.utc),
+            first_seen_at=off_first_seen,
+            now=off_now,
         )
         off_result['title'] = off['title']
         off_result['subtitle'] = off['subtitle']
@@ -94,6 +118,7 @@ async def run(args) -> int:
         output = {
             'checked_at': datetime.now(timezone.utc).isoformat(),
             'profile_dir': args.profile_dir,
+            'state_path': str(state_path),
             'registration_group': reg_result,
             'official_group': off_result,
         }
@@ -107,6 +132,7 @@ def main() -> int:
     parser.add_argument('--chrome-user-data-root', default='~/Library/Application Support/Google/Chrome')
     parser.add_argument('--profile-dir', default='Profile 25')
     parser.add_argument('--temp-user-data-dir', default='/tmp/chrome-whatsapp-live-monitor')
+    parser.add_argument('--state-path', default='./data/whatsapp_live_monitor_state.json')
     parser.add_argument('--registration-list-item-index', type=int, default=0)
     parser.add_argument('--official-list-item-index', type=int, default=1)
     parser.add_argument('--registration-group-name', default='8️⃣5️⃣')
