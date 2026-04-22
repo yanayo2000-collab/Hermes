@@ -484,3 +484,76 @@ def test_official_group_bridge_defaults_to_manual_queue_when_mode_not_configured
     assert response.status_code == 200
     body = response.json()
     assert body['mode'] == 'manual_queue'
+
+
+def test_official_group_bridge_requests_support_filters_detail_and_resolution_audit_fields():
+    app = create_app({
+        'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123',
+        'OFFICIAL_GROUP_BRIDGE_MODE': 'manual_queue',
+    })
+    client = TestClient(app)
+
+    payload_a = {
+        'target_group': 'official-group-a',
+        'lead': {'lead_id': 'lead_a', 'mobile': '85200011122'},
+        'crm_snapshot': {'id': 'crm_a'},
+        'task': {'task_id': 'task_a', 'status': 'pending'},
+    }
+    payload_b = {
+        'target_group': 'official-group-b',
+        'lead': {'lead_id': 'lead_b', 'mobile': '85200033344'},
+        'crm_snapshot': {'id': 'crm_b'},
+        'task': {'task_id': 'task_b', 'status': 'pending'},
+    }
+    first = client.post('/official-group/approve', json=payload_a)
+    second = client.post('/official-group/approve', json=payload_b)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    request_id = first.json()['raw_result']['bridge_request_id']
+
+    filtered = client.get('/ops/official-group-bridge/requests?status=pending&target_group=official-group-a&lead_id=lead_a&limit=1')
+    assert filtered.status_code == 200
+    filtered_body = filtered.json()
+    assert filtered_body['request_count'] == 1
+    assert filtered_body['total_count'] == 1
+    assert filtered_body['requests'][0]['request_id'] == request_id
+
+    detail = client.get(f'/ops/official-group-bridge/requests/{request_id}')
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert detail_body['request_id'] == request_id
+    assert detail_body['request']['target_group'] == 'official-group-a'
+    assert detail_body['status'] == 'pending'
+
+    resolution = client.post(
+        f'/ops/official-group-bridge/requests/{request_id}/resolve',
+        json={
+            'status': 'success',
+            'result_code': 'approved_by_operator',
+            'result_reason': 'manual pass',
+            'resolved_by': 'ou_xxx',
+            'resolved_by_name': 'Bridge Operator',
+            'note': 'checked crm and approved',
+        },
+    )
+    assert resolution.status_code == 200
+    resolution_body = resolution.json()
+    assert resolution_body['resolution']['resolved_by'] == 'ou_xxx'
+    assert resolution_body['resolution']['resolved_by_name'] == 'Bridge Operator'
+    assert resolution_body['resolution']['note'] == 'checked crm and approved'
+
+    detail_after = client.get(f'/ops/official-group-bridge/requests/{request_id}')
+    assert detail_after.status_code == 200
+    assert detail_after.json()['resolution']['resolved_by_name'] == 'Bridge Operator'
+
+
+def test_official_group_bridge_dashboard_page_loads():
+    app = create_app({'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123'})
+    client = TestClient(app)
+
+    response = client.get('/ops/official-group-bridge')
+    assert response.status_code == 200
+    text = response.text
+    assert '官方群审批桥接操作台' in text
+    assert '/ops/official-group-bridge/requests' in text
+    assert '待处理请求' in text

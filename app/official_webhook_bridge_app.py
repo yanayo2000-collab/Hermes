@@ -9,6 +9,7 @@ from collections import Counter, defaultdict, deque
 from typing import Any, Deque, Dict, Iterable, List, Optional, Set
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.responses import HTMLResponse
 
 try:
     import requests
@@ -27,6 +28,227 @@ def _unique_preserving_order(values: Iterable[Any]) -> List[Any]:
         seen.add(value)
         ordered.append(value)
     return ordered
+
+
+OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
+<!doctype html>
+<html lang=\"zh-CN\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>官方群审批桥接操作台</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 24px; background: #f6f8fb; color: #111827; }
+    h1 { margin: 0 0 8px 0; }
+    .muted { color: #6b7280; font-size: 13px; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 16px; margin-top: 16px; }
+    .toolbar { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 12px; }
+    input, select, textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; }
+    button { padding: 8px 12px; border: none; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; }
+    button.secondary { background: #374151; }
+    button.success { background: #047857; }
+    button.warn { background: #b45309; }
+    .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .summary-item { border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; background: #fafbff; }
+    .summary-item .label { color: #6b7280; font-size: 12px; }
+    .summary-item .value { font-size: 20px; font-weight: 700; margin-top: 6px; }
+    .layout { display: grid; grid-template-columns: minmax(420px, 1.2fr) minmax(360px, 1fr); gap: 16px; align-items: start; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; min-width: 760px; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #e5e7eb; font-size: 13px; vertical-align: top; }
+    th { background: #eef2ff; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: #e5e7eb; }
+    .pill.pending { background: #fef3c7; color: #92400e; }
+    .pill.resolved { background: #d1fae5; color: #065f46; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 10px; font-size: 12px; max-height: 240px; overflow: auto; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <h1>官方群审批桥接操作台</h1>
+  <div class=\"muted\">用于长期运营 manual_queue 请求池，支持待处理筛选、详情查看和人工 resolve。接口基于 /ops/official-group-bridge/requests。</div>
+  <div class=\"muted\" style=\"margin-top:8px;\"><a href=\"/ops\">返回主运营台</a></div>
+
+  <div class=\"card\">
+    <div class=\"summary-grid\">
+      <div class=\"summary-item\"><div class=\"label\">待处理请求</div><div class=\"value\" id=\"pendingCount\">-</div></div>
+      <div class=\"summary-item\"><div class=\"label\">已处理请求</div><div class=\"value\" id=\"resolvedCount\">-</div></div>
+      <div class=\"summary-item\"><div class=\"label\">总请求数</div><div class=\"value\" id=\"totalCount\">-</div></div>
+      <div class=\"summary-item\"><div class=\"label\">Bridge 模式</div><div class=\"value\" id=\"bridgeMode\">-</div></div>
+    </div>
+  </div>
+
+  <div class=\"card\">
+    <div class=\"toolbar\">
+      <div><label class=\"muted\">状态</label><select id=\"filterStatus\"><option value=\"\">全部</option><option value=\"pending\">pending</option><option value=\"resolved\">resolved</option></select></div>
+      <div><label class=\"muted\">target_group</label><input id=\"filterTargetGroup\" placeholder=\"official-group-a\" /></div>
+      <div><label class=\"muted\">lead_id</label><input id=\"filterLeadId\" placeholder=\"lead_xxx\" /></div>
+      <div><label class=\"muted\">request_id</label><input id=\"filterRequestId\" placeholder=\"bridge_xxx\" /></div>
+    </div>
+    <div class=\"actions\" style=\"margin-top:12px;\">
+      <button onclick=\"loadRequests()\">刷新列表</button>
+      <button class=\"secondary\" onclick=\"quickPending()\">只看待处理请求</button>
+    </div>
+  </div>
+
+  <div class=\"layout\">
+    <div class=\"card\">
+      <h3 style=\"margin-top:0;\">待处理请求</h3>
+      <div class=\"table-wrap\">
+        <table>
+          <thead>
+            <tr>
+              <th>request_id</th>
+              <th>status</th>
+              <th>target_group</th>
+              <th>lead_id</th>
+              <th>mode</th>
+              <th>updated_at</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id=\"requestRows\"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class=\"card\">
+      <h3 style=\"margin-top:0;\">详情 / 处理</h3>
+      <div id=\"detailMeta\" class=\"muted\">选择一条请求查看详情。</div>
+      <div style=\"margin-top:12px;\" class=\"actions\">
+        <button class=\"success\" onclick=\"resolveCurrent('success')\">通过</button>
+        <button class=\"secondary\" onclick=\"resolveCurrent('failed')\">拒绝</button>
+        <button class=\"warn\" onclick=\"resolveCurrent('manual_required')\">挂起</button>
+      </div>
+      <div class=\"toolbar\" style=\"margin-top:12px;\">
+        <div><label class=\"muted\">result_code</label><input id=\"resolveCode\" value=\"approved_by_operator\" /></div>
+        <div><label class=\"muted\">resolved_by</label><input id=\"resolvedBy\" placeholder=\"ou_xxx / email / operator id\" /></div>
+        <div><label class=\"muted\">resolved_by_name</label><input id=\"resolvedByName\" placeholder=\"处理人名称\" /></div>
+        <div><label class=\"muted\">note</label><input id=\"resolveNote\" placeholder=\"处理说明\" /></div>
+      </div>
+      <div style=\"margin-top:12px;\"><label class=\"muted\">result_reason</label><textarea id=\"resolveReason\" rows=\"3\">manual review completed</textarea></div>
+      <div style=\"margin-top:12px;\"><div class=\"muted\">请求</div><pre id=\"requestJson\">{}</pre></div>
+      <div style=\"margin-top:12px;\"><div class=\"muted\">响应</div><pre id=\"responseJson\">{}</pre></div>
+      <div style=\"margin-top:12px;\"><div class=\"muted\">resolution</div><pre id=\"resolutionJson\">null</pre></div>
+    </div>
+  </div>
+
+<script>
+let currentRequestId = null;
+
+function fmtTs(ts) {
+  if (!ts) return '-';
+  const d = new Date(Number(ts) * 1000);
+  return isNaN(d.getTime()) ? String(ts) : d.toLocaleString();
+}
+
+function setJson(id, value) {
+  document.getElementById(id).textContent = JSON.stringify(value, null, 2);
+}
+
+async function fetchJson(url, options) {
+  const resp = await fetch(url, options || {});
+  const text = await resp.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { throw new Error(text || ('HTTP ' + resp.status)); }
+  if (!resp.ok) throw new Error(data.detail || text || ('HTTP ' + resp.status));
+  return data;
+}
+
+async function loadSummary() {
+  const [health, pending, resolved, all] = await Promise.all([
+    fetchJson('/ops/official-group-bridge/health'),
+    fetchJson('/ops/official-group-bridge/requests?status=pending'),
+    fetchJson('/ops/official-group-bridge/requests?status=resolved'),
+    fetchJson('/ops/official-group-bridge/requests')
+  ]);
+  document.getElementById('bridgeMode').textContent = health.mode || '-';
+  document.getElementById('pendingCount').textContent = pending.request_count || 0;
+  document.getElementById('resolvedCount').textContent = resolved.request_count || 0;
+  document.getElementById('totalCount').textContent = all.total_count || all.request_count || 0;
+}
+
+function currentQuery() {
+  const params = new URLSearchParams();
+  const mappings = {
+    status: document.getElementById('filterStatus').value,
+    target_group: document.getElementById('filterTargetGroup').value.trim(),
+    lead_id: document.getElementById('filterLeadId').value.trim(),
+    request_id: document.getElementById('filterRequestId').value.trim(),
+    limit: '50'
+  };
+  Object.entries(mappings).forEach(([k, v]) => { if (v) params.set(k, v); });
+  const query = params.toString();
+  return query ? ('?' + query) : '';
+}
+
+async function loadRequests() {
+  const data = await fetchJson('/ops/official-group-bridge/requests' + currentQuery());
+  const tbody = document.getElementById('requestRows');
+  tbody.innerHTML = '';
+  for (const row of data.requests) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class=\"mono\">${row.request_id}</td>
+      <td><span class=\"pill ${row.status}\">${row.status}</span></td>
+      <td>${row.request?.target_group || '-'}</td>
+      <td class=\"mono\">${row.request?.lead?.lead_id || '-'}</td>
+      <td>${row.mode || '-'}</td>
+      <td>${fmtTs(row.updated_at)}</td>
+      <td><button onclick=\"showRequest('${row.request_id}')\">查看</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+  if (data.requests.length && !currentRequestId) {
+    await showRequest(data.requests[0].request_id);
+  }
+}
+
+async function showRequest(requestId) {
+  currentRequestId = requestId;
+  const row = await fetchJson('/ops/official-group-bridge/requests/' + encodeURIComponent(requestId));
+  document.getElementById('detailMeta').textContent = `request_id=${row.request_id} | status=${row.status} | target_group=${row.request?.target_group || '-'} | lead_id=${row.request?.lead?.lead_id || '-'}`;
+  setJson('requestJson', row.request || {});
+  setJson('responseJson', row.response || {});
+  setJson('resolutionJson', row.resolution);
+}
+
+async function resolveCurrent(status) {
+  if (!currentRequestId) {
+    alert('请先选择一条请求');
+    return;
+  }
+  const payload = {
+    status,
+    result_code: document.getElementById('resolveCode').value.trim() || 'manual_resolution',
+    result_reason: document.getElementById('resolveReason').value.trim(),
+    resolved_by: document.getElementById('resolvedBy').value.trim(),
+    resolved_by_name: document.getElementById('resolvedByName').value.trim(),
+    note: document.getElementById('resolveNote').value.trim(),
+  };
+  await fetchJson('/ops/official-group-bridge/requests/' + encodeURIComponent(currentRequestId) + '/resolve', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  });
+  await loadSummary();
+  await loadRequests();
+  await showRequest(currentRequestId);
+}
+
+function quickPending() {
+  document.getElementById('filterStatus').value = 'pending';
+  loadRequests();
+}
+
+loadSummary().then(loadRequests).catch(err => {
+  document.getElementById('detailMeta').textContent = '加载失败：' + err.message;
+});
+</script>
+</body>
+</html>
+"""
 
 
 class WebhookState:
@@ -511,14 +733,42 @@ class OfficialGroupBridgeState:
         self._store(record)
         return response_payload
 
-    def list_requests(self, *, status: Optional[str] = None) -> Dict[str, Any]:
+    def list_requests(
+        self,
+        *,
+        status: Optional[str] = None,
+        target_group: Optional[str] = None,
+        lead_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
         records = list(reversed(self.recent_requests))
         if status:
             records = [record for record in records if str(record.get('status') or '') == str(status)]
+        if target_group:
+            records = [record for record in records if str((record.get('request') or {}).get('target_group') or '') == str(target_group)]
+        if lead_id:
+            records = [record for record in records if str(((record.get('request') or {}).get('lead') or {}).get('lead_id') or '') == str(lead_id)]
+        if request_id:
+            records = [record for record in records if str(record.get('request_id') or '') == str(request_id)]
+        total_count = len(records)
+        limit = max(1, min(int(limit or 50), 200))
+        offset = max(0, int(offset or 0))
+        page = records[offset: offset + limit]
         return {
-            'request_count': len(records),
-            'requests': records,
+            'request_count': len(page),
+            'total_count': total_count,
+            'limit': limit,
+            'offset': offset,
+            'requests': page,
         }
+
+    def get_request(self, request_id: str) -> Dict[str, Any]:
+        record = self._find(request_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail='bridge request not found')
+        return record
 
     def resolve_request(self, request_id: str, resolution: Dict[str, Any]) -> Dict[str, Any]:
         record = self._find(request_id)
@@ -533,6 +783,9 @@ class OfficialGroupBridgeState:
             'status': status,
             'result_code': str(resolution.get('result_code') or '').strip(),
             'result_reason': str(resolution.get('result_reason') or '').strip(),
+            'resolved_by': str(resolution.get('resolved_by') or '').strip(),
+            'resolved_by_name': str(resolution.get('resolved_by_name') or '').strip(),
+            'note': str(resolution.get('note') or '').strip(),
         }
         record['response'] = {
             'status': status,
@@ -630,13 +883,35 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail='payload must be a JSON object')
         return bridge_state.approve(payload, authorization=authorization)
 
+    @app.get('/ops/official-group-bridge', response_class=HTMLResponse)
+    def official_group_bridge_page() -> str:
+        return OFFICIAL_GROUP_BRIDGE_PAGE_HTML
+
     @app.get('/ops/official-group-bridge/health')
     def official_group_bridge_health() -> Dict[str, Any]:
         return bridge_state.health()
 
     @app.get('/ops/official-group-bridge/requests')
-    def official_group_bridge_requests(status: Optional[str] = None) -> Dict[str, Any]:
-        return bridge_state.list_requests(status=status)
+    def official_group_bridge_requests(
+        status: Optional[str] = None,
+        target_group: Optional[str] = None,
+        lead_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        return bridge_state.list_requests(
+            status=status,
+            target_group=target_group,
+            lead_id=lead_id,
+            request_id=request_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.get('/ops/official-group-bridge/requests/{request_id}')
+    def official_group_bridge_request_detail(request_id: str) -> Dict[str, Any]:
+        return bridge_state.get_request(request_id)
 
     @app.post('/ops/official-group-bridge/requests/{request_id}/resolve')
     async def official_group_bridge_resolve(request_id: str, request: Request) -> Dict[str, Any]:
