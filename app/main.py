@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import random
@@ -1495,6 +1496,22 @@ class RegistrationGroupApprovalBatchRequest(BaseModel):
     remark: Optional[str] = None
 
 
+class RegistrationGroupApprovalDecisionRequest(BaseModel):
+    registration_group: str
+    decision: str = 'approve'
+    decided_at: str
+    decided_by: Optional[str] = None
+    decided_by_name: Optional[str] = None
+    source_platform: Optional[str] = None
+    source_campaign: Optional[str] = None
+    source_adset: Optional[str] = None
+    source_ad: Optional[str] = None
+    approved_count: int = 1
+    area: str = 'Indonesia'
+    remark: Optional[str] = None
+    force_immediate: bool = False
+
+
 class OfficialGroupApprovalCheckRequest(BaseModel):
     lead_id: str
     target_group: str
@@ -1966,6 +1983,24 @@ def create_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+def _run_registration_group_executor_warmup(executor: Any) -> None:
+    try:
+        executor.warmup()
+    except Exception as exc:
+        print(f'Registration group executor warmup degraded at startup: {exc}')
+
+
+def _schedule_registration_group_executor_warmup(executor: Any) -> str:
+    if executor is None or not hasattr(executor, 'warmup') or not callable(getattr(executor, 'warmup')):
+        return 'unsupported'
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        _run_registration_group_executor_warmup(executor)
+        return 'inline'
+    return 'deferred_inside_asyncio_loop'
+
+
 class LiveLarkReplyAdapter:
     def __init__(self, *, app_id: str, app_secret: str, domain: str = 'lark') -> None:
         self.app_id = app_id
@@ -2023,7 +2058,7 @@ class LiveLarkReplyAdapter:
 
 
 class Service:
-    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, official_group_approval_executor: Any = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False) -> None:
+    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, registration_group_approval_executor: Any = None, official_group_approval_executor: Any = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False) -> None:
         self.db = db
         self.crm_adapter = crm_adapter
         self.ocr_adapter = ocr_adapter
@@ -2039,6 +2074,7 @@ class Service:
         self.auto_bind_simulation = auto_bind_simulation
         self.bind_simulator = bind_simulator
         self.real_bind_executor = real_bind_executor
+        self.registration_group_approval_executor = registration_group_approval_executor
         self.official_group_approval_executor = official_group_approval_executor
         self.auto_bind_simulation_success_rate = max(0.0, min(1.0, float(auto_bind_simulation_success_rate or 0.5)))
         self._bind_random = random.Random(auto_bind_simulation_seed) if auto_bind_simulation_seed is not None else random.Random()
@@ -2078,10 +2114,13 @@ class Service:
             thread.start()
             self._worker_threads.append(thread)
 
+    def process_next_worker_tick(self) -> Optional[Dict[str, Any]]:
+        return self.process_next_ingress_job() or self.process_next_automation_task()
+
     def _worker_loop(self) -> None:
         while not self._worker_stop.is_set():
             try:
-                processed = self.process_next_ingress_job() or self.process_next_automation_task()
+                processed = self.process_next_worker_tick()
                 if not processed:
                     time.sleep(self.ingress_worker_poll_interval)
             except Exception:
@@ -2605,6 +2644,7 @@ class Service:
             ingress_processing = conn.execute("SELECT COUNT(*) FROM ingress_jobs WHERE status = 'processing'").fetchone()[0]
             pending_bind_tasks = conn.execute("SELECT COUNT(*) FROM automation_tasks WHERE task_type = 'bind_check' AND status = 'pending'").fetchone()[0]
             processing_bind_tasks = conn.execute("SELECT COUNT(*) FROM automation_tasks WHERE task_type = 'bind_check' AND status = 'processing'").fetchone()[0]
+        registration_group_approval_health = self.registration_group_approval_executor_health()
         official_group_approval_health = self.official_group_approval_executor_health()
         return {
             'crm': {
@@ -2628,6 +2668,7 @@ class Service:
                 'success_rate': self.auto_bind_simulation_success_rate,
                 'mode': 'simulated' if self.auto_bind_simulation else 'live',
             },
+            'registration_group_approval': registration_group_approval_health,
             'official_group_approval': official_group_approval_health,
             'ingress': {
                 'async_default': self.ingress_async_default,
@@ -5682,12 +5723,14 @@ class Service:
     def create_registration_group_approval_batch(self, payload: RegistrationGroupApprovalBatchRequest) -> Dict[str, Any]:
         if self.crm_adapter is None:
             raise HTTPException(status_code=400, detail='crm adapter not configured')
+        started = time.perf_counter()
         crm_payload = {
             'area': payload.area,
             'groupNo': payload.registration_group,
             'groupPeopleNum': str(payload.approved_count),
         }
         crm_response = self.crm_adapter.create_registration_group_batch(crm_payload)
+        elapsed_seconds = round(time.perf_counter() - started, 3)
         with self.db.connect() as conn:
             self._record_sync_log(
                 conn,
@@ -5718,6 +5761,123 @@ class Service:
             'crm_sync_status': 'success' if crm_response.get('code') == 0 else 'failed',
             'crm_payload': crm_payload,
             'crm_response': crm_response,
+            'elapsed_seconds': elapsed_seconds,
+        }
+
+    def registration_group_approval_executor_health(self) -> Dict[str, Any]:
+        executor = self.registration_group_approval_executor
+        if executor is None:
+            return {
+                'configured': False,
+                'status': 'unconfigured',
+                'provider': None,
+                'supports': [],
+            }
+        if hasattr(executor, 'health') and callable(getattr(executor, 'health')):
+            try:
+                health = executor.health() or {}
+                if isinstance(health, dict):
+                    supports = health.get('supports')
+                    if supports is None:
+                        health['supports'] = []
+                    return health
+            except Exception as exc:
+                return {
+                    'configured': True,
+                    'status': 'error',
+                    'provider': type(executor).__name__,
+                    'supports': [],
+                    'error': str(exc),
+                }
+        return {
+            'configured': True,
+            'status': 'configured',
+            'provider': type(executor).__name__,
+            'supports': [],
+        }
+
+    def registration_group_approval_decision(self, payload: RegistrationGroupApprovalDecisionRequest) -> Dict[str, Any]:
+        started = time.perf_counter()
+        decision = str(payload.decision or 'approve').strip().lower() or 'approve'
+        if decision != 'approve':
+            raise HTTPException(status_code=400, detail='unsupported decision')
+        executor = self.registration_group_approval_executor
+        if executor is None:
+            raise HTTPException(status_code=400, detail='registration group approval executor not configured')
+        execution_context = {
+            'registration_group': payload.registration_group,
+            'decision': decision,
+            'decided_at': payload.decided_at,
+            'decided_by': payload.decided_by,
+            'decided_by_name': payload.decided_by_name,
+            'source_platform': payload.source_platform,
+            'source_campaign': payload.source_campaign,
+            'source_adset': payload.source_adset,
+            'source_ad': payload.source_ad,
+            'approved_count': payload.approved_count,
+            'area': payload.area,
+            'remark': payload.remark,
+            'force_immediate': payload.force_immediate,
+        }
+        if hasattr(executor, 'approve') and callable(getattr(executor, 'approve')):
+            result = executor.approve(execution_context)
+        elif callable(executor):
+            result = executor(execution_context)
+        else:
+            raise HTTPException(status_code=500, detail='registration group approval executor is not callable')
+        if not isinstance(result, dict):
+            raise HTTPException(status_code=500, detail='registration group approval executor must return dict result')
+        verified = bool(result.get('verified'))
+        executed = True
+        approved_count = max(1, int(result.get('approved_count') or payload.approved_count or 1))
+        approved_at = str(result.get('approved_at') or result.get('finished_at') or payload.decided_at)
+        target_member = result.get('target_member') or {}
+        resolved_source_ad = payload.source_ad or ' '.join(
+            part for part in [
+                str(target_member.get('name') or '').strip(),
+                str(target_member.get('phone_raw') or '').strip(),
+            ] if part
+        ) or None
+        crm_batch = None
+        crm_recorded = False
+        crm_elapsed_seconds = 0.0
+        if verified:
+            crm_batch = self.create_registration_group_approval_batch(
+                RegistrationGroupApprovalBatchRequest(
+                    registration_group=payload.registration_group,
+                    approved_count=approved_count,
+                    approved_by=payload.decided_by,
+                    approved_by_name=payload.decided_by_name,
+                    source_platform=payload.source_platform,
+                    source_campaign=payload.source_campaign,
+                    source_adset=payload.source_adset,
+                    source_ad=resolved_source_ad,
+                    approved_at=approved_at,
+                    area=payload.area,
+                    remark=payload.remark,
+                )
+            )
+            crm_elapsed_seconds = round(float(crm_batch.get('elapsed_seconds') or 0.0), 3)
+            crm_recorded = True
+        total_elapsed_seconds = round(time.perf_counter() - started, 3)
+        return {
+            'registration_group': payload.registration_group,
+            'decision': decision,
+            'executed': executed,
+            'verified': verified,
+            'crm_recorded': crm_recorded,
+            'status': result.get('status'),
+            'result_code': result.get('result_code'),
+            'result_reason': result.get('result_reason'),
+            'approved_count': approved_count,
+            'approved_at': approved_at,
+            'elapsed_seconds': result.get('elapsed_seconds'),
+            'crm_elapsed_seconds': crm_elapsed_seconds,
+            'total_elapsed_seconds': total_elapsed_seconds,
+            'force_immediate': payload.force_immediate,
+            'target_member': target_member,
+            'raw_result': result.get('raw_result') or {},
+            'crm_batch': crm_batch,
         }
 
     def _latest_group_join_task(self, conn: sqlite3.Connection, *, lead_id: str) -> Optional[Dict[str, Any]]:
@@ -7324,6 +7484,8 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     lark_media_adapter = cfg.get('LARK_MEDIA_ADAPTER')
     lark_reply_adapter = cfg.get('LARK_REPLY_ADAPTER')
     lark_reply_adapter_by_app_id = cfg.get('LARK_REPLY_ADAPTER_BY_APP_ID') or {}
+    registration_group_approval_executor = cfg.get('REGISTRATION_GROUP_APPROVAL_EXECUTOR')
+    registration_group_approval_executor_kind = cfg.get('REGISTRATION_GROUP_APPROVAL_EXECUTOR_KIND') or os.getenv('REGISTRATION_GROUP_APPROVAL_EXECUTOR_KIND')
     official_group_approval_executor = cfg.get('OFFICIAL_GROUP_APPROVAL_EXECUTOR')
     official_group_approval_executor_kind = cfg.get('OFFICIAL_GROUP_APPROVAL_EXECUTOR_KIND') or os.getenv('OFFICIAL_GROUP_APPROVAL_EXECUTOR_KIND')
     official_group_approval_webhook_url = cfg.get('OFFICIAL_GROUP_APPROVAL_WEBHOOK_URL') or os.getenv('OFFICIAL_GROUP_APPROVAL_WEBHOOK_URL')
@@ -7400,6 +7562,27 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             print(f'CRM login degraded at startup: {crm_login_error}')
     if ocr_adapter is None and ((cfg.get('ENABLE_RAPIDOCR') is True) or str(cfg.get('ENABLE_RAPIDOCR') or os.getenv('ENABLE_RAPIDOCR') or '').strip().lower() in {'1', 'true', 'yes', 'on'}):
         ocr_adapter = RapidOcrAdapter()
+    if registration_group_approval_executor is None and str(registration_group_approval_executor_kind or '').strip().lower() == 'live_whatsapp':
+        from app.registration_group_executor import LiveWarmWhatsAppRegistrationGroupApprovalExecutor
+        registration_group_initial_wait_ms = int(cfg.get('WHATSAPP_INITIAL_WAIT_MS') or os.getenv('WHATSAPP_INITIAL_WAIT_MS') or 500)
+        registration_group_navigation_wait_ms = int(cfg.get('WHATSAPP_NAVIGATION_WAIT_MS') or os.getenv('WHATSAPP_NAVIGATION_WAIT_MS') or 120)
+        registration_group_post_click_wait_ms = int(cfg.get('WHATSAPP_POST_CLICK_WAIT_MS') or os.getenv('WHATSAPP_POST_CLICK_WAIT_MS') or 80)
+        registration_group_verify_timeout_ms = int(cfg.get('WHATSAPP_VERIFY_TIMEOUT_MS') or os.getenv('WHATSAPP_VERIFY_TIMEOUT_MS') or 1200)
+        registration_group_verify_poll_ms = int(cfg.get('WHATSAPP_VERIFY_POLL_MS') or os.getenv('WHATSAPP_VERIFY_POLL_MS') or 80)
+        registration_group_strict_reload_verify = str(cfg.get('WHATSAPP_STRICT_RELOAD_VERIFY') or os.getenv('WHATSAPP_STRICT_RELOAD_VERIFY') or 'false').strip().lower() in {'1', 'true', 'yes', 'on'}
+        registration_group_approval_executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(
+            chrome_user_data_root=cfg.get('WHATSAPP_CHROME_USER_DATA_ROOT') or os.getenv('WHATSAPP_CHROME_USER_DATA_ROOT') or cfg.get('CHROME_USER_DATA_ROOT') or os.getenv('CHROME_USER_DATA_ROOT'),
+            profile_dir=cfg.get('WHATSAPP_PROFILE_DIR') or os.getenv('WHATSAPP_PROFILE_DIR') or 'Profile 25',
+            registration_list_item_index=int(cfg.get('WHATSAPP_REGISTRATION_LIST_ITEM_INDEX') or os.getenv('WHATSAPP_REGISTRATION_LIST_ITEM_INDEX') or 0),
+            registration_group_name=cfg.get('WHATSAPP_REGISTRATION_GROUP_NAME') or os.getenv('WHATSAPP_REGISTRATION_GROUP_NAME') or '8️⃣5️⃣',
+            temp_user_data_dir=cfg.get('WHATSAPP_REGISTRATION_APPROVAL_TEMP_DIR') or os.getenv('WHATSAPP_REGISTRATION_APPROVAL_TEMP_DIR') or '/tmp/chrome-whatsapp-registration-group-approval',
+            initial_wait_ms=registration_group_initial_wait_ms,
+            navigation_wait_ms=registration_group_navigation_wait_ms,
+            post_click_wait_ms=registration_group_post_click_wait_ms,
+            verify_timeout_ms=registration_group_verify_timeout_ms,
+            verify_poll_ms=registration_group_verify_poll_ms,
+            strict_reload_verify=registration_group_strict_reload_verify,
+        )
     if official_group_approval_executor is None and str(official_group_approval_executor_kind or '').strip().lower() == 'webhook' and official_group_approval_webhook_url:
         from app.official_group_executor import WebhookOfficialGroupApprovalExecutor
         official_group_approval_executor = WebhookOfficialGroupApprovalExecutor(
@@ -7425,6 +7608,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         auto_bind_simulation=auto_bind_simulation,
         bind_simulator=bind_simulator,
         real_bind_executor=real_bind_executor,
+        registration_group_approval_executor=registration_group_approval_executor,
         official_group_approval_executor=official_group_approval_executor,
         auto_bind_simulation_success_rate=auto_bind_simulation_success_rate,
         auto_bind_simulation_seed=auto_bind_simulation_seed,
@@ -7439,6 +7623,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         external_call_rate_limit_per_minute=external_call_rate_limit_per_minute,
         require_invite_code=require_invite_code,
     )
+    _schedule_registration_group_executor_warmup(registration_group_approval_executor)
     print(
         json.dumps(
             {
@@ -7467,13 +7652,17 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     def ops_runtime_health() -> Dict[str, Any]:
         return service.runtime_health()
 
+    @app.get('/api/ops/registration-group-approval-executor-health')
+    def ops_registration_group_approval_executor_health() -> Dict[str, Any]:
+        return service.registration_group_approval_executor_health()
+
     @app.get('/api/ops/ingress-queue')
     def ops_ingress_queue() -> Dict[str, Any]:
         return service.list_ingress_queue()
 
     @app.post('/api/ops/ingress-queue/run-next')
     def ops_ingress_queue_run_next() -> Dict[str, Any]:
-        return service.process_next_ingress_job() or {'processed': False}
+        return service.process_next_worker_tick() or {'processed': False}
 
     @app.get('/api/ops/operator-audit-log')
     def ops_operator_audit_log(limit: int = 200) -> Dict[str, Any]:
@@ -7538,6 +7727,10 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     @app.post("/api/registration-groups/approval-batches")
     def registration_group_approval_batches(payload: RegistrationGroupApprovalBatchRequest):
         return service.create_registration_group_approval_batch(payload)
+
+    @app.post("/api/registration-groups/approval-decisions")
+    def registration_group_approval_decisions(payload: RegistrationGroupApprovalDecisionRequest):
+        return service.registration_group_approval_decision(payload)
 
     @app.post("/api/official-groups/approval-checks")
     def official_group_approval_checks(payload: OfficialGroupApprovalCheckRequest):

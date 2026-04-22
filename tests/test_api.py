@@ -1,4 +1,6 @@
+import asyncio
 import json
+import threading
 
 from fastapi.testclient import TestClient
 from unittest.mock import patch
@@ -5501,6 +5503,313 @@ def test_registration_group_approval_batch_syncs_to_crm():
     assert ("create_registration_group_batch", {"area": "Indonesia", "groupNo": "Piso-5", "groupPeopleNum": "30"}) in crm.calls
 
 
+class StubRegistrationGroupApprovalExecutor:
+    def __init__(self, result=None):
+        self.calls = []
+        self.result = result or {
+            'status': 'success',
+            'verified': True,
+            'result_code': 'approved',
+            'result_reason': 'verified',
+            'finished_at': '2026-04-22T07:03:11.784759+00:00',
+            'approved_at': '2026-04-22T07:03:11.784759+00:00',
+            'approved_count': 1,
+            'elapsed_seconds': 8.4,
+            'queue_delta': True,
+            'member_confirmed': True,
+            'target_member': {
+                'name': '~Eastion',
+                'phone_raw': '+86 138 6064 0933',
+                'phone_normalized': '+8613860640933',
+            },
+            'raw_result': {
+                'pending_before': 1,
+                'pending_after': 0,
+                'member_count_before': 4,
+                'member_count_after': 5,
+            },
+        }
+
+    def health(self):
+        return {
+            'configured': True,
+            'status': 'warm',
+            'provider': 'stub',
+            'schema_version': 'stub-v1',
+        }
+
+    def approve(self, context):
+        self.calls.append(context)
+        return dict(self.result)
+
+
+def test_registration_group_approval_decision_executes_executor_and_records_crm_batch():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    executor = StubRegistrationGroupApprovalExecutor()
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+
+    response = client.post(
+        '/api/registration-groups/approval-decisions',
+        json={
+            'registration_group': '8️⃣5️⃣',
+            'decided_at': '2026-04-22T07:00:36.073643+00:00',
+            'decided_by': 'system:test',
+            'decided_by_name': 'Hermes Test',
+            'source_platform': 'whatsapp',
+            'source_campaign': 'registration_group_live_prod_test_force_approve',
+            'source_adset': '8️⃣5️⃣',
+            'source_ad': '~Eastion +86 138 6064 0933',
+            'area': 'Indonesia',
+            'remark': 'forced approval by operator instruction',
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['executed'] is True
+    assert body['verified'] is True
+    assert body['crm_recorded'] is True
+    assert body['crm_batch']['crm_sync_status'] == 'success'
+    assert body['elapsed_seconds'] == 8.4
+    assert executor.calls[0]['registration_group'] == '8️⃣5️⃣'
+    assert ('create_registration_group_batch', {'area': 'Indonesia', 'groupNo': '8️⃣5️⃣', 'groupPeopleNum': '1'}) in crm.calls
+
+
+def test_registration_group_approval_decision_does_not_write_crm_when_verification_fails():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    executor = StubRegistrationGroupApprovalExecutor({
+        'status': 'failed',
+        'verified': False,
+        'result_code': 'approval_not_verified',
+        'result_reason': 'strict verification failed after approve click',
+        'finished_at': '2026-04-22T07:03:11.784759+00:00',
+        'approved_count': 1,
+        'elapsed_seconds': 9.1,
+        'queue_delta': False,
+        'member_confirmed': False,
+        'target_member': {
+            'name': '~Eastion',
+            'phone_raw': '+86 138 6064 0933',
+            'phone_normalized': '+8613860640933',
+        },
+        'raw_result': {
+            'pending_before': 1,
+            'pending_after': 1,
+            'member_count_before': 4,
+            'member_count_after': 4,
+        },
+    })
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+
+    response = client.post(
+        '/api/registration-groups/approval-decisions',
+        json={
+            'registration_group': '8️⃣5️⃣',
+            'decided_at': '2026-04-22T07:00:36.073643+00:00',
+            'source_platform': 'whatsapp',
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['executed'] is True
+    assert body['verified'] is False
+    assert body['crm_recorded'] is False
+    assert all(name != 'create_registration_group_batch' for name, _ in crm.calls)
+
+
+class SlowStubCrmAdapter(StubCrmAdapter):
+    def __init__(self, delay_seconds=0.65):
+        super().__init__()
+        self.delay_seconds = delay_seconds
+
+    def create_registration_group_batch(self, payload):
+        import time
+        time.sleep(self.delay_seconds)
+        return super().create_registration_group_batch(payload)
+
+
+class SlowStubRegistrationGroupApprovalExecutor(StubRegistrationGroupApprovalExecutor):
+    def __init__(self, delay_seconds=0.55):
+        super().__init__()
+        self.delay_seconds = delay_seconds
+
+    def approve(self, context):
+        import time
+        time.sleep(self.delay_seconds)
+        return super().approve(context)
+
+
+def test_registration_group_approval_decision_reports_total_elapsed_including_crm_write():
+    from app.main import create_app
+
+    crm = SlowStubCrmAdapter(delay_seconds=0.35)
+    executor = SlowStubRegistrationGroupApprovalExecutor(delay_seconds=0.25)
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+
+    response = client.post(
+        '/api/registration-groups/approval-decisions',
+        json={
+            'registration_group': '8️⃣5️⃣',
+            'decided_at': '2026-04-22T07:00:36.073643+00:00',
+            'area': 'Indonesia',
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['verified'] is True
+    assert body['crm_recorded'] is True
+    assert body['total_elapsed_seconds'] >= 0.55
+    assert body['total_elapsed_seconds'] < 2.5
+    assert body['crm_elapsed_seconds'] >= 0.3
+
+
+def test_create_app_warms_registration_group_executor_when_supported():
+    from app.main import create_app
+
+    class WarmableExecutor(StubRegistrationGroupApprovalExecutor):
+        def __init__(self):
+            super().__init__()
+            self.warmup_calls = 0
+
+        def warmup(self):
+            self.warmup_calls += 1
+            return {'warmed': True}
+
+    executor = WarmableExecutor()
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+
+    assert app.state.service.registration_group_approval_executor is executor
+    assert executor.warmup_calls == 1
+
+
+def test_create_app_skips_registration_group_executor_warmup_inside_asyncio_loop():
+    from app.main import create_app
+
+    class LoopSensitiveExecutor(StubRegistrationGroupApprovalExecutor):
+        def __init__(self):
+            super().__init__()
+            self.warmup_contexts = []
+
+        def warmup(self):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                self.warmup_contexts.append('outside_asyncio_loop')
+            else:
+                self.warmup_contexts.append('inside_asyncio_loop')
+            return {'warmed': True}
+
+    executor = LoopSensitiveExecutor()
+
+    async def build_app_inside_asyncio_loop():
+        return create_app({
+            'DB_PATH': ':memory:',
+            'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+        })
+
+    holder = {}
+
+    def run_inside_thread():
+        holder['app'] = asyncio.run(build_app_inside_asyncio_loop())
+
+    worker = threading.Thread(target=run_inside_thread)
+    worker.start()
+    worker.join(timeout=2)
+
+    assert worker.is_alive() is False
+    app = holder['app']
+
+    assert app.state.service.registration_group_approval_executor is executor
+    assert executor.warmup_contexts == []
+
+
+def test_registration_group_approval_executor_health_reports_configured_executor():
+    from app.main import create_app
+
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': StubRegistrationGroupApprovalExecutor(),
+    })
+    client = TestClient(app)
+
+    response = client.get('/api/ops/registration-group-approval-executor-health')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['configured'] is True
+    assert body['status'] == 'warm'
+    assert body['provider'] == 'stub'
+
+
+def test_live_whatsapp_registration_group_executor_uses_fast_default_timing_profile(monkeypatch):
+    import types
+    import sys
+    from app.main import create_app
+
+    class FakeExecutor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def health(self):
+            return {
+                'configured': True,
+                'status': 'idle',
+                'provider': 'fake_live_whatsapp',
+                'timing_profile': {
+                    'initial_wait_ms': self.kwargs.get('initial_wait_ms'),
+                    'navigation_wait_ms': self.kwargs.get('navigation_wait_ms'),
+                    'post_click_wait_ms': self.kwargs.get('post_click_wait_ms'),
+                    'verify_timeout_ms': self.kwargs.get('verify_timeout_ms'),
+                    'verify_poll_ms': self.kwargs.get('verify_poll_ms'),
+                    'strict_reload_verify': self.kwargs.get('strict_reload_verify'),
+                },
+            }
+
+    fake_module = types.ModuleType('app.registration_group_executor')
+    fake_module.LiveWarmWhatsAppRegistrationGroupApprovalExecutor = FakeExecutor
+    monkeypatch.setitem(sys.modules, 'app.registration_group_executor', fake_module)
+
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR_KIND': 'live_whatsapp',
+        'AUTO_LARK_REPLY': False,
+    })
+    client = TestClient(app)
+
+    response = client.get('/api/ops/registration-group-approval-executor-health')
+    assert response.status_code == 200
+    body = response.json()
+    timing = body['timing_profile']
+    assert timing['initial_wait_ms'] <= 600
+    assert timing['navigation_wait_ms'] <= 200
+    assert timing['post_click_wait_ms'] <= 150
+    assert timing['verify_timeout_ms'] <= 1800
+    assert timing['strict_reload_verify'] is False
+
+
 def test_ops_bind_queue_returns_bind_related_leads():
     client = make_client()
     lead = client.post(
@@ -7750,6 +8059,62 @@ def test_async_lark_ingress_reuses_idempotent_event(tmp_path):
     second = client.post('/api/intake/lark/events', json=payload).json()
     assert first['ingress_event_id'] == second['ingress_event_id']
     assert second['duplicate'] is True
+
+
+
+def test_ops_run_next_drains_bind_tasks_after_ingress_queue(tmp_path):
+    def bind_simulator(context):
+        return {
+            'status': 'success',
+            'result_code': 'bind_ok',
+            'result_reason': f"simulated for {context['dept_name']}",
+            'raw_result': {'guild_code': context['dept_name'], 'simulated': True},
+        }
+
+    app = create_app({
+        'DB_PATH': str(tmp_path / 'async-drain.db'),
+        'AUTO_LARK_REPLY': False,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+        'BIND_SIMULATOR': bind_simulator,
+        'INGRESS_WORKER_ENABLED': False,
+    })
+    client = TestClient(app)
+    payload = {
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_async_drain'}},
+            'message': {
+                'message_id': 'om_async_drain',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567021\\nPermata-77\\n55667721\\nCode EKVFGQ"}'
+            }
+        }
+    }
+    queued = client.post('/api/intake/lark/events', json=payload)
+    assert queued.status_code == 200
+    first = client.post('/api/ops/ingress-queue/run-next')
+    assert first.status_code == 200
+    assert first.json()['status'] == 'done'
+
+    second = client.post('/api/ops/ingress-queue/run-next')
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body['status'] == 'success'
+    assert second_body['task_type'] == 'bind_check'
+
+    health = client.get('/api/ops/runtime-health').json()
+    assert health['ingress']['pending_bind_tasks'] == 0
+    assert health['ingress']['processing_bind_tasks'] == 0
+
+    task_rows = client.get('/api/tasks').json()['rows']
+    bind_task = next(row for row in task_rows if row['task_type'] == 'bind_check')
+    assert bind_task['status'] == 'success'
+
+    queue_rows = client.get('/api/ops/ingress-queue').json()['rows']
+    assert queue_rows[0]['status'] == 'done'
 
 
 

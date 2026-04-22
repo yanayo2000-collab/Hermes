@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import json
 import shutil
 import sys
+import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +22,25 @@ from app.whatsapp_live_monitor import (
     update_first_seen_at,
 )
 from playwright.async_api import async_playwright
+
+
+def _safe_rmtree(path: Path, *, attempts: int = 5, delay_seconds: float = 0.2) -> None:
+    for attempt in range(max(1, attempts)):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if exc.errno not in {errno.ENOTEMPTY, errno.EBUSY, errno.EPERM} or attempt == attempts - 1:
+                raise
+            time.sleep(delay_seconds)
+
+
+def _allocate_run_temp_user_data_dir(base_dir: Path) -> Path:
+    base_dir = Path(base_dir).expanduser()
+    base_dir.parent.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=f'{base_dir.name}-', dir=str(base_dir.parent)))
 
 
 async def inspect_group(page, *, list_item_index: int) -> dict:
@@ -46,84 +68,87 @@ async def inspect_group(page, *, list_item_index: int) -> dict:
 
 async def run(args) -> int:
     src_root = Path(args.chrome_user_data_root).expanduser()
-    dst_root = Path(args.temp_user_data_dir).expanduser()
+    dst_root = _allocate_run_temp_user_data_dir(Path(args.temp_user_data_dir))
     state_path = Path(args.state_path).expanduser()
     state = load_monitor_state(state_path)
-    if dst_root.exists():
-        shutil.rmtree(dst_root)
-    dst_root.mkdir(parents=True)
-    for name in ['Local State', args.profile_dir]:
-        src = src_root / name
-        dst = dst_root / name
-        if src.is_dir():
-            shutil.copytree(src, dst, symlinks=True)
-        else:
-            shutil.copy2(src, dst)
+    try:
+        for name in ['Local State', args.profile_dir]:
+            src = src_root / name
+            dst = dst_root / name
+            if src.is_dir():
+                shutil.copytree(src, dst, symlinks=True)
+            else:
+                shutil.copy2(src, dst)
 
-    async with async_playwright() as p:
-        context = await p.chromium.launch_persistent_context(
-            str(dst_root),
-            channel='chrome',
-            headless=args.headless,
-            args=[f'--profile-directory={args.profile_dir}'],
-        )
-        page = context.pages[0] if context.pages else await context.new_page()
-        await page.goto('https://web.whatsapp.com/', wait_until='domcontentloaded', timeout=60000)
-        await page.wait_for_timeout(args.initial_wait_ms)
-        await page.get_by_role('tab', name='群组').click(timeout=5000)
-        await page.wait_for_timeout(1500)
+        async with async_playwright() as p:
+            context = await p.chromium.launch_persistent_context(
+                str(dst_root),
+                channel='chrome',
+                headless=args.headless,
+                args=[f'--profile-directory={args.profile_dir}'],
+            )
+            try:
+                page = context.pages[0] if context.pages else await context.new_page()
+                await page.goto('https://web.whatsapp.com/', wait_until='domcontentloaded', timeout=60000)
+                await page.wait_for_timeout(args.initial_wait_ms)
+                await page.get_by_role('tab', name='群组').click(timeout=5000)
+                await page.wait_for_timeout(1500)
 
-        reg = await inspect_group(page, list_item_index=args.registration_list_item_index)
-        reg_now = datetime.now(timezone.utc)
-        reg_probe = summarize_monitor_result(args.registration_group_name, reg['body_text'], first_seen_at=None, now=reg_now)
-        reg_first_seen = update_first_seen_at(
-            state,
-            group_name=args.registration_group_name,
-            pending_count=reg_probe['pending']['pending_count'],
-            now=reg_now,
-            state_path=state_path,
-        )
-        reg_result = summarize_monitor_result(
-            args.registration_group_name,
-            reg['body_text'],
-            first_seen_at=reg_first_seen,
-            now=reg_now,
-        )
-        reg_result['title'] = reg['title']
-        reg_result['subtitle'] = reg['subtitle']
-        reg_result['has_pending_request_row'] = '请求加入。点击以审核。' in reg['body_text']
+                reg = await inspect_group(page, list_item_index=args.registration_list_item_index)
+                reg_now = datetime.now(timezone.utc)
+                reg_probe = summarize_monitor_result(args.registration_group_name, reg['body_text'], first_seen_at=None, now=reg_now)
+                reg_first_seen = update_first_seen_at(
+                    state,
+                    group_name=args.registration_group_name,
+                    pending_count=reg_probe['pending']['pending_count'],
+                    now=reg_now,
+                    state_path=state_path,
+                )
+                reg_result = summarize_monitor_result(
+                    args.registration_group_name,
+                    reg['body_text'],
+                    first_seen_at=reg_first_seen,
+                    now=reg_now,
+                )
+                reg_result['title'] = reg['title']
+                reg_result['subtitle'] = reg['subtitle']
+                reg_result['has_pending_request_row'] = '请求加入。点击以审核。' in reg['body_text']
 
-        await page.get_by_role('tab', name='群组').click(timeout=5000)
-        await page.wait_for_timeout(1200)
-        off = await inspect_group(page, list_item_index=args.official_list_item_index)
-        off_now = datetime.now(timezone.utc)
-        off_probe = summarize_monitor_result(args.official_group_name, off['body_text'], first_seen_at=None, now=off_now)
-        off_first_seen = update_first_seen_at(
-            state,
-            group_name=args.official_group_name,
-            pending_count=off_probe['pending']['pending_count'],
-            now=off_now,
-            state_path=state_path,
-        )
-        off_result = summarize_monitor_result(
-            args.official_group_name,
-            off['body_text'],
-            first_seen_at=off_first_seen,
-            now=off_now,
-        )
-        off_result['title'] = off['title']
-        off_result['subtitle'] = off['subtitle']
-        off_result['has_pending_request_row'] = '请求加入。点击以审核。' in off['body_text']
+                await page.get_by_role('tab', name='群组').click(timeout=5000)
+                await page.wait_for_timeout(1200)
+                off = await inspect_group(page, list_item_index=args.official_list_item_index)
+                off_now = datetime.now(timezone.utc)
+                off_probe = summarize_monitor_result(args.official_group_name, off['body_text'], first_seen_at=None, now=off_now)
+                off_first_seen = update_first_seen_at(
+                    state,
+                    group_name=args.official_group_name,
+                    pending_count=off_probe['pending']['pending_count'],
+                    now=off_now,
+                    state_path=state_path,
+                )
+                off_result = summarize_monitor_result(
+                    args.official_group_name,
+                    off['body_text'],
+                    first_seen_at=off_first_seen,
+                    now=off_now,
+                )
+                off_result['title'] = off['title']
+                off_result['subtitle'] = off['subtitle']
+                off_result['has_pending_request_row'] = '请求加入。点击以审核。' in off['body_text']
 
-        output = {
-            'checked_at': datetime.now(timezone.utc).isoformat(),
-            'profile_dir': args.profile_dir,
-            'state_path': str(state_path),
-            'registration_group': reg_result,
-            'official_group': off_result,
-        }
-        print(json.dumps(output, ensure_ascii=False, indent=2))
-        await context.close()
+                output = {
+                    'checked_at': datetime.now(timezone.utc).isoformat(),
+                    'profile_dir': args.profile_dir,
+                    'state_path': str(state_path),
+                    'temp_user_data_dir': str(dst_root),
+                    'registration_group': reg_result,
+                    'official_group': off_result,
+                }
+                print(json.dumps(output, ensure_ascii=False, indent=2))
+            finally:
+                await context.close()
+    finally:
+        _safe_rmtree(dst_root)
     return 0
 
 

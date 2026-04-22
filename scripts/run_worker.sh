@@ -10,7 +10,7 @@ app = create_app({})
 service = app.state.service
 print('worker started')
 while True:
-    processed = service.process_next_ingress_job()
+    processed = service.process_next_worker_tick()
     if not processed:
         time.sleep(service.ingress_worker_poll_interval)
 PY
