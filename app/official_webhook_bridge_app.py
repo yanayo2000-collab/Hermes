@@ -75,6 +75,8 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
       <div class=\"summary-item\"><div class=\"label\">待处理请求</div><div class=\"value\" id=\"pendingCount\">-</div></div>
       <div class=\"summary-item\"><div class=\"label\">已处理请求</div><div class=\"value\" id=\"resolvedCount\">-</div></div>
       <div class=\"summary-item\"><div class=\"label\">总请求数</div><div class=\"value\" id=\"totalCount\">-</div></div>
+      <div class=\"summary-item\"><div class=\"label\">待处理超时请求</div><div class=\"value\" id=\"timeoutCount\">-</div></div>
+      <div class=\"summary-item\"><div class=\"label\">今日新增</div><div class=\"value\" id=\"todayCreatedCount\">-</div></div>
       <div class=\"summary-item\"><div class=\"label\">Bridge 模式</div><div class=\"value\" id=\"bridgeMode\">-</div></div>
     </div>
   </div>
@@ -157,16 +159,13 @@ async function fetchJson(url, options) {
 }
 
 async function loadSummary() {
-  const [health, pending, resolved, all] = await Promise.all([
-    fetchJson('/ops/official-group-bridge/health'),
-    fetchJson('/ops/official-group-bridge/requests?status=pending'),
-    fetchJson('/ops/official-group-bridge/requests?status=resolved'),
-    fetchJson('/ops/official-group-bridge/requests')
-  ]);
-  document.getElementById('bridgeMode').textContent = health.mode || '-';
-  document.getElementById('pendingCount').textContent = pending.request_count || 0;
-  document.getElementById('resolvedCount').textContent = resolved.request_count || 0;
-  document.getElementById('totalCount').textContent = all.total_count || all.request_count || 0;
+  const summary = await fetchJson('/ops/official-group-bridge/summary');
+  document.getElementById('bridgeMode').textContent = summary.mode || '-';
+  document.getElementById('pendingCount').textContent = summary.pending_count || 0;
+  document.getElementById('resolvedCount').textContent = summary.resolved_count || 0;
+  document.getElementById('totalCount').textContent = summary.total_count || 0;
+  document.getElementById('timeoutCount').textContent = summary.pending_timeout_over_1h_count || 0;
+  document.getElementById('todayCreatedCount').textContent = summary.today_created_count || 0;
 }
 
 function currentQuery() {
@@ -742,6 +741,8 @@ class OfficialGroupBridgeState:
         request_id: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
+        sort_by: str = 'updated_at',
+        sort_order: str = 'desc',
     ) -> Dict[str, Any]:
         records = list(reversed(self.recent_requests))
         if status:
@@ -752,6 +753,9 @@ class OfficialGroupBridgeState:
             records = [record for record in records if str(((record.get('request') or {}).get('lead') or {}).get('lead_id') or '') == str(lead_id)]
         if request_id:
             records = [record for record in records if str(record.get('request_id') or '') == str(request_id)]
+        reverse = str(sort_order or 'desc').lower() != 'asc'
+        if sort_by in {'created_at', 'updated_at'}:
+            records = sorted(records, key=lambda record: int(record.get(sort_by) or 0), reverse=reverse)
         total_count = len(records)
         limit = max(1, min(int(limit or 50), 200))
         offset = max(0, int(offset or 0))
@@ -761,6 +765,8 @@ class OfficialGroupBridgeState:
             'total_count': total_count,
             'limit': limit,
             'offset': offset,
+            'sort_by': sort_by,
+            'sort_order': 'desc' if reverse else 'asc',
             'requests': page,
         }
 
@@ -769,6 +775,35 @@ class OfficialGroupBridgeState:
         if record is None:
             raise HTTPException(status_code=404, detail='bridge request not found')
         return record
+
+    def summary(self) -> Dict[str, Any]:
+        now = int(time.time())
+        records = list(self.recent_requests)
+        pending = [record for record in records if record.get('status') == 'pending']
+        resolved = [record for record in records if record.get('status') == 'resolved']
+        timeout_over_1h = [record for record in pending if now - int(record.get('created_at') or now) > 3600]
+        by_target_group: Dict[str, Dict[str, int]] = defaultdict(lambda: {'pending_count': 0, 'resolved_count': 0, 'total_count': 0})
+        today_start = now - 86400
+        today_created_count = 0
+        for record in records:
+            target_group = str((record.get('request') or {}).get('target_group') or 'unknown')
+            bucket = by_target_group[target_group]
+            bucket['total_count'] += 1
+            if record.get('status') == 'pending':
+                bucket['pending_count'] += 1
+            if record.get('status') == 'resolved':
+                bucket['resolved_count'] += 1
+            if int(record.get('created_at') or 0) >= today_start:
+                today_created_count += 1
+        return {
+            'mode': self.mode,
+            'total_count': len(records),
+            'pending_count': len(pending),
+            'resolved_count': len(resolved),
+            'pending_timeout_over_1h_count': len(timeout_over_1h),
+            'today_created_count': today_created_count,
+            'by_target_group': dict(by_target_group),
+        }
 
     def resolve_request(self, request_id: str, resolution: Dict[str, Any]) -> Dict[str, Any]:
         record = self._find(request_id)
@@ -818,6 +853,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     )
 
     app = FastAPI(title='WhatsApp Webhook Bridge')
+    app.state.official_group_bridge_state = bridge_state
 
     @app.get('/healthz')
     def healthz() -> Dict[str, Any]:
@@ -891,6 +927,10 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     def official_group_bridge_health() -> Dict[str, Any]:
         return bridge_state.health()
 
+    @app.get('/ops/official-group-bridge/summary')
+    def official_group_bridge_summary() -> Dict[str, Any]:
+        return bridge_state.summary()
+
     @app.get('/ops/official-group-bridge/requests')
     def official_group_bridge_requests(
         status: Optional[str] = None,
@@ -899,6 +939,8 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         request_id: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
+        sort_by: str = 'updated_at',
+        sort_order: str = 'desc',
     ) -> Dict[str, Any]:
         return bridge_state.list_requests(
             status=status,
@@ -907,6 +949,8 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             request_id=request_id,
             limit=limit,
             offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
 
     @app.get('/ops/official-group-bridge/requests/{request_id}')

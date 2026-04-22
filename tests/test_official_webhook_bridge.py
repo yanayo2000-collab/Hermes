@@ -556,4 +556,51 @@ def test_official_group_bridge_dashboard_page_loads():
     text = response.text
     assert '官方群审批桥接操作台' in text
     assert '/ops/official-group-bridge/requests' in text
+    assert '/ops/official-group-bridge/summary' in text
     assert '待处理请求' in text
+    assert '待处理超时请求' in text
+
+
+def test_official_group_bridge_summary_and_sorted_requests_expose_timeout_and_trend_metrics():
+    app = create_app({
+        'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123',
+        'OFFICIAL_GROUP_BRIDGE_MODE': 'manual_queue',
+    })
+    client = TestClient(app)
+
+    first = client.post('/official-group/approve', json={
+        'target_group': 'official-group-a',
+        'lead': {'lead_id': 'lead_old'},
+        'crm_snapshot': {'id': 'crm_old'},
+        'task': {'task_id': 'task_old', 'status': 'pending'},
+    })
+    second = client.post('/official-group/approve', json={
+        'target_group': 'official-group-a',
+        'lead': {'lead_id': 'lead_new'},
+        'crm_snapshot': {'id': 'crm_new'},
+        'task': {'task_id': 'task_new', 'status': 'pending'},
+    })
+    assert first.status_code == 200
+    assert second.status_code == 200
+    old_request_id = first.json()['raw_result']['bridge_request_id']
+    new_request_id = second.json()['raw_result']['bridge_request_id']
+
+    record = app.state.official_group_bridge_state.get_request(old_request_id)
+    record['created_at'] = 100
+    record['updated_at'] = 100
+
+    summary = client.get('/ops/official-group-bridge/summary')
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body['pending_count'] == 2
+    assert body['resolved_count'] == 0
+    assert body['pending_timeout_over_1h_count'] == 1
+    assert body['by_target_group']['official-group-a']['pending_count'] == 2
+    assert body['today_created_count'] == 1
+
+    sorted_requests = client.get('/ops/official-group-bridge/requests?sort_by=updated_at&sort_order=desc&limit=1')
+    assert sorted_requests.status_code == 200
+    sorted_body = sorted_requests.json()
+    assert sorted_body['request_count'] == 1
+    assert sorted_body['total_count'] == 2
+    assert sorted_body['requests'][0]['request_id'] == new_request_id
