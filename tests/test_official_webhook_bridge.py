@@ -474,3 +474,13 @@ def test_official_group_bridge_health_exposes_mode_and_token_requirement():
     assert body['has_token'] is True
     assert body['schema_version'] == 'official-group-webhook-v1'
     assert 'approve' in body['supports']
+
+
+def test_official_group_bridge_defaults_to_manual_queue_when_mode_not_configured():
+    app = create_app({'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123'})
+    client = TestClient(app)
+
+    response = client.get('/ops/official-group-bridge/health')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['mode'] == 'manual_queue'
