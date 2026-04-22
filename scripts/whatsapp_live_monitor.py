@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import shutil
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.whatsapp_live_monitor import summarize_monitor_result
+from playwright.async_api import async_playwright
+
+
+async def inspect_group(page, *, list_item_index: int) -> dict:
+    await page.locator('[data-testid="chat-list"] [data-testid="list-item-%d"]' % list_item_index).click()
+    await page.wait_for_timeout(2500)
+    await page.locator('[data-testid="conversation-header"]').click()
+    await page.wait_for_timeout(3000)
+    body = await page.locator('body').inner_text()
+    title = ''
+    try:
+        title = (await page.locator('[data-testid="conversation-info-header-chat-title"]').inner_text()).strip()
+    except Exception:
+        pass
+    subtitle = ''
+    try:
+        subtitle = (await page.locator('[data-testid="chat-subtitle"]').inner_text()).strip()
+    except Exception:
+        pass
+    return {
+        'title': title,
+        'subtitle': subtitle,
+        'body_text': body,
+    }
+
+
+async def run(args) -> int:
+    src_root = Path(args.chrome_user_data_root).expanduser()
+    dst_root = Path(args.temp_user_data_dir).expanduser()
+    if dst_root.exists():
+        shutil.rmtree(dst_root)
+    dst_root.mkdir(parents=True)
+    for name in ['Local State', args.profile_dir]:
+        src = src_root / name
+        dst = dst_root / name
+        if src.is_dir():
+            shutil.copytree(src, dst, symlinks=True)
+        else:
+            shutil.copy2(src, dst)
+
+    async with async_playwright() as p:
+        context = await p.chromium.launch_persistent_context(
+            str(dst_root),
+            channel='chrome',
+            headless=args.headless,
+            args=[f'--profile-directory={args.profile_dir}'],
+        )
+        page = context.pages[0] if context.pages else await context.new_page()
+        await page.goto('https://web.whatsapp.com/', wait_until='domcontentloaded', timeout=60000)
+        await page.wait_for_timeout(args.initial_wait_ms)
+        await page.get_by_role('tab', name='群组').click(timeout=5000)
+        await page.wait_for_timeout(1500)
+
+        reg = await inspect_group(page, list_item_index=args.registration_list_item_index)
+        reg_result = summarize_monitor_result(
+            args.registration_group_name,
+            reg['body_text'],
+            first_seen_at=datetime.now(timezone.utc),
+            now=datetime.now(timezone.utc),
+        )
+        reg_result['title'] = reg['title']
+        reg_result['subtitle'] = reg['subtitle']
+        reg_result['has_pending_request_row'] = '请求加入。点击以审核。' in reg['body_text']
+
+        await page.get_by_role('tab', name='群组').click(timeout=5000)
+        await page.wait_for_timeout(1200)
+        off = await inspect_group(page, list_item_index=args.official_list_item_index)
+        off_result = summarize_monitor_result(
+            args.official_group_name,
+            off['body_text'],
+            first_seen_at=datetime.now(timezone.utc),
+            now=datetime.now(timezone.utc),
+        )
+        off_result['title'] = off['title']
+        off_result['subtitle'] = off['subtitle']
+        off_result['has_pending_request_row'] = '请求加入。点击以审核。' in off['body_text']
+
+        output = {
+            'checked_at': datetime.now(timezone.utc).isoformat(),
+            'profile_dir': args.profile_dir,
+            'registration_group': reg_result,
+            'official_group': off_result,
+        }
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+        await context.close()
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description='Live WhatsApp production-test monitor v1.')
+    parser.add_argument('--chrome-user-data-root', default='~/Library/Application Support/Google/Chrome')
+    parser.add_argument('--profile-dir', default='Profile 25')
+    parser.add_argument('--temp-user-data-dir', default='/tmp/chrome-whatsapp-live-monitor')
+    parser.add_argument('--registration-list-item-index', type=int, default=0)
+    parser.add_argument('--official-list-item-index', type=int, default=1)
+    parser.add_argument('--registration-group-name', default='8️⃣5️⃣')
+    parser.add_argument('--official-group-name', default='8️⃣8️⃣')
+    parser.add_argument('--initial-wait-ms', type=int, default=8000)
+    parser.add_argument('--headless', action='store_true', default=True)
+    return asyncio.run(run(parser.parse_args()))
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
