@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import re
 import shutil
 import tempfile
@@ -18,6 +19,14 @@ PENDING_COUNT_PATTERN = re.compile(r'待处理请求\s*(\d+)')
 REVIEW_CTA_PATTERN = re.compile(r'审核\s*(\d+)\s*请求加入')
 REQUEST_JOIN_ROW_PATTERN = re.compile(r'请求加入。点击以审核。')
 MEMBER_COUNT_PATTERN = re.compile(r'群组\s*[·•]\s*(\d+)位成员')
+
+
+class ReviewSurfaceRecoveryRequired(RuntimeError):
+    pass
+
+
+class AmbiguousReviewTargetError(RuntimeError):
+    pass
 
 
 class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
@@ -60,8 +69,55 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
         self._last_action_at = None
         self._group_info_ready = False
         self._approval_lock = threading.Lock()
+        self._owner_thread_lock = threading.Lock()
+        self._owner_call_queue: "queue.Queue[tuple[Any, queue.Queue]]" = queue.Queue()
+        self._owner_thread: Optional[threading.Thread] = None
+        self._owner_thread_ready = threading.Event()
+        self._last_review_selection: Dict[str, Any] = {}
 
     def warmup(self) -> Dict[str, Any]:
+        return self._call_on_owner_thread(self._warmup_impl)
+
+    def _ensure_owner_thread(self) -> None:
+        worker = self._owner_thread
+        if worker is not None and worker.is_alive():
+            return
+        with self._owner_thread_lock:
+            worker = self._owner_thread
+            if worker is not None and worker.is_alive():
+                return
+            self._owner_thread_ready.clear()
+            worker = threading.Thread(
+                target=self._owner_thread_main,
+                name='registration-group-approval-owner',
+                daemon=True,
+            )
+            self._owner_thread = worker
+            worker.start()
+        self._owner_thread_ready.wait(timeout=5)
+
+    def _owner_thread_main(self) -> None:
+        self._owner_thread_id = threading.get_ident()
+        self._owner_thread_ready.set()
+        while True:
+            task, result_queue = self._owner_call_queue.get()
+            try:
+                result_queue.put((True, task()))
+            except BaseException as exc:
+                result_queue.put((False, exc))
+
+    def _call_on_owner_thread(self, func):
+        if threading.get_ident() == self._owner_thread_id:
+            return func()
+        self._ensure_owner_thread()
+        result_queue: "queue.Queue[tuple[bool, Any]]" = queue.Queue(maxsize=1)
+        self._owner_call_queue.put((func, result_queue))
+        ok, payload = result_queue.get()
+        if ok:
+            return payload
+        raise payload
+
+    def _warmup_impl(self) -> Dict[str, Any]:
         with self._approval_lock:
             try:
                 self._ensure_browser()
@@ -168,16 +224,47 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
                 continue
         return False
 
+    def _page_has_loading_gate(self) -> bool:
+        assert self._page is not None
+        loading_markers = [
+            ('请不要关闭此窗口', False),
+            ('消息正在下载中', False),
+            ('你的消息正在下载中', False),
+        ]
+        for text, exact in loading_markers:
+            try:
+                if self._page.get_by_text(text, exact=exact).count():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _wait_for_home_surface_ready(self, *, timeout_seconds: float = 8.0) -> None:
+        assert self._page is not None
+        deadline = time.perf_counter() + max(0.5, timeout_seconds)
+        while True:
+            if self._page_has_logged_out_gate():
+                return
+            loading_gate = self._page_has_loading_gate()
+            try:
+                chat_list_ready = bool(self._page.locator('[data-testid="chat-list"]').count())
+            except Exception:
+                chat_list_ready = False
+            if chat_list_ready and not loading_gate:
+                return
+            if time.perf_counter() >= deadline:
+                return
+            self._page.wait_for_timeout(120)
+
     def _ensure_browser(self) -> None:
         current_thread_id = threading.get_ident()
         if self._context is not None and self._page is not None:
-            if self._owner_thread_id is not None and self._owner_thread_id != current_thread_id:
-                self._reset_browser(f'thread_mismatch:owner={self._owner_thread_id},current={current_thread_id}')
-            else:
-                if self._page_has_logged_out_gate():
-                    self._reset_browser('logged_out:whatsapp_session_not_authenticated')
-                    raise RuntimeError('logged_out:whatsapp_session_not_authenticated')
-                return
+            if self._page_has_logged_out_gate():
+                self._reset_browser('logged_out:whatsapp_session_not_authenticated')
+                raise RuntimeError('logged_out:whatsapp_session_not_authenticated')
+            self._wait_for_home_surface_ready(timeout_seconds=3.0)
+            self._owner_thread_id = current_thread_id
+            return
         try:
             self._clone_profile_once()
             self._playwright = sync_playwright().start()
@@ -202,6 +289,7 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         self._page.goto('https://web.whatsapp.com/', wait_until='domcontentloaded', timeout=60000)
         self._page.wait_for_timeout(max(self.initial_wait_ms, 200))
+        self._wait_for_home_surface_ready(timeout_seconds=12.0)
         if self._page_has_logged_out_gate():
             self._reset_browser('logged_out:whatsapp_session_not_authenticated')
             raise RuntimeError('logged_out:whatsapp_session_not_authenticated')
@@ -255,9 +343,19 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
             membership_request_visible = bool(self._page.locator('[data-testid="subtype-membership_approval_request"]').count())
         except Exception:
             membership_request_visible = False
+        try:
+            conversation_header_visible = bool(self._page.locator('[data-testid="conversation-header"]').count())
+        except Exception:
+            conversation_header_visible = False
+        try:
+            request_marker_visible = bool(self._page.get_by_text('点击以审核', exact=False).count())
+        except Exception:
+            request_marker_visible = False
         if contact_info_visible and not group_info_visible and not pending_section_visible and not empty_queue_visible:
             return False
-        return bool(group_info_visible or pending_section_visible or empty_queue_visible or membership_request_visible)
+        if membership_request_visible and conversation_header_visible and request_marker_visible and not contact_info_visible:
+            return True
+        return bool(group_info_visible or pending_section_visible or empty_queue_visible)
 
     def _open_group_info(self) -> None:
         assert self._page is not None
@@ -265,21 +363,35 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
             return
         self._enter_groups_tab()
         self._page.locator(f'[data-testid="chat-list"] [data-testid="list-item-{self.registration_list_item_index}"]').click(timeout=10000)
-        self._page.wait_for_timeout(max(self.navigation_wait_ms, 100))
-        self._group_info_ready = self._page_ready_for_approval()
-        if self._group_info_ready:
+        self._page.wait_for_timeout(max(self.initial_wait_ms, 200))
+        if self._page_ready_for_approval():
+            self._group_info_ready = True
             return
-        self._page.locator('[data-testid="conversation-header"]').click(timeout=10000)
-        self._page.wait_for_timeout(max(self.navigation_wait_ms, 100))
-        self._group_info_ready = self._page_ready_for_approval()
-        if self._group_info_ready:
-            return
-        try:
-            self._page.locator('[data-testid="conversation-subheader"]').click(timeout=2000)
-            self._page.wait_for_timeout(max(self.navigation_wait_ms, 100))
-        except Exception:
-            pass
-        self._group_info_ready = self._page_ready_for_approval()
+        deadline = time.perf_counter() + 4.0
+        last_error = None
+        while True:
+            try:
+                self._page.locator('[data-testid="conversation-header"]').click(timeout=1200)
+                self._page.wait_for_timeout(max(self.navigation_wait_ms, 120))
+                if self._page_ready_for_approval():
+                    self._group_info_ready = True
+                    return
+            except Exception as exc:
+                last_error = exc
+            try:
+                self._page.locator('[data-testid="conversation-subheader"]').click(timeout=1200)
+                self._page.wait_for_timeout(max(self.navigation_wait_ms, 120))
+                if self._page_ready_for_approval():
+                    self._group_info_ready = True
+                    return
+            except Exception as exc:
+                last_error = exc
+            if time.perf_counter() >= deadline:
+                self._group_info_ready = self._page_ready_for_approval()
+                if self._group_info_ready:
+                    return
+                raise RuntimeError(f'unable to open group info surface: {last_error}')
+            self._page.wait_for_timeout(120)
 
     def _normalize_phone(self, text: str) -> str:
         digits = re.sub(r'\D+', '', str(text or ''))
@@ -291,11 +403,12 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
 
     def _extract_pending_count(self, text: str) -> int:
         body = str(text or '')
-        m = PENDING_COUNT_PATTERN.search(body)
+        panel_body = body.rsplit('群组信息', 1)[1] if '群组信息' in body else body
+        m = PENDING_COUNT_PATTERN.search(panel_body)
         if m:
             return int(m.group(1))
-        if '待处理请求' in body:
-            relevant = body.split('待处理请求', 1)[1]
+        if '待处理请求' in panel_body:
+            relevant = panel_body.rsplit('待处理请求', 1)[1]
             relevant_phones = []
             for phone in PHONE_PATTERN.findall(relevant):
                 normalized = self._normalize_phone(phone)
@@ -312,10 +425,10 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
             return 0
         if '联系人信息' in body and '群组信息' not in body:
             return 0
-        review_match = REVIEW_CTA_PATTERN.search(body)
+        review_match = REVIEW_CTA_PATTERN.search(panel_body)
         if review_match:
             return int(review_match.group(1))
-        return len(REQUEST_JOIN_ROW_PATTERN.findall(body))
+        return len(REQUEST_JOIN_ROW_PATTERN.findall(panel_body))
 
     def _extract_member_count(self, text: str) -> Optional[int]:
         m = MEMBER_COUNT_PATTERN.search(str(text or ''))
@@ -329,9 +442,229 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
                 values.append(normalized)
         return values
 
+    def _extract_pending_candidates(self, text: str) -> Dict[str, list[str]]:
+        body = str(text or '')
+        panel_body = body.rsplit('群组信息', 1)[1] if '群组信息' in body else body
+        if '待处理请求' not in panel_body:
+            return {'phones': [], 'requesters': []}
+        relevant = panel_body.rsplit('待处理请求', 1)[1]
+        for marker in ['\n联系人信息\n', '\n输入消息\n', '\n搜索\n']:
+            if marker in relevant:
+                relevant = relevant.split(marker, 1)[0]
+        if '没有要审核的成员' in relevant:
+            return {'phones': [], 'requesters': []}
+        requesters = []
+        for line in relevant.splitlines():
+            value = str(line or '').strip()
+            if not value or value in {'待处理请求', '通过邀请链接'}:
+                continue
+            if PHONE_PATTERN.fullmatch(value):
+                continue
+            if value.startswith('由+') or value.startswith('由 +'):
+                continue
+            if '请求加入' in value or '点击以审核' in value:
+                continue
+            if value not in requesters:
+                requesters.append(value)
+        return {
+            'phones': self._extract_all_phones(relevant),
+            'requesters': requesters,
+        }
+
+    def _capture_group_info_body(self, *, wait_for_pending_seconds: float = 1.2) -> str:
+        assert self._page is not None
+        deadline = time.perf_counter() + max(0.2, wait_for_pending_seconds)
+        latest = self._page.locator('body').inner_text(timeout=1200)
+        while True:
+            if self._extract_pending_count(latest) > 0:
+                return latest
+            if '没有要审核的成员' in latest:
+                return latest
+            if time.perf_counter() >= deadline:
+                return latest
+            self._page.wait_for_timeout(120)
+            latest = self._page.locator('body').inner_text(timeout=1200)
+
+    def _review_row_priority(self, row_text: str, *, expected_phone: str = '', expected_name: str = '', approve_available: bool = False) -> int:
+        text = str(row_text or '')
+        normalized_expected_phone = self._normalize_phone(expected_phone)
+        normalized_phones = self._extract_all_phones(text)
+        normalized_expected_name = str(expected_name or '').strip()
+        if normalized_expected_phone and normalized_expected_phone in normalized_phones:
+            return 100
+        if normalized_expected_name and normalized_expected_name in text:
+            return 90
+        if '请求加入' in text or '点击以审核' in text:
+            return 80
+        if '通过邀请链接' in text or '由+' in text or '由 +' in text:
+            return 70
+        if approve_available:
+            return 60
+        if normalized_phones:
+            return 50
+        if text.strip():
+            return 10
+        return 0
+
+    def _extract_review_row_candidate(self, row, index: int, *, expected_phone: str = '', expected_name: str = '') -> Optional[Dict[str, Any]]:
+        approve_available = False
+        try:
+            approve_available = bool(row.locator('[aria-label="批准"]').count())
+        except Exception:
+            approve_available = False
+        try:
+            row_text = row.inner_text(timeout=300).strip()
+        except Exception:
+            return None
+        if not row_text:
+            return None
+        lowered = row_text.lower()
+        if '联系人信息' in row_text or '1个共同群组' in row_text or '影音内容、链接和文档' in row_text or '加密' in row_text:
+            return None
+        phones = self._extract_all_phones(row_text)
+        display_name = ''
+        for line in row_text.splitlines():
+            value = str(line or '').strip()
+            if not value:
+                continue
+            if PHONE_PATTERN.fullmatch(value):
+                continue
+            if value.startswith('由+') or value.startswith('由 +'):
+                continue
+            if value in {'通过邀请链接', '请求加入。点击以审核。', '请求加入', '点击以审核'}:
+                continue
+            display_name = value
+            break
+        has_request_marker = any(marker in row_text for marker in ['请求加入', '点击以审核', '通过邀请链接', '由+', '由 +'])
+        actionable = bool(approve_available or has_request_marker)
+        normalized_expected_phone = self._normalize_phone(expected_phone)
+        normalized_expected_name = str(expected_name or '').strip()
+        exact_phone_match = bool(normalized_expected_phone and normalized_expected_phone in phones)
+        exact_name_match = bool(normalized_expected_name and normalized_expected_name == display_name)
+        score = self._review_row_priority(
+            row_text,
+            expected_phone=expected_phone,
+            expected_name=expected_name,
+            approve_available=approve_available,
+        )
+        return {
+            'row': row,
+            'index': index,
+            'row_text': row_text,
+            'phones': phones,
+            'display_name': display_name,
+            'approve_available': approve_available,
+            'has_request_marker': has_request_marker,
+            'actionable': actionable,
+            'exact_phone_match': exact_phone_match,
+            'exact_name_match': exact_name_match,
+            'score': score,
+            'looks_like_contact_info': ('contact' in lowered and 'info' in lowered),
+        }
+
+    def _candidate_snapshot(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            'index': candidate.get('index'),
+            'display_name': candidate.get('display_name') or '',
+            'phones': list(candidate.get('phones') or []),
+            'approve_available': bool(candidate.get('approve_available')),
+            'has_request_marker': bool(candidate.get('has_request_marker')),
+            'actionable': bool(candidate.get('actionable')),
+            'exact_phone_match': bool(candidate.get('exact_phone_match')),
+            'exact_name_match': bool(candidate.get('exact_name_match')),
+            'score': int(candidate.get('score') or 0),
+            'row_text_excerpt': str(candidate.get('row_text') or '')[-400:],
+        }
+
+    def _select_review_row_candidate(self, *, expected_phone: str = '', expected_name: str = '') -> Dict[str, Any]:
+        assert self._page is not None
+        rows = self._page.locator('[data-testid="row"]')
+        row_count = rows.count()
+        candidates: list[Dict[str, Any]] = []
+        for index in range(row_count):
+            row = rows.nth(index) if hasattr(rows, 'nth') else (rows.first if index == 0 else None)
+            if row is None:
+                continue
+            candidate = self._extract_review_row_candidate(
+                row,
+                index,
+                expected_phone=expected_phone,
+                expected_name=expected_name,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+        snapshots = [self._candidate_snapshot(candidate) for candidate in candidates]
+        self._last_review_selection = {
+            'candidate_rows': snapshots,
+            'selected_candidate': {},
+            'selection_reason': '',
+        }
+        phone_matches = [candidate for candidate in candidates if candidate.get('exact_phone_match')]
+        if len(phone_matches) == 1:
+            selected = phone_matches[0]
+            self._last_review_selection = {
+                'candidate_rows': snapshots,
+                'selected_candidate': self._candidate_snapshot(selected),
+                'selection_reason': 'exact_phone_match',
+            }
+            return {
+                'row': selected['row'],
+                'candidate_rows': snapshots,
+                'selected_candidate': self._candidate_snapshot(selected),
+                'selection_reason': 'exact_phone_match',
+            }
+        if len(phone_matches) > 1:
+            raise AmbiguousReviewTargetError('multiple review rows matched expected phone')
+        name_matches = [candidate for candidate in candidates if candidate.get('exact_name_match')]
+        if len(name_matches) == 1:
+            selected = name_matches[0]
+            self._last_review_selection = {
+                'candidate_rows': snapshots,
+                'selected_candidate': self._candidate_snapshot(selected),
+                'selection_reason': 'exact_name_match',
+            }
+            return {
+                'row': selected['row'],
+                'candidate_rows': snapshots,
+                'selected_candidate': self._candidate_snapshot(selected),
+                'selection_reason': 'exact_name_match',
+            }
+        if len(name_matches) > 1:
+            raise AmbiguousReviewTargetError('multiple review rows matched expected name')
+        actionable = [candidate for candidate in candidates if candidate.get('actionable')]
+        if len(actionable) == 1:
+            selected = actionable[0]
+            self._last_review_selection = {
+                'candidate_rows': snapshots,
+                'selected_candidate': self._candidate_snapshot(selected),
+                'selection_reason': 'single_actionable_row',
+            }
+            return {
+                'row': selected['row'],
+                'candidate_rows': snapshots,
+                'selected_candidate': self._candidate_snapshot(selected),
+                'selection_reason': 'single_actionable_row',
+            }
+        if len(actionable) > 1:
+            raise AmbiguousReviewTargetError('multiple actionable review rows remained without a unique exact match')
+        best = max(candidates, key=lambda item: int(item.get('score') or 0), default=None)
+        if best is not None and int(best.get('score') or 0) > 0:
+            self._last_review_selection = {
+                'candidate_rows': snapshots,
+                'selected_candidate': self._candidate_snapshot(best),
+                'selection_reason': 'best_effort_highest_score',
+            }
+            return {
+                'row': best['row'],
+                'candidate_rows': snapshots,
+                'selected_candidate': self._candidate_snapshot(best),
+                'selection_reason': 'best_effort_highest_score',
+            }
+        raise PlaywrightTimeoutError('review row candidate unavailable on actionable review surface')
+
     def _snapshot_group_state(self) -> Dict[str, Any]:
         assert self._page is not None
-        body = self._page.locator('body').inner_text()
+        body = self._page.locator('body').inner_text(timeout=1200)
         phones = self._extract_all_phones(body)
         pending_after = self._extract_pending_count(body)
         return {
@@ -339,9 +672,32 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
             'member_count': self._extract_member_count(body),
             'all_phones_normalized': phones,
             'body_excerpt': body[-2500:],
+            'contact_info_detected': '联系人信息' in body and '群组信息' not in body,
+            'empty_queue_detected': '没有要审核的成员' in body,
         }
 
-    def _same_session_verify(self, *, target_phone: str, pending_before: int) -> Dict[str, Any]:
+    def _selected_candidate_exact_phone_match(self, *, target_phone: str, target_confirmation_hint: Optional[Dict[str, Any]] = None) -> bool:
+        normalized_target_phone = self._normalize_phone(target_phone)
+        if not normalized_target_phone:
+            return False
+        hint = dict(target_confirmation_hint or {})
+        selected_candidate = dict(hint.get('selected_candidate') or {})
+        selection_reason = str(hint.get('selection_reason') or '')
+        selected_phones = []
+        for value in list(selected_candidate.get('phones') or []):
+            normalized_value = self._normalize_phone(value)
+            if normalized_value and normalized_value not in selected_phones:
+                selected_phones.append(normalized_value)
+        exact_phone_match = bool(selected_candidate.get('exact_phone_match')) or selection_reason == 'exact_phone_match'
+        return bool(exact_phone_match and normalized_target_phone in selected_phones)
+
+    def _same_session_verify(
+        self,
+        *,
+        target_phone: str,
+        pending_before: int,
+        target_confirmation_hint: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         assert self._page is not None
         if self.strict_reload_verify:
             self._page.reload(wait_until='domcontentloaded', timeout=60000)
@@ -351,20 +707,33 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
         latest = self._snapshot_group_state()
         while True:
             latest['queue_delta'] = latest['pending_count'] < pending_before
+            latest['member_confirmation_source'] = ''
             latest['member_confirmed'] = bool(target_phone and target_phone in latest['all_phones_normalized'])
+            if latest['member_confirmed']:
+                latest['member_confirmation_source'] = 'body_phone_match'
+            elif latest['queue_delta'] and self._selected_candidate_exact_phone_match(
+                target_phone=target_phone,
+                target_confirmation_hint=target_confirmation_hint,
+            ):
+                latest['member_confirmed'] = True
+                latest['member_confirmation_source'] = 'selected_candidate_exact_phone_match'
             if latest['queue_delta'] and latest['member_confirmed']:
+                return latest
+            if latest['queue_delta'] and (latest.get('contact_info_detected') or int(latest.get('pending_count') or 0) <= 0):
                 return latest
             if time.perf_counter() >= deadline:
                 return latest
             self._page.wait_for_timeout(self.verify_poll_ms)
             latest = self._snapshot_group_state()
 
-    def _review_surface_state(self) -> Dict[str, Any]:
+    def _review_surface_state(self, *, prefer_fast_path: bool = False) -> Dict[str, Any]:
         assert self._page is not None
         row_count = 0
         approve_count = 0
         membership_request_button_count = 0
         empty_queue_detected = False
+        contact_info_detected = False
+        review_marker_detected = False
         body_excerpt = ''
         try:
             row_count = self._page.locator('[data-testid="row"]').count()
@@ -383,28 +752,49 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
         except Exception:
             empty_queue_detected = False
         try:
+            contact_info_detected = bool(self._page.get_by_text('联系人信息', exact=True).count())
+        except Exception:
+            contact_info_detected = False
+        if prefer_fast_path and (approve_count > 0 or empty_queue_detected or contact_info_detected):
+            return {
+                'row_count': row_count,
+                'approve_count': approve_count,
+                'membership_request_button_count': membership_request_button_count,
+                'empty_queue_detected': empty_queue_detected,
+                'contact_info_detected': contact_info_detected,
+                'review_marker_detected': bool(approve_count > 0),
+                'body_excerpt': '',
+            }
+        try:
             body_excerpt = self._page.locator('body').inner_text(timeout=1200)[-1200:]
         except Exception:
             body_excerpt = ''
+        review_marker_detected = any(marker in body_excerpt for marker in ['待处理请求', '请求加入', '点击以审核', '通过邀请链接'])
         return {
             'row_count': row_count,
             'approve_count': approve_count,
             'membership_request_button_count': membership_request_button_count,
             'empty_queue_detected': empty_queue_detected,
+            'contact_info_detected': contact_info_detected,
+            'review_marker_detected': review_marker_detected,
             'body_excerpt': body_excerpt,
         }
 
     def _wait_for_review_surface(self, *, timeout_seconds: float = 3.0) -> Dict[str, Any]:
         assert self._page is not None
         deadline = time.perf_counter() + max(0.3, timeout_seconds)
-        latest = self._review_surface_state()
+        latest = self._review_surface_state(prefer_fast_path=True)
         while True:
-            if latest['row_count'] > 0 or latest['approve_count'] > 0 or latest['empty_queue_detected']:
+            actionable_rows = (
+                (latest['approve_count'] > 0 or (latest['row_count'] > 0 and latest.get('review_marker_detected')))
+                and not latest.get('contact_info_detected')
+            )
+            if actionable_rows or latest['empty_queue_detected']:
                 return latest
             if time.perf_counter() >= deadline:
                 return latest
             self._page.wait_for_timeout(120)
-            latest = self._review_surface_state()
+            latest = self._review_surface_state(prefer_fast_path=True)
 
     def _open_pending_review(self, pending_before: int) -> Dict[str, Any]:
         assert self._page is not None
@@ -414,13 +804,23 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
             state['opened_via'] = opened_via
             return state
 
+        def _is_actionable_surface(state: Dict[str, Any]) -> bool:
+            if state.get('empty_queue_detected'):
+                return True
+            if state.get('contact_info_detected'):
+                return False
+            return bool(
+                state.get('approve_count', 0) > 0
+                or (state.get('row_count', 0) > 0 and state.get('review_marker_detected'))
+            )
+
         review_text = f'审核{pending_before}请求加入'
         review = self._page.get_by_text(review_text)
         try:
             review.first.click(timeout=2000)
-            self._page.wait_for_timeout(max(self.navigation_wait_ms, 500))
+            self._page.wait_for_timeout(max(self.navigation_wait_ms, 120))
             state = _await_surface('review_text')
-            if state['row_count'] > 0 or state['approve_count'] > 0 or state['empty_queue_detected']:
+            if _is_actionable_surface(state):
                 return state
         except Exception:
             pass
@@ -428,8 +828,9 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
             approve_buttons = self._page.locator('[aria-label="批准"]')
             if approve_buttons.count():
                 state = self._review_surface_state()
-                state['opened_via'] = 'approve_button_already_visible'
-                return state
+                if not state.get('contact_info_detected'):
+                    state['opened_via'] = 'approve_button_already_visible'
+                    return state
         except Exception:
             pass
         try:
@@ -443,12 +844,18 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
         for index in range(membership_count - 1, -1, -1):
             try:
                 membership_requests.nth(index).click(timeout=2000, force=True)
-                self._page.wait_for_timeout(max(self.navigation_wait_ms, 300))
+                self._page.wait_for_timeout(max(self.navigation_wait_ms, 120))
                 state = _await_surface(f'membership_request_button_{index}')
                 last_membership_state = state
-                if state['row_count'] > 0 or state['approve_count'] > 0:
-                    return state
-                if state['empty_queue_detected']:
+                if _is_actionable_surface(state):
+                    if state['empty_queue_detected']:
+                        if membership_count <= 1:
+                            return state
+                        if empty_membership_state is None:
+                            empty_membership_state = state
+                    else:
+                        return state
+                elif state['empty_queue_detected']:
                     if membership_count <= 1:
                         return state
                     if empty_membership_state is None:
@@ -457,15 +864,15 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
                 continue
         if empty_membership_state is not None:
             return empty_membership_state
-        if last_membership_state is not None:
+        if last_membership_state is not None and _is_actionable_surface(last_membership_state):
             return last_membership_state
         try:
             subheader = self._page.locator('[data-testid="conversation-subheader"]')
             if subheader.count():
                 subheader.click(timeout=2000)
-                self._page.wait_for_timeout(max(self.navigation_wait_ms, 500))
+                self._page.wait_for_timeout(max(self.navigation_wait_ms, 120))
                 state = _await_surface('conversation_subheader')
-                if state['row_count'] > 0 or state['approve_count'] > 0 or state['empty_queue_detected']:
+                if _is_actionable_surface(state):
                     return state
         except Exception:
             pass
@@ -473,19 +880,23 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
         state['opened_via'] = 'surface_poll_timeout'
         return state
 
-    def _wait_for_review_row(self):
+    def _wait_for_review_row(self, *, expected_phone: str = '', expected_name: str = ''):
         assert self._page is not None
         deadline = time.perf_counter() + 2.0
         while True:
             try:
-                rows = self._page.locator('[data-testid="row"]')
-                if rows.count():
-                    row = rows.first
-                    try:
-                        row.inner_text(timeout=300)
-                        return row
-                    except Exception:
-                        pass
+                snapshot = self._review_surface_state()
+                if snapshot.get('contact_info_detected'):
+                    raise RuntimeError('contact info panel is open')
+                selection = self._select_review_row_candidate(expected_phone=expected_phone, expected_name=expected_name)
+                self._last_review_selection = {
+                    'candidate_rows': selection.get('candidate_rows') or [],
+                    'selected_candidate': selection.get('selected_candidate') or {},
+                    'selection_reason': selection.get('selection_reason') or '',
+                }
+                return selection['row']
+            except AmbiguousReviewTargetError:
+                raise
             except Exception:
                 pass
             if time.perf_counter() >= deadline:
@@ -502,7 +913,7 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
         def _submission_confirmed(timeout_seconds: float = 0.8) -> bool:
             deadline = time.perf_counter() + max(0.2, timeout_seconds)
             while True:
-                snapshot = self._review_surface_state()
+                snapshot = self._review_surface_state(prefer_fast_path=True)
                 if snapshot.get('empty_queue_detected'):
                     return True
                 if snapshot.get('row_count', 0) == 0 and snapshot.get('approve_count', 0) == 0:
@@ -521,20 +932,32 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
         def _click_global_approve(timeout_seconds: float = 1.5) -> bool:
             deadline = time.perf_counter() + max(0.3, timeout_seconds)
             while True:
+                clicked = False
                 try:
                     approve_buttons = self._page.locator('[aria-label="批准"]')
                     if approve_buttons.count():
                         approve_buttons.first.click(timeout=1200, force=True)
-                        return True
+                        clicked = True
+                        confirm_budget = min(0.25, max(0.1, deadline - time.perf_counter()))
+                        if _submission_confirmed(timeout_seconds=confirm_budget):
+                            return True
                 except Exception:
                     pass
                 if time.perf_counter() >= deadline:
                     return False
+                if clicked:
+                    self._page.wait_for_timeout(120)
+                    continue
                 self._page.wait_for_timeout(120)
 
         if _click_global_approve(timeout_seconds=0.8):
             return
         row.click(timeout=1200, force=True)
+        snapshot_after_row_click = self._review_surface_state(prefer_fast_path=True)
+        if snapshot_after_row_click.get('contact_info_detected') and snapshot_after_row_click.get('approve_count', 0) <= 0:
+            raise ReviewSurfaceRecoveryRequired(
+                'contact info opened after row click; review surface must be reopened'
+            )
         if _click_global_approve(timeout_seconds=2.0):
             return
         snapshot = self._review_surface_state()
@@ -544,8 +967,23 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
         )
 
     def approve(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        return self._call_on_owner_thread(lambda: self._approve_impl(context))
+
+    def _approve_impl(self, context: Dict[str, Any]) -> Dict[str, Any]:
         started = time.perf_counter()
         stage_marks: Dict[str, float] = {}
+        approval_run_id = str(context.get('approval_run_id') or '').strip() or f"registration_group_approval_{int(time.time())}"
+        start_snapshot: Dict[str, Any] = {}
+        pending_before: Optional[int] = None
+        member_before: Optional[int] = None
+        row_text = ''
+        target_phone = ''
+        target_phone_raw = ''
+        target_name = ''
+        candidate_rows: list[Dict[str, Any]] = []
+        selected_candidate: Dict[str, Any] = {}
+        selection_reason = ''
+        target_confirmation_hint: Dict[str, Any] = {}
         with self._approval_lock:
             try:
                 self._ensure_browser()
@@ -553,9 +991,18 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
                 self._open_group_info()
                 stage_marks['group_info_ready_seconds'] = round(time.perf_counter() - started, 3)
                 assert self._page is not None
-                body_before = self._page.locator('body').inner_text()
+                body_before = self._capture_group_info_body(wait_for_pending_seconds=1.2)
                 pending_before = self._extract_pending_count(body_before)
                 member_before = self._extract_member_count(body_before)
+                pending_candidates = self._extract_pending_candidates(body_before)
+                start_snapshot = {
+                    'pending_count': pending_before,
+                    'member_count': member_before,
+                    'pending_candidates': pending_candidates,
+                    'body_excerpt': body_before[-2500:],
+                }
+                expected_phone = self._normalize_phone(context.get('target_phone_hint') or '') or (pending_candidates['phones'][0] if pending_candidates.get('phones') else '')
+                expected_name = str(context.get('target_name_hint') or '').strip() or (pending_candidates['requesters'][0] if pending_candidates.get('requesters') else '')
                 self._group_info_ready = True
                 if pending_before <= 0:
                     finished_at = datetime.now(timezone.utc).isoformat()
@@ -567,6 +1014,8 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
                         'finished_at': finished_at,
                         'elapsed_seconds': round(time.perf_counter() - started, 2),
                         'raw_result': {
+                            'approval_run_id': approval_run_id,
+                            'start_snapshot': start_snapshot,
                             'pending_before': pending_before,
                             'member_count_before': member_before,
                             'body_excerpt': body_before[-2000:],
@@ -585,6 +1034,8 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
                         'finished_at': finished_at,
                         'elapsed_seconds': round(time.perf_counter() - started, 2),
                         'raw_result': {
+                            'approval_run_id': approval_run_id,
+                            'start_snapshot': start_snapshot,
                             'pending_before': pending_before,
                             'member_count_before': member_before,
                             'review_surface': review_surface,
@@ -592,21 +1043,82 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
                             'stage_timings': dict(stage_marks),
                         },
                     }
-                row = self._wait_for_review_row()
-                stage_marks['review_row_ready_seconds'] = round(time.perf_counter() - started, 3)
-                row_text = row.inner_text().strip()
-                phone_matches = self._extract_all_phones(row_text)
-                target_phone = phone_matches[0] if phone_matches else ''
-                target_phone_raw = target_phone or row_text.splitlines()[0].strip()
-                pushname = self._page.locator('[data-testid="pushname"]')
-                target_name = pushname.first.inner_text().strip() if pushname.count() else (row_text.splitlines()[0].strip() if row_text else '')
-                self._click_approve_action(row)
+                recovery_attempted = False
+                recovery_snapshot = None
+                for attempt in range(2):
+                    try:
+                        row = self._wait_for_review_row(expected_phone=expected_phone, expected_name=expected_name)
+                        selection = dict(self._last_review_selection or {})
+                        candidate_rows = list(selection.get('candidate_rows') or [])
+                        selected_candidate = dict(selection.get('selected_candidate') or {})
+                        selection_reason = str(selection.get('selection_reason') or '')
+                        if attempt == 0:
+                            stage_marks['review_row_ready_seconds'] = round(time.perf_counter() - started, 3)
+                        else:
+                            stage_marks['review_row_recovered_seconds'] = round(time.perf_counter() - started, 3)
+                        row_text = row.inner_text(timeout=300).strip()
+                        phone_matches = self._extract_all_phones(row_text)
+                        target_phone = phone_matches[0] if phone_matches else self._normalize_phone(expected_phone)
+                        target_phone_raw = target_phone or row_text.splitlines()[0].strip()
+                        selected_display_name = str((selected_candidate or {}).get('display_name') or '').strip()
+                        target_confirmation_hint = {
+                            'selection_reason': selection_reason,
+                            'selected_candidate': dict(selected_candidate or {}),
+                        }
+                        row_lines = [line.strip() for line in row_text.splitlines() if line.strip()]
+                        derived_row_name = ''
+                        for line in row_lines:
+                            if line == target_phone_raw:
+                                continue
+                            if self._normalize_phone(line):
+                                continue
+                            if line.startswith('由') and ('添加' in line or 'invite' in line.lower()):
+                                continue
+                            derived_row_name = line
+                            break
+                        pushname = self._page.locator('[data-testid="pushname"]')
+                        pushname_text = pushname.first.inner_text(timeout=300).strip() if pushname.count() else ''
+                        target_name = selected_display_name or derived_row_name or expected_name or pushname_text or (row_lines[0] if row_lines else '')
+                        self._click_approve_action(row)
+                        break
+                    except AmbiguousReviewTargetError:
+                        raise
+                    except ReviewSurfaceRecoveryRequired:
+                        if attempt > 0:
+                            raise
+                        recovery_attempted = True
+                        try:
+                            recovery_snapshot = self._review_surface_state()
+                        except Exception:
+                            recovery_snapshot = None
+                    except PlaywrightTimeoutError:
+                        if attempt > 0:
+                            raise
+                        try:
+                            recovery_snapshot = self._review_surface_state()
+                        except Exception:
+                            recovery_snapshot = None
+                        if not (recovery_snapshot or {}).get('contact_info_detected'):
+                            raise
+                        recovery_attempted = True
+                    self._group_info_ready = False
+                    self._open_group_info()
+                    review_surface = self._open_pending_review(max(pending_before, 1))
+                    stage_marks['review_surface_recovered_seconds'] = round(time.perf_counter() - started, 3)
+                    if review_surface.get('empty_queue_detected'):
+                        raise PlaywrightTimeoutError('review surface reopened after contact info fallback but queue was empty')
                 stage_marks['approve_clicked_seconds'] = round(time.perf_counter() - started, 3)
                 self._page.wait_for_timeout(max(self.post_click_wait_ms, 100))
-                verification = self._same_session_verify(target_phone=target_phone, pending_before=pending_before)
+                verification = self._same_session_verify(
+                    target_phone=target_phone,
+                    pending_before=pending_before,
+                    target_confirmation_hint=target_confirmation_hint,
+                )
                 retry_attempted = False
                 retry_succeeded = False
                 retry_snapshot = None
+                delayed_verification_attempted = False
+                delayed_verification_snapshot = None
                 if not verification['queue_delta']:
                     try:
                         retry_snapshot = self._review_surface_state()
@@ -616,8 +1128,37 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
                         retry_attempted = True
                         self._click_approve_action(row)
                         self._page.wait_for_timeout(max(self.post_click_wait_ms, 100))
-                        verification = self._same_session_verify(target_phone=target_phone, pending_before=pending_before)
+                        verification = self._same_session_verify(
+                            target_phone=target_phone,
+                            pending_before=pending_before,
+                            target_confirmation_hint=target_confirmation_hint,
+                        )
                         retry_succeeded = bool(verification.get('queue_delta'))
+                if not (verification.get('queue_delta') and verification.get('member_confirmed')) and verification.get('queue_delta'):
+                    delayed_verification_attempted = True
+                    try:
+                        reuse_current_surface = False
+                        try:
+                            pending_after_value = int(verification.get('pending_count') or 0)
+                        except Exception:
+                            pending_after_value = None
+                        if not verification.get('contact_info_detected'):
+                            if verification.get('empty_queue_detected') or pending_after_value == 0:
+                                reuse_current_surface = True
+                            elif self._group_info_ready and self._page_ready_for_approval():
+                                reuse_current_surface = True
+                        if not reuse_current_surface:
+                            self._group_info_ready = False
+                            self._open_group_info()
+                        delayed_verification_snapshot = self._same_session_verify(
+                            target_phone=target_phone,
+                            pending_before=pending_before,
+                            target_confirmation_hint=target_confirmation_hint,
+                        )
+                    except Exception:
+                        delayed_verification_snapshot = None
+                    if delayed_verification_snapshot and delayed_verification_snapshot.get('queue_delta') and delayed_verification_snapshot.get('member_confirmed'):
+                        verification = delayed_verification_snapshot
                 stage_marks['verification_complete_seconds'] = round(time.perf_counter() - started, 3)
                 finished_at = datetime.now(timezone.utc).isoformat()
                 verified = bool(verification['queue_delta'] and verification['member_confirmed'])
@@ -633,44 +1174,142 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
                     'elapsed_seconds': round(time.perf_counter() - started, 2),
                     'queue_delta': verification['queue_delta'],
                     'member_confirmed': verification['member_confirmed'],
+                    'member_confirmation_source': verification.get('member_confirmation_source') or '',
                     'target_member': {
                         'name': target_name,
                         'phone_raw': target_phone_raw,
                         'phone_normalized': target_phone,
                     },
                     'raw_result': {
+                        'approval_run_id': approval_run_id,
+                        'start_snapshot': start_snapshot,
                         'pending_before': pending_before,
                         'member_count_before': member_before,
                         'pending_after': verification['pending_count'],
                         'member_count_after': verification['member_count'],
+                        'verification_snapshot': dict(verification),
                         'all_phones_normalized': verification['all_phones_normalized'],
+                        'member_confirmation_source': verification.get('member_confirmation_source') or '',
+                        'expected_phone': expected_phone,
+                        'expected_name': expected_name,
                         'verification_excerpt': verification['body_excerpt'],
                         'row_text_excerpt': row_text[-800:],
+                        'candidate_rows': candidate_rows,
+                        'selected_candidate': selected_candidate,
+                        'selection_reason': selection_reason,
                         'review_surface': review_surface,
+                        'review_surface_recovery_attempted': recovery_attempted,
+                        'review_surface_recovery_snapshot': recovery_snapshot,
                         'retry_attempted': retry_attempted,
                         'retry_succeeded': retry_succeeded,
                         'retry_snapshot': retry_snapshot,
+                        'delayed_verification_attempted': delayed_verification_attempted,
+                        'delayed_verification_snapshot': delayed_verification_snapshot,
                         'stage_timings': dict(stage_marks),
                     },
                 }
                 return result
+            except AmbiguousReviewTargetError as exc:
+                finished_at = datetime.now(timezone.utc).isoformat()
+                selection = dict(self._last_review_selection or {})
+                candidate_rows = list(selection.get('candidate_rows') or candidate_rows or [])
+                selected_candidate = dict(selection.get('selected_candidate') or selected_candidate or {})
+                selection_reason = str(selection.get('selection_reason') or selection_reason or '')
+                return {
+                    'status': 'failed',
+                    'verified': False,
+                    'result_code': 'ambiguous_review_target',
+                    'result_reason': str(exc),
+                    'finished_at': finished_at,
+                    'elapsed_seconds': round(time.perf_counter() - started, 2),
+                    'target_member': {
+                        'name': target_name,
+                        'phone_raw': target_phone_raw,
+                        'phone_normalized': target_phone,
+                    },
+                    'raw_result': {
+                        'approval_run_id': approval_run_id,
+                        'start_snapshot': start_snapshot,
+                        'pending_before': pending_before,
+                        'member_count_before': member_before,
+                        'candidate_rows': candidate_rows,
+                        'selected_candidate': selected_candidate,
+                        'selection_reason': selection_reason,
+                        'stage_timings': dict(stage_marks),
+                    },
+                }
             except PlaywrightTimeoutError as exc:
                 timeout_snapshot = {}
+                verification_snapshot: Dict[str, Any] = {}
                 try:
                     timeout_snapshot = self._review_surface_state()
                 except Exception:
                     timeout_snapshot = {}
+                try:
+                    assert self._page is not None
+                    timeout_body = self._page.locator('body').inner_text(timeout=1200)
+                    pending_after = self._extract_pending_count(timeout_body)
+                    member_after = self._extract_member_count(timeout_body)
+                    all_phones = self._extract_all_phones(timeout_body)
+                    verification_snapshot = {
+                        'pending_count': pending_after,
+                        'member_count': member_after,
+                        'all_phones_normalized': all_phones,
+                        'body_excerpt': timeout_body[-2500:],
+                        'queue_delta': bool(
+                            pending_before is not None
+                            and pending_after is not None
+                            and int(pending_after) < int(pending_before)
+                        ),
+                        'member_confirmed': bool(target_phone and target_phone in all_phones),
+                        'member_confirmation_source': 'body_phone_match' if bool(target_phone and target_phone in all_phones) else '',
+                    }
+                    if verification_snapshot['queue_delta'] and not verification_snapshot['member_confirmed'] and self._selected_candidate_exact_phone_match(
+                        target_phone=target_phone,
+                        target_confirmation_hint=target_confirmation_hint,
+                    ):
+                        verification_snapshot['member_confirmed'] = True
+                        verification_snapshot['member_confirmation_source'] = 'selected_candidate_exact_phone_match'
+                except Exception:
+                    verification_snapshot = {}
                 self._reset_browser(f'playwright_timeout:{exc}')
                 finished_at = datetime.now(timezone.utc).isoformat()
+                queue_delta = bool(verification_snapshot.get('queue_delta'))
+                member_confirmed = bool(verification_snapshot.get('member_confirmed'))
+                verified = bool(queue_delta and member_confirmed)
                 return {
-                    'status': 'failed',
-                    'verified': False,
-                    'result_code': 'playwright_timeout',
-                    'result_reason': str(exc),
+                    'status': 'success' if verified else 'failed',
+                    'verified': verified,
+                    'result_code': 'approved' if verified else 'playwright_timeout',
+                    'result_reason': 'queue delta and member confirmation verified after timeout salvage' if verified else str(exc),
                     'finished_at': finished_at,
+                    'approved_at': finished_at if verified else None,
+                    'approved_count': int(context.get('approved_count') or 1),
                     'elapsed_seconds': round(time.perf_counter() - started, 2),
+                    'queue_delta': queue_delta,
+                    'member_confirmed': member_confirmed,
+                    'member_confirmation_source': verification_snapshot.get('member_confirmation_source') or '',
+                    'target_member': {
+                        'name': target_name,
+                        'phone_raw': target_phone_raw,
+                        'phone_normalized': target_phone,
+                    },
                     'raw_result': {
+                        'approval_run_id': approval_run_id,
+                        'start_snapshot': start_snapshot,
                         'timeout_snapshot': timeout_snapshot,
+                        'pending_before': pending_before,
+                        'member_count_before': member_before,
+                        'pending_after': verification_snapshot.get('pending_count'),
+                        'member_count_after': verification_snapshot.get('member_count'),
+                        'verification_snapshot': verification_snapshot,
+                        'all_phones_normalized': verification_snapshot.get('all_phones_normalized') or [],
+                        'member_confirmation_source': verification_snapshot.get('member_confirmation_source') or '',
+                        'verification_excerpt': verification_snapshot.get('body_excerpt') or timeout_snapshot.get('body_excerpt', ''),
+                        'row_text_excerpt': row_text[-800:],
+                        'candidate_rows': candidate_rows,
+                        'selected_candidate': selected_candidate,
+                        'selection_reason': selection_reason,
                         'stage_timings': dict(stage_marks),
                     },
                 }
@@ -690,6 +1329,8 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
                     'finished_at': finished_at,
                     'elapsed_seconds': round(time.perf_counter() - started, 2),
                     'raw_result': {
+                        'approval_run_id': approval_run_id,
+                        'start_snapshot': start_snapshot,
                         'error_snapshot': error_snapshot,
                         'stage_timings': dict(stage_marks),
                     },

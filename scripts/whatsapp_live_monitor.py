@@ -21,7 +21,6 @@ from app.whatsapp_live_monitor import (
     summarize_monitor_result,
     update_first_seen_at,
 )
-from playwright.async_api import async_playwright
 
 
 def _safe_rmtree(path: Path, *, attempts: int = 5, delay_seconds: float = 0.2) -> None:
@@ -64,11 +63,57 @@ async def _enter_groups_tab(page, *, navigation_wait_ms: int = 120, timeout_ms: 
         await page.wait_for_timeout(120)
 
 
+async def _page_ready_for_group_info(page) -> bool:
+    try:
+        group_info_visible = bool(await page.get_by_text('群组信息', exact=True).count())
+    except Exception:
+        group_info_visible = False
+    try:
+        pending_section_visible = bool(await page.get_by_text('待处理请求', exact=True).count())
+    except Exception:
+        pending_section_visible = False
+    try:
+        empty_queue_visible = bool(await page.get_by_text('没有要审核的成员', exact=True).count())
+    except Exception:
+        empty_queue_visible = False
+    try:
+        contact_info_visible = bool(await page.get_by_text('联系人信息', exact=True).count())
+    except Exception:
+        contact_info_visible = False
+    if contact_info_visible and not group_info_visible and not pending_section_visible and not empty_queue_visible:
+        return False
+    return bool(group_info_visible or pending_section_visible or empty_queue_visible)
+
+
+async def _ensure_group_info(page, *, navigation_wait_ms: int = 120, timeout_ms: int = 4000) -> str:
+    if await _page_ready_for_group_info(page):
+        return 'already_open'
+    deadline = time.perf_counter() + max(timeout_ms, 300) / 1000.0
+    last_error = None
+    while True:
+        try:
+            await page.locator('[data-testid="conversation-header"]').click(timeout=min(timeout_ms, 1200))
+            await page.wait_for_timeout(max(navigation_wait_ms, 120))
+            if await _page_ready_for_group_info(page):
+                return 'conversation_header'
+        except Exception as exc:
+            last_error = exc
+        try:
+            await page.locator('[data-testid="conversation-subheader"]').click(timeout=min(timeout_ms, 1200))
+            await page.wait_for_timeout(max(navigation_wait_ms, 120))
+            if await _page_ready_for_group_info(page):
+                return 'conversation_subheader'
+        except Exception as exc:
+            last_error = exc
+        if time.perf_counter() >= deadline:
+            raise RuntimeError(f'unable to open group info surface: {last_error}')
+        await page.wait_for_timeout(120)
+
+
 async def inspect_group(page, *, list_item_index: int) -> dict:
     await page.locator('[data-testid="chat-list"] [data-testid="list-item-%d"]' % list_item_index).click()
     await page.wait_for_timeout(2500)
-    await page.locator('[data-testid="conversation-header"]').click()
-    await page.wait_for_timeout(3000)
+    info_surface_opened_via = await _ensure_group_info(page, navigation_wait_ms=800, timeout_ms=4000)
     body = await page.locator('body').inner_text()
     title = ''
     try:
@@ -84,10 +129,13 @@ async def inspect_group(page, *, list_item_index: int) -> dict:
         'title': title,
         'subtitle': subtitle,
         'body_text': body,
+        'info_surface_opened_via': info_surface_opened_via,
     }
 
 
 async def run(args) -> int:
+    from playwright.async_api import async_playwright
+
     src_root = Path(args.chrome_user_data_root).expanduser()
     dst_root = _allocate_run_temp_user_data_dir(Path(args.temp_user_data_dir))
     state_path = Path(args.state_path).expanduser()

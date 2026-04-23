@@ -1494,6 +1494,7 @@ class RegistrationGroupApprovalBatchRequest(BaseModel):
     approved_at: str
     area: str = "Indonesia"
     remark: Optional[str] = None
+    approval_run_id: Optional[str] = None
 
 
 class RegistrationGroupApprovalDecisionRequest(BaseModel):
@@ -1506,6 +1507,8 @@ class RegistrationGroupApprovalDecisionRequest(BaseModel):
     source_campaign: Optional[str] = None
     source_adset: Optional[str] = None
     source_ad: Optional[str] = None
+    target_name_hint: Optional[str] = None
+    target_phone_hint: Optional[str] = None
     approved_count: int = 1
     area: str = 'Indonesia'
     remark: Optional[str] = None
@@ -6197,6 +6200,7 @@ class Service:
                     'approved_at': payload.approved_at,
                     'area': payload.area,
                     'remark': payload.remark,
+                    'approval_run_id': payload.approval_run_id,
                     'crm_payload': crm_payload,
                 },
                 response_snapshot=crm_response,
@@ -6207,6 +6211,21 @@ class Service:
             'crm_sync_status': 'success' if crm_response.get('code') == 0 else 'failed',
             'crm_payload': crm_payload,
             'crm_response': crm_response,
+            'approval_run_id': payload.approval_run_id,
+            'request_snapshot': {
+                'registration_group': payload.registration_group,
+                'approved_count': payload.approved_count,
+                'approved_by': payload.approved_by,
+                'approved_by_name': payload.approved_by_name,
+                'source_platform': payload.source_platform,
+                'source_campaign': payload.source_campaign,
+                'source_adset': payload.source_adset,
+                'source_ad': payload.source_ad,
+                'approved_at': payload.approved_at,
+                'area': payload.area,
+                'remark': payload.remark,
+                'approval_run_id': payload.approval_run_id,
+            },
             'elapsed_seconds': elapsed_seconds,
         }
 
@@ -6273,6 +6292,45 @@ class Service:
         health['warmup_supported'] = False
         return health
 
+    def _registration_group_approval_evidence_summary(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        raw_result = dict((result or {}).get('raw_result') or {})
+        pending_before = raw_result.get('pending_before')
+        pending_after = raw_result.get('pending_after')
+        member_count_before = raw_result.get('member_count_before')
+        member_count_after = raw_result.get('member_count_after')
+        queue_delta = bool(result.get('queue_delta'))
+        if not queue_delta and pending_before is not None and pending_after is not None:
+            try:
+                queue_delta = int(pending_after) < int(pending_before)
+            except Exception:
+                queue_delta = False
+        member_count_delta = None
+        if member_count_before is not None and member_count_after is not None:
+            try:
+                member_count_delta = int(member_count_after) - int(member_count_before)
+            except Exception:
+                member_count_delta = None
+        member_confirmed = bool(result.get('member_confirmed'))
+        target_member = dict((result or {}).get('target_member') or {})
+        approval_may_have_executed = bool(
+            queue_delta
+            or member_confirmed
+            or (member_count_delta is not None and member_count_delta > 0)
+        )
+        return {
+            'pending_before': pending_before,
+            'pending_after': pending_after,
+            'member_count_before': member_count_before,
+            'member_count_after': member_count_after,
+            'queue_delta': queue_delta,
+            'member_count_delta': member_count_delta,
+            'member_confirmed': member_confirmed,
+            'approval_may_have_executed': approval_may_have_executed,
+            'target_member_name': target_member.get('name'),
+            'target_member_phone_raw': target_member.get('phone_raw'),
+            'target_member_phone_normalized': target_member.get('phone_normalized'),
+        }
+
     def registration_group_approval_decision(self, payload: RegistrationGroupApprovalDecisionRequest) -> Dict[str, Any]:
         started = time.perf_counter()
         decision = str(payload.decision or 'approve').strip().lower() or 'approve'
@@ -6281,6 +6339,7 @@ class Service:
         executor = self.registration_group_approval_executor
         if executor is None:
             raise HTTPException(status_code=400, detail='registration group approval executor not configured')
+        approval_run_id = f"registration_group_approval_{uuid.uuid4().hex[:12]}"
         execution_context = {
             'registration_group': payload.registration_group,
             'decision': decision,
@@ -6291,10 +6350,13 @@ class Service:
             'source_campaign': payload.source_campaign,
             'source_adset': payload.source_adset,
             'source_ad': payload.source_ad,
+            'target_name_hint': payload.target_name_hint,
+            'target_phone_hint': payload.target_phone_hint,
             'approved_count': payload.approved_count,
             'area': payload.area,
             'remark': payload.remark,
             'force_immediate': payload.force_immediate,
+            'approval_run_id': approval_run_id,
         }
         if hasattr(executor, 'approve') and callable(getattr(executor, 'approve')):
             result = executor.approve(execution_context)
@@ -6304,9 +6366,25 @@ class Service:
             raise HTTPException(status_code=500, detail='registration group approval executor is not callable')
         if not isinstance(result, dict):
             raise HTTPException(status_code=500, detail='registration group approval executor must return dict result')
+        raw_result = dict(result.get('raw_result') or {})
+        raw_result.setdefault('approval_run_id', approval_run_id)
         verified = bool(result.get('verified'))
+        evidence_summary = self._registration_group_approval_evidence_summary({**result, 'raw_result': raw_result})
+        raw_result.setdefault('evidence_summary', evidence_summary)
+        verification_pending = bool(not verified and evidence_summary.get('approval_may_have_executed'))
         executed = True
-        approved_count = max(1, int(result.get('approved_count') or payload.approved_count or 1))
+        requested_approved_count = max(1, int(result.get('approved_count') or payload.approved_count or 1))
+        observed_queue_consumed_count = None
+        pending_before = evidence_summary.get('pending_before')
+        pending_after = evidence_summary.get('pending_after')
+        if pending_before is not None and pending_after is not None:
+            try:
+                observed_queue_consumed_count = max(0, int(pending_before) - int(pending_after))
+            except Exception:
+                observed_queue_consumed_count = None
+        approved_count = requested_approved_count
+        if verified and observed_queue_consumed_count and observed_queue_consumed_count > approved_count:
+            approved_count = observed_queue_consumed_count
         approved_at = str(result.get('approved_at') or result.get('finished_at') or payload.decided_at)
         target_member = result.get('target_member') or {}
         resolved_source_ad = payload.source_ad or ' '.join(
@@ -6315,6 +6393,13 @@ class Service:
                 str(target_member.get('phone_raw') or '').strip(),
             ] if part
         ) or None
+        response_status = result.get('status')
+        response_code = result.get('result_code')
+        response_reason = result.get('result_reason')
+        if verification_pending:
+            response_status = 'pending_verification'
+            response_code = 'approval_consumed_waiting_verification'
+            response_reason = 'approval likely executed but strict verification is still pending'
         crm_batch = None
         crm_recorded = False
         crm_elapsed_seconds = 0.0
@@ -6332,6 +6417,7 @@ class Service:
                     approved_at=approved_at,
                     area=payload.area,
                     remark=payload.remark,
+                    approval_run_id=approval_run_id,
                 )
             )
             crm_elapsed_seconds = round(float(crm_batch.get('elapsed_seconds') or 0.0), 3)
@@ -6340,12 +6426,14 @@ class Service:
         return {
             'registration_group': payload.registration_group,
             'decision': decision,
+            'approval_run_id': approval_run_id,
             'executed': executed,
             'verified': verified,
+            'verification_pending': verification_pending,
             'crm_recorded': crm_recorded,
-            'status': result.get('status'),
-            'result_code': result.get('result_code'),
-            'result_reason': result.get('result_reason'),
+            'status': response_status,
+            'result_code': response_code,
+            'result_reason': response_reason,
             'approved_count': approved_count,
             'approved_at': approved_at,
             'elapsed_seconds': result.get('elapsed_seconds'),
@@ -6353,7 +6441,8 @@ class Service:
             'total_elapsed_seconds': total_elapsed_seconds,
             'force_immediate': payload.force_immediate,
             'target_member': target_member,
-            'raw_result': result.get('raw_result') or {},
+            'evidence_summary': evidence_summary,
+            'raw_result': raw_result,
             'crm_batch': crm_batch,
         }
 

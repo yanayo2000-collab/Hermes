@@ -5773,7 +5773,29 @@ def test_registration_group_approval_decision_executes_executor_and_records_crm_
     from app.main import create_app
 
     crm = StubCrmAdapter()
-    executor = StubRegistrationGroupApprovalExecutor()
+    executor = StubRegistrationGroupApprovalExecutor({
+        'status': 'success',
+        'verified': True,
+        'result_code': 'approved',
+        'result_reason': 'verified',
+        'finished_at': '2026-04-22T07:03:11.784759+00:00',
+        'approved_at': '2026-04-22T07:03:11.784759+00:00',
+        'approved_count': 1,
+        'elapsed_seconds': 8.4,
+        'queue_delta': True,
+        'member_confirmed': True,
+        'target_member': {
+            'name': '~Eastion',
+            'phone_raw': '+86 138 6064 0933',
+            'phone_normalized': '+861****0933',
+        },
+        'raw_result': {
+            'pending_before': 2,
+            'pending_after': 0,
+            'member_count_before': 4,
+            'member_count_after': 6,
+        },
+    })
     app = create_app({
         'DB_PATH': ':memory:',
         'CRM_ADAPTER': crm,
@@ -5792,6 +5814,9 @@ def test_registration_group_approval_decision_executes_executor_and_records_crm_
             'source_campaign': 'registration_group_live_prod_test_force_approve',
             'source_adset': '8️⃣5️⃣',
             'source_ad': '~Eastion +86 138 6064 0933',
+            'target_name_hint': '~Eastion',
+            'target_phone_hint': '+86 138 6064 0933',
+            'approved_count': 1,
             'area': 'Indonesia',
             'remark': 'forced approval by operator instruction',
         },
@@ -5804,8 +5829,15 @@ def test_registration_group_approval_decision_executes_executor_and_records_crm_
     assert body['crm_recorded'] is True
     assert body['crm_batch']['crm_sync_status'] == 'success'
     assert body['elapsed_seconds'] == 8.4
+    assert body['approval_run_id'].startswith('registration_group_approval_')
+    assert body['crm_batch']['approval_run_id'] == body['approval_run_id']
+    assert body['crm_batch']['request_snapshot']['approval_run_id'] == body['approval_run_id']
     assert executor.calls[0]['registration_group'] == '8️⃣5️⃣'
-    assert ('create_registration_group_batch', {'area': 'Indonesia', 'groupNo': '8️⃣5️⃣', 'groupPeopleNum': '1'}) in crm.calls
+    assert executor.calls[0]['approval_run_id'] == body['approval_run_id']
+    assert executor.calls[0]['target_name_hint'] == '~Eastion'
+    assert executor.calls[0]['target_phone_hint'] == '+86 138 6064 0933'
+    assert body['approved_count'] == 2
+    assert ('create_registration_group_batch', {'area': 'Indonesia', 'groupNo': '8️⃣5️⃣', 'groupPeopleNum': '2'}) in crm.calls
 
 
 def test_registration_group_approval_decision_does_not_write_crm_when_verification_fails():
@@ -5825,7 +5857,7 @@ def test_registration_group_approval_decision_does_not_write_crm_when_verificati
         'target_member': {
             'name': '~Eastion',
             'phone_raw': '+86 138 6064 0933',
-            'phone_normalized': '+8613860640933',
+            'phone_normalized': '+861****0933',
         },
         'raw_result': {
             'pending_before': 1,
@@ -5855,7 +5887,169 @@ def test_registration_group_approval_decision_does_not_write_crm_when_verificati
     assert body['executed'] is True
     assert body['verified'] is False
     assert body['crm_recorded'] is False
+    assert body['verification_pending'] is False
     assert all(name != 'create_registration_group_batch' for name, _ in crm.calls)
+
+
+def test_registration_group_approval_decision_does_not_write_crm_when_review_target_is_ambiguous():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    executor = StubRegistrationGroupApprovalExecutor({
+        'status': 'failed',
+        'verified': False,
+        'result_code': 'ambiguous_review_target',
+        'result_reason': 'multiple actionable review rows remained without a unique exact match',
+        'finished_at': '2026-04-22T07:03:11.784759+00:00',
+        'approved_count': 1,
+        'elapsed_seconds': 7.3,
+        'queue_delta': False,
+        'member_confirmed': False,
+        'raw_result': {
+            'pending_before': 2,
+            'member_count_before': 4,
+            'candidate_rows': [
+                {'index': 0, 'display_name': '~G2', 'phones': ['+852****8277'], 'actionable': True},
+                {'index': 1, 'display_name': '~G3', 'phones': ['+852****8899'], 'actionable': True},
+            ],
+        },
+    })
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+
+    response = client.post(
+        '/api/registration-groups/approval-decisions',
+        json={
+            'registration_group': '8️⃣5️⃣',
+            'decided_at': '2026-04-22T07:00:36.073643+00:00',
+            'source_platform': 'whatsapp',
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['verified'] is False
+    assert body['verification_pending'] is False
+    assert body['result_code'] == 'ambiguous_review_target'
+    assert body['crm_recorded'] is False
+    assert all(name != 'create_registration_group_batch' for name, _ in crm.calls)
+
+
+def test_registration_group_approval_decision_marks_consumed_waiting_verification_when_queue_was_consumed():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    executor = StubRegistrationGroupApprovalExecutor({
+        'status': 'failed',
+        'verified': False,
+        'result_code': 'approval_not_verified',
+        'result_reason': 'strict verification failed after approve click',
+        'finished_at': '2026-04-22T07:03:11.784759+00:00',
+        'approved_count': 2,
+        'elapsed_seconds': 11.2,
+        'queue_delta': True,
+        'member_confirmed': False,
+        'target_member': {
+            'name': '~Eastion',
+            'phone_raw': '+86 138 6064 0933',
+            'phone_normalized': '+861****0933',
+        },
+        'raw_result': {
+            'pending_before': 2,
+            'pending_after': 0,
+            'member_count_before': 4,
+            'member_count_after': 6,
+            'verification_excerpt': 'queue drained but target phone not yet visible',
+        },
+    })
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+
+    response = client.post(
+        '/api/registration-groups/approval-decisions',
+        json={
+            'registration_group': '8️⃣5️⃣',
+            'decided_at': '2026-04-22T07:00:36.073643+00:00',
+            'source_platform': 'whatsapp',
+            'approved_count': 2,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['verified'] is False
+    assert body['verification_pending'] is True
+    assert body['status'] == 'pending_verification'
+    assert body['result_code'] == 'approval_consumed_waiting_verification'
+    assert body['crm_recorded'] is False
+    assert body['evidence_summary']['queue_delta'] is True
+    assert body['evidence_summary']['member_count_delta'] == 2
+    assert all(name != 'create_registration_group_batch' for name, _ in crm.calls)
+
+
+def test_registration_group_approval_decision_records_crm_when_timeout_still_salvages_full_verification_evidence():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    executor = StubRegistrationGroupApprovalExecutor({
+        'status': 'success',
+        'verified': True,
+        'result_code': 'approved',
+        'result_reason': 'queue delta and member confirmation verified after timeout salvage',
+        'finished_at': '2026-04-22T07:03:11.784759+00:00',
+        'approved_count': 2,
+        'elapsed_seconds': 18.4,
+        'queue_delta': True,
+        'member_confirmed': True,
+        'target_member': {
+            'name': '~G2',
+            'phone_raw': '+852 4456 8277',
+            'phone_normalized': '+852****8277',
+        },
+        'raw_result': {
+            'pending_before': 2,
+            'pending_after': 0,
+            'member_count_before': 4,
+            'member_count_after': 6,
+            'verification_excerpt': '联系人信息\n+852 4456 8277\n6位成员',
+        },
+    })
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+
+    response = client.post(
+        '/api/registration-groups/approval-decisions',
+        json={
+            'registration_group': '8️⃣5️⃣',
+            'decided_at': '2026-04-22T07:00:36.073643+00:00',
+            'source_platform': 'whatsapp',
+            'approved_count': 2,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['verified'] is True
+    assert body['verification_pending'] is False
+    assert body['status'] == 'success'
+    assert body['result_code'] == 'approved'
+    assert body['crm_recorded'] is True
+    assert body['evidence_summary']['queue_delta'] is True
+    assert body['evidence_summary']['member_confirmed'] is True
+    assert body['evidence_summary']['member_count_delta'] == 2
+    assert ('create_registration_group_batch', {'area': 'Indonesia', 'groupNo': '8️⃣5️⃣', 'groupPeopleNum': '2'}) in crm.calls
 
 
 class SlowStubCrmAdapter(StubCrmAdapter):
@@ -6209,7 +6403,14 @@ def test_ops_page_serves_minimal_console_html():
     assert response.status_code == 200
     assert 'text/html' in response.headers['content-type']
     body = response.text
-    assert '运营操作台 MVP' in body
+    assert '运营工作台' in body
+    assert 'page-shell' in body
+    assert 'shell-nav' in body
+    assert '工作台总览' in body
+    assert '处理队列' in body
+    assert '客服通知' in body
+    assert 'queue-overview-grid' in body
+    assert 'queue-layout' in body
     assert '/api/ops/bind-queue' in body
     assert '/api/ops/group-queue' in body
     assert '/api/ops/dashboard/summary' in body
@@ -8127,6 +8328,13 @@ def test_intake_bot_presets_page_uses_dropdown_selects_for_app_and_guild():
 
     assert response.status_code == 200
     body = response.text
+    assert '收口配置中心' in body
+    assert 'page-shell' in body
+    assert 'shell-nav' in body
+    assert '配置概况' in body
+    assert '机器人配置列表' in body
+    assert '执行器总览' in body
+    assert 'config-workspace' in body
     assert 'presetFieldHtml(' in body
     assert 'data.app_options' in body
     assert 'data.guild_options' in body

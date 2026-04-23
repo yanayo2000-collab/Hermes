@@ -52,8 +52,17 @@ def update_first_seen_at(
 
 def parse_pending_requests(body_text: str) -> Dict[str, Any]:
     text = str(body_text or '')
-    has_pending_section = '待处理请求' in text
-    relevant_text = text.split('待处理请求', 1)[1] if has_pending_section else ''
+    panel_text = text.rsplit('群组信息', 1)[1] if '群组信息' in text else text
+    has_pending_section = '待处理请求' in panel_text
+    relevant_text = panel_text.rsplit('待处理请求', 1)[1] if has_pending_section else ''
+    if '没有要审核的成员' in relevant_text:
+        return {
+            'pending_count': 0,
+            'requesters': [],
+            'phone_numbers': [],
+            'has_pending_section': has_pending_section,
+            'has_review_actions': False,
+        }
     requesters: List[str] = []
     for match in REQUEST_JOIN_PATTERN.finditer(relevant_text):
         name = str(match.group('name') or '').strip()
@@ -65,7 +74,7 @@ def parse_pending_requests(body_text: str) -> Dict[str, Any]:
         if normalized not in phones:
             phones.append(normalized)
     pending_count = 0
-    pending_match = re.search(r'待处理请求\s*(\d+)', text)
+    pending_match = re.search(r'待处理请求\s*(\d+)', panel_text)
     if pending_match:
         pending_count = int(pending_match.group(1))
     elif has_pending_section and requesters:

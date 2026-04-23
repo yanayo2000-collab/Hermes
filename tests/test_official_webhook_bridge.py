@@ -554,7 +554,12 @@ def test_official_group_bridge_dashboard_page_loads():
     response = client.get('/ops/official-group-bridge')
     assert response.status_code == 200
     text = response.text
-    assert '官方群审批桥接操作台' in text
+    assert '官方群审批桥接台' in text
+    assert 'page-shell' in text
+    assert 'shell-nav' in text
+    assert '桥接概况' in text
+    assert '请求队列' in text
+    assert '处理面板' in text
     assert '/ops/official-group-bridge/requests' in text
     assert '/ops/official-group-bridge/summary' in text
     assert '待处理请求' in text

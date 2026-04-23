@@ -104,3 +104,61 @@ def test_update_first_seen_at_clears_when_pending_drops_to_zero(tmp_path: Path):
     assert cleared is None
     reloaded = load_monitor_state(state_path)
     assert reloaded['8️⃣5️⃣']['first_seen_at'] is None
+
+
+def test_parse_pending_requests_returns_zero_when_empty_queue_banner_is_visible():
+    body = """
+    聊天历史
+    ~Eastion
+    请求加入。点击以审核。
+    待处理请求
+    没有要审核的成员
+    请求加入该群组且等待批准的用户将在此显示。
+    +86 138 6064 0933
+    """
+
+    parsed = parse_pending_requests(body)
+
+    assert parsed["pending_count"] == 0
+    assert parsed["requesters"] == []
+    assert parsed["phone_numbers"] == []
+    assert parsed["has_pending_section"] is True
+
+
+def test_parse_pending_requests_prefers_last_pending_section_over_historical_one():
+    body = """
+    聊天历史
+    待处理请求
+    通过邀请链接
+    +852 6775 5475
+    ~G2
+    由+852 6775 5475添加
+    更多历史
+    待处理请求
+    没有要审核的成员
+    请求加入该群组且等待批准的用户将在此显示。
+    """
+
+    parsed = parse_pending_requests(body)
+
+    assert parsed["pending_count"] == 0
+    assert parsed["requesters"] == []
+    assert parsed["phone_numbers"] == []
+
+
+def test_parse_pending_requests_ignores_historical_chat_rows_once_group_info_panel_is_open():
+    body = """
+    聊天历史
+    ~Eastion
+    请求加入。点击以审核。
+    群组信息
+    群组 · 6位成员
+    添加成员
+    使用链接邀请加入群组
+    """
+
+    parsed = parse_pending_requests(body)
+
+    assert parsed["pending_count"] == 0
+    assert parsed["requesters"] == []
+    assert parsed["phone_numbers"] == []
