@@ -43,6 +43,27 @@ def _allocate_run_temp_user_data_dir(base_dir: Path) -> Path:
     return Path(tempfile.mkdtemp(prefix=f'{base_dir.name}-', dir=str(base_dir.parent)))
 
 
+async def _enter_groups_tab(page, *, navigation_wait_ms: int = 120, timeout_ms: int = 5000) -> str:
+    deadline = time.perf_counter() + max(timeout_ms, 200) / 1000.0
+    last_error = None
+    while True:
+        try:
+            await page.get_by_role('tab', name='群组').click(timeout=min(timeout_ms, 1200))
+            await page.wait_for_timeout(max(navigation_wait_ms, 120))
+            return 'role'
+        except Exception as exc:
+            last_error = exc
+        try:
+            await page.get_by_text('群组', exact=True).click(timeout=min(timeout_ms, 1200))
+            await page.wait_for_timeout(max(navigation_wait_ms, 120))
+            return 'text_fallback'
+        except Exception as exc:
+            last_error = exc
+        if time.perf_counter() >= deadline:
+            raise RuntimeError(f'unable to open groups tab: {last_error}')
+        await page.wait_for_timeout(120)
+
+
 async def inspect_group(page, *, list_item_index: int) -> dict:
     await page.locator('[data-testid="chat-list"] [data-testid="list-item-%d"]' % list_item_index).click()
     await page.wait_for_timeout(2500)
@@ -91,8 +112,7 @@ async def run(args) -> int:
                 page = context.pages[0] if context.pages else await context.new_page()
                 await page.goto('https://web.whatsapp.com/', wait_until='domcontentloaded', timeout=60000)
                 await page.wait_for_timeout(args.initial_wait_ms)
-                await page.get_by_role('tab', name='群组').click(timeout=5000)
-                await page.wait_for_timeout(1500)
+                await _enter_groups_tab(page, navigation_wait_ms=1500, timeout_ms=5000)
 
                 reg = await inspect_group(page, list_item_index=args.registration_list_item_index)
                 reg_now = datetime.now(timezone.utc)
@@ -114,8 +134,7 @@ async def run(args) -> int:
                 reg_result['subtitle'] = reg['subtitle']
                 reg_result['has_pending_request_row'] = '请求加入。点击以审核。' in reg['body_text']
 
-                await page.get_by_role('tab', name='群组').click(timeout=5000)
-                await page.wait_for_timeout(1200)
+                await _enter_groups_tab(page, navigation_wait_ms=1200, timeout_ms=5000)
                 off = await inspect_group(page, list_item_index=args.official_list_item_index)
                 off_now = datetime.now(timezone.utc)
                 off_probe = summarize_monitor_result(args.official_group_name, off['body_text'], first_seen_at=None, now=off_now)

@@ -2112,7 +2112,7 @@ def test_lark_event_does_not_reply_success_when_crm_sync_fails_after_bind_succes
     assert body['reason'] == 'crm_sync_failed'
     assert body['next_action'] == 'retry_crm_sync'
     assert reply.calls
-    assert reply.calls[0]['text'].startswith('**❌ CRM sync failed: CRM write was rejected.**')
+    assert reply.calls[0]['text'].startswith('**❌ CRM Failed**')
 
 
 
@@ -2157,6 +2157,232 @@ def test_process_next_automation_task_executes_pending_bind_task_and_updates_res
     bind_task = next(task for task in timeline['tasks'] if task['task_id'] == body['task_id'])
     assert bind_task['status'] == 'failed'
     assert bind_task['result_reason'] == 'AxiosError: Request failed with status code 401'
+
+
+
+def test_process_next_automation_task_retryable_crm_failure_queues_auto_retry_without_immediate_reply():
+    class RetryableCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+            self.create_attempts = 0
+        def get_apps(self):
+            return list(self.apps)
+        def get_depts(self):
+            return list(self.depts)
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            self.create_attempts += 1
+            return {"code": 500, "msg": "服务器内部异常", "data": None}
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            return None
+
+    reply = StubLarkReplyAdapter()
+    crm = RetryableCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "LARK_APP_ID": "cli_test",
+        "LARK_REPLY_ADAPTER": reply,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "CRM_RETRY_DELAYS_SECONDS": [0, 0, 0],
+        "CRM_RETRY_MAX_ATTEMPTS": 3,
+        "AUTO_BIND_SIMULATION": True,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"], "deptId": "dept_1"},
+        },
+    })
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_crm_retry_pending'}},
+            'message': {
+                'message_id': 'om_crm_retry_pending',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nPiso-25\\n45678901\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['lead_status'] == 'bind_success'
+    assert body['next_action'] == 'queue_crm_sync_retry'
+    assert reply.calls == []
+
+    timeline = client.get(f"/api/leads/{body['lead_id']}/timeline").json()
+    retry_tasks = [task for task in timeline['tasks'] if task['task_type'] == 'crm_sync_retry']
+    assert len(retry_tasks) == 1
+    assert retry_tasks[0]['status'] == 'pending'
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed is not None
+    assert processed['lead_status'] == 'bind_success'
+    assert processed['reason'] == 'crm_sync_retry_pending'
+    assert processed['next_action'] == 'queue_crm_sync_retry'
+    assert reply.calls == []
+
+    timeline = client.get(f"/api/leads/{body['lead_id']}/timeline").json()
+    retry_tasks = [task for task in timeline['tasks'] if task['task_type'] == 'crm_sync_retry']
+    assert len(retry_tasks) == 1
+    assert retry_tasks[0]['status'] == 'pending'
+
+
+
+def test_process_next_automation_task_executes_due_crm_retry_and_replies_success_after_verification():
+    class FlakyRetryableCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+            self.create_attempts = 0
+        def get_apps(self):
+            return list(self.apps)
+        def get_depts(self):
+            return list(self.depts)
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            self.create_attempts += 1
+            if self.create_attempts == 1:
+                return {"code": 500, "msg": "服务器内部异常", "data": None}
+            return {"code": 0, "msg": "success", "data": None}
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            if self.create_attempts >= 2:
+                return {
+                    "id": "crm_retry_ok_2",
+                    "ywId": yw_id,
+                    "mobile": mobile,
+                    "appName": "Linky",
+                    "deptName": "Piso",
+                    "pendaftaranGroup": "Piso-25",
+                }
+            return None
+
+    reply = StubLarkReplyAdapter()
+    crm = FlakyRetryableCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "LARK_APP_ID": "cli_test",
+        "LARK_REPLY_ADAPTER": reply,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "CRM_RETRY_DELAYS_SECONDS": [0, 0, 0],
+        "CRM_RETRY_MAX_ATTEMPTS": 3,
+        "AUTO_BIND_SIMULATION": True,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"], "deptId": "dept_1"},
+        },
+    })
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_crm_retry_ok'}},
+            'message': {
+                'message_id': 'om_crm_retry_ok',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nPiso-25\\n45678901\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['lead_status'] == 'bind_success'
+    assert body['next_action'] == 'queue_crm_sync_retry'
+    assert reply.calls == []
+
+    first = client.app.state.service.process_next_automation_task()
+    assert first is not None
+    assert first['next_action'] == 'queue_group_join'
+    assert first['crm_verified'] is True
+    assert len(reply.calls) == 1
+    assert reply.calls[0]['text'].startswith('**✅ Success**')
+
+
+
+def test_process_next_automation_task_replies_retry_exhausted_crm_message_after_all_retries_fail():
+    class AlwaysFailRetryableCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+        def get_apps(self):
+            return list(self.apps)
+        def get_depts(self):
+            return list(self.depts)
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            return {"code": 500, "msg": "服务器内部异常", "data": None}
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            return None
+
+    reply = StubLarkReplyAdapter()
+    crm = AlwaysFailRetryableCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "LARK_APP_ID": "cli_test",
+        "LARK_REPLY_ADAPTER": reply,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "CRM_RETRY_DELAYS_SECONDS": [0, 0, 0],
+        "CRM_RETRY_MAX_ATTEMPTS": 3,
+        "AUTO_BIND_SIMULATION": True,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"], "deptId": "dept_1"},
+        },
+    })
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_crm_retry_fail'}},
+            'message': {
+                'message_id': 'om_crm_retry_fail',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nPiso-25\\n45678901\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['next_action'] == 'queue_crm_sync_retry'
+    assert reply.calls == []
+
+    first = client.app.state.service.process_next_automation_task()
+    assert first['next_action'] == 'queue_crm_sync_retry'
+    assert reply.calls == []
+
+    second = client.app.state.service.process_next_automation_task()
+    assert second['next_action'] == 'queue_crm_sync_retry'
+    assert reply.calls == []
+
+    third = client.app.state.service.process_next_automation_task()
+    assert third['reason'] == 'crm_sync_failed'
+    assert third['result_code'] in {'crm_retry_exhausted', 'crm_retry_failed'}
+    assert len(reply.calls) == 1
+    assert reply.calls[0]['text'].startswith('**❌ CRM sync failed: Bind succeeded but CRM retried.**')
 
 
 
@@ -2798,7 +3024,7 @@ def test_lark_event_does_not_reply_success_when_crm_create_returns_success_but_q
     assert body['accepted'] is False
     assert body['reason'] == 'crm_sync_failed'
     assert body['result_reason'] == 'CRM write could not be verified.'
-    assert reply.calls[0]['text'].startswith('**❌ CRM sync failed: CRM write could not be verified.**')
+    assert reply.calls[0]['text'].startswith('**❌ CRM Failed**')
 
 
 def test_lark_event_does_not_treat_mismatched_query_back_row_as_verified_success():
@@ -2862,7 +3088,7 @@ def test_lark_event_does_not_treat_mismatched_query_back_row_as_verified_success
     assert body['accepted'] is False
     assert body['reason'] == 'crm_sync_failed'
     assert body['result_reason'] == 'CRM write could not be verified.'
-    assert reply.calls[0]['text'].startswith('**❌ CRM sync failed: CRM write could not be verified.**')
+    assert reply.calls[0]['text'].startswith('**❌ CRM Failed**')
 
 
 def test_lark_event_uses_english_duplicate_conflict_message_when_crm_reports_duplicate_without_lookup_hit():
@@ -2920,7 +3146,7 @@ def test_lark_event_uses_english_duplicate_conflict_message_when_crm_reports_dup
     assert body['accepted'] is False
     assert body['reason'] == 'crm_sync_failed'
     assert body['result_reason'] == 'Data duplication.'
-    assert reply.calls[0]['text'].startswith('**❌ CRM sync failed: Data duplication.**')
+    assert reply.calls[0]['text'].startswith('**❌ CRM Failed**')
 
 
 def test_lark_event_reuses_cached_crm_app_mapping_when_get_apps_temporarily_fails():
@@ -3106,7 +3332,7 @@ def test_lark_event_replies_in_english_retry_once_when_crm_app_mapping_is_tempor
     assert body['accepted'] is False
     assert body['reason'] == 'crm_sync_failed'
     assert body['result_reason'] == 'Please retry once.'
-    assert reply.calls[0]['text'].startswith('**❌ CRM sync failed: Please retry once.**')
+    assert reply.calls[0]['text'].startswith('**❌ CRM Failed**')
     assert not [name for name, _ in crm.calls if name == 'create_customer']
 
 
@@ -5706,13 +5932,14 @@ def test_create_app_warms_registration_group_executor_when_supported():
     assert executor.warmup_calls == 1
 
 
-def test_create_app_skips_registration_group_executor_warmup_inside_asyncio_loop():
+def test_create_app_warms_registration_group_executor_from_background_thread_inside_asyncio_loop():
     from app.main import create_app
 
     class LoopSensitiveExecutor(StubRegistrationGroupApprovalExecutor):
         def __init__(self):
             super().__init__()
             self.warmup_contexts = []
+            self.warmup_event = threading.Event()
 
         def warmup(self):
             try:
@@ -5721,6 +5948,7 @@ def test_create_app_skips_registration_group_executor_warmup_inside_asyncio_loop
                 self.warmup_contexts.append('outside_asyncio_loop')
             else:
                 self.warmup_contexts.append('inside_asyncio_loop')
+            self.warmup_event.set()
             return {'warmed': True}
 
     executor = LoopSensitiveExecutor()
@@ -5744,7 +5972,8 @@ def test_create_app_skips_registration_group_executor_warmup_inside_asyncio_loop
     app = holder['app']
 
     assert app.state.service.registration_group_approval_executor is executor
-    assert executor.warmup_contexts == []
+    assert executor.warmup_event.wait(timeout=2) is True
+    assert executor.warmup_contexts == ['outside_asyncio_loop']
 
 
 def test_registration_group_approval_executor_health_reports_configured_executor():
@@ -5762,6 +5991,35 @@ def test_registration_group_approval_executor_health_reports_configured_executor
     assert body['configured'] is True
     assert body['status'] == 'warm'
     assert body['provider'] == 'stub'
+
+
+def test_registration_group_approval_executor_warmup_endpoint_calls_executor_warmup():
+    from app.main import create_app
+
+    class WarmableExecutor(StubRegistrationGroupApprovalExecutor):
+        def __init__(self):
+            super().__init__({'status': 'idle', 'provider': 'warmable_stub'})
+            self.warmup_calls = 0
+
+        def warmup(self):
+            self.warmup_calls += 1
+            self.result['status'] = 'warm'
+            return self.health()
+
+    executor = WarmableExecutor()
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+
+    response = client.post('/api/ops/registration-group-approval-executor-warmup')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['configured'] is True
+    assert body['status'] == 'warm'
+    assert body['warmed'] is True
+    assert executor.warmup_calls >= 1
 
 
 def test_live_whatsapp_registration_group_executor_uses_fast_default_timing_profile(monkeypatch):

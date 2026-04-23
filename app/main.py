@@ -9,7 +9,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -1998,7 +1998,15 @@ def _schedule_registration_group_executor_warmup(executor: Any) -> str:
     except RuntimeError:
         _run_registration_group_executor_warmup(executor)
         return 'inline'
-    return 'deferred_inside_asyncio_loop'
+
+    thread = threading.Thread(
+        target=_run_registration_group_executor_warmup,
+        args=(executor,),
+        name='registration-group-executor-warmup',
+        daemon=True,
+    )
+    thread.start()
+    return 'threaded_deferred_inside_asyncio_loop'
 
 
 class LiveLarkReplyAdapter:
@@ -2058,7 +2066,7 @@ class LiveLarkReplyAdapter:
 
 
 class Service:
-    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, registration_group_approval_executor: Any = None, official_group_approval_executor: Any = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False) -> None:
+    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, registration_group_approval_executor: Any = None, official_group_approval_executor: Any = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False, crm_retry_delays_seconds: Optional[List[int]] = None, crm_retry_max_attempts: int = 3) -> None:
         self.db = db
         self.crm_adapter = crm_adapter
         self.ocr_adapter = ocr_adapter
@@ -2084,6 +2092,8 @@ class Service:
         self.crm_username = crm_username
         self.crm_login_error = crm_login_error
         self.require_invite_code = require_invite_code
+        self.crm_retry_delays_seconds = [max(0, int(v)) for v in list(crm_retry_delays_seconds or [5, 10, 20])]
+        self.crm_retry_max_attempts = max(1, int(crm_retry_max_attempts or len(self.crm_retry_delays_seconds) or 1))
         self.ingress_async_default = ingress_async_default
         self.ingress_worker_enabled = ingress_worker_enabled
         self.ingress_worker_poll_interval = max(0.1, float(ingress_worker_poll_interval or 0.5))
@@ -2345,6 +2355,44 @@ class Service:
                 if cursor.rowcount:
                     conn.commit()
                     row['started_at'] = row.get('started_at') or now
+                    row['task_type'] = 'bind_check'
+                    return row
+            return None
+
+    def _select_next_crm_retry_task(self) -> Optional[Dict[str, Any]]:
+        now = utc_now()
+        now_dt = parse_iso_datetime(now)
+        with self.db.connect() as conn:
+            rows = [dict(r) for r in conn.execute(
+                """
+                SELECT t.task_id, t.payload, t.lead_id, t.created_at, t.retry_count, t.result_code, t.result_reason
+                FROM automation_tasks t
+                WHERE t.task_type = 'crm_sync_retry' AND t.status = 'pending'
+                ORDER BY t.created_at ASC
+                LIMIT 200
+                """
+            ).fetchall()]
+            for row in rows:
+                try:
+                    payload = json.loads(row.get('payload') or '{}')
+                except Exception:
+                    payload = {}
+                next_retry_at = str(payload.get('next_retry_at') or '').strip()
+                if next_retry_at:
+                    try:
+                        if parse_iso_datetime(next_retry_at) > now_dt:
+                            continue
+                    except Exception:
+                        pass
+                cursor = conn.execute(
+                    "UPDATE automation_tasks SET status = 'processing', started_at = COALESCE(started_at, ?) WHERE task_id = ? AND status = 'pending'",
+                    (now, row['task_id']),
+                )
+                if cursor.rowcount:
+                    conn.commit()
+                    row['started_at'] = row.get('started_at') or now
+                    row['task_type'] = 'crm_sync_retry'
+                    row['payload_dict'] = payload
                     return row
             return None
 
@@ -2523,54 +2571,59 @@ class Service:
 
     def process_next_automation_task(self) -> Optional[Dict[str, Any]]:
         row = self._select_next_bind_task()
-        if not row:
-            return None
-        try:
-            payload = self._build_bind_execution_result(task_id=row['task_id'])
-            result = self.bind_check_result(row['task_id'], payload)
-        except Exception as exc:
-            payload = BindCheckResultRequest(
-                status='failed',
-                result_code='bind_execution_error',
-                result_reason=str(exc),
-                finished_at=utc_now(),
-                raw_result={},
-            )
-            result = self.bind_check_result(row['task_id'], payload)
-        executor = None
-        with self.db.connect() as conn:
-            lead_row = conn.execute("SELECT dept_name FROM leads WHERE lead_id = ?", (row['lead_id'],)).fetchone()
-        if lead_row:
-            executor = self.get_guild_executor(str(lead_row['dept_name'] or '').strip()) if self.resolve_guild_executor(str(lead_row['dept_name'] or '').strip()) else None
-        task_payload = json.loads(row['payload'] or '{}')
-        source_bot_app_id = str(task_payload.get('source_bot_app_id') or '').strip()
-        message_id = str(task_payload.get('source_message_id') or '').strip()
-        chat_id = str(task_payload.get('source_chat_id') or '').strip()
-        if message_id or chat_id:
-            reply_adapter = self._resolve_lark_reply_adapter(app_id=source_bot_app_id or None)
+        if row:
+            try:
+                payload = self._build_bind_execution_result(task_id=row['task_id'])
+                result = self.bind_check_result(row['task_id'], payload)
+            except Exception as exc:
+                payload = BindCheckResultRequest(
+                    status='failed',
+                    result_code='bind_execution_error',
+                    result_reason=str(exc),
+                    finished_at=utc_now(),
+                    raw_result={},
+                )
+                result = self.bind_check_result(row['task_id'], payload)
+            executor = None
             with self.db.connect() as conn:
-                lead_row = conn.execute("SELECT mobile, area_code, pendaftaran_group, inviter_id FROM leads WHERE lead_id = ?", (row['lead_id'],)).fetchone()
-            reply_envelope = {
-                'accepted': bool(result.get('lead_status') == 'bind_success' and result.get('reason') != 'crm_sync_failed'),
-                'reason': result.get('reason'),
-                'result_reason': result.get('result_reason'),
-                'lead_status': result.get('lead_status'),
-                'next_action': result.get('next_action'),
-                'requires_human_action': result.get('requires_human_action'),
-                'human_action_type': result.get('human_action_type'),
-                'reply_phone': str((lead_row['mobile'] if lead_row else '') or '-'),
-                'reply_area_code': int((lead_row['area_code'] if lead_row and lead_row['area_code'] is not None else 0) or 0),
-                'reply_id': str(task_payload.get('account_id') or '-'),
-                'reply_group': str((lead_row['pendaftaran_group'] if lead_row else '') or '-'),
-                'reply_code': str((lead_row['inviter_id'] if lead_row else '') or '-'),
-            }
-            if self._should_emit_lark_reply(reply_envelope):
-                reply_text = self._format_lark_reply_text(reply_envelope)
-                result['reply_text'] = reply_text
-                self._reply_lark_message(message_id=message_id, chat_id=chat_id, text=reply_text, adapter=reply_adapter)
-        if executor is not None:
-            result['executor'] = executor
-        return result
+                lead_row = conn.execute("SELECT dept_name FROM leads WHERE lead_id = ?", (row['lead_id'],)).fetchone()
+            if lead_row:
+                executor = self.get_guild_executor(str(lead_row['dept_name'] or '').strip()) if self.resolve_guild_executor(str(lead_row['dept_name'] or '').strip()) else None
+            task_payload = json.loads(row['payload'] or '{}')
+            source_bot_app_id = str(task_payload.get('source_bot_app_id') or '').strip()
+            message_id = str(task_payload.get('source_message_id') or '').strip()
+            chat_id = str(task_payload.get('source_chat_id') or '').strip()
+            if message_id or chat_id:
+                reply_adapter = self._resolve_lark_reply_adapter(app_id=source_bot_app_id or None)
+                with self.db.connect() as conn:
+                    lead_row = conn.execute("SELECT mobile, area_code, pendaftaran_group, inviter_id FROM leads WHERE lead_id = ?", (row['lead_id'],)).fetchone()
+                reply_envelope = {
+                    'accepted': bool(result.get('lead_status') == 'bind_success' and result.get('reason') != 'crm_sync_failed'),
+                    'reason': result.get('reason'),
+                    'result_code': result.get('result_code'),
+                    'result_reason': result.get('result_reason'),
+                    'lead_status': result.get('lead_status'),
+                    'next_action': result.get('next_action'),
+                    'requires_human_action': result.get('requires_human_action'),
+                    'human_action_type': result.get('human_action_type'),
+                    'reply_phone': str((lead_row['mobile'] if lead_row else '') or '-'),
+                    'reply_area_code': int((lead_row['area_code'] if lead_row and lead_row['area_code'] is not None else 0) or 0),
+                    'reply_id': str(task_payload.get('account_id') or '-'),
+                    'reply_group': str((lead_row['pendaftaran_group'] if lead_row else '') or '-'),
+                    'reply_code': str((lead_row['inviter_id'] if lead_row else '') or '-'),
+                }
+                if self._should_emit_lark_reply(reply_envelope):
+                    reply_text = self._format_lark_reply_text(reply_envelope)
+                    result['reply_text'] = reply_text
+                    self._reply_lark_message(message_id=message_id, chat_id=chat_id, text=reply_text, adapter=reply_adapter)
+            if executor is not None:
+                result['executor'] = executor
+            return result
+
+        retry_row = self._select_next_crm_retry_task()
+        if not retry_row:
+            return None
+        return self._process_crm_retry_task(retry_row)
 
     def list_ingress_queue(self) -> Dict[str, Any]:
         with self.db.connect() as conn:
@@ -4229,7 +4282,7 @@ class Service:
     def _should_emit_lark_reply(self, result: Dict[str, Any]) -> bool:
         if not isinstance(result, dict):
             return False
-        if str(result.get('next_action') or '').strip() in {'queue_bind_check', 'queue_account_recognition', 'queued_for_processing'}:
+        if str(result.get('next_action') or '').strip() in {'queue_bind_check', 'queue_account_recognition', 'queued_for_processing', 'queue_crm_sync_retry'}:
             return False
         return True
 
@@ -4244,6 +4297,9 @@ class Service:
             or result.get('verified_after_write')
             or result.get('current_submission_crm_verified')
         )
+
+    def _format_operator_crm_failure_reason(self, *, retried: bool = False) -> str:
+        return 'CRM failed after retries. Check manually.' if retried else 'CRM failed. Check manually.'
 
     def _format_lark_reply_text(self, result: Dict[str, Any]) -> str:
         parsed_payload = result.get('parsed_payload') or {}
@@ -4337,9 +4393,10 @@ class Service:
                 f'Code: {code}'
             )
         if result.get('reason') == 'crm_sync_failed':
-            reason_text = str(result.get('result_reason') or 'CRM sync failed').strip() or 'CRM sync failed'
+            result_code = str(result.get('result_code') or '').strip()
+            headline = '**❌ CRM sync failed: Bind succeeded but CRM retried.**' if result_code in {'crm_retry_exhausted', 'crm_retry_failed'} else '**❌ CRM Failed**'
             return (
-                f'**❌ CRM sync failed: {reason_text}**\n'
+                f'{headline}\n'
                 f'Phone: {phone}\n'
                 f'ID: {account_id}\n'
                 f'Group: {group}\n'
@@ -4964,8 +5021,17 @@ class Service:
         task_id: str,
         bind_result_reason: Optional[str],
         bind_raw_result: Optional[Dict[str, Any]],
+        submission_id: Optional[str] = None,
+        reply_context: Optional[Dict[str, Any]] = None,
+        retry_attempt: int = 0,
+        suppress_failure_notification: bool = False,
     ) -> Dict[str, Any]:
         crm_sync_failed = None
+        crm_retry_pending = False
+        crm_retryable = False
+        crm_payload = None
+        crm_response = None
+        verified_row = None
         lead_row = conn.execute("SELECT * FROM leads WHERE lead_id = ?", (lead_id,)).fetchone()
         if self.crm_adapter is not None and lead_row:
             lead_dict = dict(lead_row)
@@ -5011,43 +5077,37 @@ class Service:
                         'mapping_failure': mapping_failure,
                         'resolved_app': resolved_app,
                         'resolved_dept': resolved_dept,
+                        'submission_id': submission_id,
+                        'retry_attempt': retry_attempt,
                     },
                 )
                 crm_sync_failed = mapping_failure
             else:
-                crm_response = self.crm_adapter.create_customer(crm_payload)
-                crm_action = 'create'
-                verified_row = None
-                if crm_response.get('code') == 0:
-                    verified_row = self._find_existing_customer_with_fallback(
-                        yw_id=account_id,
-                        mobile=lead_dict.get('mobile'),
-                        app_name=resolved_app['appName'],
-                        dept_name=resolved_dept['deptName'],
-                        registration_group=lead_dict.get('pendaftaran_group') or '',
-                    )
-                self._record_sync_log(
-                    conn,
-                    lead_id=lead_id,
-                    task_id=task_id,
-                    sync_type='customer_upsert',
-                    target_system='crm',
-                    status='success' if crm_response.get('code') == 0 and verified_row else 'failed',
-                    request_snapshot=crm_payload,
-                    response_snapshot={
-                        'action': crm_action,
-                        'crm_response': crm_response,
-                        'verified_after_write': bool(verified_row),
-                    },
+                verified_row = self._find_existing_customer_with_fallback(
+                    yw_id=account_id,
+                    mobile=lead_dict.get('mobile'),
+                    app_name=resolved_app['appName'],
+                    dept_name=resolved_dept['deptName'],
+                    registration_group=lead_dict.get('pendaftaran_group') or '',
                 )
-                if crm_response.get('code') != 0:
-                    crm_sync_failed = self._normalize_crm_failure_reason(
-                        crm_response,
-                        fallback_found=False,
+                if verified_row:
+                    self._record_sync_log(
+                        conn,
+                        lead_id=lead_id,
+                        task_id=task_id,
+                        sync_type='customer_upsert',
+                        target_system='crm',
+                        status='success',
+                        request_snapshot=crm_payload,
+                        response_snapshot={
+                            'action': 'verify_before_retry',
+                            'crm_response': {'code': 0, 'msg': 'verified_existing_before_retry'},
+                            'verified_after_write': True,
+                            'submission_id': submission_id,
+                            'retry_attempt': retry_attempt,
+                            'reply_context': reply_context or {},
+                        },
                     )
-                elif not verified_row:
-                    crm_sync_failed = 'CRM write could not be verified.'
-                else:
                     self._record_verified_crm_state(conn, lead_id=lead_id, crm_payload=crm_payload)
                     mobile, yw_id = self._resolve_lead_notification_context(conn, lead_id)
                     self._queue_operator_notification(
@@ -5058,7 +5118,57 @@ class Service:
                         yw_id=yw_id,
                         write_result='success',
                     )
-        if crm_sync_failed:
+                else:
+                    crm_response = self.crm_adapter.create_customer(crm_payload)
+                    crm_action = 'create'
+                    verified_after_write = None
+                    if crm_response.get('code') == 0:
+                        verified_after_write = self._find_existing_customer_with_fallback(
+                            yw_id=account_id,
+                            mobile=lead_dict.get('mobile'),
+                            app_name=resolved_app['appName'],
+                            dept_name=resolved_dept['deptName'],
+                            registration_group=lead_dict.get('pendaftaran_group') or '',
+                        )
+                    verified_row = verified_after_write
+                    self._record_sync_log(
+                        conn,
+                        lead_id=lead_id,
+                        task_id=task_id,
+                        sync_type='customer_upsert',
+                        target_system='crm',
+                        status='success' if crm_response.get('code') == 0 and verified_after_write else 'failed',
+                        request_snapshot=crm_payload,
+                        response_snapshot={
+                            'action': crm_action,
+                            'crm_response': crm_response,
+                            'verified_after_write': bool(verified_after_write),
+                            'submission_id': submission_id,
+                            'retry_attempt': retry_attempt,
+                            'reply_context': reply_context or {},
+                        },
+                    )
+                    if crm_response.get('code') != 0:
+                        crm_sync_failed = self._normalize_crm_failure_reason(
+                            crm_response,
+                            fallback_found=False,
+                        )
+                        crm_retryable = self._is_retryable_crm_failure(crm_response)
+                        crm_retry_pending = crm_retryable and retry_attempt < self.crm_retry_max_attempts
+                    elif not verified_after_write:
+                        crm_sync_failed = 'CRM write could not be verified.'
+                    else:
+                        self._record_verified_crm_state(conn, lead_id=lead_id, crm_payload=crm_payload)
+                        mobile, yw_id = self._resolve_lead_notification_context(conn, lead_id)
+                        self._queue_operator_notification(
+                            conn,
+                            lead_id=lead_id,
+                            notification_type='crm_record_success',
+                            mobile=mobile,
+                            yw_id=yw_id,
+                            write_result='success',
+                        )
+        if crm_sync_failed and not (crm_retry_pending or suppress_failure_notification):
             lead_mobile_row = conn.execute("SELECT mobile FROM leads WHERE lead_id = ?", (lead_id,)).fetchone()
             self._queue_operator_notification(
                 conn,
@@ -5067,13 +5177,315 @@ class Service:
                 mobile=(lead_mobile_row['mobile'] if lead_mobile_row else ''),
                 yw_id=account_id,
                 write_result="failed",
-                reason=crm_sync_failed,
+                reason=self._format_operator_crm_failure_reason(retried=retry_attempt > 0),
             )
         return {
             'crm_sync_failed': crm_sync_failed,
             'crm_verified': crm_sync_failed is None,
             'current_submission_crm_verified': crm_sync_failed is None,
+            'crm_retry_pending': crm_retry_pending,
+            'crm_retryable': crm_retryable,
+            'crm_verified_row': verified_row,
+            'crm_payload': crm_payload,
+            'crm_response': crm_response,
         }
+
+    def _is_retryable_crm_failure(self, crm_response: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(crm_response, dict):
+            return False
+        code = crm_response.get('code')
+        msg = str(crm_response.get('msg') or '').strip().lower()
+        if isinstance(code, int) and code >= 500:
+            return True
+        retry_keywords = (
+            '服务器内部异常',
+            'internal',
+            'timeout',
+            'timed out',
+            'gateway',
+            'temporarily',
+            'unavailable',
+            'non-json response',
+            'connection',
+            'reset',
+            'broken pipe',
+        )
+        lowered = msg.lower()
+        return any(keyword.lower() in lowered for keyword in retry_keywords)
+
+    def _build_crm_retry_task_payload(
+        self,
+        *,
+        submission_id: str,
+        lead_id: str,
+        account_id: str,
+        bind_result_reason: str,
+        bind_raw_result: Optional[Dict[str, Any]],
+        source_payload: Optional[Dict[str, Any]],
+        retry_count: int,
+        next_retry_at: str,
+    ) -> Dict[str, Any]:
+        source_payload = source_payload or {}
+        return {
+            'submission_id': submission_id,
+            'lead_id': lead_id,
+            'account_id': account_id,
+            'bind_result_reason': bind_result_reason,
+            'bind_raw_result': bind_raw_result or {},
+            'source_message_id': str(source_payload.get('source_message_id') or ''),
+            'source_chat_id': str(source_payload.get('source_chat_id') or ''),
+            'source_bot_app_id': str(source_payload.get('source_bot_app_id') or ''),
+            'retry_count': retry_count,
+            'next_retry_at': next_retry_at,
+        }
+
+    def _schedule_crm_retry_task(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        submission_id: str,
+        lead_id: str,
+        account_id: str,
+        bind_result_reason: str,
+        bind_raw_result: Optional[Dict[str, Any]],
+        source_payload: Optional[Dict[str, Any]],
+        retry_count: int,
+    ) -> Optional[Dict[str, Any]]:
+        if retry_count > self.crm_retry_max_attempts:
+            return None
+        delay_index = min(max(retry_count - 1, 0), max(len(self.crm_retry_delays_seconds) - 1, 0))
+        delay_seconds = int(self.crm_retry_delays_seconds[delay_index]) if self.crm_retry_delays_seconds else 0
+        next_retry_dt = datetime.now(timezone.utc) + timedelta(seconds=max(0, delay_seconds))
+        next_retry_at = next_retry_dt.isoformat()
+        payload = self._build_crm_retry_task_payload(
+            submission_id=submission_id,
+            lead_id=lead_id,
+            account_id=account_id,
+            bind_result_reason=bind_result_reason,
+            bind_raw_result=bind_raw_result,
+            source_payload=source_payload,
+            retry_count=retry_count,
+            next_retry_at=next_retry_at,
+        )
+        existing = conn.execute(
+            "SELECT task_id FROM automation_tasks WHERE dedupe_key = ? LIMIT 1",
+            (f'crm_retry:{submission_id}',),
+        ).fetchone()
+        now = utc_now()
+        if existing:
+            task_id = str(existing['task_id'])
+            conn.execute(
+                """
+                UPDATE automation_tasks
+                SET payload = ?, priority = ?, created_by = ?, status = 'pending', retry_count = ?,
+                    result_code = ?, result_reason = ?, started_at = NULL, finished_at = NULL, raw_result = ?, created_at = ?
+                WHERE task_id = ?
+                """,
+                (
+                    json.dumps(payload, ensure_ascii=False),
+                    'P0',
+                    'system:auto_retry_crm',
+                    retry_count,
+                    'crm_retry_pending',
+                    f'crm retry scheduled attempt {retry_count}/{self.crm_retry_max_attempts}',
+                    json.dumps({'retry_count': retry_count, 'next_retry_at': next_retry_at}, ensure_ascii=False),
+                    now,
+                    task_id,
+                ),
+            )
+        else:
+            task_id = create_id('task')
+            conn.execute(
+                """
+                INSERT INTO automation_tasks (
+                    task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at, status,
+                    result_code, result_reason, retry_count, raw_result
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    lead_id,
+                    'crm_sync_retry',
+                    'P0',
+                    json.dumps(payload, ensure_ascii=False),
+                    f'crm_retry:{submission_id}',
+                    'system:auto_retry_crm',
+                    now,
+                    'pending',
+                    'crm_retry_pending',
+                    f'crm retry scheduled attempt {retry_count}/{self.crm_retry_max_attempts}',
+                    retry_count,
+                    json.dumps({'retry_count': retry_count, 'next_retry_at': next_retry_at}, ensure_ascii=False),
+                ),
+            )
+        return {'task_id': task_id, 'retry_count': retry_count, 'next_retry_at': next_retry_at}
+
+    def _process_crm_retry_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(task.get('payload_dict') or {})
+        task_id = str(task.get('task_id') or '')
+        submission_id = str(payload.get('submission_id') or '').strip()
+        lead_id = str(payload.get('lead_id') or task.get('lead_id') or '').strip()
+        account_id = str(payload.get('account_id') or '').strip()
+        bind_result_reason = str(payload.get('bind_result_reason') or '').strip()
+        bind_raw_result = payload.get('bind_raw_result') if isinstance(payload.get('bind_raw_result'), dict) else {}
+        reply_context = {
+            'source_message_id': str(payload.get('source_message_id') or ''),
+            'source_chat_id': str(payload.get('source_chat_id') or ''),
+            'source_bot_app_id': str(payload.get('source_bot_app_id') or ''),
+        }
+        retry_count = int(payload.get('retry_count') or task.get('retry_count') or 0)
+        now = utc_now()
+        with self.db.connect() as conn:
+            crm_sync = self._sync_crm_after_bind_success(
+                conn,
+                lead_id=lead_id,
+                account_id=account_id,
+                task_id=task_id,
+                bind_result_reason=bind_result_reason,
+                bind_raw_result=bind_raw_result,
+                submission_id=submission_id,
+                reply_context=reply_context,
+                retry_attempt=retry_count,
+                suppress_failure_notification=True,
+            )
+            if crm_sync.get('crm_sync_failed') is None:
+                conn.execute(
+                    "UPDATE automation_tasks SET status = 'success', result_code = ?, result_reason = ?, finished_at = ?, raw_result = ? WHERE task_id = ?",
+                    (
+                        'crm_retry_succeeded',
+                        'crm retry succeeded and verified',
+                        now,
+                        json.dumps({'crm_verified': True}, ensure_ascii=False),
+                        task_id,
+                    ),
+                )
+                created_group_join = self._queue_group_join_after_verified_crm(
+                    conn,
+                    lead_id=lead_id,
+                    submission_id=submission_id or None,
+                    account_id=account_id,
+                    created_at=now,
+                )
+                conn.commit()
+                result = {
+                    'task_id': task_id,
+                    'lead_status': 'bind_success',
+                    'next_action': 'queue_group_join',
+                    'crm_verified': True,
+                    'current_submission_crm_verified': True,
+                    **created_group_join,
+                    'accepted': True,
+                    'reason': None,
+                    'result_reason': None,
+                }
+            elif crm_sync.get('crm_retry_pending'):
+                scheduled = self._schedule_crm_retry_task(
+                    conn,
+                    submission_id=submission_id,
+                    lead_id=lead_id,
+                    account_id=account_id,
+                    bind_result_reason=bind_result_reason,
+                    bind_raw_result=bind_raw_result,
+                    source_payload=reply_context,
+                    retry_count=retry_count + 1,
+                )
+                if scheduled:
+                    conn.commit()
+                    return {
+                        'task_id': task_id,
+                        'lead_status': 'bind_success',
+                        'next_action': 'queue_crm_sync_retry',
+                        'reason': 'crm_sync_retry_pending',
+                        'result_reason': crm_sync.get('crm_sync_failed'),
+                        'crm_verified': False,
+                        'current_submission_crm_verified': False,
+                        'accepted': False,
+                        'retry_task_id': scheduled['task_id'],
+                        'retry_count': scheduled['retry_count'],
+                        'next_retry_at': scheduled['next_retry_at'],
+                    }
+                mobile, yw_id = self._resolve_lead_notification_context(conn, lead_id)
+                final_reason = crm_sync.get('crm_sync_failed') or 'CRM write was rejected.'
+                self._queue_operator_notification(
+                    conn,
+                    lead_id=lead_id,
+                    notification_type='crm_record_failed',
+                    mobile=mobile,
+                    yw_id=yw_id,
+                    write_result='failed',
+                    reason=self._format_operator_crm_failure_reason(retried=True),
+                )
+                conn.execute(
+                    "UPDATE automation_tasks SET status = 'failed', result_code = ?, result_reason = ?, finished_at = ?, raw_result = ? WHERE task_id = ?",
+                    ('crm_retry_exhausted', final_reason, now, json.dumps({'crm_retry_exhausted': True}, ensure_ascii=False), task_id),
+                )
+                conn.commit()
+                result = {
+                    'task_id': task_id,
+                    'lead_status': 'bind_success',
+                    'next_action': 'retry_crm_sync',
+                    'reason': 'crm_sync_failed',
+                    'result_code': 'crm_retry_exhausted',
+                    'result_reason': final_reason,
+                    'crm_verified': False,
+                    'current_submission_crm_verified': False,
+                    'accepted': False,
+                }
+            else:
+                mobile, yw_id = self._resolve_lead_notification_context(conn, lead_id)
+                final_reason = crm_sync.get('crm_sync_failed') or 'CRM write was rejected.'
+                self._queue_operator_notification(
+                    conn,
+                    lead_id=lead_id,
+                    notification_type='crm_record_failed',
+                    mobile=mobile,
+                    yw_id=yw_id,
+                    write_result='failed',
+                    reason=self._format_operator_crm_failure_reason(retried=True),
+                )
+                conn.execute(
+                    "UPDATE automation_tasks SET status = 'failed', result_code = ?, result_reason = ?, finished_at = ?, raw_result = ? WHERE task_id = ?",
+                    ('crm_retry_failed', final_reason, now, json.dumps({'crm_retry_failed': True}, ensure_ascii=False), task_id),
+                )
+                conn.commit()
+                result = {
+                    'task_id': task_id,
+                    'lead_status': 'bind_success',
+                    'next_action': 'retry_crm_sync',
+                    'reason': 'crm_sync_failed',
+                    'result_code': 'crm_retry_failed',
+                    'result_reason': final_reason,
+                    'crm_verified': False,
+                    'current_submission_crm_verified': False,
+                    'accepted': False,
+                }
+
+        message_id = reply_context.get('source_message_id') or ''
+        chat_id = reply_context.get('source_chat_id') or ''
+        if message_id or chat_id:
+            with self.db.connect() as conn:
+                lead_row = conn.execute("SELECT mobile, area_code, pendaftaran_group, inviter_id FROM leads WHERE lead_id = ?", (lead_id,)).fetchone()
+            reply_envelope = {
+                'accepted': bool(result.get('accepted')),
+                'reason': result.get('reason'),
+                'result_code': result.get('result_code'),
+                'result_reason': result.get('result_reason'),
+                'lead_status': result.get('lead_status'),
+                'next_action': result.get('next_action'),
+                'reply_phone': str((lead_row['mobile'] if lead_row else '') or '-'),
+                'reply_area_code': int((lead_row['area_code'] if lead_row and lead_row['area_code'] is not None else 0) or 0),
+                'reply_id': account_id or '-',
+                'reply_group': str((lead_row['pendaftaran_group'] if lead_row else '') or '-'),
+                'reply_code': str((lead_row['inviter_id'] if lead_row else '') or '-'),
+                'crm_verified': result.get('crm_verified'),
+                'current_submission_crm_verified': result.get('current_submission_crm_verified'),
+            }
+            if self._should_emit_lark_reply(reply_envelope):
+                reply_adapter = self._resolve_lark_reply_adapter(app_id=reply_context.get('source_bot_app_id') or None)
+                reply_text = self._format_lark_reply_text(reply_envelope)
+                result['reply_text'] = reply_text
+                self._reply_lark_message(message_id=message_id, chat_id=chat_id, text=reply_text, adapter=reply_adapter)
+        return result
 
     def _queue_group_join_after_verified_crm(
         self,
@@ -5201,6 +5613,11 @@ class Service:
                     trigger_source="bind_check_result",
                     trigger_task_id=task_id,
                 )
+                reply_context = {
+                    'source_message_id': str(task_payload.get('source_message_id') or ''),
+                    'source_chat_id': str(task_payload.get('source_chat_id') or ''),
+                    'source_bot_app_id': str(task_payload.get('source_bot_app_id') or ''),
+                }
                 crm_sync = self._sync_crm_after_bind_success(
                     conn,
                     lead_id=task['lead_id'],
@@ -5208,9 +5625,38 @@ class Service:
                     task_id=task_id,
                     bind_result_reason=effective_result_reason,
                     bind_raw_result=effective_raw_result,
+                    submission_id=submission_id,
+                    reply_context=reply_context,
                 )
                 crm_sync_failed = crm_sync['crm_sync_failed']
                 if crm_sync_failed:
+                    if crm_sync.get('crm_retry_pending'):
+                        scheduled = self._schedule_crm_retry_task(
+                            conn,
+                            submission_id=str(submission_id or ''),
+                            lead_id=task['lead_id'],
+                            account_id=str(account_id or ''),
+                            bind_result_reason=effective_result_reason or '',
+                            bind_raw_result=effective_raw_result,
+                            source_payload=reply_context,
+                            retry_count=1,
+                        )
+                        if scheduled:
+                            return {
+                                "task_id": task_id,
+                                "lead_status": "bind_success",
+                                "next_action": "queue_crm_sync_retry",
+                                "reason": "crm_sync_retry_pending",
+                                "result_reason": crm_sync_failed,
+                                "group_join_task_type": None,
+                                "crm_verified": False,
+                                "current_submission_crm_verified": False,
+                                "requires_human_action": False,
+                                "human_action_type": None,
+                                "retry_task_id": scheduled['task_id'],
+                                "retry_count": scheduled['retry_count'],
+                                "next_retry_at": scheduled['next_retry_at'],
+                            }
                     return {
                         "task_id": task_id,
                         "lead_status": "bind_success",
@@ -5795,6 +6241,37 @@ class Service:
             'provider': type(executor).__name__,
             'supports': [],
         }
+
+    def registration_group_approval_executor_warmup(self) -> Dict[str, Any]:
+        executor = self.registration_group_approval_executor
+        if executor is None:
+            return {
+                'configured': False,
+                'status': 'unconfigured',
+                'provider': None,
+                'supports': [],
+                'warmed': False,
+            }
+        if hasattr(executor, 'warmup') and callable(getattr(executor, 'warmup')):
+            try:
+                result = executor.warmup() or {}
+                if isinstance(result, dict):
+                    result.setdefault('warmed', bool(result.get('status') == 'warm'))
+                    result.setdefault('supports', result.get('supports') or [])
+                    return result
+            except Exception as exc:
+                return {
+                    'configured': True,
+                    'status': 'error',
+                    'provider': type(executor).__name__,
+                    'supports': [],
+                    'warmed': False,
+                    'error': str(exc),
+                }
+        health = self.registration_group_approval_executor_health()
+        health['warmed'] = False
+        health['warmup_supported'] = False
+        return health
 
     def registration_group_approval_decision(self, payload: RegistrationGroupApprovalDecisionRequest) -> Dict[str, Any]:
         started = time.perf_counter()
@@ -7547,6 +8024,12 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         if 'REQUIRE_INVITE_CODE' in cfg
         else cfg["DB_PATH"] != ':memory:'
     )
+    crm_retry_delays_seconds = cfg.get('CRM_RETRY_DELAYS_SECONDS')
+    if crm_retry_delays_seconds is None:
+        raw_retry_delays = os.getenv('CRM_RETRY_DELAYS_SECONDS')
+        if raw_retry_delays:
+            crm_retry_delays_seconds = [part.strip() for part in str(raw_retry_delays).split(',') if str(part).strip()]
+    crm_retry_max_attempts = cfg.get('CRM_RETRY_MAX_ATTEMPTS') or os.getenv('CRM_RETRY_MAX_ATTEMPTS') or 3
     crm_login_error = None
     if crm_adapter is None and crm_base_url and crm_username and crm_password:
         candidate_crm_adapter = LiveCrmAdapter(
@@ -7622,6 +8105,8 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         ingress_rate_limit_per_minute=ingress_rate_limit_per_minute,
         external_call_rate_limit_per_minute=external_call_rate_limit_per_minute,
         require_invite_code=require_invite_code,
+        crm_retry_delays_seconds=crm_retry_delays_seconds,
+        crm_retry_max_attempts=int(crm_retry_max_attempts or 3),
     )
     _schedule_registration_group_executor_warmup(registration_group_approval_executor)
     print(
@@ -7655,6 +8140,10 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     @app.get('/api/ops/registration-group-approval-executor-health')
     def ops_registration_group_approval_executor_health() -> Dict[str, Any]:
         return service.registration_group_approval_executor_health()
+
+    @app.post('/api/ops/registration-group-approval-executor-warmup')
+    def ops_registration_group_approval_executor_warmup() -> Dict[str, Any]:
+        return service.registration_group_approval_executor_warmup()
 
     @app.get('/api/ops/ingress-queue')
     def ops_ingress_queue() -> Dict[str, Any]:

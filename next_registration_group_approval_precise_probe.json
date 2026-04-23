@@ -1,0 +1,7 @@
+{
+  "status": "monitor_error",
+  "anchor_utc": "2026-04-23T03:12:51.943588+00:00",
+  "checked_at_utc": "2026-04-23T04:38:59.049175+00:00",
+  "instruction_elapsed_seconds": 5167.105,
+  "error": "monitor_failed rc=1 stderr=Traceback (most recent call last):\n  File \"/Users/chauncey/work/mcn-ai-automation/scripts/whatsapp_live_monitor.py\", line 190, in <module>\n    raise SystemExit(main())\n  File \"/Users/chauncey/work/mcn-ai-automation/scripts/whatsapp_live_monitor.py\", line 186, in main\n    return asyncio.run(run(parser.parse_args()))\n  File \"/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/runners.py\", line 44, in run\n    return loop.run_until_complete(main)\n  File \"/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/base_events.py\", line 642, in run_until_complete\n    return future.result()\n  File \"/Users/chauncey/work/mcn-ai-automation/scripts/whatsapp_live_monitor.py\", line 115, in run\n    await _enter_groups_tab(page, navigation_wait_ms=1500, timeout_ms=5000)\n  File \"/Users/chauncey/work/mcn-ai-automation/scripts/whatsapp_live_monitor.py\", line 63, in _enter_groups_tab\n    raise RuntimeError(f'unable to open groups tab: {last_error}')\nRuntimeError: unable to open groups tab: Locator.click: Timeout 1200ms exceeded.\nCall log:\n  - waiting for get_by_text(\"群组\", exact=True) stdout="
+}
