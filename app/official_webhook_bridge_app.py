@@ -63,14 +63,30 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
     .pill.resolved { background: #d1fae5; color: #065f46; }
     pre { white-space: pre-wrap; word-break: break-word; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 10px; font-size: 12px; max-height: 240px; overflow: auto; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .page-shell { max-width: 1360px; margin: 0 auto; }
+    .shell-nav { display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 16px 0; }
+    .shell-nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:6px 10px; border-radius:999px; background:#eef2ff; }
+    .hero { background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:20px; box-shadow:0 1px 3px rgba(0,0,0,.06); margin-bottom:16px; }
+    .hero .eyebrow { color:#6366f1; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
+    .hero .subtitle { color:#4b5563; font-size:14px; margin-top:8px; }
   </style>
 </head>
 <body>
-  <h1>官方群审批桥接操作台</h1>
-  <div class=\"muted\">用于长期运营 manual_queue 请求池，支持待处理筛选、详情查看和人工 resolve。接口基于 /ops/official-group-bridge/requests。</div>
-  <div class=\"muted\" style=\"margin-top:8px;\"><a href=\"/ops\">返回主运营台</a></div>
+  <div class="page-shell">
+    <div class="shell-nav">
+      <a href="/ops">运营工作台</a>
+      <a href="/ops/intake-bot-presets">收口配置中心</a>
+      <a href="/ops/official-group-bridge">官方群审批桥接台</a>
+    </div>
+    <div class="hero">
+      <div class="eyebrow">Bridge Queue</div>
+      <h1>官方群审批桥接台</h1>
+      <div class="subtitle">用于长期运营 manual_queue 请求池，支持待处理筛选、详情查看和人工 resolve。接口基于 /ops/official-group-bridge/requests。</div>
+      <div class=\"muted\" style=\"margin-top:8px;\"><a href=\"/ops\">返回运营工作台</a></div>
+    </div>
 
   <div class=\"card\">
+    <h2 style=\"margin-top:0;\">桥接概况</h2>
     <div class=\"summary-grid\">
       <div class=\"summary-item\"><div class=\"label\">待处理请求</div><div class=\"value\" id=\"pendingCount\">-</div></div>
       <div class=\"summary-item\"><div class=\"label\">已处理请求</div><div class=\"value\" id=\"resolvedCount\">-</div></div>
@@ -82,6 +98,7 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
   </div>
 
   <div class=\"card\">
+    <h2 style=\"margin-top:0;\">请求队列</h2>
     <div class=\"toolbar\">
       <div><label class=\"muted\">状态</label><select id=\"filterStatus\"><option value=\"\">全部</option><option value=\"pending\">pending</option><option value=\"resolved\">resolved</option></select></div>
       <div><label class=\"muted\">target_group</label><input id=\"filterTargetGroup\" placeholder=\"official-group-a\" /></div>
@@ -116,7 +133,8 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
     </div>
 
     <div class=\"card\">
-      <h3 style=\"margin-top:0;\">详情 / 处理</h3>
+      <h3 style=\"margin-top:0;\">处理面板</h3>
+      <div class=\"muted\" style=\"margin-bottom:8px;\">详情 / 处理</div>
       <div id=\"detailMeta\" class=\"muted\">选择一条请求查看详情。</div>
       <div style=\"margin-top:12px;\" class=\"actions\">
         <button class=\"success\" onclick=\"resolveCurrent('success')\">通过</button>
@@ -245,6 +263,7 @@ loadSummary().then(loadRequests).catch(err => {
   document.getElementById('detailMeta').textContent = '加载失败：' + err.message;
 });
 </script>
+  </div>
 </body>
 </html>
 """

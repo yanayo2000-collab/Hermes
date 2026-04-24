@@ -339,22 +339,8 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
             contact_info_visible = bool(self._page.get_by_text('联系人信息', exact=True).count())
         except Exception:
             contact_info_visible = False
-        try:
-            membership_request_visible = bool(self._page.locator('[data-testid="subtype-membership_approval_request"]').count())
-        except Exception:
-            membership_request_visible = False
-        try:
-            conversation_header_visible = bool(self._page.locator('[data-testid="conversation-header"]').count())
-        except Exception:
-            conversation_header_visible = False
-        try:
-            request_marker_visible = bool(self._page.get_by_text('点击以审核', exact=False).count())
-        except Exception:
-            request_marker_visible = False
         if contact_info_visible and not group_info_visible and not pending_section_visible and not empty_queue_visible:
             return False
-        if membership_request_visible and conversation_header_visible and request_marker_visible and not contact_info_visible:
-            return True
         return bool(group_info_visible or pending_section_visible or empty_queue_visible)
 
     def _open_group_info(self) -> None:
@@ -476,9 +462,12 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
         deadline = time.perf_counter() + max(0.2, wait_for_pending_seconds)
         latest = self._page.locator('body').inner_text(timeout=1200)
         while True:
-            if self._extract_pending_count(latest) > 0:
+            group_info_visible = '群组信息' in latest
+            if group_info_visible and self._extract_pending_count(latest) > 0:
                 return latest
-            if '没有要审核的成员' in latest:
+            if group_info_visible and '没有要审核的成员' in latest:
+                return latest
+            if '联系人信息' in latest and '群组信息' not in latest:
                 return latest
             if time.perf_counter() >= deadline:
                 return latest
@@ -918,21 +907,51 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
                     return True
                 if snapshot.get('row_count', 0) == 0 and snapshot.get('approve_count', 0) == 0:
                     return True
+                body_excerpt = str(snapshot.get('body_excerpt') or '')
+                joined_marker_detected = any(marker in body_excerpt for marker in ['已通过邀请链接加入', '通过邀请链接加入'])
+                still_pending_marker_detected = any(marker in body_excerpt for marker in ['待处理请求', '请求加入', '点击以审核'])
+                if (
+                    joined_marker_detected
+                    and snapshot.get('approve_count', 0) == 0
+                    and not snapshot.get('contact_info_detected')
+                    and not still_pending_marker_detected
+                ):
+                    return True
                 if time.perf_counter() >= deadline:
                     return False
                 self._page.wait_for_timeout(120)
 
-        try:
-            row.locator('[aria-label="批准"]').click(timeout=1200, force=True)
-            if _submission_confirmed(timeout_seconds=0.8):
-                return
-        except Exception:
-            pass
-
-        def _click_global_approve(timeout_seconds: float = 1.5) -> bool:
-            deadline = time.perf_counter() + max(0.3, timeout_seconds)
+        def _click_row_approve(timeout_seconds: float = 0.8) -> bool:
+            wait_ms = 80
+            deadline = time.perf_counter() + max(0.2, timeout_seconds)
+            max_attempts = max(1, int((max(0.2, timeout_seconds) * 1000) // wait_ms) + 1)
+            attempts = 0
             while True:
                 clicked = False
+                attempts += 1
+                try:
+                    row.locator('[aria-label="批准"]').click(timeout=1200, force=True)
+                    clicked = True
+                    confirm_budget = min(0.25, max(0.1, deadline - time.perf_counter()))
+                    if _submission_confirmed(timeout_seconds=confirm_budget):
+                        return True
+                except Exception:
+                    pass
+                if time.perf_counter() >= deadline or attempts >= max_attempts:
+                    return False
+                self._page.wait_for_timeout(120 if clicked else wait_ms)
+
+        if _click_row_approve(timeout_seconds=0.8):
+            return
+
+        def _click_global_approve(timeout_seconds: float = 1.5) -> bool:
+            wait_ms = 120
+            deadline = time.perf_counter() + max(0.3, timeout_seconds)
+            max_attempts = max(1, int((max(0.3, timeout_seconds) * 1000) // wait_ms) + 1)
+            attempts = 0
+            while True:
+                clicked = False
+                attempts += 1
                 try:
                     approve_buttons = self._page.locator('[aria-label="批准"]')
                     if approve_buttons.count():
@@ -943,12 +962,12 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
                             return True
                 except Exception:
                     pass
-                if time.perf_counter() >= deadline:
+                if time.perf_counter() >= deadline or attempts >= max_attempts:
                     return False
                 if clicked:
-                    self._page.wait_for_timeout(120)
+                    self._page.wait_for_timeout(wait_ms)
                     continue
-                self._page.wait_for_timeout(120)
+                self._page.wait_for_timeout(wait_ms)
 
         if _click_global_approve(timeout_seconds=0.8):
             return
@@ -958,6 +977,8 @@ class LiveWarmWhatsAppRegistrationGroupApprovalExecutor:
             raise ReviewSurfaceRecoveryRequired(
                 'contact info opened after row click; review surface must be reopened'
             )
+        if _click_row_approve(timeout_seconds=0.6):
+            return
         if _click_global_approve(timeout_seconds=2.0):
             return
         snapshot = self._review_surface_state()

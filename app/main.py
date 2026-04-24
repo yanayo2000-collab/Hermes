@@ -487,15 +487,33 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
     .toast { position: fixed; right: 24px; bottom: 24px; min-width: 240px; background: #111827; color: #fff; padding: 12px 14px; border-radius: 10px; display: none; }
     .toast.success { background: #065f46; }
     .toast.error { background: #991b1b; }
+    .page-shell { max-width: 1320px; margin: 0 auto; }
+    .shell-nav { display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 16px 0; }
+    .shell-nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:6px 10px; border-radius:999px; background:#eef2ff; }
+    .hero { background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:20px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+    .hero .eyebrow { color:#6366f1; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
+    .hero .subtitle { color:#4b5563; font-size:14px; margin-top:8px; }
+    .config-workspace { display:grid; gap:16px; margin-top:16px; }
   </style>
 </head>
 <body>
-  <h1>收口机器人配置中心</h1>
-  <div class="muted">实时修改默认 default_app / default_guild。仅允许使用 CRM 下拉选项；当选项不可用时禁止保存。</div>
-  <div class="muted" style="margin-top:8px;">同页还会加载公会执行器配置：/api/ops/guild-executors</div>
-  <div class="muted" style="margin-top:8px;"><a href="/ops">返回运营操作台</a></div>
+  <div class="page-shell">
+    <div class="shell-nav">
+      <a href="/ops">运营工作台</a>
+      <a href="/ops/intake-bot-presets">收口配置中心</a>
+      <a href="/ops/official-group-bridge">官方群审批桥接台</a>
+    </div>
+    <div class="hero">
+      <div class="eyebrow">Config Center</div>
+      <h1>收口配置中心</h1>
+      <div class="subtitle">收口机器人配置中心 · 实时修改默认 default_app / default_guild。仅允许使用 CRM 下拉选项；当选项不可用时禁止保存。</div>
+      <div class="muted" style="margin-top:8px;">同页还会加载公会执行器配置：/api/ops/guild-executors</div>
+      <div class="muted" style="margin-top:8px;"><a href="/ops">返回运营工作台</a></div>
+    </div>
 
-  <div class="card tight">
+    <div class="config-workspace">
+      <div class="card tight config-overview">
+        <h2 style="margin-top:0;">配置概况</h2>
     <div class="summary-grid">
       <div class="summary-item"><div class="label">收口机器人</div><div class="value" id="presetCount">-</div></div>
       <div class="summary-item"><div class="label">公会执行器</div><div class="value" id="executorCount">-</div></div>
@@ -504,7 +522,10 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
     </div>
   </div>
 
+  </div>
+
   <div class="card">
+    <h2 style="margin-top:0;">机器人配置列表</h2>
     <div class="table-wrap">
       <table>
       <thead>
@@ -544,7 +565,8 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
   </div>
 
   <div class=\"card\" style=\"margin-top:16px;\">
-    <h2 style=\"margin-top:0;\">公会执行器配置</h2>
+    <h2 style=\"margin-top:0;\">执行器总览</h2>
+    <div class=\"muted\" style=\"margin-bottom:8px;\">公会执行器配置</div>
     <div class=\"muted\">用于配置每个公会的后台地址、账号、密码引用、代理与浏览器执行参数。接口：/api/ops/guild-executors</div>
     <div id=\"guildExecutorRows\" class=\"executor-card-grid\"></div>
   </div>
@@ -910,6 +932,7 @@ setInterval(() => {
   reloadGuildExecutors().catch(err => showToast(err.message, 'error'));
 }, 15000);
 </script>
+  </div>
 </body>
 </html>
 """
@@ -940,20 +963,42 @@ OPS_PAGE_HTML = """
     .toast { position: fixed; right: 24px; bottom: 24px; min-width: 240px; max-width: 360px; background: #111827; color: #fff; padding: 12px 14px; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.2); display: none; z-index: 1000; }
     .toast.success { background: #065f46; }
     .toast.error { background: #991b1b; }
+    .page-shell { max-width: 1360px; margin: 0 auto; }
+    .shell-nav { display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 16px 0; }
+    .shell-nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:6px 10px; border-radius:999px; background:#eef2ff; }
+    .hero { background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:20px; box-shadow: 0 1px 3px rgba(0,0,0,.06); margin-bottom:16px; }
+    .hero .eyebrow { color:#6366f1; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
+    .hero .subtitle { color:#4b5563; font-size:14px; margin-top:8px; }
+    .queue-overview-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:16px; }
+    .queue-layout { display:grid; gap:24px; }
+    .section-title { margin: 0 0 12px 0; font-size: 20px; }
   </style>
 </head>
 <body>
-  <h1>运营操作台 MVP</h1>
-  <div class=\"muted\">数据来源：/api/ops/dashboard/summary · /api/ops/manual-review-queue · /api/ops/bind-queue · /api/ops/group-queue · /api/ops/parser-quality-summary</div>
-  <div class=\"muted\" style=\"margin-top:8px;\"><a href=\"/ops/intake-bot-presets\">前往收口机器人配置中心</a></div>
+  <div class="page-shell">
+    <div class="shell-nav">
+      <a href="/ops">运营工作台</a>
+      <a href="/ops/intake-bot-presets">收口配置中心</a>
+      <a href="/ops/official-group-bridge">官方群审批桥接台</a>
+    </div>
+    <div class="hero">
+      <div class="eyebrow">Operations</div>
+      <h1>运营工作台</h1>
+      <div class="subtitle">运营操作台 MVP · 面向人工处理、队列推进与异常回查的统一工作台。</div>
+      <div class=\"muted\">数据来源：/api/ops/dashboard/summary · /api/ops/manual-review-queue · /api/ops/bind-queue · /api/ops/group-queue · /api/ops/parser-quality-summary</div>
+      <div class=\"muted\" style=\"margin-top:8px;\"><a href=\"/ops/intake-bot-presets\">前往收口机器人配置中心</a></div>
+    </div>
 
   <div class=\"card\" style=\"margin-top:16px;\">
+    <h2>工作台总览</h2>
+    <div class="muted" style="margin-bottom:8px;">处理队列</div>
     <h2>AI 下一步处理建议</h2>
     <div id=\"nextActionHint\" class=\"muted\">加载中...</div>
     <pre id=\"nextActionJson\" style=\"white-space: pre-wrap; overflow:auto; margin-top:12px;\"></pre>
   </div>
 
   <div class=\"section\">
+    <h2 class=\"section-title\">批次处理</h2>
     <h2>审批批次队列</h2>
     <div class=\"grid\" style=\"grid-template-columns: repeat(2, minmax(0, 1fr));\">
       <div class=\"card\">
@@ -973,19 +1018,21 @@ OPS_PAGE_HTML = """
     </div>
   </div>
 
-  <div class=\"grid\">
+  <div class=\"grid queue-overview-grid\">
     <div class=\"card\"><h2>待复核</h2><div id=\"manualReviewCount\" class=\"metric\">-</div></div>
     <div class=\"card\"><h2>待绑定</h2><div id=\"bindQueueCount\" class=\"metric\">-</div></div>
     <div class=\"card\"><h2>待入群</h2><div id=\"groupQueueCount\" class=\"metric\">-</div></div>
   </div>
 
-  <div class=\"grid\">
+  <div class=\"grid queue-overview-grid\">
     <div class=\"card\"><h2>绑定成功</h2><div id=\"bindSuccessCount\" class=\"metric\">-</div></div>
     <div class=\"card\"><h2>解析冲突</h2><div id=\"parserConflictCount\" class=\"metric\">-</div></div>
     <div class=\"card\"><h2>修正次数</h2><div id=\"correctionCount\" class=\"metric\">-</div></div>
   </div>
 
+  <div class=\"queue-layout\">
   <div class=\"section\">
+    <h2 class=\"section-title\">处理队列</h2>
     <h2>人工复核队列</h2>
     <table>
       <thead><tr><th>lead_id</th><th>手机号</th><th>用户ID</th><th>置信度</th><th>解析状态</th><th>复核原因</th><th>推荐动作</th><th>操作</th></tr></thead>
@@ -1010,6 +1057,7 @@ OPS_PAGE_HTML = """
   </div>
 
   <div class=\"section\">
+    <h2 class=\"section-title\">客服通知</h2>
     <h2>客服通知列表</h2>
     <div class=\"muted\">支持未读/已读筛选与关键词搜索（手机号、用户ID）。</div>
     <div style=\"display:flex; gap:8px; margin:12px 0;\">
@@ -1031,6 +1079,8 @@ OPS_PAGE_HTML = """
     <h2>详情查看</h2>
     <div class=\"muted\">点击“查看详情”会加载该 lead 的 timeline JSON。</div>
     <pre id=\"leadDetail\" class=\"card\" style=\"white-space: pre-wrap; overflow:auto;\">尚未选择 lead</pre>
+  </div>
+
   </div>
 
   <div id=\"manualReviewToast\" class=\"toast\"></div>
@@ -1323,6 +1373,7 @@ init().catch(err => {
   alert('加载运营操作台失败：' + err.message);
 });
 </script>
+  </div>
 </body>
 </html>
 """

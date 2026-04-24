@@ -576,7 +576,7 @@ def test_page_ready_for_approval_ignores_membership_request_buttons_on_chat_list
     assert executor._page_ready_for_approval() is False
 
 
-def test_page_ready_for_approval_accepts_membership_request_buttons_when_chat_surface_is_open():
+def test_page_ready_for_approval_does_not_accept_chat_surface_membership_buttons_without_group_info_markers():
     executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0)
     executor._page = _ReadyPage(
         counts={('点击以审核', False): 1},
@@ -586,7 +586,63 @@ def test_page_ready_for_approval_accepts_membership_request_buttons_when_chat_su
         },
     )
 
-    assert executor._page_ready_for_approval() is True
+    assert executor._page_ready_for_approval() is False
+
+
+def test_capture_group_info_body_waits_past_historical_chat_pending_until_group_info_panel_arrives():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0)
+
+    class _BodySequencePage:
+        def __init__(self):
+            self.body_reads = 0
+            self.waits = []
+
+        def locator(self, selector, *args, **kwargs):
+            if selector != 'body':
+                return _PollingLocator([0])
+            page = self
+
+            class _Body:
+                def inner_text(self, timeout=None):
+                    page.body_reads += 1
+                    if page.body_reads == 1:
+                        return (
+                            '聊天历史\n'
+                            '待处理请求\n'
+                            '通过邀请链接\n'
+                            '+86 138 6064 0933\n'
+                            '~Eastion\n'
+                            '由+86 138 6064 0933添加\n'
+                        )
+                    return (
+                        '群组信息\n'
+                        '群组 · 4位成员\n'
+                        '待处理请求\n'
+                        '2\n'
+                        '通过邀请链接\n'
+                        '+852 6775 5475\n'
+                        '~G2\n'
+                        '由+852 6775 5475添加\n'
+                        '+62 851-9830-6838\n'
+                        '~zhu z\n'
+                        '由+62 851-9830-6838添加\n'
+                    )
+            return _Body()
+
+        def wait_for_timeout(self, value):
+            self.waits.append(value)
+            return None
+
+    executor._page = _BodySequencePage()
+
+    body = executor._capture_group_info_body(wait_for_pending_seconds=0.4)
+
+    assert '群组信息' in body
+    assert '+852 6775 5475' in body
+    assert '+86 138 6064 0933' not in body
+    assert executor._extract_pending_count(body) == 2
+    assert executor._extract_pending_candidates(body)['phones'][0].startswith('+852')
+    assert executor._page.body_reads >= 2
 
 
 class _PendingReviewPage:
@@ -1253,7 +1309,7 @@ def test_click_approve_action_falls_back_to_global_approve_button():
 
     executor._click_approve_action(row)
 
-    assert row_approve.clicks == 1
+    assert row_approve.clicks >= 1
     assert executor._page.global_approve.clicks == 1
     assert row.clicks == 0
 
@@ -1332,7 +1388,7 @@ def test_click_approve_action_confirms_submission_when_row_click_alone_does_not_
 
     executor._click_approve_action(row)
 
-    assert row_approve.clicks == 1
+    assert row_approve.clicks >= 1
     assert page.global_approve.clicks == 1
     assert page.row_submit_confirmed is True
 
@@ -1407,7 +1463,7 @@ def test_click_approve_action_retries_global_approve_until_submission_is_confirm
 
     executor._click_approve_action(row)
 
-    assert row_approve.clicks == 1
+    assert row_approve.clicks >= 1
     assert row.clicks == 0
     assert page.global_clicks == 2
     assert page.submission_confirmed is True
@@ -2351,10 +2407,204 @@ def test_click_approve_action_polls_until_global_approve_button_is_ready():
 
     executor._click_approve_action(row)
 
-    assert row_approve.clicks == 1
+    assert row_approve.clicks >= 1
     assert row.clicks == 1
     assert executor._page.waits
     assert executor._page.global_approve_clicks == 1
+
+
+class _RowApproveBecomesReadyAfterRowClickPage:
+    def __init__(self):
+        self.row_clicked = False
+        self.row_approve_clicks = 0
+        self.waits = []
+
+    def locator(self, selector, *args, **kwargs):
+        if selector == '[aria-label="批准"]':
+            page = self
+
+            class _Locator:
+                @property
+                def first(self):
+                    return self
+
+                def count(self):
+                    return 0
+
+                def click(self, **kwargs):
+                    raise RuntimeError('global approve still unavailable')
+
+            return _Locator()
+        if selector == '[data-testid="row"]':
+            page = self
+
+            class _Rows:
+                def count(self):
+                    return 0 if page.row_approve_clicks else 1
+
+            return _Rows()
+        if selector == 'body':
+            page = self
+
+            class _Body:
+                def inner_text(self, timeout=None):
+                    return '待处理请求\n没有要审核的成员' if page.row_approve_clicks else '待处理请求\n通过邀请链接\n+852 4456 8277\n~G2'
+
+            return _Body()
+        return _PollingLocator([0])
+
+    def get_by_text(self, text, exact=False):
+        page = self
+
+        class _Text:
+            def count(self):
+                if text == '没有要审核的成员' and exact:
+                    return 1 if page.row_approve_clicks else 0
+                if text == '联系人信息' and exact:
+                    return 0
+                return 0
+
+        return _Text()
+
+    def wait_for_timeout(self, value):
+        self.waits.append(value)
+        return None
+
+
+class _RowApproveBecomesReadyAfterRowClick(_ApproveRow):
+    def __init__(self, page):
+        super().__init__(_ApproveButtonLocator(raises=True))
+        self.page = page
+        self.row_approve_attempts = 0
+
+    def locator(self, selector, *args, **kwargs):
+        if selector == '[aria-label="批准"]':
+            row = self
+            page = self.page
+
+            class _RowApprove:
+                def click(self, **kwargs):
+                    row.row_approve_attempts += 1
+                    if not page.row_clicked:
+                        raise RuntimeError('row approve unavailable before row click')
+                    page.row_approve_clicks += 1
+                    return None
+
+            return _RowApprove()
+        return super().locator(selector, *args, **kwargs)
+
+    def click(self, **kwargs):
+        self.page.row_clicked = True
+        return super().click(**kwargs)
+
+
+def test_click_approve_action_retries_row_approve_after_row_click_before_global_fallback():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(post_click_wait_ms=0)
+    page = _RowApproveBecomesReadyAfterRowClickPage()
+    executor._page = page
+    row = _RowApproveBecomesReadyAfterRowClick(page)
+
+    executor._click_approve_action(row)
+
+    assert row.clicks == 1
+    assert row.row_approve_attempts >= 2
+    assert page.row_approve_clicks == 1
+    assert page.waits
+
+
+class _SubmissionConfirmedByJoinedMarkerPage:
+    def __init__(self):
+        self.waits = []
+        self.joined = False
+        self.global_clicks = 0
+
+    def locator(self, selector, *args, **kwargs):
+        if selector == '[aria-label="批准"]':
+            page = self
+
+            class _Locator:
+                @property
+                def first(self):
+                    return self
+
+                def count(self):
+                    return 0 if page.joined else 1
+
+                def click(self, **kwargs):
+                    page.global_clicks += 1
+                    page.joined = True
+                    return None
+
+            return _Locator()
+        if selector == '[data-testid="row"]':
+            page = self
+
+            class _Rows:
+                def count(self):
+                    return 1
+
+            return _Rows()
+        if selector == 'body':
+            page = self
+
+            class _Body:
+                def inner_text(self, timeout=None):
+                    if page.joined:
+                        return '你已通过邀请链接加入\n群组 · 6位成员\n输入消息'
+                    return '待处理请求\n通过邀请链接\n+852 4456 8277\n~G2\n由+852 4456 8277添加'
+
+            return _Body()
+        return _PollingLocator([0])
+
+    def get_by_text(self, text, exact=False):
+        page = self
+
+        class _Text:
+            def count(self):
+                if text == '没有要审核的成员' and exact:
+                    return 0
+                if text == '联系人信息' and exact:
+                    return 0
+                return 0
+
+        return _Text()
+
+    def wait_for_timeout(self, value):
+        self.waits.append(value)
+        return None
+
+
+class _RowApproveTurnsIntoJoinedMarker(_ApproveRow):
+    def __init__(self, page):
+        super().__init__(_ApproveButtonLocator(raises=False))
+        self.page = page
+
+    def locator(self, selector, *args, **kwargs):
+        if selector == '[aria-label="批准"]':
+            row = self
+            page = self.page
+
+            class _RowApprove:
+                def click(self, **kwargs):
+                    row.approve_locator.clicks += 1
+                    page.joined = True
+                    return None
+
+            return _RowApprove()
+        return super().locator(selector, *args, **kwargs)
+
+
+def test_click_approve_action_treats_joined_marker_without_review_controls_as_submitted():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(post_click_wait_ms=0)
+    page = _SubmissionConfirmedByJoinedMarkerPage()
+    executor._page = page
+    row = _RowApproveTurnsIntoJoinedMarker(page)
+
+    executor._click_approve_action(row)
+
+    assert row.approve_locator.clicks >= 1
+    assert page.global_clicks == 0
+    assert page.joined is True
 
 
 class _ContactInfoAfterRowClickPage:
