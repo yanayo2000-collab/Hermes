@@ -110,10 +110,10 @@ async def _ensure_group_info(page, *, navigation_wait_ms: int = 120, timeout_ms:
         await page.wait_for_timeout(120)
 
 
-async def inspect_group(page, *, list_item_index: int) -> dict:
+async def inspect_group(page, *, list_item_index: int, open_wait_ms: int = 400) -> dict:
     await page.locator('[data-testid="chat-list"] [data-testid="list-item-%d"]' % list_item_index).click()
-    await page.wait_for_timeout(2500)
-    info_surface_opened_via = await _ensure_group_info(page, navigation_wait_ms=800, timeout_ms=4000)
+    await page.wait_for_timeout(max(120, int(open_wait_ms or 0)))
+    info_surface_opened_via = await _ensure_group_info(page, navigation_wait_ms=120, timeout_ms=1800)
     body = await page.locator('body').inner_text()
     title = ''
     try:
@@ -160,9 +160,9 @@ async def run(args) -> int:
                 page = context.pages[0] if context.pages else await context.new_page()
                 await page.goto('https://web.whatsapp.com/', wait_until='domcontentloaded', timeout=60000)
                 await page.wait_for_timeout(args.initial_wait_ms)
-                await _enter_groups_tab(page, navigation_wait_ms=1500, timeout_ms=5000)
+                await _enter_groups_tab(page, navigation_wait_ms=120, timeout_ms=2600)
 
-                reg = await inspect_group(page, list_item_index=args.registration_list_item_index)
+                reg = await inspect_group(page, list_item_index=args.registration_list_item_index, open_wait_ms=args.open_wait_ms)
                 reg_now = datetime.now(timezone.utc)
                 reg_probe = summarize_monitor_result(args.registration_group_name, reg['body_text'], first_seen_at=None, now=reg_now)
                 reg_first_seen = update_first_seen_at(
@@ -182,26 +182,28 @@ async def run(args) -> int:
                 reg_result['subtitle'] = reg['subtitle']
                 reg_result['has_pending_request_row'] = '请求加入。点击以审核。' in reg['body_text']
 
-                await _enter_groups_tab(page, navigation_wait_ms=1200, timeout_ms=5000)
-                off = await inspect_group(page, list_item_index=args.official_list_item_index)
-                off_now = datetime.now(timezone.utc)
-                off_probe = summarize_monitor_result(args.official_group_name, off['body_text'], first_seen_at=None, now=off_now)
-                off_first_seen = update_first_seen_at(
-                    state,
-                    group_name=args.official_group_name,
-                    pending_count=off_probe['pending']['pending_count'],
-                    now=off_now,
-                    state_path=state_path,
-                )
-                off_result = summarize_monitor_result(
-                    args.official_group_name,
-                    off['body_text'],
-                    first_seen_at=off_first_seen,
-                    now=off_now,
-                )
-                off_result['title'] = off['title']
-                off_result['subtitle'] = off['subtitle']
-                off_result['has_pending_request_row'] = '请求加入。点击以审核。' in off['body_text']
+                off_result = None
+                if args.include_official:
+                    await _enter_groups_tab(page, navigation_wait_ms=120, timeout_ms=2600)
+                    off = await inspect_group(page, list_item_index=args.official_list_item_index, open_wait_ms=args.open_wait_ms)
+                    off_now = datetime.now(timezone.utc)
+                    off_probe = summarize_monitor_result(args.official_group_name, off['body_text'], first_seen_at=None, now=off_now)
+                    off_first_seen = update_first_seen_at(
+                        state,
+                        group_name=args.official_group_name,
+                        pending_count=off_probe['pending']['pending_count'],
+                        now=off_now,
+                        state_path=state_path,
+                    )
+                    off_result = summarize_monitor_result(
+                        args.official_group_name,
+                        off['body_text'],
+                        first_seen_at=off_first_seen,
+                        now=off_now,
+                    )
+                    off_result['title'] = off['title']
+                    off_result['subtitle'] = off['subtitle']
+                    off_result['has_pending_request_row'] = '请求加入。点击以审核。' in off['body_text']
 
                 output = {
                     'checked_at': datetime.now(timezone.utc).isoformat(),
@@ -229,7 +231,9 @@ def main() -> int:
     parser.add_argument('--official-list-item-index', type=int, default=1)
     parser.add_argument('--registration-group-name', default='8️⃣5️⃣')
     parser.add_argument('--official-group-name', default='8️⃣8️⃣')
-    parser.add_argument('--initial-wait-ms', type=int, default=8000)
+    parser.add_argument('--initial-wait-ms', type=int, default=1000)
+    parser.add_argument('--open-wait-ms', type=int, default=400)
+    parser.add_argument('--include-official', action='store_true', default=False)
     parser.add_argument('--headless', action='store_true', default=True)
     return asyncio.run(run(parser.parse_args()))
 

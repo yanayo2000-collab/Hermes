@@ -1969,10 +1969,8 @@ def test_bind_check_success_auto_resolves_prior_failed_notifications_for_same_le
 
     rows = client.get('/api/ops/operator-notifications').json()['rows']
     success_row = next(row for row in rows if row['notification_type'] == 'crm_record_success')
-    failed_row = next(row for row in rows if row['notification_type'] == 'crm_record_failed')
     assert success_row['is_read'] is False
-    assert failed_row['is_read'] is True
-    assert failed_row['read_by'] == 'system:auto_resolved'
+    assert not [row for row in rows if row['notification_type'] == 'crm_record_failed']
 
 
 
@@ -2109,10 +2107,9 @@ def test_lark_event_does_not_reply_success_when_crm_sync_fails_after_bind_succes
     assert response.status_code == 200
     body = response.json()
     assert body['accepted'] is False
-    assert body['reason'] == 'crm_sync_failed'
-    assert body['next_action'] == 'retry_crm_sync'
-    assert reply.calls
-    assert reply.calls[0]['text'].startswith('**❌ CRM Failed**')
+    assert body['reason'] == 'crm_sync_retry_pending'
+    assert body['next_action'] == 'queue_crm_sync_retry'
+    assert reply.calls == []
 
 
 
@@ -2741,8 +2738,8 @@ def test_bind_success_crm_failure_does_not_create_group_join_task():
         },
     ).json()
 
-    assert body['reason'] == 'crm_sync_failed'
-    assert body['next_action'] == 'retry_crm_sync'
+    assert body['reason'] == 'crm_sync_retry_pending'
+    assert body['next_action'] == 'queue_crm_sync_retry'
     assert body['group_join_task_type'] is None
     timeline = client.get(f"/api/leads/{lead['lead_id']}/timeline").json()
     assert not [task for task in timeline['tasks'] if task['task_type'] == 'group_join']
@@ -2865,8 +2862,8 @@ def test_ops_retry_crm_replays_crm_sync_and_queues_group_join_after_success():
             "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
         },
     ).json()
-    assert first['reason'] == 'crm_sync_failed'
-    assert first['next_action'] == 'retry_crm_sync'
+    assert first['reason'] == 'crm_sync_retry_pending'
+    assert first['next_action'] == 'queue_crm_sync_retry'
 
     retried = client.post(f"/api/ops/submissions/{submission['submission_id']}/retry-crm")
     assert retried.status_code == 200
@@ -5840,6 +5837,56 @@ def test_registration_group_approval_decision_executes_executor_and_records_crm_
     assert ('create_registration_group_batch', {'area': 'Indonesia', 'groupNo': '8️⃣5️⃣', 'groupPeopleNum': '2'}) in crm.calls
 
 
+def test_file_backed_registration_group_approval_decision_queues_for_async_processing_and_exposes_status(tmp_path):
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    executor = StubRegistrationGroupApprovalExecutor()
+    app = create_app({
+        'DB_PATH': str(tmp_path / 'registration-approval.db'),
+        'CRM_ADAPTER': crm,
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+        'INGRESS_WORKER_ENABLED': False,
+    })
+    client = TestClient(app)
+
+    queued = client.post(
+        '/api/registration-groups/approval-decisions',
+        json={
+            'registration_group': '8️⃣5️⃣',
+            'decided_at': '2026-04-22T07:00:36.073643+00:00',
+            'source_platform': 'whatsapp',
+            'target_phone_hint': '+86 138 6064 0933',
+        },
+    )
+
+    assert queued.status_code == 200
+    queued_body = queued.json()
+    assert queued_body['accepted'] is True
+    assert queued_body['queued'] is True
+    assert queued_body['next_action'] == 'queued_for_processing'
+    assert queued_body['status'] == 'queued'
+    assert queued_body['approval_run_id'].startswith('registration_group_approval_')
+    assert queued_body['ingress_event_id']
+
+    queue_rows = client.get('/api/ops/ingress-queue').json()['rows']
+    assert queue_rows[0]['ingress_type'] == 'registration_group_approval_decision'
+    assert queue_rows[0]['status'] == 'queued'
+
+    processed = client.post('/api/ops/ingress-queue/run-next').json()
+    assert processed['status'] == 'done'
+    assert processed['result']['verified'] is True
+    assert processed['result']['crm_recorded'] is True
+    assert processed['result']['approval_run_id'] == queued_body['approval_run_id']
+
+    status = client.get(f"/api/registration-groups/approval-decisions/{queued_body['approval_run_id']}")
+    assert status.status_code == 200
+    status_body = status.json()
+    assert status_body['status'] == 'done'
+    assert status_body['result']['approval_run_id'] == queued_body['approval_run_id']
+    assert status_body['result']['verified'] is True
+
+
 def test_registration_group_approval_decision_does_not_write_crm_when_verification_fails():
     from app.main import create_app
 
@@ -5935,6 +5982,55 @@ def test_registration_group_approval_decision_does_not_write_crm_when_review_tar
     assert body['verified'] is False
     assert body['verification_pending'] is False
     assert body['result_code'] == 'ambiguous_review_target'
+    assert body['crm_recorded'] is False
+    assert all(name != 'create_registration_group_batch' for name, _ in crm.calls)
+
+
+def test_registration_group_approval_decision_does_not_write_crm_when_review_surface_is_stale():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    executor = StubRegistrationGroupApprovalExecutor({
+        'status': 'failed',
+        'verified': False,
+        'result_code': 'stale_review_surface',
+        'result_reason': 'review surface candidates do not match current pending candidates',
+        'finished_at': '2026-04-22T07:03:11.784759+00:00',
+        'approved_count': 1,
+        'elapsed_seconds': 6.8,
+        'queue_delta': False,
+        'member_confirmed': False,
+        'raw_result': {
+            'pending_before': 2,
+            'member_count_before': 4,
+            'candidate_rows': [
+                {'index': 0, 'display_name': '~Old1', 'phones': ['+861****0933'], 'actionable': True},
+                {'index': 1, 'display_name': '~Old2', 'phones': ['+852****8277'], 'actionable': True},
+            ],
+        },
+    })
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+
+    response = client.post(
+        '/api/registration-groups/approval-decisions',
+        json={
+            'registration_group': '8️⃣5️⃣',
+            'decided_at': '2026-04-22T07:00:36.073643+00:00',
+            'source_platform': 'whatsapp',
+            'target_phone_hint': '+852 6775 5475',
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['verified'] is False
+    assert body['verification_pending'] is False
+    assert body['result_code'] == 'stale_review_surface'
     assert body['crm_recorded'] is False
     assert all(name != 'create_registration_group_batch' for name, _ in crm.calls)
 
@@ -8575,8 +8671,9 @@ def test_ops_run_next_drains_bind_tasks_after_ingress_queue(tmp_path):
     assert health['ingress']['pending_bind_tasks'] == 0
     assert health['ingress']['processing_bind_tasks'] == 0
 
-    task_rows = client.get('/api/tasks').json()['rows']
-    bind_task = next(row for row in task_rows if row['task_type'] == 'bind_check')
+    lead_id = first.json()['result']['lead_id']
+    timeline = client.get(f"/api/leads/{lead_id}/timeline").json()
+    bind_task = next(row for row in timeline['tasks'] if row['task_type'] == 'bind_check')
     assert bind_task['status'] == 'success'
 
     queue_rows = client.get('/api/ops/ingress-queue').json()['rows']

@@ -69,8 +69,19 @@ def parse_pending_requests(body_text: str) -> Dict[str, Any]:
         if name and name not in requesters:
             requesters.append(name)
     phones = []
-    for phone in PHONE_PATTERN.findall(relevant_text):
-        normalized = ' '.join(str(phone).split())
+    lines = [str(line or '').strip() for line in relevant_text.splitlines()]
+    for idx, value in enumerate(lines):
+        if not PHONE_PATTERN.fullmatch(value):
+            continue
+        next_line = lines[idx + 1] if idx + 1 < len(lines) else ''
+        prev_line = lines[idx - 1] if idx > 0 else ''
+        if not (
+            next_line.startswith('由+')
+            or next_line.startswith('由 +')
+            or prev_line == '通过邀请链接'
+        ):
+            continue
+        normalized = ' '.join(value.split())
         if normalized not in phones:
             phones.append(normalized)
     pending_count = 0

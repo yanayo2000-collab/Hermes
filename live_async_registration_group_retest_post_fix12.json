@@ -1,0 +1,293 @@
+{
+  "approval_request_started_at_utc": "2026-04-24T07:58:37.707682+00:00",
+  "approval_request_completed_at_utc": "2026-04-24T07:58:37.732319+00:00",
+  "approval_http_elapsed_seconds": 0.025,
+  "http_status": 200,
+  "request_payload": {
+    "registration_group": "8️⃣5️⃣",
+    "decision": "approve",
+    "decided_at": "2026-04-24T07:58:37.707552+00:00",
+    "approved_count": 1,
+    "area": "Indonesia",
+    "force_immediate": true
+  },
+  "approval_run_id": "registration_group_approval_3ebb9d9672ee",
+  "final": {
+    "approval_run_id": "registration_group_approval_3ebb9d9672ee",
+    "ingress_event_id": "ingress_fdb5b1ba893b",
+    "status": "done",
+    "created_at": "2026-04-24T07:58:37.729107+00:00",
+    "updated_at": "2026-04-24T07:59:22.782198+00:00",
+    "processed_at": "2026-04-24T07:59:22.782198+00:00",
+    "result": {
+      "registration_group": "8️⃣5️⃣",
+      "decision": "approve",
+      "approval_run_id": "registration_group_approval_3ebb9d9672ee",
+      "executed": false,
+      "verified": false,
+      "verification_pending": false,
+      "crm_recorded": false,
+      "status": "failed",
+      "result_code": "executor_timeout",
+      "result_reason": "registration group approval executor exceeded 45s timeout",
+      "approved_count": 1,
+      "approved_at": "2026-04-24T07:58:37.707552+00:00",
+      "elapsed_seconds": 45.006,
+      "crm_elapsed_seconds": 0.0,
+      "total_elapsed_seconds": 45.006,
+      "force_immediate": true,
+      "target_member": {},
+      "evidence_summary": {
+        "pending_before": null,
+        "pending_after": null,
+        "member_count_before": null,
+        "member_count_after": null,
+        "queue_delta": false,
+        "member_count_delta": null,
+        "member_confirmed": false,
+        "approval_may_have_executed": false,
+        "target_member_name": null,
+        "target_member_phone_raw": null,
+        "target_member_phone_normalized": null
+      },
+      "raw_result": {
+        "approval_run_id": "registration_group_approval_3ebb9d9672ee",
+        "executor_timeout_seconds": 45.0
+      },
+      "crm_batch": null
+    }
+  },
+  "polls": [
+    {
+      "checked_at": "2026-04-24T07:58:37.775623+00:00",
+      "status": "queued",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:38.790734+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:39.808445+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:40.823579+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:41.841233+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:42.858407+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:43.915350+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:44.933625+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:45.944561+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:46.963377+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:47.982412+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:48.995737+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:50.049941+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:51.067624+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:52.085812+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:53.100648+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:54.115872+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:55.128005+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:56.145215+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:57.206384+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:58.221689+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:58:59.240851+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:00.257853+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:01.276049+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:02.289160+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:03.341794+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:04.360743+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:05.377881+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:06.397033+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:07.416104+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:08.434690+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:09.489108+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:10.507831+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:11.527201+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:12.546295+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:13.562880+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:14.577620+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:15.596023+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:16.648155+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:17.667053+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:18.685693+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:19.708948+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:20.727637+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:21.746244+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:22.763845+00:00",
+      "status": "processing",
+      "result_code": null
+    },
+    {
+      "checked_at": "2026-04-24T07:59:23.781219+00:00",
+      "status": "done",
+      "result_code": "executor_timeout"
+    }
+  ],
+  "saved_at_utc": "2026-04-24T07:59:23.781256+00:00"
+}

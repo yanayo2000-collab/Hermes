@@ -125,6 +125,26 @@ def test_parse_pending_requests_returns_zero_when_empty_queue_banner_is_visible(
     assert parsed["has_pending_section"] is True
 
 
+def test_parse_pending_requests_ignores_member_phone_numbers_when_pending_section_only_shows_group_members():
+    body = """
+    群组信息
+    待处理请求
+    2
+    新成员需要管理员批准才能加入该群组。
+    +852 6775 5475
+    +62 851-9830-6838
+    +62 858-1347-8460
+    你
+    群组管理员
+    """
+
+    parsed = parse_pending_requests(body)
+
+    assert parsed["pending_count"] == 2
+    assert parsed["requesters"] == []
+    assert parsed["phone_numbers"] == []
+
+
 def test_parse_pending_requests_prefers_last_pending_section_over_historical_one():
     body = """
     聊天历史

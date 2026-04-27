@@ -13,21 +13,27 @@ class RapidOcrAdapter:
     - rapidocr_onnxruntime
 
     The adapter returns raw OCR text only; business normalization stays in app.native_ocr.
+    When optional OCR deps are missing, the adapter stays attached but marks itself
+    unavailable so app startup can degrade gracefully in test/dev environments.
     """
 
     def __init__(self, *, timeout: int = 20) -> None:
         self.timeout = timeout
+        self.available = False
+        self.unavailable_reason: Optional[str] = None
+        self._engine = None
         try:
             import requests  # noqa: F401
             from PIL import Image  # noqa: F401
-            from rapidocr_onnxruntime import RapidOCR  # noqa: F401
+            from rapidocr_onnxruntime import RapidOCR
         except Exception as exc:  # pragma: no cover - env dependent
-            raise RuntimeError(
+            self.unavailable_reason = (
                 'RapidOcrAdapter requires requests, pillow, rapidocr_onnxruntime'
-            ) from exc
-        from rapidocr_onnxruntime import RapidOCR
+            )
+            return
 
         self._engine = RapidOCR()
+        self.available = True
 
     def _load_bytes(self, image_ref: str) -> bytes:
         if image_ref.startswith('http://') or image_ref.startswith('https://'):
@@ -40,6 +46,9 @@ class RapidOcrAdapter:
             return f.read()
 
     def extract_text(self, image_ref: str) -> Dict[str, Any]:
+        if not self.available or self._engine is None:
+            raise RuntimeError(self.unavailable_reason or 'RapidOcrAdapter is unavailable')
+
         from PIL import Image
 
         image_bytes = self._load_bytes(image_ref)

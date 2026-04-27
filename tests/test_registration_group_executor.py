@@ -387,6 +387,49 @@ class _EnterGroupsPage:
         return None
 
 
+def test_ensure_browser_reused_page_waits_longer_for_download_gate_before_reusing_warm_context(monkeypatch, tmp_path):
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(
+        temp_user_data_dir=str(tmp_path / 'temp-profile'),
+        initial_wait_ms=0,
+        navigation_wait_ms=0,
+        post_click_wait_ms=0,
+        verify_timeout_ms=300,
+        verify_poll_ms=50,
+    )
+
+    class _ReusedLoadingPage:
+        def __init__(self):
+            self.waits = []
+            self.loading_counts = [1, 1, 1, 1, 1, 0]
+
+        def wait_for_timeout(self, value):
+            self.waits.append(value)
+            return None
+
+        def get_by_text(self, text, exact=False):
+            if text in {'请不要关闭此窗口', '消息正在下载中', '你的消息正在下载中'}:
+                count = self.loading_counts.pop(0) if len(self.loading_counts) > 1 else self.loading_counts[0]
+                return _PollingLocator([count])
+            return _PollingLocator([0])
+
+        def locator(self, selector, *args, **kwargs):
+            if selector == '[data-testid="chat-list"]':
+                return _PollingLocator([1])
+            return _PollingLocator([0])
+
+    perf_values = iter([0.0, 1.0, 2.0, 3.1, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 11.5])
+    monkeypatch.setattr('app.registration_group_executor.time.perf_counter', lambda: next(perf_values))
+
+    executor._context = object()
+    executor._page = _ReusedLoadingPage()
+    executor._owner_thread_id = -1
+    executor._warm = True
+
+    executor._ensure_browser()
+
+    assert len(executor._page.waits) >= 4
+
+
 def test_enter_groups_tab_polls_until_group_tab_is_ready():
     executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0)
     group_locator = _PollingLocator([0, 1])
@@ -492,6 +535,80 @@ class _OpenGroupInfoRetryPage:
         return None
 
 
+def test_open_group_info_reuses_current_chat_surface_before_reopening_chat_row():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
+
+    class _CurrentSurfacePage:
+        def __init__(self):
+            self.header_clicks = 0
+            self.subheader_clicks = 0
+            self.list_item_clicks = 0
+            self.waits = []
+
+        def get_by_text(self, text, exact=False):
+            if text == '群组信息' and exact:
+                return _PollingLocator([1 if self.subheader_clicks else 0])
+            if text == '待处理请求' and exact:
+                return _PollingLocator([1 if self.subheader_clicks else 0])
+            if text == '没有要审核的成员' and exact:
+                return _PollingLocator([0])
+            if text == '联系人信息' and exact:
+                return _PollingLocator([1 if self.header_clicks and not self.subheader_clicks else 0])
+            return _PollingLocator([0])
+
+        def get_by_role(self, *args, **kwargs):
+            return _PollingLocator([0])
+
+        def locator(self, selector, *args, **kwargs):
+            page = self
+
+            class _Clickable:
+                def __init__(self, kind):
+                    self.kind = kind
+
+                @property
+                def first(self):
+                    return self
+
+                def count(self):
+                    return 1
+
+                def click(self, **kwargs):
+                    if self.kind == 'header':
+                        page.header_clicks += 1
+                    elif self.kind == 'subheader':
+                        page.subheader_clicks += 1
+                    elif self.kind == 'list_item':
+                        page.list_item_clicks += 1
+                    return None
+
+            if selector == '[data-testid="chat-list"] [data-testid="list-item-0"]':
+                return _Clickable('list_item')
+            if selector == '[data-testid="conversation-header"]':
+                return _Clickable('header')
+            if selector == '[data-testid="conversation-subheader"]':
+                return _Clickable('subheader')
+            return _Clickable('other')
+
+        def wait_for_timeout(self, value):
+            self.waits.append(value)
+            return None
+
+    page = _CurrentSurfacePage()
+    executor._page = page
+    enter_groups_calls = []
+    executor._enter_groups_tab = lambda: enter_groups_calls.append('enter')
+    executor._wait_for_home_surface_ready = lambda timeout_seconds=0.0: None
+
+    executor._open_group_info()
+
+    assert page.header_clicks == 1
+    assert page.subheader_clicks == 1
+    assert page.list_item_clicks == 0
+    assert enter_groups_calls == []
+    assert executor._group_info_ready is True
+
+
 def test_open_group_info_retries_via_subheader_when_header_opens_contact_panel():
     executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
     executor._page = _OpenGroupInfoRetryPage()
@@ -502,7 +619,7 @@ def test_open_group_info_retries_via_subheader_when_header_opens_contact_panel()
     assert executor._page.header_clicks == 1
     assert executor._page.subheader_clicks == 1
     assert executor._group_info_ready is True
-    assert executor._page.waits[:3] == [200, 120, 120]
+    assert executor._page.waits[:2] == [120, 120]
 
 class _OpenGroupInfoHeaderRetryPage:
     def __init__(self):
@@ -566,6 +683,457 @@ def test_open_group_info_retries_header_until_group_info_surface_is_ready():
     executor._open_group_info()
 
     assert executor._page.header_clicks >= 2
+    assert executor._group_info_ready is True
+
+
+class _ListItemRetryPage:
+    def __init__(self):
+        self.list_item_clicks = 0
+        self.header_clicks = 0
+        self.subheader_clicks = 0
+        self.waits = []
+
+    def get_by_text(self, text, exact=False):
+        if text == '群组信息' and exact:
+            return _PollingLocator([1 if self.list_item_clicks >= 2 else 0])
+        if text == '待处理请求' and exact:
+            return _PollingLocator([1 if self.list_item_clicks >= 2 else 0])
+        if text == '没有要审核的成员' and exact:
+            return _PollingLocator([0])
+        if text == '联系人信息' and exact:
+            return _PollingLocator([0])
+        return _PollingLocator([0])
+
+    def get_by_role(self, *args, **kwargs):
+        return _PollingLocator([0])
+
+    def locator(self, selector, *args, **kwargs):
+        page = self
+
+        class _Clickable:
+            def __init__(self, kind):
+                self.kind = kind
+
+            @property
+            def first(self):
+                return self
+
+            def count(self):
+                return 1
+
+            def click(self, **kwargs):
+                if self.kind == 'list_item':
+                    page.list_item_clicks += 1
+                    if page.list_item_clicks == 1:
+                        raise RuntimeError('chat list item not ready yet')
+                elif self.kind == 'header':
+                    page.header_clicks += 1
+                elif self.kind == 'subheader':
+                    page.subheader_clicks += 1
+                return None
+
+        if selector == '[data-testid="chat-list"] [data-testid="list-item-0"]':
+            return _Clickable('list_item')
+        if selector == '[data-testid="conversation-header"]':
+            return _Clickable('header')
+        if selector == '[data-testid="conversation-subheader"]':
+            return _Clickable('subheader')
+        return _Clickable('other')
+
+    def wait_for_timeout(self, value):
+        self.waits.append(value)
+        return None
+
+
+def test_open_group_info_retries_list_item_click_before_header_navigation():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
+    executor._page = _ListItemRetryPage()
+    enter_groups_calls = []
+    home_ready_calls = []
+    executor._enter_groups_tab = lambda: enter_groups_calls.append('enter')
+    executor._wait_for_home_surface_ready = lambda timeout_seconds=0.0: home_ready_calls.append(timeout_seconds)
+
+    executor._open_group_info()
+
+    assert executor._page.list_item_clicks == 2
+    assert enter_groups_calls == ['enter', 'enter']
+    assert home_ready_calls == [3.0, 3.0]
+    assert executor._group_info_ready is True
+
+
+class _NamedChatRowPage:
+    def __init__(self):
+        self.named_chat_clicks = 0
+        self.list_item_clicks = 0
+        self.header_clicks = 0
+        self.waits = []
+
+    def get_by_text(self, text, exact=False):
+        page = self
+        if text == '群组信息' and exact:
+            return _PollingLocator([1 if page.named_chat_clicks else 0])
+        if text == '待处理请求' and exact:
+            return _PollingLocator([1 if page.named_chat_clicks else 0])
+        if text == '没有要审核的成员' and exact:
+            return _PollingLocator([0])
+        if text == '联系人信息' and exact:
+            return _PollingLocator([0])
+        if text == '8️⃣5️⃣' and exact:
+            class _NamedChatLocator:
+                @property
+                def first(self):
+                    return self
+
+                def count(self):
+                    return 1
+
+                def click(self, **kwargs):
+                    page.named_chat_clicks += 1
+                    return None
+
+            return _NamedChatLocator()
+        return _PollingLocator([0])
+
+    def get_by_role(self, *args, **kwargs):
+        return _PollingLocator([0])
+
+    def locator(self, selector, *args, **kwargs):
+        page = self
+
+        class _Clickable:
+            def __init__(self, kind):
+                self.kind = kind
+
+            @property
+            def first(self):
+                return self
+
+            def count(self):
+                return 1
+
+            def click(self, **kwargs):
+                if self.kind == 'list_item':
+                    page.list_item_clicks += 1
+                elif self.kind == 'header':
+                    page.header_clicks += 1
+                return None
+
+        if selector == '[data-testid="chat-list"] [data-testid="list-item-0"]':
+            return _Clickable('list_item')
+        if selector == '[data-testid="conversation-header"]':
+            return _Clickable('header')
+        return _Clickable('other')
+
+    def wait_for_timeout(self, value):
+        self.waits.append(value)
+        return None
+
+
+def test_open_group_info_prefers_named_chat_row_before_falling_back_to_list_index():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(
+        navigation_wait_ms=0,
+        initial_wait_ms=0,
+        registration_group_name='8️⃣5️⃣',
+    )
+    executor._page = _NamedChatRowPage()
+    executor._enter_groups_tab = lambda: None
+    executor._wait_for_home_surface_ready = lambda timeout_seconds=0.0: None
+
+    executor._open_group_info()
+
+    assert executor._page.named_chat_clicks == 1
+    assert executor._page.list_item_clicks == 0
+    assert executor._group_info_ready is True
+
+
+class _GenericListItemFallbackPage:
+    def __init__(self):
+        self.specific_clicks = 0
+        self.generic_clicks = []
+        self.header_clicks = 0
+        self.waits = []
+
+    def get_by_text(self, text, exact=False):
+        if text == '群组信息' and exact:
+            return _PollingLocator([1 if self.generic_clicks else 0])
+        if text == '待处理请求' and exact:
+            return _PollingLocator([1 if self.generic_clicks else 0])
+        if text == '没有要审核的成员' and exact:
+            return _PollingLocator([0])
+        if text == '联系人信息' and exact:
+            return _PollingLocator([0])
+        return _PollingLocator([0])
+
+    def get_by_role(self, *args, **kwargs):
+        return _PollingLocator([0])
+
+    def locator(self, selector, *args, **kwargs):
+        page = self
+
+        class _Clickable:
+            def __init__(self, kind):
+                self.kind = kind
+
+            @property
+            def first(self):
+                return self
+
+            def count(self):
+                return 1
+
+            def click(self, **kwargs):
+                if self.kind == 'specific':
+                    page.specific_clicks += 1
+                    raise RuntimeError('specific list-item selector missing')
+                if self.kind == 'header':
+                    page.header_clicks += 1
+                return None
+
+        if selector == '[data-testid="chat-list"] [data-testid="list-item-0"]':
+            return _Clickable('specific')
+        if selector == '[data-testid="chat-list"] [data-testid^="list-item-"]':
+            class _GenericRows:
+                def count(self):
+                    return 2
+                def nth(self, index):
+                    class _Nth:
+                        def click(self, **kwargs):
+                            page.generic_clicks.append(index)
+                            return None
+                    return _Nth()
+            return _GenericRows()
+        if selector in {'[data-testid="conversation-header"]', '[data-testid="conversation-subheader"]'}:
+            return _Clickable('header')
+        return _Clickable('other')
+
+    def wait_for_timeout(self, value):
+        self.waits.append(value)
+        return None
+
+
+def test_open_group_info_falls_back_to_generic_list_items_when_specific_selector_is_missing():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
+    executor._page = _GenericListItemFallbackPage()
+    executor._enter_groups_tab = lambda: None
+    executor._wait_for_home_surface_ready = lambda timeout_seconds=0.0: None
+
+    executor._open_group_info()
+
+    assert executor._page.specific_clicks >= 1
+    assert executor._page.generic_clicks == [0]
+    assert executor._group_info_ready is True
+
+
+def test_review_candidates_match_expected_pending_when_phone_or_name_overlap():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor()
+
+    assert executor._review_candidates_match_expected_pending(
+        candidate_rows=[
+            {'display_name': '~Eastion', 'phones': ['+8613860640933'], 'actionable': True},
+            {'display_name': '', 'phones': ['+85244568277'], 'actionable': True},
+        ],
+        pending_candidates={
+            'phones': ['+8613860640933'],
+            'requesters': ['~Eastion'],
+        },
+        expected_phone='+8613860640933',
+        expected_name='~Eastion',
+    ) is True
+
+
+def test_review_candidates_match_expected_pending_rejects_stale_review_surface_without_overlap():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor()
+
+    assert executor._review_candidates_match_expected_pending(
+        candidate_rows=[
+            {'display_name': '~Old1', 'phones': ['+8613860640933'], 'actionable': True},
+            {'display_name': '~Old2', 'phones': ['+85244568277'], 'actionable': True},
+        ],
+        pending_candidates={
+            'phones': ['+85267755475'],
+            'requesters': ['~NewTarget'],
+        },
+        expected_phone='+85267755475',
+        expected_name='~NewTarget',
+    ) is False
+
+
+def test_open_group_info_waits_for_loading_gate_to_clear_before_retrying_chat_row():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
+
+    class _LoadingGateRetryPage:
+        def __init__(self):
+            self.list_item_clicks = 0
+            self.waits = []
+            self.loading_counts = [1, 1, 0, 0]
+
+        def get_by_text(self, text, exact=False):
+            if text in {'请不要关闭此窗口', '消息正在下载中', '你的消息正在下载中'}:
+                count = self.loading_counts.pop(0) if len(self.loading_counts) > 1 else self.loading_counts[0]
+                return _PollingLocator([count])
+            if text == '群组信息' and exact:
+                return _PollingLocator([1 if self.list_item_clicks >= 2 else 0])
+            if text == '待处理请求' and exact:
+                return _PollingLocator([1 if self.list_item_clicks >= 2 else 0])
+            if text == '没有要审核的成员' and exact:
+                return _PollingLocator([0])
+            if text == '联系人信息' and exact:
+                return _PollingLocator([0])
+            return _PollingLocator([0])
+
+        def get_by_role(self, *args, **kwargs):
+            return _PollingLocator([0])
+
+        def locator(self, selector, *args, **kwargs):
+            page = self
+
+            class _Clickable:
+                def __init__(self, kind):
+                    self.kind = kind
+
+                @property
+                def first(self):
+                    return self
+
+                def count(self):
+                    if self.kind == 'chat_list':
+                        return 1
+                    return 1
+
+                def click(self, **kwargs):
+                    if self.kind == 'list_item':
+                        page.list_item_clicks += 1
+                        if page.list_item_clicks == 1:
+                            raise RuntimeError('chat list item not ready yet')
+                    return None
+
+            if selector == '[data-testid="chat-list"]':
+                return _Clickable('chat_list')
+            if selector == '[data-testid="chat-list"] [data-testid="list-item-0"]':
+                return _Clickable('list_item')
+            if selector in {'[data-testid="conversation-header"]', '[data-testid="conversation-subheader"]'}:
+                return _Clickable('header')
+            return _Clickable('other')
+
+        def wait_for_timeout(self, value):
+            self.waits.append(value)
+            return None
+
+    page = _LoadingGateRetryPage()
+    executor._page = page
+    executor._enter_groups_tab = lambda: None
+
+    executor._open_group_info()
+
+    assert page.list_item_clicks == 2
+    assert any(wait >= 120 for wait in page.waits)
+    assert executor._group_info_ready is True
+
+
+def test_open_group_info_extends_chat_row_retry_deadline_while_loading_gate_is_visible(monkeypatch):
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
+
+    class _LoadingGateDeadlinePage:
+        def __init__(self):
+            self.list_item_clicks = 0
+            self.loading_counts = [1, 1, 1, 0, 0]
+            self.waits = []
+
+        def get_by_text(self, text, exact=False):
+            if text in {'请不要关闭此窗口', '消息正在下载中', '你的消息正在下载中'}:
+                count = self.loading_counts.pop(0) if len(self.loading_counts) > 1 else self.loading_counts[0]
+                return _PollingLocator([count])
+            if text == '群组信息' and exact:
+                return _PollingLocator([1 if self.list_item_clicks >= 3 else 0])
+            if text == '待处理请求' and exact:
+                return _PollingLocator([1 if self.list_item_clicks >= 3 else 0])
+            if text == '没有要审核的成员' and exact:
+                return _PollingLocator([0])
+            if text == '联系人信息' and exact:
+                return _PollingLocator([0])
+            return _PollingLocator([0])
+
+        def get_by_role(self, *args, **kwargs):
+            return _PollingLocator([0])
+
+        def locator(self, selector, *args, **kwargs):
+            page = self
+
+            class _Clickable:
+                def __init__(self, kind):
+                    self.kind = kind
+
+                @property
+                def first(self):
+                    return self
+
+                def count(self):
+                    return 1
+
+                def click(self, **kwargs):
+                    if self.kind == 'list_item':
+                        page.list_item_clicks += 1
+                        if page.list_item_clicks < 3:
+                            raise RuntimeError('chat list item not ready yet')
+                    return None
+
+            if selector == '[data-testid="chat-list"]':
+                return _Clickable('chat_list')
+            if selector == '[data-testid="chat-list"] [data-testid="list-item-0"]':
+                return _Clickable('list_item')
+            if selector in {'[data-testid="conversation-header"]', '[data-testid="conversation-subheader"]'}:
+                return _Clickable('header')
+            return _Clickable('other')
+
+        def wait_for_timeout(self, value):
+            self.waits.append(value)
+            return None
+
+    values = iter([0.0, 0.5, 2.0, 4.6, 4.7, 5.4, 5.5, 6.1, 6.2, 6.8])
+    monkeypatch.setattr('app.registration_group_executor.time.perf_counter', lambda: next(values))
+
+    page = _LoadingGateDeadlinePage()
+    executor._page = page
+    executor._enter_groups_tab = lambda: None
+    executor._wait_for_home_surface_ready = lambda timeout_seconds=0.0: None
+
+    executor._open_group_info()
+
+    assert page.list_item_clicks == 3
+    assert executor._group_info_ready is True
+
+
+def test_open_group_info_skips_chat_row_open_attempts_until_loading_gate_clears(monkeypatch):
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
+
+    class _Page:
+        def __init__(self):
+            self.waits = []
+
+        def wait_for_timeout(self, value):
+            self.waits.append(value)
+            return None
+
+    values = iter([0.0, 1.0, 4.2, 4.3, 4.4, 6.8, 6.9, 7.0, 7.1])
+    monkeypatch.setattr('app.registration_group_executor.time.perf_counter', lambda: next(values))
+
+    page = _Page()
+    executor._page = page
+    enter_groups_calls = []
+    open_calls = []
+    loading_states = iter([True, True, False])
+    executor._try_open_group_info_on_current_surface = lambda timeout_seconds=1.2: False
+    executor._enter_groups_tab = lambda: enter_groups_calls.append('enter')
+    executor._wait_for_home_surface_ready = lambda timeout_seconds=0.0: None
+    executor._page_has_loading_gate = lambda: next(loading_states)
+    executor._open_registration_chat_row = lambda: open_calls.append('open') or 'list_item_index_0'
+    executor._page_ready_for_approval = lambda: bool(open_calls)
+
+    executor._open_group_info()
+
+    assert enter_groups_calls == ['enter', 'enter', 'enter']
+    assert open_calls == ['open']
+    assert page.waits == [120, 120, 200]
     assert executor._group_info_ready is True
 
 
@@ -656,7 +1224,8 @@ class _PendingReviewPage:
         self.waits = []
 
     def get_by_text(self, text, exact=False):
-        locator = _PollingLocator([self.has_review_text if text.startswith('审核') else 0])
+        text_value = getattr(text, 'pattern', text)
+        locator = _PollingLocator([self.has_review_text if str(text_value).startswith('审核') else 0])
         original_click = locator.click
         def _click(**kwargs):
             self.review_clicks += 1
@@ -690,9 +1259,75 @@ def test_open_pending_review_returns_immediately_when_approve_button_exists():
 
     executor._open_pending_review(1)
 
-    assert executor._page.review_clicks == 1
+    assert executor._page.review_clicks == 0
     assert executor._page.subheader_clicks == 0
     assert executor._page.waits == []
+
+
+def test_open_pending_review_falls_back_to_visible_review_cta_when_count_hint_is_stale():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0)
+
+    class _StaleReviewTextPage(_PendingReviewPage):
+        def get_by_text(self, text, exact=False):
+            import re
+            is_visible = 0
+            if getattr(text, 'pattern', None):
+                is_visible = 1 if re.search(text.pattern, '审核2请求加入') else 0
+            elif text == '审核2请求加入':
+                is_visible = 1
+            locator = _PollingLocator([is_visible])
+            original_click = locator.click
+
+            def _click(**kwargs):
+                self.review_clicks += 1
+                return original_click(**kwargs)
+
+            locator.click = _click
+            return locator
+
+    executor._page = _StaleReviewTextPage(has_review_text=0, approve_count=1, subheader_count=0, review_click_raises=False)
+
+    executor._open_pending_review(3)
+
+    assert executor._page.review_clicks == 1
+    assert executor._page.waits == [120]
+
+
+def test_open_pending_review_prefers_last_visible_review_cta_for_regex_fallback():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0)
+
+    class _LocatorWithLast(_PollingLocator):
+        def __init__(self, counts):
+            super().__init__(counts)
+            self.first_target = _PollingLocator([1])
+            self.last_target = _PollingLocator([1])
+
+        @property
+        def first(self):
+            return self.first_target
+
+        @property
+        def last(self):
+            return self.last_target
+
+    class _RegexLastPage(_PendingReviewPage):
+        def __init__(self):
+            super().__init__(has_review_text=0, approve_count=1, subheader_count=0, review_click_raises=False)
+            self.regex_locator = _LocatorWithLast([1])
+
+        def get_by_text(self, text, exact=False):
+            if getattr(text, 'pattern', None):
+                return self.regex_locator
+            return _PollingLocator([0])
+
+    page = _RegexLastPage()
+    executor._page = page
+
+    executor._open_pending_review(3)
+
+    assert page.regex_locator.first_target.clicks == 0
+    assert page.regex_locator.last_target.clicks == 1
+    assert executor._page.waits == [120]
 
 
 def test_open_pending_review_uses_short_wait_after_review_cta_click():
@@ -734,6 +1369,48 @@ class _FastApproveReviewSurfacePage:
     def wait_for_timeout(self, value):
         self.waits.append(value)
         return None
+
+
+def test_wait_for_review_surface_does_not_accept_first_empty_queue_snapshot_when_membership_buttons_still_exist(monkeypatch):
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0)
+
+    class _WaitPage:
+        def __init__(self):
+            self.waits = []
+
+        def wait_for_timeout(self, value):
+            self.waits.append(value)
+            return None
+
+    executor._page = _WaitPage()
+    snapshots = iter([
+        {
+            'row_count': 0,
+            'approve_count': 0,
+            'membership_request_button_count': 3,
+            'empty_queue_detected': True,
+            'contact_info_detected': False,
+            'review_marker_detected': False,
+            'body_excerpt': '',
+        },
+        {
+            'row_count': 2,
+            'approve_count': 2,
+            'membership_request_button_count': 3,
+            'empty_queue_detected': False,
+            'contact_info_detected': False,
+            'review_marker_detected': True,
+            'body_excerpt': '',
+        },
+    ])
+    def _state(prefer_fast_path=False):
+        return next(snapshots)
+    executor._review_surface_state = _state
+
+    state = executor._wait_for_review_surface(timeout_seconds=0.3)
+
+    assert state['approve_count'] == 2
+    assert executor._page.waits == [120]
 
 
 def test_wait_for_review_surface_fast_path_skips_body_read_when_approve_is_visible():
@@ -840,6 +1517,253 @@ def test_open_pending_review_uses_membership_request_button_and_detects_empty_qu
     assert executor._page.membership_clicks == [1, 0]
 
 
+class _RequestJoinRowFallbackPage(_MembershipRequestButtonPage):
+    def __init__(self):
+        super().__init__()
+        self.request_row_clicks = []
+        self.request_row_count = 2
+        self.preferred_request_row_count = 0
+
+    def get_by_text(self, text, exact=False):
+        if text == '没有要审核的成员':
+            return _PollingLocator([0])
+        if text == '请求加入。点击以审核。':
+            page = self
+
+            class _Locator:
+                def count(self):
+                    return page.request_row_count
+
+                def nth(self, index):
+                    class _Nth:
+                        def click(self, **kwargs):
+                            page.request_row_clicks.append(index)
+                            page.current_open_index = index
+                            return None
+                    return _Nth()
+
+            return _Locator()
+        return super().get_by_text(text, exact=exact)
+
+    def locator(self, selector, *args, **kwargs):
+        if selector == '[data-testid="msg-notification-container"] [data-testid="subtype-membership_approval_request"]':
+            page = self
+
+            class _Locator:
+                def count(self):
+                    return page.preferred_request_row_count
+
+                def nth(self, index):
+                    class _Nth:
+                        def click(self, **kwargs):
+                            page.request_row_clicks.append(index)
+                            page.current_open_index = index
+                            return None
+                    return _Nth()
+
+            return _Locator()
+        if selector == '[data-testid="subtype-membership_approval_request"][role="button"]':
+            return _PollingLocator([0])
+        if selector == '[data-testid="row"]':
+            return _PollingLocator([1 if self.current_open_index == 1 else 0])
+        if selector == '[aria-label="批准"]':
+            return _PollingLocator([1 if self.current_open_index == 1 else 0])
+        if selector == '[data-testid="subtype-membership_approval_request"]':
+            page = self
+
+            class _Locator:
+                def count(self):
+                    return 2
+
+                def nth(self, index):
+                    class _Nth:
+                        def click(self, **kwargs):
+                            page.membership_clicks.append(index)
+                            return None
+                    return _Nth()
+
+            return _Locator()
+        return super().locator(selector, *args, **kwargs)
+
+
+def test_open_pending_review_prefers_request_join_row_before_membership_buttons_when_it_opens_actionable_surface():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0)
+    page = _RequestJoinRowFallbackPage()
+    executor._page = page
+
+    state = executor._open_pending_review(2)
+
+    assert state['opened_via'] == 'request_join_row_1'
+    assert state['approve_count'] == 1
+    assert page.request_row_clicks == [1]
+    assert page.membership_clicks == []
+
+
+def test_open_pending_review_prefers_notification_container_request_rows_over_plain_text_matches():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0)
+    page = _RequestJoinRowFallbackPage()
+    page.request_row_count = 3
+    page.preferred_request_row_count = 2
+    executor._page = page
+
+    state = executor._open_pending_review(2)
+
+    assert state['opened_via'] == 'request_join_row_1'
+    assert state['approve_count'] == 1
+    assert page.request_row_clicks == [1]
+    assert page.membership_clicks == []
+
+
+def test_open_pending_review_prefers_last_pending_window_for_request_join_rows_before_older_stale_rows():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0)
+
+    class _ThreeRequestRowPage(_RequestJoinRowFallbackPage):
+        def __init__(self):
+            super().__init__()
+            self.request_row_count = 3
+
+        def locator(self, selector, *args, **kwargs):
+            if selector == '[data-testid="row"]':
+                return _PollingLocator([1 if self.current_open_index in {1, 2} else 0])
+            if selector == '[aria-label="批准"]':
+                return _PollingLocator([1 if self.current_open_index in {1, 2} else 0])
+            return super().locator(selector, *args, **kwargs)
+
+    page = _ThreeRequestRowPage()
+    executor._page = page
+
+    state = executor._open_pending_review(2)
+
+    assert state['opened_via'] == 'request_join_row_2'
+    assert state['approve_count'] == 1
+    assert page.request_row_clicks == [2]
+    assert page.membership_clicks == []
+
+
+class _ReopenRequiredRequestJoinRowPage(_RequestJoinRowFallbackPage):
+    def __init__(self):
+        super().__init__()
+        self.group_info_open_count = 0
+
+    def get_by_text(self, text, exact=False):
+        if text == '请求加入。点击以审核。':
+            page = self
+
+            class _Locator:
+                def count(self):
+                    return 2
+
+                def nth(self, index):
+                    class _Nth:
+                        def click(self, **kwargs):
+                            page.request_row_clicks.append(index)
+                            page.current_open_index = index
+                            return None
+                    return _Nth()
+
+            return _Locator()
+        return super().get_by_text(text, exact=exact)
+
+    def locator(self, selector, *args, **kwargs):
+        if selector == '[data-testid="row"]':
+            actionable = self.current_open_index == 0 and self.group_info_open_count > 0
+            return _PollingLocator([1 if actionable else 0])
+        if selector == '[aria-label="批准"]':
+            actionable = self.current_open_index == 0 and self.group_info_open_count > 0
+            return _PollingLocator([1 if actionable else 0])
+        return super().locator(selector, *args, **kwargs)
+
+
+def test_open_pending_review_reopens_group_info_before_trying_next_request_join_row():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0)
+    page = _ReopenRequiredRequestJoinRowPage()
+    executor._page = page
+    executor._open_group_info = lambda: setattr(page, 'group_info_open_count', page.group_info_open_count + 1)
+
+    state = executor._open_pending_review(2)
+
+    assert state['opened_via'] == 'request_join_row_0'
+    assert state['approve_count'] == 1
+    assert page.group_info_open_count >= 1
+    assert page.request_row_clicks == [1, 0]
+    assert page.membership_clicks == []
+
+
+class _RequestJoinMultiSourceFallbackPage(_MembershipRequestButtonPage):
+    def __init__(self):
+        super().__init__()
+        self.request_row_clicks = []
+        self.current_request_source = None
+
+    def get_by_text(self, text, exact=False):
+        if text == '没有要审核的成员':
+            return _PollingLocator([1 if self.empty_queue_visible else 0])
+        if text == '请求加入。点击以审核。':
+            page = self
+
+            class _Locator:
+                def count(self):
+                    return 3
+
+                def nth(self, index):
+                    class _Nth:
+                        def click(self, **kwargs):
+                            page.request_row_clicks.append(('plain_text', index))
+                            page.current_request_source = 'plain_text'
+                            page.current_open_index = index
+                            page.empty_queue_visible = index != 2
+                            return None
+
+                    return _Nth()
+
+            return _Locator()
+        return super().get_by_text(text, exact=exact)
+
+    def locator(self, selector, *args, **kwargs):
+        if selector == '[data-testid="msg-notification-container"] [data-testid="subtype-membership_approval_request"]':
+            page = self
+
+            class _Locator:
+                def count(self):
+                    return 1
+
+                def nth(self, index):
+                    class _Nth:
+                        def click(self, **kwargs):
+                            page.request_row_clicks.append(('notification_container', index))
+                            page.current_request_source = 'notification_container'
+                            page.current_open_index = index
+                            page.empty_queue_visible = True
+                            return None
+
+                    return _Nth()
+
+            return _Locator()
+        if selector == '[data-testid="subtype-membership_approval_request"][role="button"]':
+            return _PollingLocator([0])
+        if selector == '[data-testid="row"]':
+            actionable = self.current_request_source == 'plain_text' and self.current_open_index == 2
+            return _PollingLocator([1 if actionable else 0])
+        if selector == '[aria-label="批准"]':
+            actionable = self.current_request_source == 'plain_text' and self.current_open_index == 2
+            return _PollingLocator([1 if actionable else 0])
+        return super().locator(selector, *args, **kwargs)
+
+
+def test_open_pending_review_falls_through_to_plain_text_request_rows_when_notification_container_only_has_stale_empty_entry():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0)
+    page = _RequestJoinMultiSourceFallbackPage()
+    executor._page = page
+    executor._open_group_info = lambda: None
+
+    state = executor._open_pending_review(2)
+
+    assert state['opened_via'] == 'request_join_row_2'
+    assert state['approve_count'] == 1
+    assert page.request_row_clicks == [('notification_container', 0), ('plain_text', 2)]
+    assert page.membership_clicks == []
+
+
 class _MixedMembershipRequestButtonPage(_MembershipRequestButtonPage):
     def locator(self, selector, *args, **kwargs):
         if selector == '[data-testid="subtype-membership_approval_request"]':
@@ -877,6 +1801,53 @@ def test_open_pending_review_skips_stale_membership_history_buttons_until_action
     assert state['row_count'] == 1
     assert state['approve_count'] == 1
     assert executor._page.membership_clicks == [2, 1]
+
+
+class _ReopenRequiredMembershipRequestPage(_MembershipRequestButtonPage):
+    def __init__(self):
+        super().__init__()
+        self.group_info_open_count = 0
+
+    def locator(self, selector, *args, **kwargs):
+        if selector == '[data-testid="subtype-membership_approval_request"]':
+            page = self
+
+            class _Locator:
+                def count(self):
+                    return 3
+
+                def nth(self, index):
+                    class _Nth:
+                        def click(self, **kwargs):
+                            page.membership_clicks.append(index)
+                            page.current_open_index = index
+                            page.empty_queue_visible = index == 2
+                            return None
+                    return _Nth()
+
+            return _Locator()
+        if selector == '[data-testid="row"]':
+            actionable = self.current_open_index == 1 and self.group_info_open_count > 0
+            return _PollingLocator([1 if actionable else 0])
+        if selector == '[aria-label="批准"]':
+            actionable = self.current_open_index == 1 and self.group_info_open_count > 0
+            return _PollingLocator([1 if actionable else 0])
+        return super().locator(selector, *args, **kwargs)
+
+
+def test_open_pending_review_reopens_group_info_before_trying_next_membership_request_button():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0)
+    page = _ReopenRequiredMembershipRequestPage()
+    executor._page = page
+    executor._open_group_info = lambda: setattr(page, 'group_info_open_count', page.group_info_open_count + 1)
+
+    state = executor._open_pending_review(1)
+
+    assert state['opened_via'] == 'membership_request_button_1'
+    assert state['row_count'] == 1
+    assert state['approve_count'] == 1
+    assert page.group_info_open_count >= 1
+    assert page.membership_clicks == [2, 1]
 
 
 class _GroupInfoMembershipRequestPage(_MembershipRequestButtonPage):
@@ -1098,6 +2069,239 @@ def test_approve_returns_no_pending_when_review_surface_is_empty_after_stale_req
     assert result['raw_result']['review_surface']['empty_queue_detected'] is True
 
 
+def test_approve_retries_stale_empty_review_surface_when_request_rows_still_exist():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(post_click_wait_ms=0)
+    executor._warm = True
+    executor._context = object()
+    executor._group_info_ready = True
+    executor._page_ready_for_approval = lambda: True
+
+    class _Row:
+        def inner_text(self, timeout=None):
+            return '+852 4456 8277\n~G2\n由+852 4456 8277添加'
+
+        def locator(self, selector, *args, **kwargs):
+            return _PollingLocator([0])
+
+    class _Page:
+        def wait_for_timeout(self, value):
+            return None
+
+        def locator(self, selector, *args, **kwargs):
+            return _PollingLocator([0])
+
+        def get_by_text(self, text, exact=False):
+            return _PollingLocator([0])
+
+    executor._page = _Page()
+    open_group_info_calls = []
+    review_surfaces = [
+        {
+            'opened_via': 'membership_request_button_2',
+            'row_count': 0,
+            'approve_count': 0,
+            'membership_request_button_count': 3,
+            'empty_queue_detected': True,
+            'contact_info_detected': False,
+            'review_marker_detected': True,
+            'body_excerpt': '请求加入。点击以审核。\n没有要审核的成员',
+        },
+        {
+            'opened_via': 'membership_request_button_1',
+            'row_count': 2,
+            'approve_count': 2,
+            'membership_request_button_count': 3,
+            'empty_queue_detected': False,
+            'contact_info_detected': False,
+            'review_marker_detected': True,
+            'body_excerpt': '待处理请求\n通过邀请链接\n+852 4456 8277',
+        },
+    ]
+
+    executor._ensure_browser = lambda: None
+    executor._open_group_info = lambda: open_group_info_calls.append('open')
+    executor._capture_group_info_body = lambda wait_for_pending_seconds=0: '群组信息\n群组 · 4位成员\n~Eastion\n请求加入。点击以审核。\n~Eastion\n请求加入。点击以审核。\n输入消息'
+    executor._extract_pending_count = lambda body: 0
+    executor._extract_member_count = lambda body: 4
+    executor._extract_pending_candidates = lambda body: {'phones': [], 'requesters': []}
+    executor._open_pending_review = lambda pending_before: review_surfaces.pop(0)
+    executor._wait_for_review_row = lambda **kwargs: _Row()
+    executor._last_review_selection = {
+        'candidate_rows': [{'index': 0, 'display_name': '~G2', 'phones': ['+852****8277'], 'actionable': True}],
+        'selected_candidate': {'index': 0, 'display_name': '~G2', 'phones': ['+852****8277'], 'actionable': True},
+        'selection_reason': 'exact_phone_match',
+    }
+    executor._click_approve_action = lambda row: None
+    executor._same_session_verify = lambda **kwargs: {
+        'pending_count': 0,
+        'member_count': 6,
+        'all_phones_normalized': ['+852****8277'],
+        'body_excerpt': 'queue drained and target member confirmed',
+        'queue_delta': True,
+        'member_confirmed': True,
+    }
+
+    result = executor.approve({
+        'registration_group': '8️⃣5️⃣',
+        'approved_count': 1,
+        'target_name_hint': '~G2',
+        'target_phone_hint': '+852 4456 8277',
+    })
+
+    assert result['result_code'] == 'approved'
+    assert result['verified'] is True
+    assert result['raw_result']['start_snapshot']['pending_count'] == 1
+    assert len(open_group_info_calls) >= 2
+
+
+def test_approve_rechecks_group_info_once_when_first_group_panel_shows_no_pending_but_retry_reveals_queue():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(post_click_wait_ms=0)
+    executor._warm = True
+    executor._context = object()
+    executor._group_info_ready = True
+    executor._page_ready_for_approval = lambda: True
+
+    class _Page:
+        def __init__(self):
+            self.waits = []
+
+        def locator(self, selector, *args, **kwargs):
+            if selector == '[data-testid="pushname"]':
+                class _Push:
+                    @property
+                    def first(self):
+                        return self
+                    def count(self):
+                        return 1
+                    def inner_text(self, timeout=None):
+                        return '~G2'
+                return _Push()
+            return _PollingLocator([0])
+
+        def wait_for_timeout(self, value):
+            self.waits.append(value)
+            return None
+
+    class _Row:
+        def inner_text(self, timeout=None):
+            return '+852 6775 5475\n~G2\n由+852 6775 5475添加'
+
+        def locator(self, selector, *args, **kwargs):
+            return _PollingLocator([0])
+
+    page = _Page()
+    executor._page = page
+    executor._ensure_browser = lambda: None
+    open_group_info_calls = []
+    executor._open_group_info = lambda: open_group_info_calls.append('open')
+    bodies = iter([
+        '群组信息\n群组 · 4位成员\n添加成员\n使用链接邀请加入群组',
+        '群组信息\n群组 · 4位成员\n待处理请求\n2\n+852 6775 5475\n~G2\n+62 851-9830-6838\n~zhu z',
+    ])
+    wait_args = []
+    executor._capture_group_info_body = lambda *, wait_for_pending_seconds=1.2: wait_args.append(wait_for_pending_seconds) or next(bodies)
+    executor._open_pending_review = lambda pending_before: {'opened_via': 'review_text', 'row_count': 2, 'approve_count': 2, 'empty_queue_detected': False}
+    executor._wait_for_review_row = lambda **kwargs: _Row()
+    executor._last_review_selection = {
+        'candidate_rows': [{'index': 0, 'display_name': '~G2', 'phones': ['+852****5475'], 'actionable': True, 'exact_phone_match': True}],
+        'selected_candidate': {'index': 0, 'display_name': '~G2', 'phones': ['+852****5475'], 'actionable': True, 'exact_phone_match': True},
+        'selection_reason': 'exact_phone_match',
+    }
+    executor._click_approve_action = lambda row: None
+    executor._same_session_verify = lambda **kwargs: {
+        'pending_count': 0,
+        'member_count': 6,
+        'all_phones_normalized': ['+852****5475'],
+        'body_excerpt': 'queue drained and target member confirmed',
+        'queue_delta': True,
+        'member_confirmed': True,
+    }
+
+    result = executor.approve({
+        'registration_group': '8️⃣5️⃣',
+        'approved_count': 1,
+        'target_name_hint': '~G2',
+        'target_phone_hint': '+852 6775 5475',
+    })
+
+    assert result['result_code'] == 'approved'
+    assert result['raw_result']['start_snapshot']['pending_count'] == 2
+    assert open_group_info_calls == ['open', 'open']
+    assert wait_args == [1.2, 2.5]
+
+
+def test_approve_does_not_return_no_pending_when_first_group_panel_is_ambiguous_but_review_surface_is_actionable():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(post_click_wait_ms=0)
+    executor._warm = True
+    executor._context = object()
+    executor._group_info_ready = True
+    executor._page_ready_for_approval = lambda: True
+
+    class _Page:
+        def __init__(self):
+            self.waits = []
+
+        def locator(self, selector, *args, **kwargs):
+            if selector == '[data-testid="pushname"]':
+                class _Push:
+                    @property
+                    def first(self):
+                        return self
+                    def count(self):
+                        return 1
+                    def inner_text(self, timeout=None):
+                        return '~G2'
+                return _Push()
+            return _PollingLocator([0])
+
+        def wait_for_timeout(self, value):
+            self.waits.append(value)
+            return None
+
+    class _Row:
+        def inner_text(self, timeout=None):
+            return '+852 6775 5475\n~G2\n由+852 6775 5475添加'
+
+        def locator(self, selector, *args, **kwargs):
+            return _PollingLocator([0])
+
+    page = _Page()
+    executor._page = page
+    executor._ensure_browser = lambda: None
+    open_group_info_calls = []
+    executor._open_group_info = lambda: open_group_info_calls.append('open')
+    executor._capture_group_info_body = lambda *, wait_for_pending_seconds=1.2: '群组信息\n群组 · 4位成员\n添加成员\n使用链接邀请加入群组\n+852 6775 5475\n~G2'
+    open_pending_review_args = []
+    executor._open_pending_review = lambda pending_before: open_pending_review_args.append(pending_before) or {'opened_via': 'review_text', 'row_count': 1, 'approve_count': 1, 'empty_queue_detected': False}
+    executor._wait_for_review_row = lambda **kwargs: _Row()
+    executor._last_review_selection = {
+        'candidate_rows': [{'index': 0, 'display_name': '~G2', 'phones': ['+85267755475'], 'actionable': True, 'exact_phone_match': True}],
+        'selected_candidate': {'index': 0, 'display_name': '~G2', 'phones': ['+85267755475'], 'actionable': True, 'exact_phone_match': True},
+        'selection_reason': 'exact_phone_match',
+    }
+    executor._click_approve_action = lambda row: None
+    executor._same_session_verify = lambda **kwargs: {
+        'pending_count': 0,
+        'member_count': 5,
+        'all_phones_normalized': ['+85267755475'],
+        'body_excerpt': 'queue drained and target member confirmed',
+        'queue_delta': True,
+        'member_confirmed': True,
+    }
+
+    result = executor.approve({
+        'registration_group': '8️⃣5️⃣',
+        'approved_count': 1,
+        'target_name_hint': '~G2',
+        'target_phone_hint': '+852 6775 5475',
+    })
+
+    assert result['result_code'] == 'approved'
+    assert open_group_info_calls == ['open', 'open']
+    assert open_pending_review_args == [1]
+    assert result['raw_result']['start_snapshot']['pending_count'] == 1
+
+
 class _RowWaitPage:
     def __init__(self, counts):
         class _RowLocator(_PollingLocator):
@@ -1223,6 +2427,124 @@ def test_extract_pending_count_ignores_historical_chat_rows_when_group_info_pane
     )
 
     assert executor._extract_pending_count(body) == 0
+
+
+def test_extract_pending_count_uses_review_markers_after_input_box_before_group_info_when_panel_count_is_missing():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor()
+    body = (
+        '聊天历史\n'
+        '~Old\n请求加入。点击以审核。\n'
+        '输入消息\n'
+        '审核2请求加入\n'
+        '+852 4456 8277\n由+852 4456 8277添加\n'
+        '群组信息\n'
+        '群组 · 4位成员\n'
+        '添加成员\n'
+        '使用链接邀请加入群组\n'
+    )
+
+    assert executor._extract_pending_count(body) == 2
+
+
+def test_extract_pending_candidates_uses_review_rows_after_input_box_before_group_info_when_pending_section_not_rendered():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor()
+    body = (
+        '聊天历史\n'
+        '~Old\n请求加入。点击以审核。\n'
+        '输入消息\n'
+        '审核2请求加入\n'
+        '~Eastion\n请求加入。点击以审核。\n'
+        '+86 138 6064 0933\n由+86 138 6064 0933添加\n'
+        '+852 4456 8277\n由+852 4456 8277添加\n'
+        '群组信息\n'
+        '群组 · 4位成员\n'
+        '添加成员\n'
+        '使用链接邀请加入群组\n'
+    )
+
+    candidates = executor._extract_pending_candidates(body)
+
+    assert '+8613860640933' in candidates['phones']
+    assert '+85244568277' in candidates['phones']
+    assert '~Eastion' in candidates['requesters']
+
+
+def test_extract_pending_count_uses_review_markers_before_input_box_when_group_info_panel_places_rows_above_input():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor()
+    body = (
+        '聊天历史\n'
+        '无关旧消息\n'
+        '你已通过邀请链接加入\n'
+        '4位成员\n'
+        '~Eastion\n请求加入。点击以审核。\n'
+        '+86 138 6064 0933\n由+86 138 6064 0933添加\n'
+        '+852 4456 8277\n由+852 4456 8277添加\n'
+        '输入消息\n'
+        '群组信息\n'
+        '群组 · 4位成员\n'
+        '添加成员\n'
+        '使用链接邀请加入群组\n'
+    )
+
+    assert executor._extract_pending_count(body) == 2
+
+
+def test_extract_pending_candidates_uses_review_rows_before_input_box_when_group_info_panel_places_rows_above_input():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor()
+    body = (
+        '你已通过邀请链接加入\n'
+        '4位成员\n'
+        '你已成为群组管理员\n'
+        '~Eastion\n请求加入。点击以审核。\n'
+        '输入消息\n'
+        '群组信息\n群组 · 4位成员'
+    )
+
+    candidates = executor._extract_pending_candidates(body)
+
+    assert '~Eastion' in candidates['requesters']
+    assert '你已成为群组管理员' not in candidates['requesters']
+
+
+def test_extract_pending_candidates_ignores_review_markers_before_input_box_when_group_info_is_open():
+
+    candidates = executor._extract_pending_candidates(body)
+
+    assert any(str(phone).endswith('0933') for phone in candidates['phones'])
+    assert any(str(phone).endswith('8277') for phone in candidates['phones'])
+    assert '~Eastion' in candidates['requesters']
+
+
+def test_extract_pending_count_ignores_review_markers_before_input_box_when_group_info_is_open():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor()
+    body = (
+        '聊天历史\n'
+        '审核3请求加入\n'
+        '~Eastion\n请求加入。点击以审核。\n'
+        '输入消息\n'
+        '群组信息\n'
+        '群组 · 4位成员\n'
+        '添加成员\n'
+        '使用链接邀请加入群组\n'
+    )
+
+    assert executor._extract_pending_count(body) == 0
+
+
+def test_extract_pending_candidates_ignores_review_markers_before_input_box_when_group_info_is_open():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor()
+    body = (
+        '聊天历史\n'
+        '~Eastion\n请求加入。点击以审核。\n'
+        '+86 138 6064 0933\n由+86 138 6064 0933添加\n'
+        '输入消息\n'
+        '群组信息\n'
+        '群组 · 4位成员\n'
+        '添加成员\n'
+        '使用链接邀请加入群组\n'
+    )
+
+    assert executor._extract_pending_candidates(body) == {'phones': [], 'requesters': []}
 
 
 class _ApproveButtonLocator:
@@ -2341,6 +3663,87 @@ def test_approve_reopens_group_info_for_delayed_verification_when_contact_info_i
 
     assert result['verified'] is True
     assert result['raw_result']['delayed_verification_attempted'] is True
+    assert open_group_info_calls == ['open', 'open']
+
+
+def test_approve_retries_delayed_verification_when_member_is_confirmed_but_queue_delta_is_initially_missing():
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(post_click_wait_ms=0)
+    executor._warm = True
+    executor._context = object()
+    executor._group_info_ready = True
+    executor._page_ready_for_approval = lambda: True
+
+    class _Page:
+        def locator(self, selector, *args, **kwargs):
+            if selector == 'body':
+                class _Body:
+                    def inner_text(self, timeout=None):
+                        return '待处理请求\n通过邀请链接\n+852 4456 8277\n由+852 4456 8277添加'
+                return _Body()
+            if selector == '[data-testid="pushname"]':
+                class _Push:
+                    @property
+                    def first(self):
+                        return self
+                    def count(self):
+                        return 1
+                    def inner_text(self, timeout=None):
+                        return '~G2'
+                return _Push()
+            return _PollingLocator([0])
+
+        def wait_for_timeout(self, value):
+            return None
+
+    class _Row:
+        def inner_text(self, timeout=None):
+            return '+852 4456 8277\n~G2\n由+852 4456 8277添加'
+
+        def locator(self, selector, *args, **kwargs):
+            return _PollingLocator([0])
+
+    verify_results = [
+        {
+            'pending_count': 1,
+            'member_count': 4,
+            'all_phones_normalized': ['+852****8277'],
+            'body_excerpt': 'target phone still visible on stale surface',
+            'queue_delta': False,
+            'member_confirmed': True,
+            'empty_queue_detected': False,
+            'contact_info_detected': False,
+        },
+        {
+            'pending_count': 0,
+            'member_count': 5,
+            'all_phones_normalized': ['+852****8277'],
+            'body_excerpt': 'queue drained after reopening group info',
+            'queue_delta': True,
+            'member_confirmed': True,
+            'empty_queue_detected': True,
+            'contact_info_detected': False,
+        },
+    ]
+    open_group_info_calls = []
+
+    executor._page = _Page()
+    executor._ensure_browser = lambda: None
+    executor._open_group_info = lambda: open_group_info_calls.append('open')
+    executor._open_pending_review = lambda pending_before: {'opened_via': 'review_text', 'row_count': 1, 'approve_count': 1, 'empty_queue_detected': False}
+    executor._wait_for_review_row = lambda **kwargs: _Row()
+    executor._last_review_selection = {
+        'candidate_rows': [{'index': 0, 'display_name': '~G2', 'phones': ['+852****8277'], 'actionable': True}],
+        'selected_candidate': {'index': 0, 'display_name': '~G2', 'phones': ['+852****8277'], 'actionable': True, 'exact_phone_match': True},
+        'selection_reason': 'exact_phone_match',
+    }
+    executor._click_approve_action = lambda row: None
+    executor._same_session_verify = lambda **kwargs: verify_results.pop(0)
+
+    result = executor.approve({'registration_group': '8️⃣5️⃣', 'approved_count': 1})
+
+    assert result['verified'] is True
+    assert result['raw_result']['delayed_verification_attempted'] is True
+    assert result['raw_result']['delayed_verification_snapshot']['queue_delta'] is True
     assert open_group_info_calls == ['open', 'open']
 
 

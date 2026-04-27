@@ -2278,6 +2278,11 @@ class Service:
                 result = self._handle_lark_event_sync(payload)
             elif event['ingress_type'] == 'manual_cs_submission':
                 result = self._submit_manual_cs_sync(ManualCsSubmissionRequest(**payload))
+            elif event['ingress_type'] == 'registration_group_approval_decision':
+                result = self._registration_group_approval_decision_sync(
+                    RegistrationGroupApprovalDecisionRequest(**{k: v for k, v in payload.items() if k != 'approval_run_id'}),
+                    approval_run_id=str(payload.get('approval_run_id') or '').strip() or None,
+                )
             else:
                 raise RuntimeError(f'unsupported ingress_type: {event["ingress_type"]}')
             status = 'done'
@@ -2672,12 +2677,15 @@ class Service:
                     self._reply_lark_message(message_id=message_id, chat_id=chat_id, text=reply_text, adapter=reply_adapter)
             if executor is not None:
                 result['executor'] = executor
+            result['task_type'] = 'bind_check'
             return result
 
         retry_row = self._select_next_crm_retry_task()
         if not retry_row:
             return None
-        return self._process_crm_retry_task(retry_row)
+        result = self._process_crm_retry_task(retry_row)
+        result['task_type'] = 'crm_sync_retry'
+        return result
 
     def list_ingress_queue(self) -> Dict[str, Any]:
         with self.db.connect() as conn:
@@ -3380,6 +3388,9 @@ class Service:
         }
         if bind_result.get('reason') == 'crm_sync_failed':
             response['reason'] = 'crm_sync_failed'
+            response['result_reason'] = bind_result.get('result_reason') or response['result_reason']
+        elif bind_result.get('reason') == 'crm_sync_retry_pending':
+            response['reason'] = 'crm_sync_retry_pending'
             response['result_reason'] = bind_result.get('result_reason') or response['result_reason']
         elif not accepted:
             bind_reason = str(bind_result.get('reason') or '').strip()
@@ -5137,13 +5148,15 @@ class Service:
                 )
                 crm_sync_failed = mapping_failure
             else:
-                verified_row = self._find_existing_customer_with_fallback(
-                    yw_id=account_id,
-                    mobile=lead_dict.get('mobile'),
-                    app_name=resolved_app['appName'],
-                    dept_name=resolved_dept['deptName'],
-                    registration_group=lead_dict.get('pendaftaran_group') or '',
-                )
+                verified_row = None
+                if retry_attempt > 0:
+                    verified_row = self._find_existing_customer_with_fallback(
+                        yw_id=account_id,
+                        mobile=lead_dict.get('mobile'),
+                        app_name=resolved_app['appName'],
+                        dept_name=resolved_dept['deptName'],
+                        registration_group=lead_dict.get('pendaftaran_group') or '',
+                    )
                 if verified_row:
                     self._record_sync_log(
                         conn,
@@ -5246,6 +5259,8 @@ class Service:
 
     def _is_retryable_crm_failure(self, crm_response: Optional[Dict[str, Any]]) -> bool:
         if not isinstance(crm_response, dict):
+            return False
+        if self._crm_response_looks_like_duplicate(crm_response):
             return False
         code = crm_response.get('code')
         msg = str(crm_response.get('msg') or '').strip().lower()
@@ -6280,6 +6295,44 @@ class Service:
             'elapsed_seconds': elapsed_seconds,
         }
 
+    def _find_registration_group_approval_ingress_event(self, approval_run_id: str) -> Optional[Dict[str, Any]]:
+        normalized_run_id = str(approval_run_id or '').strip()
+        if not normalized_run_id:
+            return None
+        with self.db.connect() as conn:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT event_id, ingress_type, status, payload, result_snapshot, created_at, updated_at, processed_at FROM ingress_events WHERE ingress_type = 'registration_group_approval_decision' ORDER BY created_at DESC LIMIT 500"
+            ).fetchall()]
+        for row in rows:
+            try:
+                payload = json.loads(row.get('payload') or '{}')
+            except Exception:
+                payload = {}
+            try:
+                result_snapshot = json.loads(row.get('result_snapshot') or '{}')
+            except Exception:
+                result_snapshot = {}
+            if str(payload.get('approval_run_id') or result_snapshot.get('approval_run_id') or '').strip() != normalized_run_id:
+                continue
+            row['payload_dict'] = payload
+            row['result_snapshot_dict'] = result_snapshot
+            return row
+        return None
+
+    def registration_group_approval_decision_status(self, approval_run_id: str) -> Dict[str, Any]:
+        row = self._find_registration_group_approval_ingress_event(approval_run_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail='registration group approval run not found')
+        return {
+            'approval_run_id': approval_run_id,
+            'ingress_event_id': row['event_id'],
+            'status': row['status'],
+            'created_at': row.get('created_at'),
+            'updated_at': row.get('updated_at'),
+            'processed_at': row.get('processed_at'),
+            'result': dict(row.get('result_snapshot_dict') or {}),
+        }
+
     def registration_group_approval_executor_health(self) -> Dict[str, Any]:
         executor = self.registration_group_approval_executor
         if executor is None:
@@ -6383,6 +6436,44 @@ class Service:
         }
 
     def registration_group_approval_decision(self, payload: RegistrationGroupApprovalDecisionRequest) -> Dict[str, Any]:
+        approval_run_id = f"registration_group_approval_{uuid.uuid4().hex[:12]}"
+        if self.ingress_async_default:
+            source_key = str(payload.registration_group or 'registration_group_approval').strip() or 'registration_group_approval'
+            queued_payload = payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
+            queued_payload['approval_run_id'] = approval_run_id
+            queued = self._enqueue_ingress_event(
+                ingress_type='registration_group_approval_decision',
+                source_key=source_key,
+                payload=queued_payload,
+            )
+            result_snapshot = dict(queued.get('result_snapshot') or {})
+            if not approval_run_id:
+                approval_run_id = str(result_snapshot.get('approval_run_id') or approval_run_id)
+            if queued.get('duplicate'):
+                existing = self._find_registration_group_approval_ingress_event(approval_run_id)
+                if existing is not None:
+                    approval_run_id = str((existing.get('payload_dict') or {}).get('approval_run_id') or (existing.get('result_snapshot_dict') or {}).get('approval_run_id') or approval_run_id)
+            return {
+                'accepted': True,
+                'queued': True,
+                'duplicate': bool(queued.get('duplicate')),
+                'status': queued.get('status') or 'queued',
+                'next_action': 'queued_for_processing',
+                'approval_run_id': approval_run_id,
+                'ingress_event_id': queued.get('event_id'),
+                'executed': False,
+                'verified': False,
+                'verification_pending': False,
+                'crm_recorded': False,
+            }
+        return self._registration_group_approval_decision_sync(payload, approval_run_id=approval_run_id)
+
+    def _registration_group_approval_decision_sync(
+        self,
+        payload: RegistrationGroupApprovalDecisionRequest,
+        *,
+        approval_run_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         started = time.perf_counter()
         decision = str(payload.decision or 'approve').strip().lower() or 'approve'
         if decision != 'approve':
@@ -6390,7 +6481,7 @@ class Service:
         executor = self.registration_group_approval_executor
         if executor is None:
             raise HTTPException(status_code=400, detail='registration group approval executor not configured')
-        approval_run_id = f"registration_group_approval_{uuid.uuid4().hex[:12]}"
+        approval_run_id = str(approval_run_id or '').strip() or f"registration_group_approval_{uuid.uuid4().hex[:12]}"
         execution_context = {
             'registration_group': payload.registration_group,
             'decision': decision,
@@ -6409,12 +6500,71 @@ class Service:
             'force_immediate': payload.force_immediate,
             'approval_run_id': approval_run_id,
         }
+        executor_timeout_seconds = max(10.0, float(os.getenv('REGISTRATION_GROUP_APPROVAL_EXECUTOR_TIMEOUT_SECONDS', '45') or 45))
         if hasattr(executor, 'approve') and callable(getattr(executor, 'approve')):
-            result = executor.approve(execution_context)
+            call_target = lambda: executor.approve(execution_context)
         elif callable(executor):
-            result = executor(execution_context)
+            call_target = lambda: executor(execution_context)
         else:
             raise HTTPException(status_code=500, detail='registration group approval executor is not callable')
+        result_holder: Dict[str, Any] = {}
+        error_holder: Dict[str, BaseException] = {}
+
+        def _run_executor_call() -> None:
+            try:
+                result_holder['result'] = call_target()
+            except BaseException as exc:
+                error_holder['error'] = exc
+
+        executor_thread = threading.Thread(
+            target=_run_executor_call,
+            name=f'registration-group-approval-{approval_run_id}',
+            daemon=True,
+        )
+        executor_thread.start()
+        executor_thread.join(timeout=executor_timeout_seconds)
+        if executor_thread.is_alive():
+            timeout_elapsed = round(time.perf_counter() - started, 3)
+            return {
+                'registration_group': payload.registration_group,
+                'decision': decision,
+                'approval_run_id': approval_run_id,
+                'executed': False,
+                'verified': False,
+                'verification_pending': False,
+                'crm_recorded': False,
+                'status': 'failed',
+                'result_code': 'executor_timeout',
+                'result_reason': f'registration group approval executor exceeded {executor_timeout_seconds:.0f}s timeout',
+                'approved_count': int(payload.approved_count or 1),
+                'approved_at': payload.decided_at,
+                'elapsed_seconds': timeout_elapsed,
+                'crm_elapsed_seconds': 0.0,
+                'total_elapsed_seconds': timeout_elapsed,
+                'force_immediate': payload.force_immediate,
+                'target_member': {},
+                'evidence_summary': {
+                    'pending_before': None,
+                    'pending_after': None,
+                    'member_count_before': None,
+                    'member_count_after': None,
+                    'queue_delta': False,
+                    'member_count_delta': None,
+                    'member_confirmed': False,
+                    'approval_may_have_executed': False,
+                    'target_member_name': None,
+                    'target_member_phone_raw': None,
+                    'target_member_phone_normalized': None,
+                },
+                'raw_result': {
+                    'approval_run_id': approval_run_id,
+                    'executor_timeout_seconds': executor_timeout_seconds,
+                },
+                'crm_batch': None,
+            }
+        if 'error' in error_holder:
+            raise error_holder['error']
+        result = result_holder.get('result')
         if not isinstance(result, dict):
             raise HTTPException(status_code=500, detail='registration group approval executor must return dict result')
         raw_result = dict(result.get('raw_result') or {})
@@ -8291,7 +8441,16 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
 
     @app.post('/api/ops/ingress-queue/run-next')
     def ops_ingress_queue_run_next() -> Dict[str, Any]:
-        return service.process_next_worker_tick() or {'processed': False}
+        processed = service.process_next_worker_tick()
+        if not processed:
+            return {'processed': False}
+        if 'status' in processed:
+            return processed
+        if 'task_id' in processed:
+            normalized = dict(processed)
+            normalized.setdefault('status', 'success')
+            return normalized
+        return processed
 
     @app.get('/api/ops/operator-audit-log')
     def ops_operator_audit_log(limit: int = 200) -> Dict[str, Any]:
@@ -8360,6 +8519,10 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     @app.post("/api/registration-groups/approval-decisions")
     def registration_group_approval_decisions(payload: RegistrationGroupApprovalDecisionRequest):
         return service.registration_group_approval_decision(payload)
+
+    @app.get("/api/registration-groups/approval-decisions/{approval_run_id}")
+    def registration_group_approval_decision_status(approval_run_id: str):
+        return service.registration_group_approval_decision_status(approval_run_id)
 
     @app.post("/api/official-groups/approval-checks")
     def official_group_approval_checks(payload: OfficialGroupApprovalCheckRequest):

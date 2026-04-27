@@ -1,43 +1,16 @@
 {
-  "status": "completed",
-  "anchor_utc": "2026-04-23T06:30:34.112057+00:00",
-  "detected_pending_at_utc": "2026-04-23T06:31:24.548244+00:00",
-  "instruction_to_pending_detected_seconds": 50.436,
+  "status": "waiting_for_pending",
+  "anchor_utc": "2026-04-27T02:30:13.802356+00:00",
+  "checked_at_utc": "2026-04-27T03:00:47.252993+00:00",
+  "instruction_elapsed_seconds": 1833.451,
+  "pending_count": 0,
   "monitor": {
-    "checked_at": "2026-04-23T06:31:44.290983+00:00",
+    "checked_at": "2026-04-27T03:00:56.979949+00:00",
     "profile_dir": "Profile 25",
     "state_path": "data/whatsapp_live_monitor_state.json",
-    "temp_user_data_dir": "/tmp/chrome-whatsapp-live-monitor-yiy4fsgh",
+    "temp_user_data_dir": "/tmp/chrome-whatsapp-live-monitor-xmsinb5w",
     "registration_group": {
       "group_name": "8️⃣5️⃣",
-      "pending": {
-        "pending_count": 1,
-        "requesters": [],
-        "phone_numbers": [
-          "+852 6775 5475",
-          "+62 851-9830-6838",
-          "+62 858-1347-8460",
-          "+62 851-9830-6832",
-          "+86 138 6064 0933"
-        ],
-        "has_pending_section": true,
-        "has_review_actions": false
-      },
-      "release": {
-        "ready": false,
-        "reason_code": "waiting_for_batch",
-        "remaining_seconds": 1200,
-        "elapsed_minutes": 0,
-        "release_at": "2026-04-23T06:51:39.470096+00:00",
-        "poll_interval_seconds": 30
-      },
-      "checked_at": "2026-04-23T06:31:39.470096+00:00",
-      "title": "",
-      "subtitle": "+86 138 6064 0933、+62 851-9830-6838、+62 858-1347-8460、+62 851-9830-6832、你",
-      "has_pending_request_row": true
-    },
-    "official_group": {
-      "group_name": "8️⃣8️⃣",
       "pending": {
         "pending_count": 0,
         "requesters": [],
@@ -50,61 +23,14 @@
         "reason_code": "waiting_for_batch",
         "remaining_seconds": 1200,
         "elapsed_minutes": 0,
-        "release_at": "2026-04-23T06:51:44.290493+00:00",
+        "release_at": "2026-04-27T03:20:56.976999+00:00",
         "poll_interval_seconds": 30
       },
-      "checked_at": "2026-04-23T06:31:44.290493+00:00",
+      "checked_at": "2026-04-27T03:00:56.976999+00:00",
       "title": "",
-      "subtitle": "+62 851-9830-6838、+62 858-1347-8460、+62 851-9830-6832、你",
+      "subtitle": "只有管理员可以发送消息",
       "has_pending_request_row": true
-    }
-  },
-  "approval_request_started_at_utc": "2026-04-23T06:31:44.734615+00:00",
-  "approval_request_completed_at_utc": "2026-04-23T06:32:03.177702+00:00",
-  "instruction_to_approval_request_start_seconds": 70.623,
-  "instruction_to_response_complete_seconds": 89.066,
-  "approval_http_elapsed_seconds": 18.443,
-  "http_status": 200,
-  "request_payload": {
-    "registration_group": "8️⃣5️⃣",
-    "decision": "approve",
-    "decided_at": "2026-04-23T06:31:44.734615+00:00",
-    "approved_count": 1,
-    "area": "Indonesia",
-    "force_immediate": true
-  },
-  "response": {
-    "registration_group": "8️⃣5️⃣",
-    "decision": "approve",
-    "executed": true,
-    "verified": false,
-    "crm_recorded": false,
-    "status": "failed",
-    "result_code": "playwright_timeout",
-    "result_reason": "approve action unavailable after review row opened; row_count=0 approve_count=0",
-    "approved_count": 1,
-    "approved_at": "2026-04-23T06:32:03.174570+00:00",
-    "elapsed_seconds": 18.4,
-    "crm_elapsed_seconds": 0.0,
-    "total_elapsed_seconds": 18.398,
-    "force_immediate": true,
-    "target_member": {},
-    "raw_result": {
-      "timeout_snapshot": {
-        "row_count": 0,
-        "approve_count": 0,
-        "membership_request_button_count": 2,
-        "empty_queue_detected": false,
-        "contact_info_detected": true,
-        "body_excerpt": "地域政策），做最小化 checklist + 自动标注原型。 3) 机会：游戏/内容行业“AI 语音质检与真人替换决策”工具 - 目标客户：游戏工作室、互动内容公司、广告制作公司   - 变现路径：项目制咨询 + 质检 SaaS（按时长计费）   - 执行难度：中   - 1周内可验证动作：选 50 段样本音频，建立“可用度评分卡”（情感、自然度、品牌匹配）并形成 demo 报告。 4) 机会：高风险行业 AI 审计日志与人工复核中台 - 目标客户：安防、金融风控、政务外包、医疗辅助厂商   - 变现路径：私有化部署费 + 年维护费   - 执行难度：高   - 1周内可验证动作：先做“决策留痕模板（输入/输出/置信度/复核人）”并找 1 家潜在客户访谈需求。 5) 机会：影视/品牌“定制小模型+私有知识库”打包交付 - 目标客户：MCN、品牌内容团队、影视后期团队   - 变现路径：一次性项目费 + 月度托管费   - 执行难度：高   - 1周内可验证动作：选一个垂直场景（如短剧分镜/商品图脚本），用开源模型做小样并交付首版风格一致性报告。 6) 机会：AI 心理风险“对话安全层”插件 - 目标客户：AI 陪伴应用、教育类聊天产品、客服机器人厂商   - 变现路径：API 调用计费 + 风险策略订阅   - 执行难度：中   - 1周内可验证动作：定义 30 条高风险语义规则，接入一个开源聊天框架完成拦截+升级转人工流程演示。 备注：个别信息来自媒体“据报道”口径，已标注“待核实”；落地前建议二次核验原始公告/监管文件。   非投资建议。\n你的私人消息已进行端到端加密\n获取 Mac 版 WhatsApp\n+86 138 6064 0933、+62 851-9830-6838、+62 858-1347-8460、+62 851-9830-6832、+852 4456 8277、你\n通话\n昨天\n你已通过邀请链接加入\n6位成员 · 没有联系人 · 创建于2026年2月7日\n添加描述…\n添加成员\n添加成员标记\n你已成为群组管理员\n~Eastion\n请求加入。点击以审核。\n~Eastion\n请求加入。点击以审核。\n今天\n~G2\n已通过邀请链接加入\n\n\n\n\n输入消息\n联系人信息\n+852 4456 8277\n搜索\n发消息\n添加\n影音内容、链接和文档\n0\n已加星标消息\n静音通知\n限时消息\n已关闭\n高级聊天隐私\n已关闭\n加密\n消息都是进行端到端加密，点击验证。\n1个共同群组\n+86 138 6064 0933、+62 851-9830-6838、+62 858-1347-8460、+62 851-9830-6832、+852 4456 8277、你\n添加到“特别关注”\n添加到列表\n清空聊天\n封锁\n+852 4456 8277\n举报\n+852 4456 8277\n删除聊天"
-      },
-      "stage_timings": {
-        "browser_ready_seconds": 5.32,
-        "group_info_ready_seconds": 11.524,
-        "review_surface_ready_seconds": 13.915,
-        "review_row_ready_seconds": 13.93
-      }
     },
-    "crm_batch": null
+    "official_group": null
   }
 }

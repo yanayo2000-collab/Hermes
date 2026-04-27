@@ -1,0 +1,190 @@
+{
+  "anchor_utc": "2026-04-24T07:05:42.913459+00:00",
+  "approval_run_id": "registration_group_approval_a2fe279a0d7d",
+  "instruction_to_response_complete_seconds": 0.025,
+  "approval_http_elapsed_seconds": 0.025,
+  "request_payload": {
+    "registration_group": "8️⃣5️⃣",
+    "decision": "approve",
+    "decided_at": "2026-04-24T07:05:42Z",
+    "approved_count": 1,
+    "area": "Indonesia",
+    "force_immediate": true,
+    "target_phone_hint": "+852 6775 5475"
+  },
+  "queue_response": {
+    "accepted": true,
+    "queued": true,
+    "duplicate": false,
+    "status": "queued",
+    "next_action": "queued_for_processing",
+    "approval_run_id": "registration_group_approval_a2fe279a0d7d",
+    "ingress_event_id": "ingress_95b3031882cc",
+    "executed": false,
+    "verified": false,
+    "verification_pending": false,
+    "crm_recorded": false
+  },
+  "status_history": [
+    {
+      "index": 1,
+      "status": "queued",
+      "at": "2026-04-24T07:05:42.988384+00:00"
+    },
+    {
+      "index": 2,
+      "status": "processing",
+      "at": "2026-04-24T07:05:44.003084+00:00"
+    },
+    {
+      "index": 3,
+      "status": "processing",
+      "at": "2026-04-24T07:05:45.018243+00:00"
+    },
+    {
+      "index": 4,
+      "status": "processing",
+      "at": "2026-04-24T07:05:46.028908+00:00"
+    },
+    {
+      "index": 5,
+      "status": "processing",
+      "at": "2026-04-24T07:05:47.041058+00:00"
+    },
+    {
+      "index": 6,
+      "status": "processing",
+      "at": "2026-04-24T07:05:48.056556+00:00"
+    },
+    {
+      "index": 7,
+      "status": "processing",
+      "at": "2026-04-24T07:05:49.102361+00:00"
+    },
+    {
+      "index": 8,
+      "status": "processing",
+      "at": "2026-04-24T07:05:50.114677+00:00"
+    },
+    {
+      "index": 9,
+      "status": "processing",
+      "at": "2026-04-24T07:05:51.121979+00:00"
+    },
+    {
+      "index": 10,
+      "status": "processing",
+      "at": "2026-04-24T07:05:52.130316+00:00"
+    },
+    {
+      "index": 11,
+      "status": "processing",
+      "at": "2026-04-24T07:05:53.149454+00:00"
+    },
+    {
+      "index": 12,
+      "status": "processing",
+      "at": "2026-04-24T07:05:54.169518+00:00"
+    },
+    {
+      "index": 13,
+      "status": "processing",
+      "at": "2026-04-24T07:05:55.210634+00:00"
+    },
+    {
+      "index": 14,
+      "status": "processing",
+      "at": "2026-04-24T07:05:56.224548+00:00"
+    },
+    {
+      "index": 15,
+      "status": "done",
+      "at": "2026-04-24T07:05:57.234919+00:00"
+    }
+  ],
+  "final_status": {
+    "approval_run_id": "registration_group_approval_a2fe279a0d7d",
+    "ingress_event_id": "ingress_95b3031882cc",
+    "status": "done",
+    "created_at": "2026-04-24T07:05:42.934538+00:00",
+    "updated_at": "2026-04-24T07:05:57.138842+00:00",
+    "processed_at": "2026-04-24T07:05:57.138842+00:00",
+    "result": {
+      "registration_group": "8️⃣5️⃣",
+      "decision": "approve",
+      "approval_run_id": "registration_group_approval_a2fe279a0d7d",
+      "executed": true,
+      "verified": false,
+      "verification_pending": false,
+      "crm_recorded": false,
+      "status": "failed",
+      "result_code": "no_pending_request",
+      "result_reason": "no pending request in registration group",
+      "approved_count": 1,
+      "approved_at": "2026-04-24T07:05:57.137996+00:00",
+      "elapsed_seconds": 13.91,
+      "crm_elapsed_seconds": 0.0,
+      "total_elapsed_seconds": 13.908,
+      "force_immediate": true,
+      "target_member": {},
+      "evidence_summary": {
+        "pending_before": 0,
+        "pending_after": null,
+        "member_count_before": null,
+        "member_count_after": null,
+        "queue_delta": false,
+        "member_count_delta": null,
+        "member_confirmed": false,
+        "approval_may_have_executed": false,
+        "target_member_name": null,
+        "target_member_phone_raw": null,
+        "target_member_phone_normalized": null
+      },
+      "raw_result": {
+        "approval_run_id": "registration_group_approval_a2fe279a0d7d",
+        "start_snapshot": {
+          "pending_count": 0,
+          "member_count": null,
+          "pending_candidates": {
+            "phones": [],
+            "requesters": []
+          },
+          "body_excerpt": "  - 发布时间：2026-03-15 21:01 UTC   - 核心要点：报道指出 ByteDance 暂停 Seedance 2.0 的全球上线节奏，可能涉及合规、市场策略或产品成熟度考量。   - 为什么重要：AIGC 视频赛道竞争加速，全球化发布已从“先发”转向“合规+稳定性”优先。 3) Anthropic 临时提升 Claude 离峰时段调用上限 - 来源：Engadget   - 发布时间：2026-03-15 16:36 UTC   - 核心要点：Anthropic 宣布未来两周在离峰时段将 Claude 使用额度翻倍。   - 为什么重要：这反映了“算力弹性定价/配额调度”趋势，企业可据此优化批处理任务成本与时段策略。 4) Arc Raiders 回退部分 AI 语音，改用专业配音演员 - 来源：Engadget   - 发布时间：2026-03-15 18:49 UTC   - 核心要点：游戏《Arc Raiders》将部分 AI 生成配音替换为真人配音。   - 为什么重要：内容行业对“可用”与“可接受”是两套标准，品牌体验与创作者生态仍强烈影响 AI 落地路径。 5) AI 误识别再引司法争议：美国一名老妇被错押六个月 - 来源：Tom’s Hardware   - 发布时间：2026-03-15 15:45 UTC   - 核心要点：报道聚焦人脸识别误判导致错误羁押，执法侧 AI 应用的问责问题再被放大。   - 为什么重要：高风险场景的“可解释性、审计日志、人工复核”将成为政策与采购硬约束。 6) “AI 引发心理风险”法律议题升温 - 来源：TechCrunch   - 发布时间：2026-03-15 18:49 UTC   - 核心要点：相关律师公开警示生成式 AI 可能带来心理健康与极端行为风险，呼吁更严治理。   - 为什么重要：这类案例会推动平台责任边界变化，影响模型安全策略、免责声明与产品交互设计。 7) 影视行业出现“定制化 AI 模型”趋势 - 来源：The Verge   - 发布时间：2026-03-15 16:01 UTC（按 -04:00 折算）   - 核心要点：报道显示影视制作正从通用模型转向“项目/工作室定制模型”，以匹配特定美术风格与制作流程。   - 为什么重要：行业专用模型将催生“数据治理+版权清洗+工作流集成”的新一轮 B2B 机会。 8) Google 320 亿美元收购 Wiz 的市场解读持续发酵（AI 安全关联） - 来源：TechCrunch   - 发布时间：2026-03-15 15:30 UTC   - 核心要点：投资人视角解读该并购逻辑，核心在云安全与平台能力整合；与 AI 时代基础设施安全需求高度相关。   - 为什么重要：AI 大规模部署后，安全预算与合规预算正向基础设施层集中，带动安全+AI 的复合赛道。 —— 潜在商业机会（可在 1 周内验证） 1) 机会：企业“离峰推理调度”优化服务 - 目标客户：中小 SaaS、AI Agent 团队、内容批处理团队   - 变现路径：按月订阅（调度策略+成本报表）或按节省成本分成   - 执行难度：中   - 1周内可验证动作：用 2 家公开模型 API 做“高峰/离峰成本对照实验”，产出可复用脚本和一页案例。 2) 机会：AIGC 视频出海“发布前合规检查”微服务 - 目标客户：短视频工具、营销代理商、跨境内容团队   - 变现路径：按次审核包 + 企业版 SLA   - 执行难度：中   - 1周内可验证动作：整理 20 条常见风险项（版权/肖像/地域政策），做最小化 checklist + 自动标注原型。 3) 机会：游戏/内容行业“AI 语音质检与真人替换决策”工具 - 目标客户：游戏工作室、互动内容公司、广告制作公司   - 变现路径：项目制咨询 + 质检 SaaS（按时长计费）   - 执行难度：中   - 1周内可验证动作：选 50 段样本音频，建立“可用度评分卡”（情感、自然度、品牌匹配）并形成 demo 报告。 4) 机会：高风险行业 AI 审计日志与人工复核中台 - 目标客户：安防、金融风控、政务外包、医疗辅助厂商   - 变现路径：私有化部署费 + 年维护费   - 执行难度：高   - 1周内可验证动作：先做“决策留痕模板（输入/输出/置信度/复核人）”并找 1 家潜在客户访谈需求。 5) 机会：影视/品牌“定制小模型+私有知识库”打包交付 - 目标客户：MCN、品牌内容团队、影视后期团队   - 变现路径：一次性项目费 + 月度托管费   - 执行难度：高   - 1周内可验证动作：选一个垂直场景（如短剧分镜/商品图脚本），用开源模型做小样并交付首版风格一致性报告。 6) 机会：AI 心理风险“对话安全层”插件 - 目标客户：AI 陪伴应用、教育类聊天产品、客服机器人厂商   - 变现路径：API 调用计费 + 风险策略订阅   - 执行难度：中   - 1周内可验证动作：定义 30 条高风险语义规则，接入一个开源聊天框架完成拦截+升级转人工流程演示。 备注：个别信息来自媒体“据报道”口径，已标注“待核实”；落地前建议二次核验原始公告/监管文件。   非投资建议。\n你的私人消息已进行端到端加密\n获取 Mac 版 WhatsApp\n+62 851-9830-6838、+62 858-1347-8460、+62 851-9830-6832、你\n通话\n星期三\n消息和通话已进行端到端加密。只有此聊天中的成员可以查看、收听或分享。点击了解更多\n你已通过邀请链接加入\n4位成员 · 没有联系人 · ~ zhu z于2026年2月7日创建\n添加描述…\n添加成员\n添加成员标记\n你已成为群组管理员\n~Eastion\n请求加入。点击以审核。\n~Eastion\n请求加入。点击以审核。\n\n\n\n\n输入消息\n待处理请求\n没有要审核的成员\n请求加入该群组且等待批准的用户将在此显示。"
+        },
+        "pending_before": 0,
+        "member_count_before": null,
+        "body_excerpt": "径。 5) AI 误识别再引司法争议：美国一名老妇被错押六个月 - 来源：Tom’s Hardware   - 发布时间：2026-03-15 15:45 UTC   - 核心要点：报道聚焦人脸识别误判导致错误羁押，执法侧 AI 应用的问责问题再被放大。   - 为什么重要：高风险场景的“可解释性、审计日志、人工复核”将成为政策与采购硬约束。 6) “AI 引发心理风险”法律议题升温 - 来源：TechCrunch   - 发布时间：2026-03-15 18:49 UTC   - 核心要点：相关律师公开警示生成式 AI 可能带来心理健康与极端行为风险，呼吁更严治理。   - 为什么重要：这类案例会推动平台责任边界变化，影响模型安全策略、免责声明与产品交互设计。 7) 影视行业出现“定制化 AI 模型”趋势 - 来源：The Verge   - 发布时间：2026-03-15 16:01 UTC（按 -04:00 折算）   - 核心要点：报道显示影视制作正从通用模型转向“项目/工作室定制模型”，以匹配特定美术风格与制作流程。   - 为什么重要：行业专用模型将催生“数据治理+版权清洗+工作流集成”的新一轮 B2B 机会。 8) Google 320 亿美元收购 Wiz 的市场解读持续发酵（AI 安全关联） - 来源：TechCrunch   - 发布时间：2026-03-15 15:30 UTC   - 核心要点：投资人视角解读该并购逻辑，核心在云安全与平台能力整合；与 AI 时代基础设施安全需求高度相关。   - 为什么重要：AI 大规模部署后，安全预算与合规预算正向基础设施层集中，带动安全+AI 的复合赛道。 —— 潜在商业机会（可在 1 周内验证） 1) 机会：企业“离峰推理调度”优化服务 - 目标客户：中小 SaaS、AI Agent 团队、内容批处理团队   - 变现路径：按月订阅（调度策略+成本报表）或按节省成本分成   - 执行难度：中   - 1周内可验证动作：用 2 家公开模型 API 做“高峰/离峰成本对照实验”，产出可复用脚本和一页案例。 2) 机会：AIGC 视频出海“发布前合规检查”微服务 - 目标客户：短视频工具、营销代理商、跨境内容团队   - 变现路径：按次审核包 + 企业版 SLA   - 执行难度：中   - 1周内可验证动作：整理 20 条常见风险项（版权/肖像/地域政策），做最小化 checklist + 自动标注原型。 3) 机会：游戏/内容行业“AI 语音质检与真人替换决策”工具 - 目标客户：游戏工作室、互动内容公司、广告制作公司   - 变现路径：项目制咨询 + 质检 SaaS（按时长计费）   - 执行难度：中   - 1周内可验证动作：选 50 段样本音频，建立“可用度评分卡”（情感、自然度、品牌匹配）并形成 demo 报告。 4) 机会：高风险行业 AI 审计日志与人工复核中台 - 目标客户：安防、金融风控、政务外包、医疗辅助厂商   - 变现路径：私有化部署费 + 年维护费   - 执行难度：高   - 1周内可验证动作：先做“决策留痕模板（输入/输出/置信度/复核人）”并找 1 家潜在客户访谈需求。 5) 机会：影视/品牌“定制小模型+私有知识库”打包交付 - 目标客户：MCN、品牌内容团队、影视后期团队   - 变现路径：一次性项目费 + 月度托管费   - 执行难度：高   - 1周内可验证动作：选一个垂直场景（如短剧分镜/商品图脚本），用开源模型做小样并交付首版风格一致性报告。 6) 机会：AI 心理风险“对话安全层”插件 - 目标客户：AI 陪伴应用、教育类聊天产品、客服机器人厂商   - 变现路径：API 调用计费 + 风险策略订阅   - 执行难度：中   - 1周内可验证动作：定义 30 条高风险语义规则，接入一个开源聊天框架完成拦截+升级转人工流程演示。 备注：个别信息来自媒体“据报道”口径，已标注“待核实”；落地前建议二次核验原始公告/监管文件。   非投资建议。\n你的私人消息已进行端到端加密\n获取 Mac 版 WhatsApp\n+62 851-9830-6838、+62 858-1347-8460、+62 851-9830-6832、你\n通话\n星期三\n消息和通话已进行端到端加密。只有此聊天中的成员可以查看、收听或分享。点击了解更多\n你已通过邀请链接加入\n4位成员 · 没有联系人 · ~ zhu z于2026年2月7日创建\n添加描述…\n添加成员\n添加成员标记\n你已成为群组管理员\n~Eastion\n请求加入。点击以审核。\n~Eastion\n请求加入。点击以审核。\n\n\n\n\n输入消息\n待处理请求\n没有要审核的成员\n请求加入该群组且等待批准的用户将在此显示。",
+        "review_surface": {
+          "row_count": 0,
+          "approve_count": 0,
+          "membership_request_button_count": 3,
+          "empty_queue_detected": true,
+          "contact_info_detected": false,
+          "review_marker_detected": true,
+          "body_excerpt": " 变现路径：按月订阅（调度策略+成本报表）或按节省成本分成   - 执行难度：中   - 1周内可验证动作：用 2 家公开模型 API 做“高峰/离峰成本对照实验”，产出可复用脚本和一页案例。 2) 机会：AIGC 视频出海“发布前合规检查”微服务 - 目标客户：短视频工具、营销代理商、跨境内容团队   - 变现路径：按次审核包 + 企业版 SLA   - 执行难度：中   - 1周内可验证动作：整理 20 条常见风险项（版权/肖像/地域政策），做最小化 checklist + 自动标注原型。 3) 机会：游戏/内容行业“AI 语音质检与真人替换决策”工具 - 目标客户：游戏工作室、互动内容公司、广告制作公司   - 变现路径：项目制咨询 + 质检 SaaS（按时长计费）   - 执行难度：中   - 1周内可验证动作：选 50 段样本音频，建立“可用度评分卡”（情感、自然度、品牌匹配）并形成 demo 报告。 4) 机会：高风险行业 AI 审计日志与人工复核中台 - 目标客户：安防、金融风控、政务外包、医疗辅助厂商   - 变现路径：私有化部署费 + 年维护费   - 执行难度：高   - 1周内可验证动作：先做“决策留痕模板（输入/输出/置信度/复核人）”并找 1 家潜在客户访谈需求。 5) 机会：影视/品牌“定制小模型+私有知识库”打包交付 - 目标客户：MCN、品牌内容团队、影视后期团队   - 变现路径：一次性项目费 + 月度托管费   - 执行难度：高   - 1周内可验证动作：选一个垂直场景（如短剧分镜/商品图脚本），用开源模型做小样并交付首版风格一致性报告。 6) 机会：AI 心理风险“对话安全层”插件 - 目标客户：AI 陪伴应用、教育类聊天产品、客服机器人厂商   - 变现路径：API 调用计费 + 风险策略订阅   - 执行难度：中   - 1周内可验证动作：定义 30 条高风险语义规则，接入一个开源聊天框架完成拦截+升级转人工流程演示。 备注：个别信息来自媒体“据报道”口径，已标注“待核实”；落地前建议二次核验原始公告/监管文件。   非投资建议。\n你的私人消息已进行端到端加密\n获取 Mac 版 WhatsApp\n+62 851-9830-6838、+62 858-1347-8460、+62 851-9830-6832、你\n通话\n星期三\n消息和通话已进行端到端加密。只有此聊天中的成员可以查看、收听或分享。点击了解更多\n你已通过邀请链接加入\n4位成员 · 没有联系人 · ~ zhu z于2026年2月7日创建\n添加描述…\n添加成员\n添加成员标记\n你已成为群组管理员\n~Eastion\n请求加入。点击以审核。\n~Eastion\n请求加入。点击以审核。\n\n\n\n\n输入消息\n待处理请求\n没有要审核的成员\n请求加入该群组且等待批准的用户将在此显示。",
+          "opened_via": "membership_request_button_2"
+        },
+        "review_surface_retry_attempted": true,
+        "stage_timings": {
+          "browser_ready_seconds": 0.047,
+          "group_info_ready_seconds": 1.157
+        },
+        "evidence_summary": {
+          "pending_before": 0,
+          "pending_after": null,
+          "member_count_before": null,
+          "member_count_after": null,
+          "queue_delta": false,
+          "member_count_delta": null,
+          "member_confirmed": false,
+          "approval_may_have_executed": false,
+          "target_member_name": null,
+          "target_member_phone_raw": null,
+          "target_member_phone_normalized": null
+        }
+      },
+      "crm_batch": null
+    }
+  },
+  "completed_in_seconds": 14.321
+}
