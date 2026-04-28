@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.chauncey.mcn.registration-group-backend</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/chauncey/work/mcn-ai-automation/scripts/restart_intake_backend_with_bind.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/chauncey/work/mcn-ai-automation</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/chauncey/work/mcn-ai-automation/logs/registration_group_backend.launchd.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/chauncey/work/mcn-ai-automation/logs/registration_group_backend.launchd.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/chauncey/work/mcn-ai-automation/.venv/bin:/Users/chauncey/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/chauncey</string>
+    <key>USER</key>
+    <string>chauncey</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>TERM</key>
+    <string>xterm-256color</string>
+  </dict>
+</dict>
+</plist>

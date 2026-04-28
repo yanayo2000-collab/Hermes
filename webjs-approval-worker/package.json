@@ -1,0 +1,14 @@
+{
+  "name": "webjs-approval-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "whatsapp-web.js bridge worker for MCN registration-group approval",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.34.1"
+  }
+}

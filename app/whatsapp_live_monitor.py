@@ -105,7 +105,7 @@ def compute_registration_release_state(
     first_seen_at: Optional[datetime],
     now: datetime,
     batch_size: int = 30,
-    timeout_minutes: int = 20,
+    timeout_minutes: int = 30,
 ) -> Dict[str, Any]:
     pending_count = max(int(pending_count or 0), 0)
     first_seen = first_seen_at or now
@@ -136,7 +136,7 @@ def compute_registration_release_state(
         }
     if remaining_seconds <= 120:
         poll_interval_seconds = 10
-    elif remaining_seconds <= 1200:
+    elif remaining_seconds <= 1800:
         poll_interval_seconds = 30
     else:
         poll_interval_seconds = 120

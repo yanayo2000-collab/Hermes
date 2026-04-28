@@ -5,7 +5,7 @@ import threading
 from fastapi.testclient import TestClient
 from unittest.mock import patch
 
-from app.main import create_app, parse_manual_cs_message, extract_invalid_group_candidate, LiveLarkReplyAdapter, format_display_phone
+from app.main import create_app, parse_manual_cs_message, extract_invalid_group_candidate, LiveLarkReplyAdapter, format_display_phone, validate_fast_intake_fields
 
 
 class StubLarkMediaAdapter:
@@ -151,6 +151,27 @@ def test_parse_manual_cs_message_supports_labeled_form():
 
 
 
+def test_parse_manual_cs_message_supports_grouped_space_phone_form():
+    parsed = parse_manual_cs_message(
+        text="手机号：+62 899 9999 9999\nID：45678901\n注册群组：Piso-5\n应用：Linky\n公会：Piso"
+    )
+
+    assert parsed["mobile"] == "89999999999"
+    assert parsed["area_code"] == 62
+    assert parsed["country"] == "Indonesia"
+    assert parsed["account_id"] == "45678901"
+
+
+
+def test_validate_fast_intake_fields_accepts_grouped_space_phone():
+    assert validate_fast_intake_fields(
+        mobile='+62 899 9999 9999',
+        app_name='Linky',
+        account_id='45678901',
+    ) is None
+
+
+
 def test_parse_manual_cs_message_supports_messy_free_text_form():
     parsed = parse_manual_cs_message(
         text="Linky 的用户，Piso组，公会Piso，手机号 081234567891，id是 56789012，麻烦处理"
@@ -260,6 +281,99 @@ def test_parse_manual_cs_message_normalizes_hyphenated_phone_input():
 
 
 
+def test_parse_manual_cs_message_normalizes_parenthesized_phone_input():
+    parsed = parse_manual_cs_message(
+        text='Phone: +62 (852) 4951-9581\nGroup: PERMATA-909\nID: 51669366\nCode: EKVFGQ',
+        image_ocr_text=None,
+    )
+
+    assert parsed['mobile'] == '85249519581'
+    assert parsed['area_code'] == 62
+    assert parsed['country'] == 'Indonesia'
+
+
+
+def test_validate_fast_intake_fields_accepts_us_parenthesized_phone():
+    assert validate_fast_intake_fields(
+        mobile='+1 (650) 555-1212',
+        app_name='Linky',
+        account_id='45678901',
+    ) is None
+
+
+
+def test_parse_manual_cs_message_supports_hong_kong_grouped_space_phone():
+    parsed = parse_manual_cs_message(
+        text='Phone: +852 4456 8277\nGroup: Permata-66\nID: 51858602\nCode: PKUYW9',
+        image_ocr_text=None,
+    )
+
+    assert parsed['mobile'] == '44568277'
+    assert parsed['area_code'] == 852
+    assert parsed['country'] == 'Hong Kong'
+    assert parsed['account_id'] == '51858602'
+    assert parsed['registration_group'] == 'Permata-66'
+    assert parsed['invite_code'] == 'PKUYW9'
+
+
+
+def test_validate_fast_intake_fields_accepts_hong_kong_grouped_space_phone():
+    assert validate_fast_intake_fields(
+        mobile='+852 4456 8277',
+        app_name='Linky',
+        account_id='51858602',
+    ) is None
+
+
+
+def test_parse_manual_cs_message_supports_united_kingdom_grouped_space_phone():
+    parsed = parse_manual_cs_message(
+        text='Phone: +44 7700 900123\nGroup: Permata-66\nID: 51858602\nCode: PKUYW9',
+        image_ocr_text=None,
+    )
+
+    assert parsed['mobile'] == '7700900123'
+    assert parsed['area_code'] == 44
+    assert parsed['country'] == 'United Kingdom'
+    assert parsed['account_id'] == '51858602'
+    assert parsed['registration_group'] == 'Permata-66'
+    assert parsed['invite_code'] == 'PKUYW9'
+
+
+
+def test_validate_fast_intake_fields_accepts_united_kingdom_grouped_space_phone():
+    assert validate_fast_intake_fields(
+        mobile='+44 7700 900123',
+        app_name='Linky',
+        account_id='51858602',
+    ) is None
+
+
+
+def test_parse_manual_cs_message_supports_unmapped_explicit_country_code_phone():
+    parsed = parse_manual_cs_message(
+        text='Phone: +971 50 123 4567\nGroup: Permata-66\nID: 51858602\nCode: PKUYW9',
+        image_ocr_text=None,
+    )
+
+    assert parsed['mobile'] == '501234567'
+    assert parsed['area_code'] == 971
+    assert parsed['country'] == 'United Arab Emirates'
+    assert parsed['account_id'] == '51858602'
+    assert parsed['registration_group'] == 'Permata-66'
+    assert parsed['invite_code'] == 'PKUYW9'
+
+
+
+def test_validate_fast_intake_fields_accepts_unmapped_explicit_country_code_phone():
+    assert validate_fast_intake_fields(
+        mobile='+971 50 123 4567',
+        app_name='Linky',
+        account_id='51858602',
+    ) is None
+
+
+
 def test_parse_manual_cs_message_normalizes_homoglyph_invite_code_from_text():
     parsed = parse_manual_cs_message(
         text='Phone: +62 85249519581\nGroup: PERMATA-909\nID: 51669366\nCode: 7ЕНТ9N',
@@ -343,7 +457,7 @@ def test_registration_group_batching_ready_when_reaches_30():
 
 
 
-def test_registration_group_batching_flushes_after_20_minutes_even_if_under_30():
+def test_registration_group_batching_flushes_after_30_minutes_even_if_under_30():
     client = make_client()
     response = client.post(
         "/api/ops/approval-batches/evaluate",
@@ -352,7 +466,7 @@ def test_registration_group_batching_flushes_after_20_minutes_even_if_under_30()
             "registration_group": "Piso-31",
             "pending_count": 12,
             "oldest_pending_at": "2026-04-15T10:00:00Z",
-            "now": "2026-04-15T10:21:00Z",
+            "now": "2026-04-15T10:31:00Z",
         },
     )
     assert response.status_code == 200
@@ -682,6 +796,53 @@ def test_guild_executor_health_api_returns_latest_bind_status_and_human_action_f
     assert row['last_bind_result_code'] == 'bind_unauthorized'
     assert row['requires_human_action'] is True
     assert row['human_action_type'] == 'auth_required'
+
+
+def test_guild_executor_health_hides_stale_human_action_when_latest_bind_no_longer_requires_it():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    created = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_region': '厦门',
+        'proxy_type': 'http',
+        'enabled': True,
+        'browser_profile_key': 'permata-profile',
+    })
+    assert created.status_code == 200
+
+    submission = client.post('/api/intake/manual-cs-submissions', json={
+        'mobile': '+62 81234567123',
+        'registration_group': 'Permata-90',
+        'app_name': 'Linky',
+        'dept_name': 'Permata',
+        'submission_type': 'account_id',
+        'account_id': '55667788',
+        'invite_code': 'EKVFGQ',
+        'submitted_by': 'tester',
+        'source_channel': 'manual_cs_lark',
+        'submitted_at': '2026-04-21T12:10:00Z',
+    }).json()
+
+    with client.app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE automation_tasks SET status='failed', result_code=?, result_reason=?, raw_result=?, started_at=?, finished_at=? WHERE task_id=?",
+            ('bind_unauthorized', 'HTTP 401: please re-login', json.dumps({'guild_code': 'Permata', 'auth_required': True}), '2026-04-21T12:10:05Z', '2026-04-21T12:10:10Z', submission['task_id'])
+        )
+        newer_task_id = 'task_newer_perm'
+        conn.execute(
+            "INSERT INTO automation_tasks (task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at, status, result_code, result_reason, raw_result, started_at, finished_at) VALUES (?, ?, 'bind_check', 'normal', '{}', ?, 'tester', ?, 'failed', ?, ?, ?, ?, ?)",
+            (newer_task_id, submission['lead_id'], f'dedupe:{newer_task_id}', '2026-04-21T12:12:00Z', 'bind_backend_http_error', 'HTTP 400: device limit', json.dumps({'guild_code': 'Permata'}), '2026-04-21T12:12:02Z', '2026-04-21T12:12:08Z')
+        )
+        conn.commit()
+
+    health = client.get('/api/ops/guild-executors/health')
+    assert health.status_code == 200
+    row = health.json()['rows'][0]
+    assert row['last_bind_task_id'] == 'task_newer_perm'
+    assert row['last_bind_result_code'] == 'bind_backend_http_error'
+    assert row['requires_human_action'] is False
+    assert row['human_action_type'] is None
 
 
 
@@ -1169,6 +1330,30 @@ def test_lark_reply_templates_include_code_field_for_success_and_failures():
     })
     assert bind_profile_unconfigured.startswith('**🚫 I do not handle this app/agency.**')
     assert 'Code: EKVFGQ' in bind_profile_unconfigured
+
+    invalid_personal_code = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'bind_check_failed',
+        'result_reason': 'HTTP 400: {"error":{"code":400,"message":"invalid person code "}}',
+        'bind_failure_category': 'invalid_personal_code',
+        'reply_phone': '+62 81234567890',
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': 'EKVFGQ',
+    })
+    assert invalid_personal_code.startswith('**❌ Bind failed: Invalid personal code**')
+
+    auth_manual_recovery = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'bind_check_failed',
+        'result_reason': 'HTTP 401: please re-login',
+        'bind_failure_category': 'session_expired',
+        'reply_phone': '+62 81234567890',
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': 'EKVFGQ',
+    })
+    assert auth_manual_recovery.startswith('**❌ Failed：Error Code Unable to Bind**')
 
     generic_failed = service._format_lark_reply_text({
         'accepted': False,
@@ -2542,6 +2727,157 @@ def test_process_next_automation_task_flags_auth_required_for_human_action_and_r
 
 
 
+def test_process_next_automation_task_schedules_bind_retry_for_retryable_failure_without_reply():
+    reply = StubLarkReplyAdapter()
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+        'AUTO_BIND_SIMULATION': False,
+        'LARK_REPLY_ADAPTER': reply,
+        'BIND_SIMULATOR': lambda context: {
+            'status': 'failed',
+            'result_code': 'bind_execution_error',
+            'result_reason': 'connection reset by peer',
+            'raw_result': {'guild_code': context['dept_name']},
+        },
+    })
+    executor = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_region': '厦门',
+        'proxy_type': 'http',
+        'enabled': True,
+        'browser_profile_key': 'permata-profile',
+    })
+    assert executor.status_code == 200
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_bind_retry_pending'}},
+            'message': {
+                'message_id': 'om_bind_retry_pending',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567124\\nPERMATA-910\\n55667789\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed is not None
+    assert processed['next_action'] == 'queue_bind_retry'
+    assert processed['reason'] == 'bind_retry_pending'
+    assert processed['retry_count'] == 1
+    assert reply.calls == []
+
+    with client.app.state.service.db.connect() as conn:
+        rows = conn.execute(
+            "SELECT task_id, status, retry_count, result_code FROM automation_tasks WHERE lead_id = ? AND task_type = 'bind_check' ORDER BY created_at ASC",
+            (response.json()['lead_id'],),
+        ).fetchall()
+        lead_row = conn.execute("SELECT current_status FROM leads WHERE lead_id = ?", (response.json()['lead_id'],)).fetchone()
+    assert [row['status'] for row in rows] == ['failed', 'pending']
+    assert [row['retry_count'] for row in rows] == [0, 1]
+    assert lead_row['current_status'] == 'bind_check_pending'
+
+
+
+def test_bind_check_result_stops_after_two_retries_and_notifies_operator_with_business_reason():
+    client = make_client({'BIND_RETRY_MAX_ATTEMPTS': 2})
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-bind-retry-exhausted",
+            "source_platform": "manual_cs",
+            "source_campaign": "lark",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "81110000088",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-88",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "88888888",
+            "account_id_type": "platform_uid",
+            "source_channel": "manual_cs_lark",
+            "submitted_by": "cs_retry",
+            "submitted_at": "2026-04-15T09:10:00Z",
+        },
+    ).json()
+
+    first = client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "failed",
+            "result_code": "bind_execution_error",
+            "result_reason": "connection reset by peer",
+            "finished_at": "2026-04-15T09:12:00Z",
+            "raw_result": {},
+        },
+    ).json()
+    assert first['next_action'] == 'queue_bind_retry'
+    assert first['retry_count'] == 1
+
+    with client.app.state.service.db.connect() as conn:
+        retry_one = conn.execute(
+            "SELECT task_id FROM automation_tasks WHERE lead_id = ? AND task_type = 'bind_check' AND retry_count = 1 ORDER BY created_at DESC LIMIT 1",
+            (lead['lead_id'],),
+        ).fetchone()
+    assert retry_one is not None
+
+    second = client.post(
+        f"/api/tasks/{retry_one['task_id']}/bind-check-result",
+        json={
+            "status": "failed",
+            "result_code": "bind_execution_error",
+            "result_reason": "connection reset by peer",
+            "finished_at": "2026-04-15T09:13:00Z",
+            "raw_result": {},
+        },
+    ).json()
+    assert second['next_action'] == 'queue_bind_retry'
+    assert second['retry_count'] == 2
+
+    with client.app.state.service.db.connect() as conn:
+        retry_two = conn.execute(
+            "SELECT task_id FROM automation_tasks WHERE lead_id = ? AND task_type = 'bind_check' AND retry_count = 2 ORDER BY created_at DESC LIMIT 1",
+            (lead['lead_id'],),
+        ).fetchone()
+    assert retry_two is not None
+
+    final = client.post(
+        f"/api/tasks/{retry_two['task_id']}/bind-check-result",
+        json={
+            "status": "failed",
+            "result_code": "bind_execution_error",
+            "result_reason": "connection reset by peer",
+            "finished_at": "2026-04-15T09:14:00Z",
+            "raw_result": {},
+        },
+    ).json()
+    assert final['lead_status'] == 'bind_failed'
+    assert final['reason'] == 'bind_check_failed'
+    assert final['bind_failure_category'] == 'technical_retryable'
+
+    rows = client.get('/api/ops/operator-notifications').json()['rows']
+    assert rows[0]['notification_type'] == 'bind_check_failed'
+    assert rows[0]['reason'] == 'Bind failed after 2 retries. Check guild executor/network manually.'
+
+
+
 def test_process_next_automation_task_uses_real_bind_executor_when_configured():
     captured = {}
 
@@ -2603,6 +2939,116 @@ def test_process_next_automation_task_uses_real_bind_executor_when_configured():
     bind_task = next(task for task in timeline['tasks'] if task['task_id'] == response.json()['task_id'])
     assert bind_task['status'] == 'success'
     assert bind_task['result_reason'] == 'live bind ok'
+
+
+def test_process_next_automation_task_prefers_registration_group_executor_when_preset_guild_has_no_executor():
+    captured = {}
+
+    def real_bind_executor(context):
+        captured.update(context)
+        return {
+            'status': 'success',
+            'result_code': 'bind_success',
+            'result_reason': 'live bind ok',
+            'raw_result': {'guild_code': context['dept_name'], 'executor_mode': 'real'},
+        }
+
+    client = make_client({
+        'LARK_APP_ID': 'cli_default_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'AUTO_BIND_SIMULATION': False,
+        'REAL_BIND_EXECUTOR': real_bind_executor,
+    })
+    preset = client.app.state.service._upsert_intake_bot_preset_row(
+        profile_name='intake',
+        app_id='cli_a955df8b1e38de17',
+        robot_name='Lk-Piso',
+        default_app='Linky',
+        default_guild='Piso',
+        enabled=1,
+    )
+    assert preset['profile_name'] == 'intake'
+    executor = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_region': '厦门',
+        'proxy_type': 'http',
+        'enabled': True,
+        'browser_profile_key': 'permata-profile',
+    })
+    assert executor.status_code == 200
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_a955df8b1e38de17',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_bind_executor_preset_fallback'}},
+            'message': {
+                'message_id': 'om_bind_executor_preset_fallback',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nPermata-90\\n45678901\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'app_guild_mismatch'
+    assert body['reply_text'].startswith('**🚫 I do not handle this app/agency.**')
+    assert captured == {}
+
+
+def test_intake_bot_rejects_group_owned_by_other_guild_before_bind_duplicate():
+    client = make_client({
+        'LARK_APP_ID': 'cli_default_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    client.app.state.service._upsert_intake_bot_preset_row(
+        profile_name='intake',
+        app_id='cli_a955df8b1e38de17',
+        robot_name='Lk-Piso',
+        default_app='Linky',
+        default_guild='Piso',
+        enabled=1,
+    )
+    executor = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'login_username': 'permata@example.com',
+        'password_secret_ref': 'secret_perm',
+        'proxy_region': '厦门',
+        'proxy_type': 'http',
+        'enabled': True,
+        'browser_profile_key': 'permata-profile',
+    })
+    assert executor.status_code == 200
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_a955df8b1e38de17',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_scope_guard'}},
+            'message': {
+                'message_id': 'om_scope_guard',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+86 13860640933\\n51797757\\n6JL9MC\\nPermata-90"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'app_guild_mismatch'
+    assert body['reply_text'].startswith('**🚫 I do not handle this app/agency.**')
 
 
 
@@ -3488,7 +3934,7 @@ def test_registration_group_batching_ready_when_reaches_30():
 
 
 
-def test_registration_group_batching_flushes_after_20_minutes_even_if_under_30():
+def test_registration_group_batching_flushes_after_30_minutes_even_if_under_30():
     client = make_client()
     response = client.post(
         "/api/ops/approval-batches/evaluate",
@@ -3497,7 +3943,7 @@ def test_registration_group_batching_flushes_after_20_minutes_even_if_under_30()
             "registration_group": "Piso-31",
             "pending_count": 12,
             "oldest_pending_at": "2026-04-15T10:00:00Z",
-            "now": "2026-04-15T10:21:00Z",
+            "now": "2026-04-15T10:31:00Z",
         },
     )
     assert response.status_code == 200
@@ -4554,6 +5000,220 @@ def test_official_group_approval_summary_counts_pending_approved_and_skipped_dup
     assert body['retryable_failed_count'] >= 1
     assert body['manual_required_count'] >= 1
     assert body['by_target_group']['official-group-a']['approved_count'] >= 1
+
+
+
+def test_run_ready_official_group_batches_executes_ready_leads_using_target_map():
+    from app.main import create_app
+
+    class StubOfficialGroupApprovalExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def approve(self, *, target_group, lead, crm_snapshot, task):
+            self.calls.append({'target_group': target_group, 'lead_id': lead.get('lead_id')})
+            return {
+                'status': 'success',
+                'result_code': 'approval_ok',
+                'result_reason': 'approved',
+                'raw_result': {'target_group': target_group},
+            }
+
+    class MultiRecordCrmAdapter(StubCrmAdapter):
+        def __init__(self):
+            super().__init__()
+            self.records = {}
+            self._seed_record = None
+
+        def seed(self, record):
+            self._seed_record = dict(record)
+            self.record = dict(record)
+            for key in (record.get('ywId'), record.get('mobile')):
+                normalized = str(key or '').strip()
+                if normalized:
+                    self.records[normalized] = dict(record)
+
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            key = str(yw_id or '').strip() or str(mobile or '').strip()
+            if key and key in self.records:
+                return dict(self.records[key])
+            if self._seed_record is None:
+                return None
+            return dict(self._seed_record)
+
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            record = {"id": f"crm_{payload.get('ywId') or payload.get('mobile')}", **payload}
+            for key in (payload.get('ywId'), payload.get('mobile')):
+                normalized = str(key or '').strip()
+                if normalized:
+                    self.records[normalized] = dict(record)
+            self.record = record
+            return {"code": 0, "msg": "success", "data": None}
+
+        def update_customer(self, payload):
+            self.calls.append(("update_customer", payload))
+            record = dict(payload)
+            for key in (payload.get('ywId'), payload.get('mobile')):
+                normalized = str(key or '').strip()
+                if normalized:
+                    self.records[normalized] = dict(record)
+            self.record = record
+            return {"code": 0, "msg": "success", "data": None}
+
+    crm = MultiRecordCrmAdapter()
+    crm.apps = [{'id': 'app_1', 'name': 'Linky'}]
+    crm.depts = [{'deptId': 'dept_1', 'deptName': 'Piso'}]
+    executor = StubOfficialGroupApprovalExecutor()
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'OFFICIAL_GROUP_APPROVAL_EXECUTOR': executor,
+        'OFFICIAL_GROUP_TARGET_MAP': {'registration_group_prefix:piso': 'official-group-a'},
+    })
+    client = TestClient(app)
+
+    for idx in range(10):
+        mobile = f'899999991{idx:02d}'
+        account_id = f'700010{idx:02d}'
+        crm.seed({
+            'id': f'crm_{account_id}',
+            'mobile': mobile,
+            'ywId': account_id,
+            'appId': 'app_1',
+            'appName': 'Linky',
+            'deptId': 'dept_1',
+            'deptName': 'Piso',
+            'pendaftaranGroup': 'Piso-5',
+            'wa': '',
+            'joinGroup': 0,
+        })
+        lead = client.post('/api/leads/upsert', json={
+            'trace_id': f'trace-batch-{idx}',
+            'source_platform': 'meta',
+            'source_page_id': f'page-batch-{idx}',
+            'country': 'Indonesia',
+            'area_code': 62,
+            'mobile': mobile,
+            'app_name': 'Linky',
+            'dept_name': 'Piso',
+            'pendaftaran_group': 'Piso-5',
+        }).json()
+        submission = client.post('/api/account-submissions', json={
+            'lead_id': lead['lead_id'],
+            'submission_type': 'account_id',
+            'account_id': account_id,
+            'account_id_type': 'platform_uid',
+            'source_channel': 'whatsapp',
+            'submitted_by': 'customer_service',
+            'submitted_at': '2026-04-14T12:15:00Z',
+        }).json()
+        response = client.post(f"/api/tasks/{submission['task_id']}/bind-check-result", json={
+            'status': 'success',
+            'result_code': 'bind_ok',
+            'result_reason': 'manual backend bind success',
+            'finished_at': f'2026-04-14T12:{17 + idx:02d}:00Z',
+            'raw_result': {'guild_code': 'Piso', 'deptName': 'Piso', 'deptId': 'dept_1'},
+        })
+        assert response.status_code == 200
+
+    run = client.post('/api/ops/official-group-approval-batches/run-ready', json={
+        'decided_at': '2026-04-14T13:00:00Z',
+        'decided_by': 'batch_runner',
+    })
+    assert run.status_code == 200
+    body = run.json()
+    assert body['ready_group_count'] == 1
+    assert body['executed_count'] == 10
+    assert body['unresolved_count'] == 0
+    assert len(executor.calls) == 10
+    assert executor.calls[0]['target_group'] == 'official-group-a'
+
+
+
+def test_run_ready_official_group_batches_records_unresolved_target_group_when_mapping_missing():
+    from app.main import create_app
+
+    class StubOfficialGroupApprovalExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def approve(self, *, target_group, lead, crm_snapshot, task):
+            self.calls.append({'target_group': target_group, 'lead_id': lead.get('lead_id')})
+            return {
+                'status': 'success',
+                'result_code': 'approval_ok',
+                'result_reason': 'approved',
+                'raw_result': {'target_group': target_group},
+            }
+
+    crm = StubCrmAdapter()
+    crm.apps = [{'id': 'app_1', 'name': 'Linky'}]
+    crm.depts = [{'deptId': 'dept_1', 'deptName': 'Piso'}]
+    executor = StubOfficialGroupApprovalExecutor()
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'OFFICIAL_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+
+    for idx in range(10):
+        mobile = f'899999992{idx:02d}'
+        account_id = f'710010{idx:02d}'
+        crm.record = {
+            'id': f'crm_{account_id}',
+            'mobile': mobile,
+            'ywId': account_id,
+            'appId': 'app_1',
+            'appName': 'Linky',
+            'deptId': 'dept_1',
+            'deptName': 'Piso',
+            'pendaftaranGroup': 'Piso-5',
+            'wa': '',
+            'joinGroup': 0,
+        }
+        lead = client.post('/api/leads/upsert', json={
+            'trace_id': f'trace-unresolved-{idx}',
+            'source_platform': 'meta',
+            'source_page_id': f'page-unresolved-{idx}',
+            'country': 'Indonesia',
+            'area_code': 62,
+            'mobile': mobile,
+            'app_name': 'Linky',
+            'dept_name': 'Piso',
+            'pendaftaran_group': 'Piso-5',
+        }).json()
+        submission = client.post('/api/account-submissions', json={
+            'lead_id': lead['lead_id'],
+            'submission_type': 'account_id',
+            'account_id': account_id,
+            'account_id_type': 'platform_uid',
+            'source_channel': 'whatsapp',
+            'submitted_by': 'customer_service',
+            'submitted_at': '2026-04-14T12:15:00Z',
+        }).json()
+        response = client.post(f"/api/tasks/{submission['task_id']}/bind-check-result", json={
+            'status': 'success',
+            'result_code': 'bind_ok',
+            'result_reason': 'manual backend bind success',
+            'finished_at': f'2026-04-14T12:{17 + idx:02d}:00Z',
+            'raw_result': {'guild_code': 'Piso', 'deptName': 'Piso', 'deptId': 'dept_1'},
+        })
+        assert response.status_code == 200
+
+    run = client.post('/api/ops/official-group-approval-batches/run-ready', json={
+        'decided_at': '2026-04-14T13:00:00Z',
+        'decided_by': 'batch_runner',
+    })
+    assert run.status_code == 200
+    body = run.json()
+    assert body['ready_group_count'] == 1
+    assert body['executed_count'] == 0
+    assert body['unresolved_count'] == 10
+    assert executor.calls == []
+    assert body['results'][0]['reason_code'] == 'official_group_target_unresolved'
 
 
 
@@ -5726,6 +6386,330 @@ def test_registration_group_approval_batch_syncs_to_crm():
     assert ("create_registration_group_batch", {"area": "Indonesia", "groupNo": "Piso-5", "groupPeopleNum": "30"}) in crm.calls
 
 
+def test_registration_group_approval_batch_is_idempotent_per_approval_run_id(tmp_path):
+    import sqlite3
+    from app.main import create_app
+
+    db_path = tmp_path / "registration-group-approval-batch-idempotent.db"
+    crm = StubCrmAdapter()
+    app = create_app({"DB_PATH": str(db_path), "CRM_ADAPTER": crm})
+    client = TestClient(app)
+    payload = {
+        "registration_group": "Piso-5",
+        "approved_count": 2,
+        "approved_by": "cs_001",
+        "approved_by_name": "注册客服A",
+        "approved_at": "2026-04-14T16:59:03Z",
+        "area": "Indonesia",
+        "remark": "manual approval batch",
+        "approval_run_id": "registration_group_approval_batch_dedupe_1",
+    }
+
+    first = client.post("/api/registration-groups/approval-batches", json=payload)
+    second = client.post("/api/registration-groups/approval-batches", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_body = first.json()
+    second_body = second.json()
+    assert first_body["approval_run_id"] == payload["approval_run_id"]
+    assert second_body["approval_run_id"] == payload["approval_run_id"]
+    assert first_body["crm_payload"] == second_body["crm_payload"]
+    assert sum(1 for name, _ in crm.calls if name == "create_registration_group_batch") == 1
+
+    with sqlite3.connect(str(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT request_snapshot FROM sync_logs WHERE sync_type = 'registration_group_approval_batch'"
+        ).fetchall()
+    matching = [row for row in rows if payload["approval_run_id"] in str(row[0] or "")]
+    assert len(matching) == 1
+
+
+def test_registration_group_approval_batch_is_atomic_under_concurrent_same_run_id(tmp_path):
+    import sqlite3
+    import threading
+    import time
+    from app.main import RegistrationGroupApprovalBatchRequest, create_app
+
+    class SlowStubCrmAdapter(StubCrmAdapter):
+        def __init__(self):
+            super().__init__()
+            self._lock = threading.Lock()
+
+        def create_registration_group_batch(self, payload):
+            time.sleep(0.05)
+            with self._lock:
+                return super().create_registration_group_batch(payload)
+
+    db_path = tmp_path / "registration-group-approval-batch-concurrent-idempotent.db"
+    crm = SlowStubCrmAdapter()
+    app_a = create_app({"DB_PATH": str(db_path), "CRM_ADAPTER": crm, "INGRESS_WORKER_ENABLED": False})
+    app_b = create_app({"DB_PATH": str(db_path), "CRM_ADAPTER": crm, "INGRESS_WORKER_ENABLED": False})
+    services = [app_a.state.service, app_b.state.service]
+    payload = RegistrationGroupApprovalBatchRequest(
+        registration_group="Piso-5",
+        approved_count=2,
+        approved_by="cs_001",
+        approved_by_name="注册客服A",
+        approved_at="2026-04-14T16:59:03Z",
+        area="Indonesia",
+        remark="manual approval batch",
+        approval_run_id="registration_group_approval_batch_concurrent_dedupe_1",
+    )
+
+    barrier = threading.Barrier(2)
+    results = []
+    errors = []
+
+    def worker(service):
+        try:
+            barrier.wait(timeout=2)
+            results.append(service.create_registration_group_approval_batch(payload))
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(service,)) for service in services]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not errors
+    assert len(results) == 2
+    assert sum(1 for name, _ in crm.calls if name == "create_registration_group_batch") == 1
+
+    with sqlite3.connect(str(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT request_snapshot FROM sync_logs WHERE sync_type = 'registration_group_approval_batch'"
+        ).fetchall()
+    matching = [row for row in rows if payload.approval_run_id in str(row[0] or "")]
+    assert len(matching) == 1
+
+
+def test_registration_group_approval_batch_allows_retry_after_failed_attempt(tmp_path):
+    import sqlite3
+    from app.main import RegistrationGroupApprovalBatchRequest, create_app
+
+    class FailOnceStubCrmAdapter(StubCrmAdapter):
+        def __init__(self):
+            super().__init__()
+            self._attempts = 0
+
+        def create_registration_group_batch(self, payload):
+            self._attempts += 1
+            self.calls.append(("create_registration_group_batch", payload))
+            if self._attempts == 1:
+                return {"code": 502, "msg": "temporary failure", "data": None}
+            return {"code": 0, "msg": "success", "data": None}
+
+    db_path = tmp_path / "registration-group-approval-batch-retry-after-fail.db"
+    crm = FailOnceStubCrmAdapter()
+    app = create_app({"DB_PATH": str(db_path), "CRM_ADAPTER": crm, "INGRESS_WORKER_ENABLED": False})
+    service = app.state.service
+    payload = RegistrationGroupApprovalBatchRequest(
+        registration_group="Piso-5",
+        approved_count=2,
+        approved_by="cs_001",
+        approved_by_name="注册客服A",
+        approved_at="2026-04-14T16:59:03Z",
+        area="Indonesia",
+        remark="manual approval batch",
+        approval_run_id="registration_group_approval_batch_retry_after_fail_1",
+    )
+
+    first = service.create_registration_group_approval_batch(payload)
+    second = service.create_registration_group_approval_batch(payload)
+
+    assert first["crm_sync_status"] == "failed"
+    assert second["crm_sync_status"] == "success"
+    assert sum(1 for name, _ in crm.calls if name == "create_registration_group_batch") == 2
+
+    with sqlite3.connect(str(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT request_snapshot, response_snapshot FROM sync_logs WHERE sync_type = 'registration_group_approval_batch'"
+        ).fetchall()
+    matching = [row for row in rows if payload.approval_run_id in str(row[0] or "")]
+    assert len(matching) == 2
+    assert any('"code": 0' in str(row[1] or '') for row in matching)
+
+
+def test_registration_group_approval_batch_recovers_after_crm_exception(tmp_path):
+    import sqlite3
+    from app.main import RegistrationGroupApprovalBatchRequest, create_app
+
+    class RaiseOnceStubCrmAdapter(StubCrmAdapter):
+        def __init__(self):
+            super().__init__()
+            self._attempts = 0
+
+        def create_registration_group_batch(self, payload):
+            self._attempts += 1
+            self.calls.append(("create_registration_group_batch", payload))
+            if self._attempts == 1:
+                raise RuntimeError('crm gateway timeout')
+            return {"code": 0, "msg": "success", "data": None}
+
+    db_path = tmp_path / "registration-group-approval-batch-retry-after-exception.db"
+    crm = RaiseOnceStubCrmAdapter()
+    app = create_app({"DB_PATH": str(db_path), "CRM_ADAPTER": crm, "INGRESS_WORKER_ENABLED": False})
+    service = app.state.service
+    payload = RegistrationGroupApprovalBatchRequest(
+        registration_group="Piso-5",
+        approved_count=2,
+        approved_by="cs_001",
+        approved_by_name="注册客服A",
+        approved_at="2026-04-14T16:59:03Z",
+        area="Indonesia",
+        remark="manual approval batch",
+        approval_run_id="registration_group_approval_batch_retry_after_exception_1",
+    )
+
+    first = service.create_registration_group_approval_batch(payload)
+    second = service.create_registration_group_approval_batch(payload)
+
+    assert first["crm_sync_status"] == "failed"
+    assert 'crm gateway timeout' in str(first["crm_response"])
+    assert second["crm_sync_status"] == "success"
+    assert sum(1 for name, _ in crm.calls if name == "create_registration_group_batch") == 2
+
+    with sqlite3.connect(str(db_path)) as conn:
+        rows = conn.execute(
+            "SELECT status, response_snapshot FROM registration_group_approval_batch_runs WHERE approval_run_id = ?",
+            (payload.approval_run_id,),
+        ).fetchall()
+    assert rows[0][0] == 'success'
+    assert 'success' in str(rows[0][1] or '')
+
+
+def test_registration_group_approval_batch_duplicate_processing_returns_processing(tmp_path):
+    import sqlite3
+    from app.main import RegistrationGroupApprovalBatchRequest, create_app, utc_now
+
+    db_path = tmp_path / "registration-group-approval-batch-processing-duplicate.db"
+    crm = StubCrmAdapter()
+    app = create_app({"DB_PATH": str(db_path), "CRM_ADAPTER": crm, "INGRESS_WORKER_ENABLED": False})
+    service = app.state.service
+    payload = RegistrationGroupApprovalBatchRequest(
+        registration_group="Piso-5",
+        approved_count=2,
+        approved_by="cs_001",
+        approved_by_name="注册客服A",
+        approved_at="2026-04-14T16:59:03Z",
+        area="Indonesia",
+        remark="manual approval batch",
+        approval_run_id="registration_group_approval_batch_processing_duplicate_1",
+    )
+
+    now = utc_now()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO registration_group_approval_batch_runs (approval_run_id, sync_log_id, status, request_snapshot, response_snapshot, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (payload.approval_run_id, None, 'processing', '{"approval_run_id": "registration_group_approval_batch_processing_duplicate_1"}', '{}', now, now),
+        )
+        conn.commit()
+
+    service._wait_for_registration_group_approval_batch_run = lambda approval_run_id, timeout_seconds=5.0, poll_interval_seconds=0.05: {
+        'approval_run_id': approval_run_id,
+        'status': 'processing',
+        'request_snapshot_dict': {'approval_run_id': approval_run_id},
+        'response_snapshot_dict': {},
+    }
+    result = service.create_registration_group_approval_batch(payload)
+
+    assert result['crm_sync_status'] == 'processing'
+    assert result.get('duplicate') is True
+    assert sum(1 for name, _ in crm.calls if name == 'create_registration_group_batch') == 0
+
+
+def test_process_next_ingress_job_claim_is_atomic_under_concurrent_workers(tmp_path):
+    import sqlite3
+    import threading
+    import time
+    from app.main import create_app
+
+    db_path = tmp_path / "ingress-claim-atomic.db"
+    app = create_app({"DB_PATH": str(db_path), "AUTO_LARK_REPLY": False, "INGRESS_WORKER_ENABLED": False})
+    client = TestClient(app)
+    service = app.state.service
+
+    payload = {
+        'registration_group': '8️⃣5️⃣',
+        'decision': 'approve',
+        'decided_at': '2026-04-27T07:26:05.137945+00:00',
+        'decided_by': 'Hermes',
+        'decided_by_name': 'Song Yuqi',
+        'approved_count': 2,
+        'area': 'Indonesia',
+        'remark': 'atomic ingress claim test',
+        'force_immediate': True,
+    }
+    accepted = client.post('/api/registration-groups/approval-decisions', json=payload)
+    assert accepted.status_code == 200
+    approval_run_id = accepted.json()['approval_run_id']
+
+    original_sync = service._registration_group_approval_decision_sync
+    calls = []
+
+    def wrapped_sync(*args, **kwargs):
+        calls.append(kwargs.get('approval_run_id'))
+        time.sleep(0.05)
+        return {
+            'registration_group': '8️⃣5️⃣',
+            'decision': 'approve',
+            'approval_run_id': kwargs.get('approval_run_id'),
+            'executed': True,
+            'verified': True,
+            'verification_pending': False,
+            'crm_recorded': True,
+            'status': 'success',
+            'result_code': 'approved',
+            'result_reason': 'stubbed success',
+            'approved_count': 2,
+            'approved_at': '2026-04-27T07:26:31.077Z',
+            'elapsed_seconds': 0.05,
+            'crm_elapsed_seconds': 0.0,
+            'total_elapsed_seconds': 0.05,
+            'force_immediate': True,
+            'target_member': {},
+            'evidence_summary': {},
+            'raw_result': {},
+            'crm_batch': {'accepted': True},
+        }
+
+    service._registration_group_approval_decision_sync = wrapped_sync
+    results = []
+    errors = []
+
+    def worker():
+        try:
+            results.append(service.process_next_ingress_job())
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    service._registration_group_approval_decision_sync = original_sync
+
+    assert not errors
+    assert sum(1 for row in results if row) == 1
+    assert calls == [approval_run_id]
+
+    with sqlite3.connect(str(db_path)) as conn:
+        job = conn.execute(
+            "SELECT attempt_count, status FROM ingress_jobs ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        audit_rows = conn.execute(
+            "SELECT event_type FROM operator_audit_log ORDER BY created_at DESC LIMIT 10"
+        ).fetchall()
+    assert job[0] == 1
+    assert job[1] == 'done'
+    assert sum(1 for row in audit_rows if row[0] == 'ingress_event_processed') == 1
+
+
 class StubRegistrationGroupApprovalExecutor:
     def __init__(self, result=None):
         self.calls = []
@@ -5835,6 +6819,73 @@ def test_registration_group_approval_decision_executes_executor_and_records_crm_
     assert executor.calls[0]['target_phone_hint'] == '+86 138 6064 0933'
     assert body['approved_count'] == 2
     assert ('create_registration_group_batch', {'area': 'Indonesia', 'groupNo': '8️⃣5️⃣', 'groupPeopleNum': '2'}) in crm.calls
+
+
+def test_registration_group_approval_decision_does_not_write_crm_when_batch_success_count_is_short():
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    executor = StubRegistrationGroupApprovalExecutor({
+        'status': 'success',
+        'verified': True,
+        'result_code': 'approved',
+        'result_reason': 'verified',
+        'finished_at': '2026-04-27T06:28:07.893Z',
+        'approved_at': '2026-04-27T06:28:07.893Z',
+        'approved_count': 1,
+        'elapsed_seconds': 16.962,
+        'queue_delta': True,
+        'member_confirmed': True,
+        'target_member': {
+            'phone_raw': '+216****9549@lid',
+            'phone_normalized': '+216****9549@lid',
+            'requester_id': '216067590889549@lid',
+        },
+        'raw_result': {
+            'pending_before': 2,
+            'pending_after': 0,
+            'member_count_before': 4,
+            'member_count_after': 5,
+            'approval_results': [
+                {'requesterId': '216067590889549@lid', 'message': 'Approved successfully'},
+                {'requesterId': '64163187581105@lid', 'error': 404, 'message': 'ParticipantRequestNotFoundError'},
+            ],
+        },
+    })
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+
+    response = client.post(
+        '/api/registration-groups/approval-decisions',
+        json={
+            'registration_group': '8️⃣5️⃣',
+            'decided_at': '2026-04-27T06:27:50.786630+00:00',
+            'decided_by': 'Hermes',
+            'decided_by_name': 'Song Yuqi',
+            'approved_count': 2,
+            'area': 'Indonesia',
+            'remark': 'post-dedupe live verify',
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['executed'] is True
+    assert body['verified'] is False
+    assert body['verification_pending'] is True
+    assert body['crm_recorded'] is False
+    assert body['status'] == 'pending_verification'
+    assert body['result_code'] == 'approval_consumed_waiting_verification'
+    assert body['raw_result']['verification_consistency_error'] == 'batch_success_count_mismatch'
+    assert body['raw_result']['verification_consistency_detail'] == {
+        'requested_approved_count': 2,
+        'approved_success_count': 1,
+    }
+    assert all(name != 'create_registration_group_batch' for name, _ in crm.calls)
 
 
 def test_file_backed_registration_group_approval_decision_queues_for_async_processing_and_exposes_status(tmp_path):
@@ -6356,6 +7407,225 @@ def test_live_whatsapp_registration_group_executor_uses_fast_default_timing_prof
     assert timing['post_click_wait_ms'] <= 150
     assert timing['verify_timeout_ms'] <= 1800
     assert timing['strict_reload_verify'] is False
+
+
+def test_webjs_bridge_registration_group_executor_posts_context_and_reports_health():
+    class StubResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+    class StubSession:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, timeout):
+            self.calls.append(('get', url, timeout, None, None))
+            return StubResponse({
+                'status': 'warm',
+                'provider': 'whatsapp_webjs_bridge',
+                'supports': ['approve', 'strict_queue_and_member_verify', 'crm_batch_writeback_ready'],
+            })
+
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.calls.append(('post', url, timeout, json, headers))
+            if url.endswith('/approve'):
+                return StubResponse({
+                    'status': 'success',
+                    'verified': True,
+                    'result_code': 'approved',
+                    'result_reason': 'bridge approved',
+                    'approved_count': 2,
+                    'approved_at': '2026-04-27T03:20:00+00:00',
+                    'elapsed_seconds': 1.8,
+                    'target_member': {'name': '~G2', 'phone_raw': '+852 6775 5475'},
+                    'raw_result': {'pending_before': 2, 'pending_after': 0},
+                })
+            return StubResponse({'status': 'warm', 'provider': 'whatsapp_webjs_bridge'})
+
+    from app.registration_group_webjs_executor import WebjsBridgeRegistrationGroupApprovalExecutor
+
+    session = StubSession()
+    executor = WebjsBridgeRegistrationGroupApprovalExecutor(
+        base_url='http://127.0.0.1:8787',
+        token='secret-token',
+        session=session,
+        timeout_seconds=9,
+    )
+
+    health = executor.health()
+    assert health['configured'] is True
+    assert health['status'] == 'warm'
+    assert health['provider'] == 'whatsapp_webjs_bridge'
+
+    result = executor.approve({'registration_group': '8️⃣5️⃣', 'approval_run_id': 'registration_group_approval_bridge_1'})
+    assert result['verified'] is True
+    assert result['approved_count'] == 2
+    assert result['raw_result']['pending_after'] == 0
+    assert session.calls[0][0] == 'get'
+    assert session.calls[1][0] == 'post'
+    assert session.calls[1][1] == 'http://127.0.0.1:8787/approve'
+    assert session.calls[1][3]['approval_run_id'] == 'registration_group_approval_bridge_1'
+    assert session.calls[1][4]['Authorization'] == 'Bearer secret-token'
+
+
+def test_webjs_bridge_registration_group_executor_fetches_group_state():
+    class StubResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+    class StubSession:
+        def __init__(self):
+            self.calls = []
+
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.calls.append(('post', url, timeout, json, headers))
+            return StubResponse({
+                'group_id': '120363423424902684@g.us',
+                'group_name': '8️⃣5️⃣',
+                'pending_count': 2,
+                'member_count': 4,
+                'requester_ids': ['216067590889549@lid', '64163187581105@lid'],
+            })
+
+    from app.registration_group_webjs_executor import WebjsBridgeRegistrationGroupApprovalExecutor
+
+    session = StubSession()
+    executor = WebjsBridgeRegistrationGroupApprovalExecutor(
+        base_url='http://127.0.0.1:8787',
+        token='secret-token',
+        session=session,
+        timeout_seconds=9,
+    )
+
+    result = executor.group_state('8️⃣5️⃣')
+    assert result['pending_count'] == 2
+    assert result['member_count'] == 4
+    assert result['group_name'] == '8️⃣5️⃣'
+    assert session.calls[0][1] == 'http://127.0.0.1:8787/group-state'
+    assert session.calls[0][3]['registration_group'] == '8️⃣5️⃣'
+    assert session.calls[0][4]['Authorization'] == 'Bearer secret-token'
+
+
+def test_create_app_supports_webjs_bridge_registration_group_executor_kind(monkeypatch):
+    import types
+    import sys
+    from app.main import create_app
+
+    class FakeBridgeExecutor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def health(self):
+            return {
+                'configured': True,
+                'status': 'warm',
+                'provider': 'fake_webjs_bridge',
+                'base_url': self.kwargs.get('base_url'),
+                'timeout_seconds': self.kwargs.get('timeout_seconds'),
+            }
+
+        def warmup(self):
+            return self.health()
+
+    fake_module = types.ModuleType('app.registration_group_webjs_executor')
+    fake_module.WebjsBridgeRegistrationGroupApprovalExecutor = FakeBridgeExecutor
+    monkeypatch.setitem(sys.modules, 'app.registration_group_webjs_executor', fake_module)
+
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR_KIND': 'webjs_bridge',
+        'REGISTRATION_GROUP_APPROVAL_WEBJS_BASE_URL': 'http://127.0.0.1:8787',
+        'REGISTRATION_GROUP_APPROVAL_WEBJS_TIMEOUT_SECONDS': 12,
+        'AUTO_LARK_REPLY': False,
+    })
+    client = TestClient(app)
+
+    response = client.get('/api/ops/registration-group-approval-executor-health')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['provider'] == 'fake_webjs_bridge'
+    assert body['base_url'] == 'http://127.0.0.1:8787'
+    assert body['timeout_seconds'] == 12.0
+
+
+def test_create_app_webjs_bridge_uses_safer_default_timeout(monkeypatch):
+    import types
+    import sys
+    from app.main import create_app
+
+    class FakeBridgeExecutor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def health(self):
+            return {
+                'configured': True,
+                'status': 'warm',
+                'provider': 'fake_webjs_bridge',
+                'base_url': self.kwargs.get('base_url'),
+                'timeout_seconds': self.kwargs.get('timeout_seconds'),
+            }
+
+        def warmup(self):
+            return self.health()
+
+    fake_module = types.ModuleType('app.registration_group_webjs_executor')
+    fake_module.WebjsBridgeRegistrationGroupApprovalExecutor = FakeBridgeExecutor
+    monkeypatch.setitem(sys.modules, 'app.registration_group_webjs_executor', fake_module)
+
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR_KIND': 'webjs_bridge',
+        'REGISTRATION_GROUP_APPROVAL_WEBJS_BASE_URL': 'http://127.0.0.1:8787',
+        'AUTO_LARK_REPLY': False,
+    })
+    client = TestClient(app)
+
+    response = client.get('/api/ops/registration-group-approval-executor-health')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['timeout_seconds'] == 35.0
+
+
+def test_registration_group_approval_executor_group_state_endpoint_calls_executor():
+    from app.main import create_app
+
+    class GroupStateExecutor(StubRegistrationGroupApprovalExecutor):
+        def __init__(self):
+            super().__init__({'status': 'warm', 'provider': 'group_state_stub'})
+            self.group_state_calls = []
+
+        def group_state(self, registration_group: str):
+            self.group_state_calls.append(registration_group)
+            return {
+                'group_name': registration_group,
+                'group_id': 'group-123',
+                'pending_count': 2,
+                'member_count': 4,
+                'requester_ids': ['a', 'b'],
+            }
+
+    executor = GroupStateExecutor()
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+
+    response = client.get('/api/ops/registration-group-approval-executor-group-state', params={'registration_group': '8️⃣5️⃣'})
+    assert response.status_code == 200
+    body = response.json()
+    assert body['group_name'] == '8️⃣5️⃣'
+    assert body['pending_count'] == 2
+    assert executor.group_state_calls == ['8️⃣5️⃣']
 
 
 def test_ops_bind_queue_returns_bind_related_leads():
@@ -7955,6 +9225,64 @@ def test_lark_event_rejects_phone_without_country_code_space_before_bind():
     assert 'ID: 90144211' in reply.calls[0]['text']
     assert 'Group: Piso-4' in reply.calls[0]['text']
     assert reply.calls[0]['text'].endswith('Code: -')
+
+
+def test_lark_event_accepts_grouped_space_phone_before_bind():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'AUTO_LARK_REPLY': False,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'AUTO_BIND_SIMULATION': True,
+        'AUTO_BIND_SIMULATION_SUCCESS_RATE': 1.0,
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_phone_grouped'}},
+            'message': {
+                'message_id': 'om_text_phone_grouped',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"Phone: +62 899 9999 9999\nGroup: Piso-4\nID: 90144211\nCode: EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get('reason') != 'invalid_phone_format'
+    assert body['reply_phone'] == '+62 89999999999'
+
+
+
+def test_lark_event_accepts_us_parenthesized_phone_before_bind():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test',
+        'AUTO_LARK_REPLY': False,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'AUTO_BIND_SIMULATION': True,
+        'AUTO_BIND_SIMULATION_SUCCESS_RATE': 1.0,
+    })
+    response = client.post('/api/intake/lark/events', json={
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cs_phone_us'}},
+            'message': {
+                'message_id': 'om_text_phone_us',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"Phone: +1 (650) 555-1212\nGroup: Piso-4\nID: 90144211\nCode: EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get('reason') != 'invalid_phone_format'
+    assert body['reply_phone'] == '+1 6505551212'
+
 
 
 def test_lark_event_rejects_linky_id_that_is_not_8_digits_before_bind():

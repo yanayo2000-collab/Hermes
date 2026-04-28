@@ -39,25 +39,25 @@ def test_compute_registration_release_state_returns_waiting_until_timeout():
         first_seen_at=first_seen_at,
         now=now,
         batch_size=30,
-        timeout_minutes=20,
+        timeout_minutes=30,
     )
 
     assert state["ready"] is False
     assert state["reason_code"] == "waiting_for_batch"
-    assert state["remaining_seconds"] == 928
+    assert state["remaining_seconds"] == 1528
     assert state["poll_interval_seconds"] == 30
 
 
 def test_compute_registration_release_state_returns_ready_when_timeout_reached():
     first_seen_at = datetime(2026, 4, 22, 13, 32, 0, tzinfo=timezone.utc)
-    now = datetime(2026, 4, 22, 13, 52, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 4, 22, 14, 2, 0, tzinfo=timezone.utc)
 
     state = compute_registration_release_state(
         pending_count=1,
         first_seen_at=first_seen_at,
         now=now,
         batch_size=30,
-        timeout_minutes=20,
+        timeout_minutes=30,
     )
 
     assert state["ready"] is True

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.chauncey.mcn.production-ops-daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>/Users/chauncey/work/mcn-ai-automation/scripts/start_production_ops_daemon.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/chauncey/work/mcn-ai-automation</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/chauncey/work/mcn-ai-automation/logs/production_ops_daemon.launchd.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/chauncey/work/mcn-ai-automation/logs/production_ops_daemon.launchd.error.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+  </dict>
+</plist>

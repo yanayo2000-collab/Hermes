@@ -1,0 +1,89 @@
+{
+  "status": "waiting",
+  "anchor_utc": "2026-04-28T02:39:17.311213+00:00",
+  "checked_at_utc": "2026-04-28T03:00:41.126027+00:00",
+  "registration_group": "🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎",
+  "group_state": {
+    "group_id": "120363425215002840@g.us",
+    "group_name": "🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎",
+    "pending_count": 6,
+    "member_count": 333,
+    "requester_ids": [
+      "13606624202907@lid",
+      "182072991858888@lid",
+      "203122509139976@lid",
+      "239431793545466@lid",
+      "74659802419327@lid",
+      "88399788662948@lid"
+    ],
+    "requesters": [
+      {
+        "requesterId": "13606624202907@lid",
+        "phoneRaw": "+13606624202907@lid",
+        "phoneNormalized": "+13606624202907@lid",
+        "displayName": "unknown",
+        "requestMethod": "InviteLink",
+        "requestedAtUnix": 1777344692,
+        "requestedAtIso": "2026-04-28T02:51:32.000Z"
+      },
+      {
+        "requesterId": "182072991858888@lid",
+        "phoneRaw": "+182072991858888@lid",
+        "phoneNormalized": "+182072991858888@lid",
+        "displayName": "Dapur buk nong",
+        "requestMethod": "InviteLink",
+        "requestedAtUnix": 1777345128,
+        "requestedAtIso": "2026-04-28T02:58:48.000Z"
+      },
+      {
+        "requesterId": "203122509139976@lid",
+        "phoneRaw": "+203122509139976@lid",
+        "phoneNormalized": "+203122509139976@lid",
+        "displayName": "ccekk...",
+        "requestMethod": "InviteLink",
+        "requestedAtUnix": 1777344768,
+        "requestedAtIso": "2026-04-28T02:52:48.000Z"
+      },
+      {
+        "requesterId": "239431793545466@lid",
+        "phoneRaw": "+239431793545466@lid",
+        "phoneNormalized": "+239431793545466@lid",
+        "displayName": "Diana Harahap",
+        "requestMethod": "InviteLink",
+        "requestedAtUnix": 1777345085,
+        "requestedAtIso": "2026-04-28T02:58:05.000Z"
+      },
+      {
+        "requesterId": "74659802419327@lid",
+        "phoneRaw": "+74659802419327@lid",
+        "phoneNormalized": "+74659802419327@lid",
+        "displayName": "tyr",
+        "requestMethod": "InviteLink",
+        "requestedAtUnix": 1777345237,
+        "requestedAtIso": "2026-04-28T03:00:37.000Z"
+      },
+      {
+        "requesterId": "88399788662948@lid",
+        "phoneRaw": "+88399788662948@lid",
+        "phoneNormalized": "+88399788662948@lid",
+        "displayName": "reee🔱",
+        "requestMethod": "InviteLink",
+        "requestedAtUnix": 1777345114,
+        "requestedAtIso": "2026-04-28T02:58:34.000Z"
+      }
+    ]
+  },
+  "release": {
+    "approval_type": "registration_group",
+    "registration_group": "🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎",
+    "pending_count": 6,
+    "oldest_pending_at": "2026-04-28T02:51:32.000Z",
+    "ready": false,
+    "release_count": 0,
+    "reason_code": "waiting_for_batch",
+    "batch_size": 30,
+    "timeout_minutes": 30,
+    "elapsed_minutes": 9
+  },
+  "requester_fingerprint": "13606624202907@lid@1777344692|182072991858888@lid@1777345128|203122509139976@lid@1777344768|239431793545466@lid@1777345085|74659802419327@lid@1777345237|88399788662948@lid@1777345114"
+}

@@ -26,13 +26,83 @@ from app.ocr_adapter import RapidOcrAdapter
 
 
 PHONE_PREFIX_COUNTRY_MAP = {
-    '62': 'Indonesia',
+    '1': 'United States',
+    '7': 'Russia',
+    '20': 'Egypt',
+    '27': 'South Africa',
+    '31': 'Netherlands',
+    '32': 'Belgium',
+    '33': 'France',
+    '34': 'Spain',
+    '39': 'Italy',
+    '44': 'United Kingdom',
+    '49': 'Germany',
     '52': 'Mexico',
     '55': 'Brazil',
+    '60': 'Malaysia',
+    '61': 'Australia',
+    '62': 'Indonesia',
+    '63': 'Philippines',
+    '64': 'New Zealand',
+    '65': 'Singapore',
+    '66': 'Thailand',
+    '81': 'Japan',
+    '82': 'South Korea',
+    '84': 'Vietnam',
+    '86': 'China',
+    '90': 'Turkey',
+    '91': 'India',
+    '92': 'Pakistan',
+    '93': 'Afghanistan',
+    '94': 'Sri Lanka',
+    '95': 'Myanmar',
+    '98': 'Iran',
+    '212': 'Morocco',
+    '213': 'Algeria',
+    '216': 'Tunisia',
+    '218': 'Libya',
+    '220': 'Gambia',
+    '221': 'Senegal',
+    '233': 'Ghana',
+    '234': 'Nigeria',
+    '251': 'Ethiopia',
+    '254': 'Kenya',
+    '255': 'Tanzania',
+    '256': 'Uganda',
+    '351': 'Portugal',
+    '352': 'Luxembourg',
+    '353': 'Ireland',
+    '354': 'Iceland',
+    '355': 'Albania',
+    '356': 'Malta',
+    '357': 'Cyprus',
+    '358': 'Finland',
+    '380': 'Ukraine',
+    '420': 'Czech Republic',
+    '852': 'Hong Kong',
+    '853': 'Macau',
+    '855': 'Cambodia',
+    '856': 'Laos',
+    '880': 'Bangladesh',
+    '886': 'Taiwan',
+    '961': 'Lebanon',
+    '962': 'Jordan',
+    '963': 'Syria',
+    '964': 'Iraq',
+    '965': 'Kuwait',
+    '966': 'Saudi Arabia',
+    '971': 'United Arab Emirates',
+    '972': 'Israel',
+    '973': 'Bahrain',
+    '974': 'Qatar',
+    '975': 'Bhutan',
+    '976': 'Mongolia',
+    '977': 'Nepal',
+    '998': 'Uzbekistan',
 }
 
-GLOBAL_PHONE_PATTERN = re.compile(r'^\+(\d{1,3})\s(\d{6,15})$')
-PHONE_CANDIDATE_PATTERN = re.compile(r'(\+?\d[\d -]{8,}\d)')
+GLOBAL_PHONE_PATTERN = re.compile(r'^\+(\d{1,3})(?:[\s\-()]|\d){6,}$')
+PHONE_CANDIDATE_PATTERN = re.compile(r'(\+?\d[\d\s\-().]{8,}\d)')
 GROUP_VALUE_PATTERN = re.compile(r'^[A-Za-z]+-\d+$', flags=re.IGNORECASE)
 GROUP_CANDIDATE_WITHOUT_DASH_PATTERN = re.compile(r'^[A-Za-z]+\d+$', flags=re.IGNORECASE)
 PURE_DIGIT_ID_PATTERN = re.compile(r'^\d{6,12}$')
@@ -153,6 +223,15 @@ def normalize_phone_identity(*, mobile: str, area_code: int, country: str) -> tu
         normalized_country = PHONE_PREFIX_COUNTRY_MAP.get(prefix, normalized_country)
         return body, normalized_area_code, normalized_country
 
+    explicit_prefix_match = re.fullmatch(r'\+(\d{1,3})[\s\-().]+([\d\s\-().]{4,})', raw)
+    if explicit_prefix_match:
+        prefix = explicit_prefix_match.group(1)
+        body = ''.join(ch for ch in explicit_prefix_match.group(2) if ch.isdigit())
+        if body:
+            normalized_area_code = int(prefix)
+            normalized_country = PHONE_PREFIX_COUNTRY_MAP.get(prefix, normalized_country)
+            return body, normalized_area_code, normalized_country
+
     if raw.startswith('+'):
         digits = '+' + ''.join(ch for ch in raw[1:] if ch.isdigit())
         for prefix in sorted(PHONE_PREFIX_COUNTRY_MAP.keys(), key=len, reverse=True):
@@ -165,8 +244,8 @@ def normalize_phone_identity(*, mobile: str, area_code: int, country: str) -> tu
     else:
         raw = ''.join(ch for ch in raw if ch.isdigit())
 
-    if normalized_area_code in {62, 52, 55} and not normalized_country:
-        normalized_country = PHONE_PREFIX_COUNTRY_MAP[str(normalized_area_code)]
+    if normalized_area_code and not normalized_country:
+        normalized_country = PHONE_PREFIX_COUNTRY_MAP.get(str(normalized_area_code), normalized_country)
 
     return raw, normalized_area_code, normalized_country
 
@@ -175,7 +254,7 @@ def format_display_phone(phone: Optional[str], *, area_code: Optional[int] = Non
     raw = str(phone or '').strip()
     if not raw or raw == '-':
         return '-'
-    if re.search(r'[^\d\s+\-]', raw):
+    if re.search(r'[^\d\s+\-().]', raw):
         return raw
     digits_only = ''.join(ch for ch in raw if ch.isdigit())
     if raw.startswith('+'):
@@ -200,7 +279,8 @@ def validate_fast_intake_fields(*, mobile: Optional[str], app_name: Optional[str
     app_text = str(app_name or '').strip()
     account_text = str(account_id or '').strip()
 
-    if phone_text and not re.fullmatch(r'\+\d{1,3}\s\d{6,15}', phone_text):
+    normalized_phone_text = format_display_phone(phone_text) if phone_text else ''
+    if phone_text and not re.fullmatch(r'\+\d{1,3}\s\d{6,15}', normalized_phone_text):
         return {
             'reason': 'invalid_phone_format',
             'detail': 'mobile must use format +<country code> <number>',
@@ -1605,6 +1685,19 @@ class OfficialGroupApprovalRetryRequest(BaseModel):
     remark: Optional[str] = None
 
 
+class OfficialGroupBatchRunRequest(BaseModel):
+    decided_at: str
+    decided_by: Optional[str] = None
+    decided_by_name: Optional[str] = None
+    source_platform: Optional[str] = None
+    source_campaign: Optional[str] = None
+    source_adset: Optional[str] = None
+    source_ad: Optional[str] = None
+    remark: Optional[str] = None
+    limit_groups: int = 10
+    limit_leads_per_group: Optional[int] = None
+
+
 class NotificationReadRequest(BaseModel):
     read_by: Optional[str] = None
 
@@ -1961,6 +2054,16 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS registration_group_approval_batch_runs (
+                    approval_run_id TEXT PRIMARY KEY,
+                    sync_log_id TEXT,
+                    status TEXT NOT NULL,
+                    request_snapshot TEXT NOT NULL,
+                    response_snapshot TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS operator_audit_log (
                     audit_id TEXT PRIMARY KEY,
                     lead_id TEXT,
@@ -2013,6 +2116,7 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_automation_tasks_lead_type_status ON automation_tasks (lead_id, task_type, status, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_ingress_events_status_created_at ON ingress_events (status, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_ingress_jobs_status_available_at ON ingress_jobs (status, available_at)",
+            "CREATE INDEX IF NOT EXISTS idx_registration_group_approval_batch_runs_updated_at ON registration_group_approval_batch_runs (updated_at)",
             "CREATE INDEX IF NOT EXISTS idx_operator_audit_log_lead_created_at ON operator_audit_log (lead_id, created_at)",
         ]:
             conn.execute(statement)
@@ -2120,7 +2224,7 @@ class LiveLarkReplyAdapter:
 
 
 class Service:
-    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, registration_group_approval_executor: Any = None, official_group_approval_executor: Any = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False, crm_retry_delays_seconds: Optional[List[int]] = None, crm_retry_max_attempts: int = 3) -> None:
+    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, registration_group_approval_executor: Any = None, official_group_approval_executor: Any = None, official_group_target_map: Optional[Dict[str, str]] = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False, crm_retry_delays_seconds: Optional[List[int]] = None, crm_retry_max_attempts: int = 3, bind_retry_max_attempts: int = 2) -> None:
         self.db = db
         self.crm_adapter = crm_adapter
         self.ocr_adapter = ocr_adapter
@@ -2138,6 +2242,11 @@ class Service:
         self.real_bind_executor = real_bind_executor
         self.registration_group_approval_executor = registration_group_approval_executor
         self.official_group_approval_executor = official_group_approval_executor
+        self.official_group_target_map = {
+            str(k).strip().lower(): str(v).strip()
+            for k, v in dict(official_group_target_map or {}).items()
+            if str(k).strip() and str(v).strip()
+        }
         self.auto_bind_simulation_success_rate = max(0.0, min(1.0, float(auto_bind_simulation_success_rate or 0.5)))
         self._bind_random = random.Random(auto_bind_simulation_seed) if auto_bind_simulation_seed is not None else random.Random()
         self.media_cache_dir = Path(media_cache_dir or './data/lark_media_cache')
@@ -2148,6 +2257,7 @@ class Service:
         self.require_invite_code = require_invite_code
         self.crm_retry_delays_seconds = [max(0, int(v)) for v in list(crm_retry_delays_seconds or [5, 10, 20])]
         self.crm_retry_max_attempts = max(1, int(crm_retry_max_attempts or len(self.crm_retry_delays_seconds) or 1))
+        self.bind_retry_max_attempts = max(0, int(bind_retry_max_attempts if bind_retry_max_attempts is not None else 2))
         self.ingress_async_default = ingress_async_default
         self.ingress_worker_enabled = ingress_worker_enabled
         self.ingress_worker_poll_interval = max(0.1, float(ingress_worker_poll_interval or 0.5))
@@ -2159,6 +2269,7 @@ class Service:
         self.ocr_circuit_breaker = CircuitBreaker(failure_threshold=5, reset_timeout_seconds=30)
         self._worker_threads: List[threading.Thread] = []
         self._worker_stop = threading.Event()
+        self._registration_group_approval_batch_lock = threading.Lock()
         self._crm_option_cache: Dict[str, Dict[str, Dict[str, Any]]] = {
             'app': {},
             'guild': {},
@@ -2260,16 +2371,24 @@ class Service:
 
     def process_next_ingress_job(self) -> Optional[Dict[str, Any]]:
         with self.db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
             row = conn.execute(
                 "SELECT job_id, event_id FROM ingress_jobs WHERE status = 'queued' ORDER BY available_at ASC, created_at ASC LIMIT 1"
             ).fetchone()
             if not row:
+                conn.commit()
                 return None
             now = utc_now()
-            conn.execute("UPDATE ingress_jobs SET status = 'processing', attempt_count = attempt_count + 1, updated_at = ? WHERE job_id = ?", (now, row['job_id']))
+            cursor = conn.execute(
+                "UPDATE ingress_jobs SET status = 'processing', attempt_count = attempt_count + 1, updated_at = ? WHERE job_id = ? AND status = 'queued'",
+                (now, row['job_id']),
+            )
+            if cursor.rowcount <= 0:
+                conn.commit()
+                return None
             conn.execute("UPDATE ingress_events SET status = 'processing', updated_at = ? WHERE event_id = ?", (now, row['event_id']))
-            conn.commit()
             event = conn.execute("SELECT ingress_type, payload FROM ingress_events WHERE event_id = ?", (row['event_id'],)).fetchone()
+            conn.commit()
         if not event:
             return None
         payload = json.loads(event['payload'] or '{}')
@@ -2661,6 +2780,7 @@ class Service:
                     'reason': result.get('reason'),
                     'result_code': result.get('result_code'),
                     'result_reason': result.get('result_reason'),
+                    'bind_failure_category': result.get('bind_failure_category'),
                     'lead_status': result.get('lead_status'),
                     'next_action': result.get('next_action'),
                     'requires_human_action': result.get('requires_human_action'),
@@ -3445,7 +3565,7 @@ class Service:
 
     def evaluate_approval_batch(self, payload: ApprovalBatchEvaluateRequest) -> Dict[str, Any]:
         rules = {
-            'registration_group': {'batch_size': 30, 'timeout_minutes': 20},
+            'registration_group': {'batch_size': 30, 'timeout_minutes': 30},
             'official_group': {'batch_size': 10, 'timeout_minutes': 30},
         }
         if payload.approval_type not in rules:
@@ -4347,7 +4467,7 @@ class Service:
     def _should_emit_lark_reply(self, result: Dict[str, Any]) -> bool:
         if not isinstance(result, dict):
             return False
-        if str(result.get('next_action') or '').strip() in {'queue_bind_check', 'queue_account_recognition', 'queued_for_processing', 'queue_crm_sync_retry'}:
+        if str(result.get('next_action') or '').strip() in {'queue_bind_check', 'queue_bind_retry', 'queue_account_recognition', 'queued_for_processing', 'queue_crm_sync_retry'}:
             return False
         return True
 
@@ -4478,6 +4598,7 @@ class Service:
         if result.get('reason') in {'simulated_bind_failed', 'bind_check_failed'}:
             reason_text = str(result.get('result_reason') or 'bind failed').strip() or 'bind failed'
             lowered_reason = reason_text.lower()
+            failure_category = str(result.get('bind_failure_category') or '').strip()
             if '401' in reason_text:
                 return (
                     '**❌ Failed：Error Code Unable to Bind**\n'
@@ -4508,6 +4629,22 @@ class Service:
             if 'the streamer was in other guild' in lowered_reason:
                 return (
                     '**❌ Bind failed: The streamer was in another agency**\n'
+                    f'Phone: {phone}\n'
+                    f'ID: {account_id}\n'
+                    f'Group: {group}\n'
+                    f'Code: {code}'
+                )
+            if failure_category == 'invalid_personal_code':
+                return (
+                    '**❌ Bind failed: Invalid personal code**\n'
+                    f'Phone: {phone}\n'
+                    f'ID: {account_id}\n'
+                    f'Group: {group}\n'
+                    f'Code: {code}'
+                )
+            if failure_category in {'auth_required', 'session_expired', 'captcha_required', 'manual_continue_required'}:
+                return (
+                    '**❌ Bind failed: Backend session requires manual recovery**\n'
                     f'Phone: {phone}\n'
                     f'ID: {account_id}\n'
                     f'Group: {group}\n'
@@ -4709,7 +4846,7 @@ class Service:
             or str(bare_candidates.get('mobile_line') or '').strip()
             or (mobile_match.group(1) if mobile_match else '-')
         )
-        if resolved_phone != '-' and ('*' in resolved_phone or re.search(r'[^\d\s+\-]', resolved_phone)):
+        if resolved_phone != '-' and ('*' in resolved_phone or re.search(r'[^\d\s+\-().]', resolved_phone)):
             normalized_reply_phone = resolved_phone
         else:
             normalized_reply_phone = format_display_phone(resolved_phone if resolved_phone != '-' else None, area_code=(parsed_text.get('area_code') if isinstance(parsed_text, dict) else None))
@@ -4735,9 +4872,15 @@ class Service:
 
         explicit_app_name = str(explicit_fields.get('app_name') or (app_match.group(1) if app_match else '')).strip() or None
         explicit_dept_name = str(explicit_fields.get('dept_name') or (dept_match.group(1) if dept_match else '')).strip() or None
+        inferred_group_guild = self._infer_executor_guild_from_registration_group(resolved_group)
         if (
             (explicit_app_name and active_default_app and explicit_app_name.lower() != active_default_app.lower())
             or (explicit_dept_name and active_default_dept and explicit_dept_name.lower() != active_default_dept.lower())
+            or (
+                inferred_group_guild
+                and active_default_dept
+                and inferred_group_guild.strip().lower() != str(active_default_dept).strip().lower()
+            )
         ):
             result = {
                 'accepted': False,
@@ -4746,6 +4889,7 @@ class Service:
                 'reply_phone': normalized_reply_phone,
                 'reply_id': resolved_account_id or '-',
                 'reply_group': resolved_group or '-',
+                'reply_code': resolved_invite_code or invite_code_meta.get('raw_input') or '-',
             }
             return _finalize(message_id, result)
 
@@ -5014,17 +5158,46 @@ class Service:
             **result,
         }
 
+    def _infer_executor_guild_from_registration_group(self, registration_group: Optional[str]) -> Optional[str]:
+        normalized_group = str(registration_group or '').strip()
+        if not normalized_group:
+            return None
+        with self.db.connect() as conn:
+            rows = [dict(r) for r in conn.execute("SELECT guild_name, enabled FROM guild_executors").fetchall()]
+        lowered_group = normalized_group.lower()
+        for row in rows:
+            guild_name = str(row.get('guild_name') or '').strip()
+            if not guild_name or not bool(row.get('enabled', 1)):
+                continue
+            if lowered_group == guild_name.lower() or lowered_group.startswith(f"{guild_name.lower()}-"):
+                return guild_name
+        return None
+
     def _resolve_expected_bind_guild(self, *, task_payload: Dict[str, Any], lead_row: Optional[sqlite3.Row]) -> Optional[str]:
+        registration_group = ''
+        lead_guild = ''
+        crm_verified_guild = ''
+        if lead_row:
+            registration_group = str(lead_row['pendaftaran_group'] or '').strip()
+            lead_guild = str(lead_row['dept_name'] or '').strip()
+            crm_verified_guild = str(lead_row['crm_verified_dept_name'] or '').strip()
+        inferred_executor_guild = self._infer_executor_guild_from_registration_group(registration_group)
+        if crm_verified_guild:
+            return crm_verified_guild
         bot_app_id = str(task_payload.get('source_bot_app_id') or '').strip()
         if bot_app_id:
             preset = self.resolve_intake_bot_preset(app_id=bot_app_id)
             preset_guild = str(preset.get('default_guild') or '').strip()
             if preset_guild:
+                if inferred_executor_guild and inferred_executor_guild.strip().lower() != preset_guild.strip().lower():
+                    preset_executor = self.resolve_guild_executor(preset_guild)
+                    if not preset_executor:
+                        return inferred_executor_guild
                 return preset_guild
-        if lead_row:
-            lead_guild = str(lead_row['dept_name'] or '').strip()
-            if lead_guild:
-                return lead_guild
+        if inferred_executor_guild:
+            return inferred_executor_guild
+        if lead_guild:
+            return lead_guild
         return None
 
     def _extract_backend_bind_guild(self, raw_result: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -5076,6 +5249,168 @@ class Service:
         if 'status code 401' in normalized_reason or 'unauthorized' in normalized_reason or 'forbidden' in normalized_reason:
             return {'requires_human_action': True, 'human_action_type': 'auth_required'}
         return {'requires_human_action': False, 'human_action_type': None}
+
+    def _classify_bind_failure(self, *, result_code: Optional[str], result_reason: Optional[str], raw_result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        normalized_code = str(result_code or '').strip().lower()
+        reason_text = str(result_reason or '').strip()
+        normalized_reason = reason_text.lower()
+        human = self._classify_bind_human_action(
+            result_code=result_code,
+            result_reason=result_reason,
+            raw_result=raw_result,
+        )
+        if normalized_code == 'bind_backend_guild_mismatch':
+            return {
+                'failure_category': 'routing_mismatch',
+                'failure_stage': 'bind',
+                'retryable': False,
+                'requires_human_action': False,
+                'human_action_type': None,
+                'operator_reason': 'Bot/guild routing mismatch. Check app/agency mapping.',
+            }
+        if normalized_code == 'bind_executor_profile_not_configured' or 'no chrome profile mapping configured' in normalized_reason:
+            return {
+                'failure_category': 'routing_mismatch',
+                'failure_stage': 'bind',
+                'retryable': False,
+                'requires_human_action': False,
+                'human_action_type': None,
+                'operator_reason': 'No guild executor profile mapping. Check app/agency routing.',
+            }
+        if 'the streamer was in other guild' in normalized_reason:
+            return {
+                'failure_category': 'already_in_other_agency',
+                'failure_stage': 'bind',
+                'retryable': False,
+                'requires_human_action': False,
+                'human_action_type': None,
+                'operator_reason': 'Account is already in another agency.',
+            }
+        if 'batas maksimum guild' in normalized_reason or 'maximum guild' in normalized_reason:
+            return {
+                'failure_category': 'device_duplicate_registration',
+                'failure_stage': 'bind',
+                'retryable': False,
+                'requires_human_action': False,
+                'human_action_type': None,
+                'operator_reason': 'Device/account has reached the guild join limit.',
+            }
+        if 'invalid person code' in normalized_reason or 'invalid invite code' in normalized_reason:
+            return {
+                'failure_category': 'invalid_personal_code',
+                'failure_stage': 'bind',
+                'retryable': False,
+                'requires_human_action': False,
+                'human_action_type': None,
+                'operator_reason': 'Personal bind code is invalid for this agency.',
+            }
+        if human.get('requires_human_action'):
+            human_action_type = human.get('human_action_type')
+            human_reason_map = {
+                'auth_required': 'Bind backend authorization expired. Re-login required.',
+                'session_expired': 'Bind backend session expired. Re-login required.',
+                'captcha_required': 'Bind backend requires captcha/manual confirmation.',
+                'manual_continue_required': 'Bind backend requires manual confirmation to continue.',
+            }
+            return {
+                'failure_category': human_action_type or 'manual_intervention_required',
+                'failure_stage': 'bind',
+                'retryable': False,
+                'requires_human_action': True,
+                'human_action_type': human_action_type,
+                'operator_reason': human_reason_map.get(str(human_action_type or '').strip(), reason_text or 'Bind requires manual intervention.'),
+            }
+        retryable_keywords = (
+            'timeout',
+            'timed out',
+            'gateway',
+            'temporarily',
+            'unavailable',
+            'connection',
+            'reset',
+            'broken pipe',
+            'empty response',
+            'non-json response',
+            'econnreset',
+            'net::err',
+            'chrome-error://',
+        )
+        retryable_codes = {
+            'bind_execution_error',
+            'bind_backend_http_500',
+            'bind_backend_http_502',
+            'bind_backend_http_503',
+            'bind_backend_http_504',
+            'bind_backend_timeout',
+            'bind_transport_error',
+        }
+        if normalized_code in retryable_codes or any(keyword in normalized_reason for keyword in retryable_keywords):
+            return {
+                'failure_category': 'technical_retryable',
+                'failure_stage': 'bind',
+                'retryable': True,
+                'requires_human_action': False,
+                'human_action_type': None,
+                'operator_reason': 'Temporary bind execution error. System will retry automatically.',
+            }
+        return {
+            'failure_category': 'bind_failed',
+            'failure_stage': 'bind',
+            'retryable': False,
+            'requires_human_action': False,
+            'human_action_type': None,
+            'operator_reason': reason_text or 'Bind failed.',
+        }
+
+    def _format_operator_bind_failure_reason(self, *, failure_meta: Dict[str, Any], raw_reason: Optional[str], retried: bool = False) -> str:
+        category = str((failure_meta or {}).get('failure_category') or '').strip()
+        base_reason = str((failure_meta or {}).get('operator_reason') or '').strip() or str(raw_reason or '').strip() or 'Bind failed.'
+        if category == 'technical_retryable' and retried:
+            return f'Bind failed after {self.bind_retry_max_attempts} retries. Check guild executor/network manually.'
+        return base_reason
+
+    def _build_bind_retry_task_payload(self, *, source_payload: Dict[str, Any], retry_count: int) -> Dict[str, Any]:
+        payload = dict(source_payload or {})
+        payload['retry_count'] = retry_count
+        return payload
+
+    def _schedule_bind_retry_task(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        lead_id: str,
+        source_task_payload: Dict[str, Any],
+        source_created_by: Optional[str],
+        retry_count: int,
+    ) -> Dict[str, Any]:
+        submission_id = str(source_task_payload.get('submission_id') or '').strip()
+        payload = self._build_bind_retry_task_payload(source_payload=source_task_payload, retry_count=retry_count)
+        task_id = create_id('task')
+        dedupe_parts = ['bind_retry', lead_id, submission_id or 'no_submission', str(retry_count)]
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at, status,
+                result_code, result_reason, retry_count, raw_result
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                lead_id,
+                'bind_check',
+                'P0',
+                json.dumps(payload, ensure_ascii=False),
+                ':'.join(dedupe_parts),
+                source_created_by or 'system:auto_retry_bind',
+                utc_now(),
+                'pending',
+                'bind_retry_pending',
+                f'bind retry scheduled {retry_count}/{self.bind_retry_max_attempts}',
+                retry_count,
+                json.dumps({'retry_count': retry_count}, ensure_ascii=False),
+            ),
+        )
+        return {'task_id': task_id, 'retry_count': retry_count}
 
     def _sync_crm_after_bind_success(
         self,
@@ -5573,10 +5908,14 @@ class Service:
             group_join_task_id = existing_group_join['task_id']
         else:
             group_join_task_id = create_id("task")
+            lead_row = conn.execute("SELECT * FROM leads WHERE lead_id = ?", (lead_id,)).fetchone()
+            lead = dict(lead_row) if lead_row else {}
+            resolved_target_group = self._resolve_official_group_target_group(lead=lead)
             group_payload = {
                 "submission_id": submission_id,
                 "lead_id": lead_id,
                 "account_id": account_id,
+                "target_group": resolved_target_group,
             }
             conn.execute(
                 """
@@ -5601,15 +5940,45 @@ class Service:
             'group_join_task_id': group_join_task_id,
         }
 
+    def _resolve_official_group_target_group(self, *, lead: Dict[str, Any]) -> Optional[str]:
+        if not isinstance(lead, dict):
+            return None
+        direct_candidate = str(lead.get('crm_verified_official_group') or '').strip()
+        if direct_candidate:
+            return direct_candidate
+        registration_group = str(lead.get('pendaftaran_group') or '').strip()
+        dept_name = str(lead.get('crm_verified_dept_name') or lead.get('dept_name') or '').strip()
+        app_name = str(lead.get('crm_verified_app_name') or lead.get('app_name') or '').strip()
+        registration_prefix = registration_group.split('-', 1)[0].strip() if registration_group else ''
+        lookup_keys = [
+            f'registration_group:{registration_group.lower()}' if registration_group else '',
+            f'registration_group_prefix:{registration_prefix.lower()}' if registration_prefix else '',
+            f'dept_name:{dept_name.lower()}' if dept_name else '',
+            f'app_name:{app_name.lower()}' if app_name else '',
+            registration_group.lower() if registration_group else '',
+            registration_prefix.lower() if registration_prefix else '',
+            dept_name.lower() if dept_name else '',
+            app_name.lower() if app_name else '',
+        ]
+        for key in lookup_keys:
+            if not key:
+                continue
+            candidate = str(self.official_group_target_map.get(key) or '').strip()
+            if candidate:
+                return candidate
+        return None
+
     def bind_check_result(self, task_id: str, payload: BindCheckResultRequest) -> Dict[str, Any]:
         now = utc_now()
         with self.db.connect() as conn:
-            task = conn.execute("SELECT lead_id, payload FROM automation_tasks WHERE task_id = ?", (task_id,)).fetchone()
+            task = conn.execute("SELECT lead_id, payload, retry_count, created_by FROM automation_tasks WHERE task_id = ?", (task_id,)).fetchone()
             if not task:
                 raise HTTPException(status_code=404, detail="task not found")
             task_payload = json.loads(task["payload"] or "{}")
             submission_id = task_payload.get("submission_id")
             account_id = task_payload.get("account_id")
+            current_retry_count = int(task['retry_count'] or 0)
+            attempt_number = current_retry_count + 1
             lead_row = conn.execute("SELECT * FROM leads WHERE lead_id = ?", (task['lead_id'],)).fetchone()
             effective_raw_result = dict(payload.raw_result or {})
             effective_status = payload.status
@@ -5620,7 +5989,15 @@ class Service:
                 result_reason=effective_result_reason,
                 raw_result=effective_raw_result,
             )
+            bind_failure_meta = self._classify_bind_failure(
+                result_code=effective_result_code,
+                result_reason=effective_result_reason,
+                raw_result=effective_raw_result,
+            )
             effective_raw_result.update({k: v for k, v in bind_human_action.items() if v is not None})
+            effective_raw_result.update({k: v for k, v in bind_failure_meta.items() if v is not None})
+            effective_raw_result['attempt_number'] = attempt_number
+            effective_raw_result['retry_count'] = current_retry_count
             if payload.status == "success":
                 mismatch = self._detect_bind_backend_guild_mismatch(
                     task_payload=task_payload,
@@ -5632,6 +6009,12 @@ class Service:
                     effective_result_code = 'bind_backend_guild_mismatch'
                     effective_result_reason = mismatch['result_reason']
                     effective_raw_result.update(mismatch)
+                    bind_failure_meta = self._classify_bind_failure(
+                        result_code=effective_result_code,
+                        result_reason=effective_result_reason,
+                        raw_result=effective_raw_result,
+                    )
+                    effective_raw_result.update({k: v for k, v in bind_failure_meta.items() if v is not None})
             conn.execute(
                 """
                 INSERT OR REPLACE INTO bind_check_jobs (
@@ -5650,7 +6033,7 @@ class Service:
                     effective_result_code,
                     effective_result_reason,
                     json.dumps(effective_raw_result, ensure_ascii=False),
-                    0,
+                    current_retry_count,
                     payload.finished_at,
                     payload.finished_at,
                     now,
@@ -5755,6 +6138,40 @@ class Service:
                     "requires_human_action": False,
                     "human_action_type": None,
                 }
+            should_retry_bind = bool(bind_failure_meta.get('retryable')) and current_retry_count < self.bind_retry_max_attempts
+            if should_retry_bind:
+                retry_meta = self._schedule_bind_retry_task(
+                    conn,
+                    lead_id=task['lead_id'],
+                    source_task_payload=task_payload,
+                    source_created_by=str(task['created_by'] or '').strip() or None,
+                    retry_count=current_retry_count + 1,
+                )
+                conn.execute("UPDATE leads SET current_status = ?, updated_at = ? WHERE lead_id = ?", ("bind_check_pending", now, task["lead_id"]))
+                self._record_status_history(
+                    conn,
+                    lead_id=task["lead_id"],
+                    from_status="bind_check_pending",
+                    to_status="bind_check_pending",
+                    trigger_type="bind_check_retry_scheduled",
+                    trigger_source="bind_check_result",
+                    trigger_task_id=retry_meta['task_id'],
+                    remark=f"retry {retry_meta['retry_count']}/{self.bind_retry_max_attempts}",
+                )
+                return {
+                    "task_id": task_id,
+                    "lead_status": "bind_check_pending",
+                    "next_action": "queue_bind_retry",
+                    "reason": "bind_retry_pending",
+                    "result_code": effective_result_code,
+                    "result_reason": effective_result_reason,
+                    "group_join_task_type": None,
+                    "requires_human_action": False,
+                    "human_action_type": None,
+                    "bind_failure_category": bind_failure_meta.get('failure_category'),
+                    "retry_task_id": retry_meta['task_id'],
+                    "retry_count": retry_meta['retry_count'],
+                }
             conn.execute("UPDATE leads SET current_status = ?, updated_at = ? WHERE lead_id = ?", ("bind_failed", now, task["lead_id"]))
             lead_row = conn.execute("SELECT mobile FROM leads WHERE lead_id = ?", (task['lead_id'],)).fetchone()
             self._queue_operator_notification(
@@ -5764,7 +6181,11 @@ class Service:
                 mobile=(lead_row['mobile'] if lead_row else ''),
                 yw_id=account_id,
                 write_result="failed",
-                reason=effective_result_reason,
+                reason=self._format_operator_bind_failure_reason(
+                    failure_meta=bind_failure_meta,
+                    raw_reason=effective_result_reason,
+                    retried=current_retry_count >= self.bind_retry_max_attempts,
+                ),
             )
             self._record_status_history(
                 conn,
@@ -5784,6 +6205,7 @@ class Service:
                 "group_join_task_type": None,
                 "requires_human_action": bool(bind_human_action.get('requires_human_action')),
                 "human_action_type": bind_human_action.get('human_action_type'),
+                "bind_failure_category": bind_failure_meta.get('failure_category'),
             }
 
     def group_join_result(self, task_id: str, payload: GroupJoinResultRequest) -> Dict[str, Any]:
@@ -6238,62 +6660,215 @@ class Service:
     def create_registration_group_approval_batch(self, payload: RegistrationGroupApprovalBatchRequest) -> Dict[str, Any]:
         if self.crm_adapter is None:
             raise HTTPException(status_code=400, detail='crm adapter not configured')
-        started = time.perf_counter()
+        request_snapshot = {
+            'registration_group': payload.registration_group,
+            'approved_count': payload.approved_count,
+            'approved_by': payload.approved_by,
+            'approved_by_name': payload.approved_by_name,
+            'source_platform': payload.source_platform,
+            'source_campaign': payload.source_campaign,
+            'source_adset': payload.source_adset,
+            'source_ad': payload.source_ad,
+            'approved_at': payload.approved_at,
+            'area': payload.area,
+            'remark': payload.remark,
+            'approval_run_id': payload.approval_run_id,
+        }
+        normalized_run_id = str(payload.approval_run_id or '').strip()
         crm_payload = {
             'area': payload.area,
             'groupNo': payload.registration_group,
             'groupPeopleNum': str(payload.approved_count),
         }
-        crm_response = self.crm_adapter.create_registration_group_batch(crm_payload)
-        elapsed_seconds = round(time.perf_counter() - started, 3)
-        with self.db.connect() as conn:
-            self._record_sync_log(
-                conn,
-                lead_id=None,
-                task_id=None,
-                sync_type='registration_group_approval_batch',
-                target_system='crm',
-                status='success' if crm_response.get('code') == 0 else 'failed',
-                request_snapshot={
-                    'registration_group': payload.registration_group,
-                    'approved_count': payload.approved_count,
-                    'approved_by': payload.approved_by,
-                    'approved_by_name': payload.approved_by_name,
-                    'source_platform': payload.source_platform,
-                    'source_campaign': payload.source_campaign,
-                    'source_adset': payload.source_adset,
-                    'source_ad': payload.source_ad,
-                    'approved_at': payload.approved_at,
-                    'area': payload.area,
-                    'remark': payload.remark,
-                    'approval_run_id': payload.approval_run_id,
-                    'crm_payload': crm_payload,
-                },
-                response_snapshot=crm_response,
-            )
-            conn.commit()
+        request_snapshot_with_payload = {
+            **request_snapshot,
+            'crm_payload': crm_payload,
+        }
+        with self._registration_group_approval_batch_lock:
+            if normalized_run_id:
+                claimed = self._claim_registration_group_approval_batch_run(normalized_run_id, request_snapshot_with_payload)
+                if not claimed.get('claimed'):
+                    existing = dict(claimed.get('row') or {})
+                    if str(existing.get('status') or '').strip() == 'processing':
+                        existing = self._wait_for_registration_group_approval_batch_run(normalized_run_id) or existing
+                    if existing:
+                        return self._build_registration_group_approval_batch_existing_response(
+                            existing,
+                            request_snapshot=request_snapshot,
+                            fallback_crm_payload=crm_payload,
+                        )
+            started = time.perf_counter()
+            try:
+                crm_response = self.crm_adapter.create_registration_group_batch(crm_payload)
+            except Exception as exc:
+                crm_response = {
+                    'code': -1,
+                    'msg': str(exc),
+                    'error_type': type(exc).__name__,
+                }
+            elapsed_seconds = round(time.perf_counter() - started, 3)
+            sync_status = 'success' if crm_response.get('code') == 0 else 'failed'
+            sync_log_id = create_id('sync')
+            now = utc_now()
+            with self.db.connect() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                conn.execute(
+                    "INSERT INTO sync_logs (sync_log_id, lead_id, task_id, sync_type, target_system, status, request_snapshot, response_snapshot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        sync_log_id,
+                        None,
+                        None,
+                        'registration_group_approval_batch',
+                        'crm',
+                        sync_status,
+                        json.dumps(request_snapshot_with_payload, ensure_ascii=False),
+                        json.dumps(crm_response, ensure_ascii=False),
+                        now,
+                    ),
+                )
+                if normalized_run_id:
+                    conn.execute(
+                        "UPDATE registration_group_approval_batch_runs SET sync_log_id = ?, status = ?, request_snapshot = ?, response_snapshot = ?, updated_at = ? WHERE approval_run_id = ?",
+                        (
+                            sync_log_id,
+                            sync_status,
+                            json.dumps(request_snapshot_with_payload, ensure_ascii=False),
+                            json.dumps(crm_response, ensure_ascii=False),
+                            now,
+                            normalized_run_id,
+                        ),
+                    )
+                conn.commit()
         return {
             'accepted': True,
-            'crm_sync_status': 'success' if crm_response.get('code') == 0 else 'failed',
+            'crm_sync_status': sync_status,
             'crm_payload': crm_payload,
             'crm_response': crm_response,
             'approval_run_id': payload.approval_run_id,
-            'request_snapshot': {
-                'registration_group': payload.registration_group,
-                'approved_count': payload.approved_count,
-                'approved_by': payload.approved_by,
-                'approved_by_name': payload.approved_by_name,
-                'source_platform': payload.source_platform,
-                'source_campaign': payload.source_campaign,
-                'source_adset': payload.source_adset,
-                'source_ad': payload.source_ad,
-                'approved_at': payload.approved_at,
-                'area': payload.area,
-                'remark': payload.remark,
-                'approval_run_id': payload.approval_run_id,
-            },
+            'request_snapshot': request_snapshot,
             'elapsed_seconds': elapsed_seconds,
         }
+
+    def _build_registration_group_approval_batch_existing_response(
+        self,
+        existing: Dict[str, Any],
+        *,
+        request_snapshot: Dict[str, Any],
+        fallback_crm_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        existing_request = dict(existing.get('request_snapshot_dict') or {})
+        existing_response = dict(existing.get('response_snapshot_dict') or {})
+        existing_status = str(existing.get('status') or 'failed').strip() or 'failed'
+        return {
+            'accepted': True,
+            'crm_sync_status': 'processing' if existing_status == 'processing' else ('success' if existing_status == 'success' else 'failed'),
+            'crm_payload': dict(existing_request.get('crm_payload') or fallback_crm_payload),
+            'crm_response': existing_response,
+            'approval_run_id': str(existing.get('approval_run_id') or existing_request.get('approval_run_id') or '').strip() or None,
+            'request_snapshot': {k: existing_request.get(k) for k in request_snapshot.keys()},
+            'elapsed_seconds': 0.0,
+            'duplicate': True,
+        }
+
+    def _claim_registration_group_approval_batch_run(self, approval_run_id: str, request_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        normalized_run_id = str(approval_run_id or '').strip()
+        if not normalized_run_id:
+            return {'claimed': True}
+        now = utc_now()
+        serialized_request = json.dumps(request_snapshot, ensure_ascii=False)
+        with self.db.connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute(
+                "SELECT approval_run_id, sync_log_id, status, request_snapshot, response_snapshot, created_at, updated_at FROM registration_group_approval_batch_runs WHERE approval_run_id = ?",
+                (normalized_run_id,),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO registration_group_approval_batch_runs (approval_run_id, sync_log_id, status, request_snapshot, response_snapshot, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (normalized_run_id, None, 'processing', serialized_request, json.dumps({}, ensure_ascii=False), now, now),
+                )
+                conn.commit()
+                return {'claimed': True}
+            row_dict = dict(row)
+            status = str(row_dict.get('status') or '').strip()
+            if status == 'failed':
+                cursor = conn.execute(
+                    "UPDATE registration_group_approval_batch_runs SET sync_log_id = NULL, status = 'processing', request_snapshot = ?, response_snapshot = ?, updated_at = ? WHERE approval_run_id = ? AND status = 'failed'",
+                    (serialized_request, json.dumps({}, ensure_ascii=False), now, normalized_run_id),
+                )
+                if cursor.rowcount > 0:
+                    conn.commit()
+                    return {'claimed': True}
+                row = conn.execute(
+                    "SELECT approval_run_id, sync_log_id, status, request_snapshot, response_snapshot, created_at, updated_at FROM registration_group_approval_batch_runs WHERE approval_run_id = ?",
+                    (normalized_run_id,),
+                ).fetchone()
+                row_dict = dict(row) if row else row_dict
+            conn.commit()
+        return {'claimed': False, 'row': self._deserialize_registration_group_approval_batch_run_row(row_dict)}
+
+    def _wait_for_registration_group_approval_batch_run(self, approval_run_id: str, *, timeout_seconds: float = 5.0, poll_interval_seconds: float = 0.05) -> Optional[Dict[str, Any]]:
+        deadline = time.perf_counter() + max(0.1, float(timeout_seconds or 0.0))
+        while time.perf_counter() < deadline:
+            row = self._find_registration_group_approval_batch_sync_log(approval_run_id)
+            if row is None:
+                time.sleep(poll_interval_seconds)
+                continue
+            if str(row.get('status') or '').strip() != 'processing':
+                return row
+            time.sleep(poll_interval_seconds)
+        return self._find_registration_group_approval_batch_sync_log(approval_run_id)
+
+    def _deserialize_registration_group_approval_batch_run_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = dict(row or {})
+        try:
+            normalized['request_snapshot_dict'] = json.loads(normalized.get('request_snapshot') or '{}')
+        except Exception:
+            normalized['request_snapshot_dict'] = {}
+        try:
+            normalized['response_snapshot_dict'] = json.loads(normalized.get('response_snapshot') or '{}')
+        except Exception:
+            normalized['response_snapshot_dict'] = {}
+        return normalized
+
+    def _find_registration_group_approval_batch_sync_log(self, approval_run_id: str) -> Optional[Dict[str, Any]]:
+        normalized_run_id = str(approval_run_id or '').strip()
+        if not normalized_run_id:
+            return None
+        with self.db.connect() as conn:
+            batch_row = conn.execute(
+                "SELECT approval_run_id, sync_log_id, status, request_snapshot, response_snapshot, created_at, updated_at FROM registration_group_approval_batch_runs WHERE approval_run_id = ?",
+                (normalized_run_id,),
+            ).fetchone()
+            if batch_row:
+                row = dict(batch_row)
+                try:
+                    row['request_snapshot_dict'] = json.loads(row.get('request_snapshot') or '{}')
+                except Exception:
+                    row['request_snapshot_dict'] = {}
+                try:
+                    row['response_snapshot_dict'] = json.loads(row.get('response_snapshot') or '{}')
+                except Exception:
+                    row['response_snapshot_dict'] = {}
+                return row
+            rows = [dict(r) for r in conn.execute(
+                "SELECT sync_log_id, status, request_snapshot, response_snapshot, created_at FROM sync_logs WHERE sync_type = 'registration_group_approval_batch' ORDER BY created_at DESC LIMIT 500"
+            ).fetchall()]
+        for row in rows:
+            try:
+                request_snapshot = json.loads(row.get('request_snapshot') or '{}')
+            except Exception:
+                request_snapshot = {}
+            if str(request_snapshot.get('approval_run_id') or '').strip() != normalized_run_id:
+                continue
+            try:
+                response_snapshot = json.loads(row.get('response_snapshot') or '{}')
+            except Exception:
+                response_snapshot = {}
+            row['request_snapshot_dict'] = request_snapshot
+            row['response_snapshot_dict'] = response_snapshot
+            return row
+        return None
 
     def _find_registration_group_approval_ingress_event(self, approval_run_id: str) -> Optional[Dict[str, Any]]:
         normalized_run_id = str(approval_run_id or '').strip()
@@ -6395,6 +6970,36 @@ class Service:
         health['warmed'] = False
         health['warmup_supported'] = False
         return health
+
+    def registration_group_approval_executor_group_state(self, registration_group: str) -> Dict[str, Any]:
+        normalized_group = str(registration_group or '').strip()
+        if not normalized_group:
+            raise HTTPException(status_code=400, detail='registration_group is required')
+        executor = self.registration_group_approval_executor
+        if executor is None:
+            return {
+                'configured': False,
+                'status': 'unconfigured',
+                'provider': None,
+                'group_name': normalized_group,
+                'group_id': None,
+                'pending_count': None,
+                'member_count': None,
+                'requester_ids': [],
+            }
+        if hasattr(executor, 'group_state') and callable(getattr(executor, 'group_state')):
+            result = executor.group_state(normalized_group) or {}
+            if not isinstance(result, dict):
+                raise HTTPException(status_code=500, detail='registration group approval executor group_state must return dict result')
+            normalized = dict(result)
+            normalized.setdefault('configured', True)
+            normalized.setdefault('group_name', normalized_group)
+            normalized.setdefault('group_id', None)
+            normalized.setdefault('pending_count', None)
+            normalized.setdefault('member_count', None)
+            normalized.setdefault('requester_ids', [])
+            return normalized
+        raise HTTPException(status_code=400, detail='registration group approval executor group_state not supported')
 
     def _registration_group_approval_evidence_summary(self, result: Dict[str, Any]) -> Dict[str, Any]:
         raw_result = dict((result or {}).get('raw_result') or {})
@@ -6572,9 +7177,37 @@ class Service:
         verified = bool(result.get('verified'))
         evidence_summary = self._registration_group_approval_evidence_summary({**result, 'raw_result': raw_result})
         raw_result.setdefault('evidence_summary', evidence_summary)
-        verification_pending = bool(not verified and evidence_summary.get('approval_may_have_executed'))
         executed = True
-        requested_approved_count = max(1, int(result.get('approved_count') or payload.approved_count or 1))
+        requested_approved_count = max(1, int(payload.approved_count or result.get('approved_count') or 1))
+        approval_results = raw_result.get('approval_results')
+        approved_success_count = None
+        if isinstance(approval_results, list):
+            approved_success_count = 0
+            for item in approval_results:
+                if not isinstance(item, dict):
+                    continue
+                error_value = item.get('error')
+                if error_value in (None, '', 0, '0'):
+                    approved_success_count += 1
+                    continue
+                try:
+                    if int(error_value) == 409:
+                        approved_success_count += 1
+                except Exception:
+                    continue
+        if (
+            verified
+            and requested_approved_count > 1
+            and approved_success_count is not None
+            and approved_success_count < requested_approved_count
+        ):
+            verified = False
+            raw_result['verification_consistency_error'] = 'batch_success_count_mismatch'
+            raw_result['verification_consistency_detail'] = {
+                'requested_approved_count': requested_approved_count,
+                'approved_success_count': approved_success_count,
+            }
+        verification_pending = bool(not verified and evidence_summary.get('approval_may_have_executed'))
         observed_queue_consumed_count = None
         pending_before = evidence_summary.get('pending_before')
         pending_after = evidence_summary.get('pending_after')
@@ -6622,7 +7255,7 @@ class Service:
                 )
             )
             crm_elapsed_seconds = round(float(crm_batch.get('elapsed_seconds') or 0.0), 3)
-            crm_recorded = True
+            crm_recorded = crm_batch.get('crm_sync_status') == 'success'
         total_elapsed_seconds = round(time.perf_counter() - started, 3)
         return {
             'registration_group': payload.registration_group,
@@ -6929,6 +7562,84 @@ class Service:
                 'manual_required_count': int(manual_required_count or 0),
                 'by_target_group': by_target_group,
             }
+
+    def run_ready_official_group_batches(self, payload: OfficialGroupBatchRunRequest) -> Dict[str, Any]:
+        now_iso = parse_iso_datetime(payload.decided_at).isoformat()
+        batch_queue = self.approval_batch_queue()
+        ready_groups = [row for row in list(batch_queue.get('official_groups') or []) if bool(row.get('ready'))]
+        ready_groups = ready_groups[:max(1, int(payload.limit_groups or 10))]
+        official_statuses = ('bind_success', 'group_join_pending', 'group_join_failed')
+        results: list[dict[str, Any]] = []
+        unresolved_count = 0
+        executed_count = 0
+        skipped_count = 0
+        for group in ready_groups:
+            registration_group = str(group.get('registration_group') or '').strip()
+            release_count = int(group.get('release_count') or group.get('pending_count') or 0)
+            if payload.limit_leads_per_group is not None:
+                release_count = min(release_count, max(1, int(payload.limit_leads_per_group or 1)))
+            with self.db.connect() as conn:
+                lead_rows = conn.execute(
+                    f"""
+                    SELECT * FROM leads
+                    WHERE pendaftaran_group = ?
+                      AND current_status IN ({','.join(['?'] * len(official_statuses))})
+                    ORDER BY updated_at ASC, created_at ASC
+                    LIMIT ?
+                    """,
+                    (registration_group, *official_statuses, max(0, release_count)),
+                ).fetchall()
+            for lead_row in lead_rows:
+                lead = dict(lead_row)
+                target_group = self._resolve_official_group_target_group(lead=lead)
+                if not target_group:
+                    unresolved_count += 1
+                    detail = {
+                        'lead_id': lead.get('lead_id'),
+                        'registration_group': registration_group,
+                        'reason_code': 'official_group_target_unresolved',
+                        'next_action': 'configure_official_group_target_mapping',
+                    }
+                    with self.db.connect() as conn:
+                        self._record_audit_event(
+                            conn,
+                            event_type='official_group_approval_target_unresolved',
+                            event_source='official_group_batch_runner',
+                            payload=detail,
+                            lead_id=str(lead.get('lead_id') or '').strip() or None,
+                        )
+                        conn.commit()
+                    results.append(detail)
+                    continue
+                result = self.official_group_approval_decision(
+                    OfficialGroupApprovalDecisionRequest(
+                        lead_id=str(lead.get('lead_id') or '').strip(),
+                        target_group=target_group,
+                        decision='approve',
+                        decided_at=now_iso,
+                        decided_by=payload.decided_by,
+                        decided_by_name=payload.decided_by_name,
+                        source_platform=payload.source_platform,
+                        source_campaign=payload.source_campaign,
+                        source_adset=payload.source_adset,
+                        source_ad=payload.source_ad,
+                        remark=payload.remark,
+                    )
+                )
+                results.append(result)
+                if result.get('executed'):
+                    executed_count += 1
+                else:
+                    skipped_count += 1
+        return {
+            'executed': True,
+            'decided_at': now_iso,
+            'ready_group_count': len(ready_groups),
+            'executed_count': executed_count,
+            'skipped_count': skipped_count,
+            'unresolved_count': unresolved_count,
+            'results': results,
+        }
 
     def official_group_approval_check(self, payload: OfficialGroupApprovalCheckRequest) -> Dict[str, Any]:
         lead_id = str(payload.lead_id or '').strip()
@@ -7277,6 +7988,15 @@ class Service:
             human = human_by_guild.get(guild_name, {})
             bind_concurrency = int(executor.get('bind_concurrency') or 1)
             processing_count = int(processing_by_guild.get(guild_name) or 0)
+            human_visible = bool(human)
+            if human_visible and latest:
+                latest_task_id = str(latest.get('task_id') or '').strip()
+                human_task_id = str(human.get('task_id') or '').strip()
+                latest_code = str(latest.get('result_code') or '').strip().lower()
+                latest_reason = str(latest.get('result_reason') or '').strip().lower()
+                latest_still_requires_human = latest_code in {'bind_unauthorized', 'auth_required', 'session_expired', 'bind_session_expired', 'captcha_required', 'bind_captcha_required', 'manual_continue_required', 'bind_manual_continue_required'} or 're-login' in latest_reason or 'status code 401' in latest_reason or 'unauthorized' in latest_reason or 'forbidden' in latest_reason or 'captcha' in latest_reason
+                if latest_task_id and human_task_id and latest_task_id != human_task_id and not latest_still_requires_human:
+                    human_visible = False
             rows.append({
                 'guild_name': guild_name,
                 'enabled': bool(executor.get('enabled')),
@@ -7292,9 +8012,9 @@ class Service:
                 'last_bind_created_at': latest.get('created_at'),
                 'last_bind_started_at': latest.get('started_at'),
                 'last_bind_finished_at': latest.get('finished_at'),
-                'requires_human_action': bool(human),
-                'human_action_type': human.get('human_action_type'),
-                'human_action_task_id': human.get('task_id'),
+                'requires_human_action': human_visible,
+                'human_action_type': human.get('human_action_type') if human_visible else None,
+                'human_action_task_id': human.get('task_id') if human_visible else None,
             })
         return {'rows': rows}
 
@@ -8259,6 +8979,25 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     official_group_approval_webhook_token = cfg.get('OFFICIAL_GROUP_APPROVAL_WEBHOOK_TOKEN') or os.getenv('OFFICIAL_GROUP_APPROVAL_WEBHOOK_TOKEN')
     official_group_approval_webhook_session = cfg.get('OFFICIAL_GROUP_APPROVAL_WEBHOOK_SESSION')
     official_group_approval_webhook_timeout_seconds = cfg.get('OFFICIAL_GROUP_APPROVAL_WEBHOOK_TIMEOUT_SECONDS') or os.getenv('OFFICIAL_GROUP_APPROVAL_WEBHOOK_TIMEOUT_SECONDS') or 20
+    official_group_target_map_raw = cfg.get('OFFICIAL_GROUP_TARGET_MAP') or os.getenv('OFFICIAL_GROUP_TARGET_MAP') or '{}'
+    official_group_target_map = {}
+    if isinstance(official_group_target_map_raw, dict):
+        official_group_target_map = {
+            str(k).strip(): str(v).strip()
+            for k, v in official_group_target_map_raw.items()
+            if str(k).strip() and str(v).strip()
+        }
+    else:
+        try:
+            parsed_official_group_target_map = json.loads(official_group_target_map_raw)
+            if isinstance(parsed_official_group_target_map, dict):
+                official_group_target_map = {
+                    str(k).strip(): str(v).strip()
+                    for k, v in parsed_official_group_target_map.items()
+                    if str(k).strip() and str(v).strip()
+                }
+        except Exception:
+            official_group_target_map = {}
     media_cache_dir = cfg.get('MEDIA_CACHE_DIR')
     lark_default_app_name = cfg.get('LARK_DEFAULT_APP_NAME') or os.getenv('LARK_DEFAULT_APP_NAME')
     lark_default_dept_name = cfg.get('LARK_DEFAULT_DEPT_NAME') or os.getenv('LARK_DEFAULT_DEPT_NAME')
@@ -8320,6 +9059,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         if raw_retry_delays:
             crm_retry_delays_seconds = [part.strip() for part in str(raw_retry_delays).split(',') if str(part).strip()]
     crm_retry_max_attempts = cfg.get('CRM_RETRY_MAX_ATTEMPTS') or os.getenv('CRM_RETRY_MAX_ATTEMPTS') or 3
+    bind_retry_max_attempts = cfg.get('BIND_RETRY_MAX_ATTEMPTS') or os.getenv('BIND_RETRY_MAX_ATTEMPTS') or 2
     crm_login_error = None
     if crm_adapter is None and crm_base_url and crm_username and crm_password:
         candidate_crm_adapter = LiveCrmAdapter(
@@ -8335,7 +9075,8 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             print(f'CRM login degraded at startup: {crm_login_error}')
     if ocr_adapter is None and ((cfg.get('ENABLE_RAPIDOCR') is True) or str(cfg.get('ENABLE_RAPIDOCR') or os.getenv('ENABLE_RAPIDOCR') or '').strip().lower() in {'1', 'true', 'yes', 'on'}):
         ocr_adapter = RapidOcrAdapter()
-    if registration_group_approval_executor is None and str(registration_group_approval_executor_kind or '').strip().lower() == 'live_whatsapp':
+    normalized_registration_group_executor_kind = str(registration_group_approval_executor_kind or '').strip().lower()
+    if registration_group_approval_executor is None and normalized_registration_group_executor_kind == 'live_whatsapp':
         from app.registration_group_executor import LiveWarmWhatsAppRegistrationGroupApprovalExecutor
         registration_group_initial_wait_ms = int(cfg.get('WHATSAPP_INITIAL_WAIT_MS') or os.getenv('WHATSAPP_INITIAL_WAIT_MS') or 500)
         registration_group_navigation_wait_ms = int(cfg.get('WHATSAPP_NAVIGATION_WAIT_MS') or os.getenv('WHATSAPP_NAVIGATION_WAIT_MS') or 120)
@@ -8355,6 +9096,13 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             verify_timeout_ms=registration_group_verify_timeout_ms,
             verify_poll_ms=registration_group_verify_poll_ms,
             strict_reload_verify=registration_group_strict_reload_verify,
+        )
+    if registration_group_approval_executor is None and normalized_registration_group_executor_kind == 'webjs_bridge':
+        from app.registration_group_webjs_executor import WebjsBridgeRegistrationGroupApprovalExecutor
+        registration_group_approval_executor = WebjsBridgeRegistrationGroupApprovalExecutor(
+            base_url=cfg.get('REGISTRATION_GROUP_APPROVAL_WEBJS_BASE_URL') or os.getenv('REGISTRATION_GROUP_APPROVAL_WEBJS_BASE_URL') or 'http://127.0.0.1:8787',
+            token=cfg.get('REGISTRATION_GROUP_APPROVAL_WEBJS_TOKEN') or os.getenv('REGISTRATION_GROUP_APPROVAL_WEBJS_TOKEN'),
+            timeout_seconds=float(cfg.get('REGISTRATION_GROUP_APPROVAL_WEBJS_TIMEOUT_SECONDS') or os.getenv('REGISTRATION_GROUP_APPROVAL_WEBJS_TIMEOUT_SECONDS') or 35),
         )
     if official_group_approval_executor is None and str(official_group_approval_executor_kind or '').strip().lower() == 'webhook' and official_group_approval_webhook_url:
         from app.official_group_executor import WebhookOfficialGroupApprovalExecutor
@@ -8383,6 +9131,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         real_bind_executor=real_bind_executor,
         registration_group_approval_executor=registration_group_approval_executor,
         official_group_approval_executor=official_group_approval_executor,
+        official_group_target_map=official_group_target_map,
         auto_bind_simulation_success_rate=auto_bind_simulation_success_rate,
         auto_bind_simulation_seed=auto_bind_simulation_seed,
         crm_base_url=crm_base_url,
@@ -8397,6 +9146,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         require_invite_code=require_invite_code,
         crm_retry_delays_seconds=crm_retry_delays_seconds,
         crm_retry_max_attempts=int(crm_retry_max_attempts or 3),
+        bind_retry_max_attempts=int(bind_retry_max_attempts or 2),
     )
     _schedule_registration_group_executor_warmup(registration_group_approval_executor)
     print(
@@ -8434,6 +9184,10 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     @app.post('/api/ops/registration-group-approval-executor-warmup')
     def ops_registration_group_approval_executor_warmup() -> Dict[str, Any]:
         return service.registration_group_approval_executor_warmup()
+
+    @app.get('/api/ops/registration-group-approval-executor-group-state')
+    def ops_registration_group_approval_executor_group_state(registration_group: str) -> Dict[str, Any]:
+        return service.registration_group_approval_executor_group_state(registration_group)
 
     @app.get('/api/ops/ingress-queue')
     def ops_ingress_queue() -> Dict[str, Any]:
@@ -8543,6 +9297,10 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     @app.get('/api/ops/official-group-approval-summary')
     def ops_official_group_approval_summary():
         return service.official_group_approval_summary()
+
+    @app.post('/api/ops/official-group-approval-batches/run-ready')
+    def ops_run_ready_official_group_batches(payload: OfficialGroupBatchRunRequest):
+        return service.run_ready_official_group_batches(payload)
 
     @app.get("/api/ops/manual-review-queue")
     def ops_manual_review_queue():
