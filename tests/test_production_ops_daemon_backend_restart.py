@@ -1,0 +1,393 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from scripts.production_ops_daemon import run_cycle
+
+
+class Args:
+    api_base_url = 'http://127.0.0.1:8011'
+    worker_base_url = 'http://127.0.0.1:8787'
+    registration_group = 'RG'
+    backend_restart_cmd = 'restart-backend'
+    restart_command_timeout_seconds = 5.0
+    restart_wait_seconds = 0.0
+    health_timeout_seconds = 1.0
+    worker_timeout_seconds = 1.0
+    trigger_cooldown_seconds = 120
+    area = 'Indonesia'
+    remark = 'test'
+    approved_count = 1
+    approval_poll_interval_seconds = 0.1
+    approval_poll_timeout_seconds = 60.0
+    decided_by = 'Hermes'
+    decided_by_name = 'Song Yuqi'
+    fresh_probe_cmd = ''
+    worker_restart_cmd = ''
+    worker_event_log = ''
+    command_timeout_seconds = 60.0
+    auto_recover_worker = True
+    monitoring_session_id = ''
+
+
+def test_run_cycle_backend_recovery_does_not_raise_after_restart(monkeypatch):
+    calls = {'n': 0}
+
+    def fake_check_backend_health(api_base_url, *, timeout):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            return {'ok': False, 'error': 'connection refused'}
+        return {'ok': True, 'payload': {'status': 'ok'}}
+
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', fake_check_backend_health)
+    monkeypatch.setattr('scripts.production_ops_daemon.maybe_restart', lambda command, timeout: {'attempted': True, 'ok': True, 'command': command})
+    monkeypatch.setattr('scripts.production_ops_daemon.time.sleep', lambda seconds: None)
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', lambda *args, **kwargs: {'group_id': 'g', 'group_name': 'RG', 'pending_count': 0, 'member_count': 1, 'requesters': []})
+    monkeypatch.setattr('scripts.production_ops_daemon._run_fresh_probe', lambda *args, **kwargs: {'group_id': 'g', 'group_name': 'RG', 'pending_count': 0, 'member_count': 1, 'requesters': []})
+
+    cycle = run_cycle(Args(), {})
+
+    assert cycle['backend_health']['ok'] is True
+    assert cycle['backend_health']['recovered_after_restart'] is True
+    assert cycle['backend_health']['restart']['attempted'] is True
+    assert cycle['worker_state']['ok'] is True
+    assert cycle['fresh_probe']['ok'] is True
+
+
+def test_run_cycle_runs_startup_initial_batch_once_for_new_monitoring_session(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.monitoring_session_id = 'session-1'
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url.endswith('/group-state'):
+            return {
+                'group_id': 'g',
+                'group_name': 'RG',
+                'pending_count': 7,
+                'member_count': 100,
+                'requesters': [
+                    {'requesterId': 'u1', 'requestedAtUnix': 100},
+                    {'requesterId': 'u2', 'requestedAtUnix': 101},
+                ],
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon._run_fresh_probe', lambda *args, **kwargs: {
+        'group_id': 'g',
+        'group_name': 'RG',
+        'pending_count': 7,
+        'member_count': 100,
+        'requesters': [
+            {'requesterId': 'u1', 'requestedAtUnix': 100},
+            {'requesterId': 'u2', 'requestedAtUnix': 101},
+        ],
+    })
+
+    captured = {}
+
+    def fake_run_formal_approval_command(command, timeout):
+        captured['command'] = command
+        return {
+            'returncode': 0,
+            'result': {
+                'formal_run': {
+                    'approval_run_id': 'startup-run-1',
+                    'result': {
+                        'verified': True,
+                        'crm_recorded': True,
+                    },
+                },
+            },
+        }
+
+    monkeypatch.setattr('scripts.production_ops_daemon.run_formal_approval_command', fake_run_formal_approval_command)
+
+    state = {}
+    cycle = run_cycle(args, state)
+
+    assert cycle['startup_initial_batch']['triggered'] is True
+    assert cycle['startup_initial_batch']['pending_count'] == 7
+    assert cycle['startup_initial_batch']['attempts'] == 1
+    assert '--approved-count' in captured['command']
+    assert captured['command'][captured['command'].index('--approved-count') + 1] == '7'
+    assert state['monitoring_session']['startup_initial_batch_done'] is True
+    assert state['monitoring_session']['startup_initial_batch_attempts'] == 1
+    assert cycle.get('formal_approval', {}).get('triggered') is not True
+
+    second_cycle = run_cycle(args, state)
+    assert second_cycle['startup_initial_batch']['startup_initial_batch_done'] is True
+    assert second_cycle['startup_initial_batch'].get('triggered') is not True
+
+
+def test_run_cycle_startup_initial_batch_rechecks_and_stops_when_queue_clears(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.monitoring_session_id = 'session-2'
+
+    group_states = iter([
+        {
+            'group_id': 'g',
+            'group_name': 'RG',
+            'pending_count': 2,
+            'member_count': 100,
+            'requesters': [{'requesterId': 'u1', 'requestedAtUnix': 100}, {'requesterId': 'u2', 'requestedAtUnix': 101}],
+        },
+        {
+            'group_id': 'g',
+            'group_name': 'RG',
+            'pending_count': 0,
+            'member_count': 102,
+            'requesters': [],
+        },
+    ])
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url.endswith('/group-state'):
+            return next(group_states)
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    fresh_states = iter([
+        {
+            'group_id': 'g',
+            'group_name': 'RG',
+            'pending_count': 2,
+            'member_count': 100,
+            'requesters': [{'requesterId': 'u1', 'requestedAtUnix': 100}, {'requesterId': 'u2', 'requestedAtUnix': 101}],
+        },
+        {
+            'group_id': 'g',
+            'group_name': 'RG',
+            'pending_count': 0,
+            'member_count': 102,
+            'requesters': [],
+        },
+    ])
+    monkeypatch.setattr('scripts.production_ops_daemon._run_fresh_probe', lambda *args, **kwargs: next(fresh_states))
+    monkeypatch.setattr('scripts.production_ops_daemon.run_formal_approval_command', lambda command, timeout: {
+        'returncode': 0,
+        'result': {'formal_run': {'approval_run_id': 'startup-run-fail', 'result': {'verified': False, 'crm_recorded': False}}},
+    })
+
+    state = {}
+    cycle = run_cycle(args, state)
+
+    assert cycle['startup_initial_batch']['triggered'] is True
+    assert cycle['startup_initial_batch']['ok'] is True
+    assert cycle['startup_initial_batch']['cleared_after_recheck'] is True
+    assert cycle['startup_initial_batch']['attempts'] == 1
+    assert state['monitoring_session']['startup_initial_batch_done'] is True
+    assert state['monitoring_session']['startup_initial_batch_attempts'] == 1
+
+
+def test_run_cycle_startup_initial_batch_retries_at_most_twice_then_exits_startup(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.monitoring_session_id = 'session-3'
+
+    group_state = {
+        'group_id': 'g',
+        'group_name': 'RG',
+        'pending_count': 2,
+        'member_count': 100,
+        'requesters': [{'requesterId': 'u1', 'requestedAtUnix': 100}, {'requesterId': 'u2', 'requestedAtUnix': 101}],
+    }
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url.endswith('/group-state'):
+            return dict(group_state)
+        if url.endswith('/api/ops/approval-batches/evaluate'):
+            return {
+                'approval_type': 'registration_group',
+                'registration_group': 'RG',
+                'pending_count': 2,
+                'oldest_pending_at': '2026-04-28T00:00:00+00:00',
+                'ready': False,
+                'release_count': 0,
+                'reason_code': 'waiting_for_batch',
+                'batch_size': 30,
+                'timeout_minutes': 30,
+                'elapsed_minutes': 1,
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon._run_fresh_probe', lambda *args, **kwargs: dict(group_state))
+
+    calls = {'n': 0}
+    def fake_run_formal_approval_command(command, timeout):
+        calls['n'] += 1
+        return {
+            'returncode': 0,
+            'result': {'formal_run': {'approval_run_id': f'startup-run-{calls["n"]}', 'result': {'verified': False, 'crm_recorded': False}}},
+        }
+
+    monkeypatch.setattr('scripts.production_ops_daemon.run_formal_approval_command', fake_run_formal_approval_command)
+
+    state = {}
+    cycle = run_cycle(args, state)
+
+    assert calls['n'] == 3
+    assert cycle['startup_initial_batch']['triggered'] is True
+    assert cycle['startup_initial_batch']['ok'] is False
+    assert cycle['startup_initial_batch']['attempts'] == 3
+    assert cycle['startup_initial_batch']['max_retries'] == 2
+    assert cycle['startup_initial_batch']['retries_exhausted'] is True
+    assert state['monitoring_session']['startup_initial_batch_done'] is True
+    assert state['monitoring_session']['startup_initial_batch_attempts'] == 3
+
+    second_cycle = run_cycle(args, state)
+    assert second_cycle['startup_initial_batch']['startup_initial_batch_done'] is True
+    assert second_cycle['startup_initial_batch']['attempts'] == 3
+
+
+def test_run_cycle_timeout_flush_failure_sets_30_minute_cooldown(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url.endswith('/group-state'):
+            return {
+                'group_id': 'g',
+                'group_name': 'RG',
+                'pending_count': 1,
+                'member_count': 100,
+                'requesters': [
+                    {'requesterId': 'u1', 'requestedAtUnix': 100},
+                ],
+            }
+        if url.endswith('/api/ops/approval-batches/evaluate'):
+            return {
+                'approval_type': 'registration_group',
+                'registration_group': 'RG',
+                'pending_count': 1,
+                'oldest_pending_at': '2026-04-28T00:00:00+00:00',
+                'ready': True,
+                'release_count': 1,
+                'reason_code': 'timeout_flush',
+                'batch_size': 30,
+                'timeout_minutes': 30,
+                'elapsed_minutes': 31,
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon._run_fresh_probe', lambda *args, **kwargs: {
+        'group_id': 'g',
+        'group_name': 'RG',
+        'pending_count': 1,
+        'member_count': 100,
+        'requesters': [
+            {'requesterId': 'u1', 'requestedAtUnix': 100},
+        ],
+    })
+
+    calls = {'n': 0}
+
+    def fake_run_formal_approval_command(command, timeout):
+        calls['n'] += 1
+        return {
+            'returncode': 0,
+            'result': {
+                'formal_run': {
+                    'approval_run_id': f'run-{calls["n"]}',
+                    'result': {
+                        'verified': False,
+                        'crm_recorded': False,
+                    },
+                },
+            },
+        }
+
+    monkeypatch.setattr('scripts.production_ops_daemon.run_formal_approval_command', fake_run_formal_approval_command)
+
+    state = {}
+    first_cycle = run_cycle(args, state)
+    assert first_cycle['formal_approval']['triggered'] is True
+    assert first_cycle['formal_approval']['trigger_cooldown_seconds'] == 1800
+    assert calls['n'] == 1
+
+    second_cycle = run_cycle(args, state)
+    assert second_cycle['formal_approval']['triggered'] is False
+    assert second_cycle['formal_approval']['cooldown_skip'] is True
+    assert second_cycle['formal_approval']['trigger_cooldown_seconds'] == 1800
+    assert calls['n'] == 1
+
+
+def test_run_cycle_uses_fresh_probe_as_authoritative_source(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url.endswith('/group-state'):
+            return {
+                'group_id': 'g',
+                'group_name': 'RG',
+                'pending_count': 10,
+                'member_count': 339,
+                'requesters': [{'requesterId': 'old1', 'requestedAtUnix': 100}],
+            }
+        if url.endswith('/api/ops/approval-batches/evaluate'):
+            assert payload['pending_count'] == 6
+            return {
+                'approval_type': 'registration_group',
+                'registration_group': 'RG',
+                'pending_count': 6,
+                'oldest_pending_at': payload['oldest_pending_at'],
+                'ready': True,
+                'release_count': 6,
+                'reason_code': 'timeout_flush',
+                'batch_size': 30,
+                'timeout_minutes': 30,
+                'elapsed_minutes': 40,
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon._run_fresh_probe', lambda *args, **kwargs: {
+        'group_id': 'g',
+        'group_name': 'RG',
+        'pending_count': 6,
+        'member_count': 376,
+        'requesters': [
+            {'requesterId': 'fresh1', 'requestedAtUnix': 100},
+            {'requesterId': 'fresh2', 'requestedAtUnix': 101},
+            {'requesterId': 'fresh3', 'requestedAtUnix': 102},
+            {'requesterId': 'fresh4', 'requestedAtUnix': 103},
+            {'requesterId': 'fresh5', 'requestedAtUnix': 104},
+            {'requesterId': 'fresh6', 'requestedAtUnix': 105},
+        ],
+    })
+
+    captured = {}
+    def fake_run_formal_approval_command(command, timeout):
+        captured['command'] = command
+        return {
+            'returncode': 0,
+            'result': {'formal_run': {'approval_run_id': 'run-fresh', 'result': {'verified': False, 'crm_recorded': False}}},
+        }
+
+    monkeypatch.setattr('scripts.production_ops_daemon.run_formal_approval_command', fake_run_formal_approval_command)
+
+    cycle = run_cycle(args, {})
+    assert cycle['decision_group_state']['source'] == 'fresh_probe'
+    assert cycle['decision_group_state']['mismatch'] is True
+    assert 'pending_count' in cycle['decision_group_state']['mismatch_reasons']
+    assert cycle['formal_approval']['release_count'] == 6
+    assert captured['command'][captured['command'].index('--approved-count') + 1] == '6'
+
+
+def test_run_cycle_fresh_probe_failure_fails_closed(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', lambda *args, **kwargs: {'group_id': 'g', 'group_name': 'RG', 'pending_count': 10, 'member_count': 339, 'requesters': [{'requesterId': 'old1', 'requestedAtUnix': 100}]})
+    monkeypatch.setattr('scripts.production_ops_daemon._run_fresh_probe', lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('fresh probe unavailable')))
+
+    cycle = run_cycle(args, {})
+    assert cycle['worker_state']['ok'] is True
+    assert cycle['fresh_probe']['ok'] is False
+    assert cycle['decision_group_state']['source'] == 'fail_closed'
+    assert cycle.get('formal_approval') is None

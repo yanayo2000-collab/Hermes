@@ -200,6 +200,7 @@ def main() -> int:
         decided_by=args.decided_by,
         decided_by_name=args.decided_by_name,
         approved_count=args.approved_count,
+        expected_group_state=(output['preflight_after_recovery']['snapshot']['worker_group_state'] if output.get('preflight_after_recovery') else output['preflight_before']['snapshot']['worker_group_state']),
         poll_interval_seconds=args.poll_interval_seconds,
         poll_timeout_seconds=args.poll_timeout_seconds,
     )

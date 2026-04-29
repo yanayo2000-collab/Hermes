@@ -548,7 +548,10 @@ def test_official_group_bridge_requests_support_filters_detail_and_resolution_au
 
 
 def test_official_group_bridge_dashboard_page_loads():
-    app = create_app({'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123'})
+    app = create_app({
+        'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123',
+        'OFFICIAL_GROUP_BRIDGE_CONSOLE_BASE_URL': 'http://127.0.0.1:8011',
+    })
     client = TestClient(app)
 
     response = client.get('/ops/official-group-bridge')
@@ -564,6 +567,10 @@ def test_official_group_bridge_dashboard_page_loads():
     assert '/ops/official-group-bridge/summary' in text
     assert '待处理请求' in text
     assert '待处理超时请求' in text
+    assert 'http://127.0.0.1:8011/ops' in text
+    assert 'http://127.0.0.1:8011/ops/intake-bot-presets' in text
+    assert 'http://127.0.0.1:8011/ops/production-ops' in text
+    assert 'http://127.0.0.1:8011/ops/official-group-bridge' in text
 
 
 def test_official_group_bridge_summary_and_sorted_requests_expose_timeout_and_trend_metrics():

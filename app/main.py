@@ -5,18 +5,22 @@ import json
 import os
 import random
 import re
+import shlex
+import shutil
+import socket
 import sqlite3
+import subprocess
 import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 
 from fastapi import Body, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from app.async_pipeline import CircuitBreaker, TokenBucketRateLimiter, fingerprint_payload
@@ -101,8 +105,8 @@ PHONE_PREFIX_COUNTRY_MAP = {
     '998': 'Uzbekistan',
 }
 
-GLOBAL_PHONE_PATTERN = re.compile(r'^\+(\d{1,3})(?:[\s\-()]|\d){6,}$')
-PHONE_CANDIDATE_PATTERN = re.compile(r'(\+?\d[\d\s\-().]{8,}\d)')
+GLOBAL_PHONE_PATTERN = re.compile(r'^\+(\d{1,3})(?:[ \t\-()]|\d){6,}$')
+PHONE_CANDIDATE_PATTERN = re.compile(r'(\+?\d[\d \t\-().]{8,}\d)')
 GROUP_VALUE_PATTERN = re.compile(r'^[A-Za-z]+-\d+$', flags=re.IGNORECASE)
 GROUP_CANDIDATE_WITHOUT_DASH_PATTERN = re.compile(r'^[A-Za-z]+\d+$', flags=re.IGNORECASE)
 PURE_DIGIT_ID_PATTERN = re.compile(r'^\d{6,12}$')
@@ -223,7 +227,7 @@ def normalize_phone_identity(*, mobile: str, area_code: int, country: str) -> tu
         normalized_country = PHONE_PREFIX_COUNTRY_MAP.get(prefix, normalized_country)
         return body, normalized_area_code, normalized_country
 
-    explicit_prefix_match = re.fullmatch(r'\+(\d{1,3})[\s\-().]+([\d\s\-().]{4,})', raw)
+    explicit_prefix_match = re.fullmatch(r'\+(\d{1,3})[ \t\-().]+([\d \t\-().]{4,})', raw)
     if explicit_prefix_match:
         prefix = explicit_prefix_match.group(1)
         body = ''.join(ch for ch in explicit_prefix_match.group(2) if ch.isdigit())
@@ -568,7 +572,7 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
     .toast.success { background: #065f46; }
     .toast.error { background: #991b1b; }
     .page-shell { max-width: 1320px; margin: 0 auto; }
-    .shell-nav { display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 16px 0; }
+    .shell-nav { position: sticky; top: 0; z-index: 20; display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 16px 0; padding: 10px 0 12px; background: rgba(246,248,251,.96); backdrop-filter: blur(8px); }
     .shell-nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:6px 10px; border-radius:999px; background:#eef2ff; }
     .hero { background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:20px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
     .hero .eyebrow { color:#6366f1; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
@@ -581,6 +585,7 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
     <div class="shell-nav">
       <a href="/ops">运营工作台</a>
       <a href="/ops/intake-bot-presets">收口配置中心</a>
+      <a href="/ops/production-ops">群审批控制台</a>
       <a href="/ops/official-group-bridge">官方群审批桥接台</a>
     </div>
     <div class="hero">
@@ -599,6 +604,7 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
       <div class="summary-item"><div class="label">公会执行器</div><div class="value" id="executorCount">-</div></div>
       <div class="summary-item"><div class="label">已配置代理</div><div class="value" id="executorProxyCount">-</div></div>
       <div class="summary-item"><div class="label">已配置密码引用</div><div class="value" id="executorSecretCount">-</div></div>
+      <div class="summary-item"><div class="label">生产守护</div><div class="value" id="daemonEnabledState">-</div></div>
     </div>
   </div>
 
@@ -641,6 +647,19 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
       <div>
         <button id=\"createPresetButton\" onclick=\"createPreset()\">新增机器人</button>
       </div>
+    </div>
+  </div>
+
+  <div class=\"card\" style=\"margin-top:16px;\">
+    <h2 style=\"margin-top:0;\">群审批控制台</h2>
+    <div class=\"muted\" style=\"margin-bottom:12px;\">注册群守护与官方群审批现已收敛到统一控制面。这里仅展示当前状态，点击后进入控制台操作。</div>
+    <div class=\"summary-grid\">
+      <div class=\"summary-item\"><div class=\"label\">当前状态</div><div class=\"value\" id=\"daemonEnabledState\">-</div></div>
+      <div class=\"summary-item\"><div class=\"label\">入口</div><div class=\"value\"><a href=\"/ops/production-ops\">打开群审批控制台</a></div></div>
+    </div>
+    <div class=\"muted\" id=\"productionOpsRuntimeHint\" style=\"margin-top:12px;\">运行状态加载中…</div>
+    <div style=\"margin-top:12px;\">
+      <a href=\"/ops/production-ops\"><button type=\"button\">进入群审批控制台</button></a>
     </div>
   </div>
 
@@ -883,6 +902,59 @@ async function reloadGuildExecutors() {
   document.getElementById('executorSecretCount').textContent = String(rows.filter(row => row.password_configured).length);
   refreshExecutorProxyRegionSelect(document.getElementById('new_executor_proxy_region').value || '');
 }
+function applyProductionOpsDaemonConfig(data) {
+  const config = data.config || {};
+  const enabledField = document.getElementById('production_ops_enabled');
+  const intervalField = document.getElementById('production_ops_interval_seconds');
+  const notifyField = document.getElementById('production_ops_notify_chat_id');
+  const apiBaseUrlField = document.getElementById('production_ops_api_base_url');
+  const workerBaseUrlField = document.getElementById('production_ops_worker_base_url');
+  const areaField = document.getElementById('production_ops_area');
+  const remarkField = document.getElementById('production_ops_remark');
+  const approvedCountField = document.getElementById('production_ops_approved_count');
+  const autoRecoverField = document.getElementById('production_ops_auto_recover_worker');
+  if (enabledField) enabledField.value = config.enabled ? 'true' : 'false';
+  if (intervalField) intervalField.value = Number(config.interval_seconds || 20);
+  if (notifyField) notifyField.value = config.notify_chat_id || '';
+  if (apiBaseUrlField) apiBaseUrlField.value = config.api_base_url || '';
+  if (workerBaseUrlField) workerBaseUrlField.value = config.worker_base_url || '';
+  if (areaField) areaField.value = config.area || 'Indonesia';
+  if (remarkField) remarkField.value = config.remark || '';
+  if (approvedCountField) approvedCountField.value = Number(config.approved_count || 1);
+  if (autoRecoverField) autoRecoverField.value = config.auto_recover_worker ? 'true' : 'false';
+  const runtime = data.runtime || {};
+  const checkedAt = runtime.status && runtime.status.checked_at ? runtime.status.checked_at : '暂无';
+  const pendingIncidents = Array.isArray((runtime.status || {}).incidents) ? runtime.status.incidents.length : 0;
+  const runtimeText = `launchd=${runtime.launch_agent_installed ? 'installed' : 'not_installed'} · 启用=${config.enabled ? 'on' : 'off'} · 最近检查=${checkedAt} · incidents=${pendingIncidents}`;
+  const runtimeHint = document.getElementById('productionOpsRuntimeHint');
+  const daemonEnabledState = document.getElementById('daemonEnabledState');
+  if (runtimeHint) runtimeHint.textContent = runtimeText;
+  if (daemonEnabledState) daemonEnabledState.textContent = config.enabled ? 'ON' : 'OFF';
+}
+async function reloadProductionOpsDaemonConfig() {
+  const data = await loadJson('/api/ops/production-ops-daemon');
+  applyProductionOpsDaemonConfig(data);
+}
+async function saveProductionOpsDaemonConfig() {
+  const payload = {
+    enabled: document.getElementById('production_ops_enabled').value === 'true',
+    interval_seconds: Number(document.getElementById('production_ops_interval_seconds').value || 20),
+    notify_chat_id: document.getElementById('production_ops_notify_chat_id').value.trim(),
+    api_base_url: document.getElementById('production_ops_api_base_url').value.trim(),
+    worker_base_url: document.getElementById('production_ops_worker_base_url').value.trim(),
+    area: document.getElementById('production_ops_area').value.trim(),
+    remark: document.getElementById('production_ops_remark').value.trim(),
+    approved_count: Number(document.getElementById('production_ops_approved_count').value || 1),
+    auto_recover_worker: document.getElementById('production_ops_auto_recover_worker').value === 'true',
+  };
+  await loadJson('/api/ops/production-ops-daemon', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+  showToast(payload.enabled ? '生产守护已开启并应用' : '生产守护已关闭并应用', 'success');
+  await reloadProductionOpsDaemonConfig();
+}
 function fillExecutorForm(guildName) {
   const rows = Array.isArray(window.__guildExecutors) ? window.__guildExecutors : [];
   const row = rows.find(item => String(item.guild_name || '') === String(guildName || ''));
@@ -1007,12 +1079,1266 @@ async function createPreset() {
 }
 reloadPresets().catch(err => showToast(err.message, 'error'));
 reloadGuildExecutors().catch(err => showToast(err.message, 'error'));
+reloadProductionOpsDaemonConfig().catch(err => showToast(err.message, 'error'));
 setInterval(() => {
   reloadPresets().catch(err => showToast(err.message, 'error'));
   reloadGuildExecutors().catch(err => showToast(err.message, 'error'));
+  reloadProductionOpsDaemonConfig().catch(err => showToast(err.message, 'error'));
 }, 15000);
 </script>
   </div>
+</body>
+</html>
+"""
+
+
+PRODUCTION_OPS_PAGE_HTML = """
+<!doctype html>
+<html lang=\"zh-CN\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>群审批控制台</title>
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --panel: #ffffff;
+      --panel-soft: #f8fbff;
+      --line: #dbe4f0;
+      --line-strong: #c7d4e3;
+      --text: #142033;
+      --muted: #5d6b82;
+      --brand: #2563eb;
+      --brand-soft: #e8f0ff;
+      --success: #16a34a;
+      --warning: #d97706;
+      --danger: #dc2626;
+      --shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+      --radius: 18px;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 24px; background: linear-gradient(180deg, #f7faff 0%, var(--bg) 100%); color: var(--text); }
+    .page-shell { max-width: 1320px; margin: 0 auto; }
+    .shell-nav { position: sticky; top: 0; z-index: 20; display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 18px 0; padding: 12px 0 14px; background: rgba(243,246,251,.92); backdrop-filter: blur(10px); }
+    .shell-nav a { color:var(--brand); text-decoration:none; font-size:13px; padding:8px 12px; border-radius:999px; background:#eef4ff; border:1px solid #d8e5ff; }
+    .hero { background: linear-gradient(135deg, #ffffff 0%, #f5f9ff 58%, #eef4ff 100%); border:1px solid var(--line); border-radius:24px; padding:24px; box-shadow: var(--shadow); }
+    .hero .eyebrow { color:#4f46e5; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
+    .hero h1 { margin:0; font-size:30px; line-height:1.15; }
+    .hero .subtitle { color:var(--muted); font-size:14px; margin-top:10px; max-width:920px; line-height:1.7; }
+    .card { background: var(--panel); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); border:1px solid rgba(219,228,240,.95); margin-top: 16px; }
+    .card h2 { margin:0 0 14px 0; font-size:20px; }
+    .top-overview-grid { display:grid; grid-template-columns: minmax(0, 1.2fr) minmax(360px, .8fr); gap:12px; margin-top:16px; align-items:stretch; }
+    .top-overview-grid .card { margin-top:0; padding:16px; }
+    .summary-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px; }
+    .summary-item { padding:12px 14px; border-radius:14px; background:linear-gradient(180deg, #ffffff 0%, #f8fbff 100%); border:1px solid var(--line); min-height:72px; }
+    .summary-item .label { color:var(--muted); font-size:12px; margin-bottom:8px; }
+    .summary-item .value { font-size:22px; font-weight:700; letter-spacing:-0.02em; }
+    .status-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:12px; }
+    .status-card { padding:14px; border-radius:16px; background:linear-gradient(180deg, #ffffff 0%, #f8fbff 100%); border:1px solid var(--line); }
+    .status-card h3 { margin:0 0 10px 0; font-size:15px; }
+    .status-meta { display:grid; grid-template-columns: 92px 1fr; gap:6px 10px; font-size:13px; }
+    .status-meta .k { color:var(--muted); }
+    .account-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:14px; }
+    .account-card { padding:18px; border-radius:18px; background:linear-gradient(180deg, #ffffff 0%, #f7fbff 100%); border:1px solid var(--line); }
+    .account-card h3 { margin:0 0 14px 0; font-size:16px; display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+    .account-head-left { display:flex; align-items:center; gap:10px; min-width:0; }
+    .account-head-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .card-monitor-toggle { display:inline-flex; align-items:center; justify-content:center; min-width:88px; padding:6px 12px; border-radius:999px; font-size:12px; line-height:1; border:1px solid transparent; flex-shrink:0; }
+    .card-monitor-toggle.enabled { background:#dcfce7; color:#166534; border-color:#86efac; }
+    .card-monitor-toggle.disabled { background:#e5e7eb; color:#4b5563; border-color:#cbd5e1; }
+    .card-monitor-toggle.pending { background:#dbeafe; color:#1d4ed8; border-color:#93c5fd; cursor:wait; opacity:.92; }
+    .status-dot { display:inline-block; width:10px; height:10px; border-radius:999px; margin-right:6px; }
+    .status-dot.green { background:var(--success); box-shadow:0 0 0 4px rgba(22,163,74,.12); }
+    .status-dot.gray { background:#94a3b8; box-shadow:0 0 0 4px rgba(148,163,184,.15); }
+    .status-dot.amber { background:var(--warning); box-shadow:0 0 0 4px rgba(217,119,6,.14); }
+    .status-dot.blue { background:var(--brand); box-shadow:0 0 0 4px rgba(37,99,235,.14); }
+    .account-meta { display:grid; grid-template-columns: 104px 1fr; gap:8px 12px; font-size:13px; }
+    .account-meta .k { color:var(--muted); }
+    .link-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
+    .binding-list { display:grid; gap:12px; }
+    .binding-card { border:1px solid var(--line); border-radius:16px; background:var(--panel-soft); padding:14px; }
+    .binding-card.is-empty { background: #fafcff; border-style:dashed; }
+    .binding-card-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
+    .binding-title { font-size:14px; font-weight:700; }
+    .binding-badge { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px; background:var(--brand-soft); color:var(--brand); font-size:12px; font-weight:600; }
+    .binding-config-grid { display:grid; grid-template-columns: minmax(0, 1.35fr) minmax(180px, .7fr) minmax(180px, .7fr); gap:10px; }
+    .binding-meta-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:10px; margin-top:10px; }
+    .advanced-fields { margin-top:10px; border:1px solid var(--line); border-radius:12px; background:#fbfdff; }
+    .advanced-fields summary { cursor:pointer; list-style:none; padding:10px 12px; font-size:12px; color:var(--muted); font-weight:600; }
+    .advanced-fields summary::-webkit-details-marker { display:none; }
+    .advanced-fields[open] summary { border-bottom:1px solid var(--line); }
+    .advanced-fields-body { padding:10px 12px 12px; }
+    .advanced-mapping-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; }
+    .binding-subgrid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; }
+    .schedule-inline-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:8px; }
+    .inline-list { display:flex; flex-direction:column; gap:10px; }
+    .inline-row { display:grid; grid-template-columns: minmax(0,1fr) auto auto; gap:8px; align-items:center; }
+    .inline-row button { min-width:88px; }
+    .binding-row { grid-template-columns: minmax(0, 1.35fr) minmax(160px, .6fr) auto auto; }
+    .toggle-switch { display:inline-flex; align-items:center; gap:10px; padding:6px; border-radius:999px; background:#e5ecf6; border:1px solid var(--line); }
+    .toggle-switch button { min-width:72px; border-radius:999px; background:transparent; color:#374151; }
+    .toggle-switch button.active { background:var(--brand); color:#fff; box-shadow:0 1px 2px rgba(0,0,0,.12); }
+    .toggle-state-label { font-size:12px; color:var(--muted); }
+    .executor-form-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:16px 18px; }
+    .field-stack { display:flex; flex-direction:column; gap:6px; }
+    .field-hint { color:var(--muted); font-size:12px; }
+    .section-split { display:grid; grid-template-columns: minmax(0, 1.45fr) minmax(320px, .75fr); gap:16px; align-items:start; }
+    input, select, textarea { padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 10px; font-size: 14px; width: 100%; box-sizing: border-box; background:#fff; color:var(--text); }
+    input:focus, select:focus, textarea:focus { outline:none; border-color:#8db3ff; box-shadow:0 0 0 4px rgba(37,99,235,.12); }
+    button { padding: 9px 14px; border-radius: 10px; border: none; background: var(--brand); color: #fff; cursor: pointer; white-space: nowrap; font-weight:600; }
+    button.secondary { background: #334155; }
+    .muted { color: var(--muted); font-size: 13px; line-height:1.65; }
+    .mini-note { margin-top:8px; padding:10px 12px; border-radius:12px; background:#f8fbff; border:1px solid var(--line); }
+    .toast { position: fixed; right: 24px; bottom: 24px; min-width: 240px; background: #111827; color: #fff; padding: 12px 14px; border-radius: 12px; display: none; box-shadow:0 12px 28px rgba(15,23,42,.26); }
+    .toast.success { background: #065f46; }
+    .toast.error { background: #991b1b; }
+    .qr-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, .52); display: none; align-items: center; justify-content: center; padding: 24px; z-index: 60; }
+    .qr-modal.is-open { display: flex; }
+    .qr-modal-card { width: min(760px, 100%); max-height: calc(100vh - 48px); overflow: auto; background: #fff; border-radius: 20px; box-shadow: 0 24px 64px rgba(15,23,42,.24); border: 1px solid rgba(219,228,240,.95); }
+    .qr-modal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px 20px 14px; border-bottom:1px solid var(--line); }
+    .qr-modal-head h3 { margin:0; font-size:18px; }
+    .qr-modal-head .muted { margin-top:6px; }
+    .qr-modal-body { padding:18px 20px 20px; }
+    .qr-modal-status { margin-bottom:14px; }
+    .qr-modal-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
+    .qr-shell { margin-top:12px; border-radius:16px; background:#0f172a; color:#e2e8f0; padding:16px; overflow:auto; }
+    .qr-shell pre { margin:0; font-size:10px; line-height:1.05; }
+    .qr-loading { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px; }
+    .qr-loading::before { content:''; width:16px; height:16px; border-radius:999px; border:2px solid #c7d2fe; border-top-color: var(--brand); animation: qr-spin .9s linear infinite; }
+    .button-loading { opacity:.8; cursor:wait; }
+    @keyframes qr-spin { to { transform: rotate(360deg); } }
+    @media (max-width: 1080px) {
+      .top-overview-grid, .status-grid, .account-grid, .section-split, .binding-config-grid, .binding-meta-grid, .schedule-inline-grid, .executor-form-grid { grid-template-columns: 1fr; }
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .binding-row { grid-template-columns: 1fr; }
+      .account-meta, .status-meta { grid-template-columns: 96px 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class=\"page-shell\">
+    <div class=\"shell-nav\">
+      <a href=\"/ops\">运营工作台</a>
+      <a href=\"/ops/intake-bot-presets\">收口配置中心</a>
+      <a href=\"/ops/production-ops\">群审批控制台</a>
+      <a href=\"/ops/official-group-bridge\">官方群审批桥接台</a>
+    </div>
+    <div class=\"hero\">
+      <div class=\"eyebrow\">Group Approval Console</div>
+      <h1>群审批控制台</h1>
+
+    </div>
+
+    <div class=\"top-overview-grid\">
+      <div class=\"card\">
+        <h2 style=\"margin-top:0;\">当前状态</h2>
+        <div class=\"summary-grid\">
+          <div class=\"summary-item\"><div class=\"label\">守护状态</div><div class=\"value\" id=\"daemonEnabledState\">-</div></div>
+          <div class=\"summary-item\"><div class=\"label\">审批账号</div><div class=\"value\" id=\"waAccountCount\">-</div></div>
+          <div class=\"summary-item\"><div class=\"label\">运行中</div><div class=\"value\" id=\"waEnabledAccountCount\">-</div></div>
+          <div class=\"summary-item\"><div class=\"label\">官方群待处理</div><div class=\"value\" id=\"officialPendingCount\">-</div></div>
+        </div>
+        <div class=\"muted\" id=\"productionOpsRuntimeHint\" style=\"margin-top:10px;\"></div>
+      </div>
+
+      <div class=\"card\">
+        <h2 style=\"margin-top:0;\">官方群总览</h2>
+        <div class=\"status-card\">
+          <div class=\"status-meta\" id=\"officialBridgeSummaryMeta\"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class=\"card\">
+      <h2 style=\"margin-top:0;\">WhatsApp 审批账号</h2>
+      <div id=\"approvalAccountRows\" class=\"account-grid\"></div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">新增 / 更新 WhatsApp 审批账号</h2>
+      <div class="section-split">
+        <div class="field-stack">
+          <div class="executor-form-grid">
+            <input type="hidden" id="wa_account_key" />
+            <div class="field-stack">
+              <label class="field-hint">账号名称（account_name）</label>
+              <input id="wa_account_name" placeholder="例如 WA Admin 1" />
+            </div>
+            <div class="field-stack">
+              <label class="field-hint">负责类型（responsible_type）</label>
+              <select id="wa_responsible_type"><option value="registration_group">注册群</option><option value="official_group">官方群</option></select>
+            </div>
+            <input type="hidden" id="wa_enabled" value="true" />
+            <div class="field-stack">
+              <label class="field-hint">备注（notes）</label>
+              <input id="wa_notes" placeholder="例如负责印尼注册群审批" />
+            </div>
+          </div>
+
+          <div class="field-stack" style="margin-top:14px;">
+            <label class="field-hint">逐群绑定配置（最多3组）</label>
+            <div class="binding-list">
+              <div class="binding-card" id="wa_binding_card_1">
+                <div class="binding-card-head">
+                  <div class="binding-title">第 1 组群绑定</div>
+                  <span class="binding-badge">逐群独立配置</span>
+                </div>
+                <div class="binding-config-grid">
+                  <div class="field-stack">
+                    <label class="field-hint">群链接</label>
+                    <input id="wa_group_link_1" placeholder="https://chat.whatsapp.com/xxx" />
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">群名称（选填）</label>
+                    <input id="wa_group_name_1" placeholder="例如 印尼注册群 A" />
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">地区</label>
+                    <select id="wa_group_area_1"></select>
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">通知机器人</label>
+                    <select id="wa_group_notify_profile_name_1"></select>
+                  </div>
+                </div>
+                <div class="binding-meta-grid">
+                  <div class="field-stack">
+                    <label class="field-hint">本群监控</label>
+                    <select id="wa_group_enabled_1"><option value="true">监控中</option><option value="false">不监控</option></select>
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">审批人数阈值</label>
+                    <input id="wa_group_approval_count_threshold_1" type="number" min="1" step="1" value="30" placeholder="例如 25 / 28 / 100" />
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">审批超时分钟</label>
+                    <input id="wa_group_approval_timeout_minutes_1" type="number" min="1" step="1" value="30" placeholder="例如 30 / 45 / 90" />
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">自动恢复 worker</label>
+                    <select id="wa_group_auto_recover_worker_1"><option value="true">开启</option><option value="false">关闭</option></select>
+                  </div>
+                </div>
+                <details class="advanced-fields">
+                  <summary>高级项</summary>
+                  <div class="advanced-fields-body">
+                    <div class="advanced-mapping-grid">
+                      <div class="field-stack">
+                        <label class="field-hint">系统映射 registration_group（可留空）</label>
+                        <input id="wa_group_registration_group_1" placeholder="可留空；系统默认按实时探针推断" />
+                      </div>
+                      <div class="field-stack">
+                        <label class="field-hint">系统映射 group_id（可留空）</label>
+                        <input id="wa_group_group_id_1" placeholder="可留空；拿不到时不要手填" />
+                      </div>
+                    </div>
+                  </div>
+                </details>
+                <div class="field-stack" style="margin-top:10px;">
+                  <label class="field-hint">监控时间段（最多3个）</label>
+                  <div class="schedule-inline-grid">
+                    <input id="wa_group_schedule_window_1_1" placeholder="09:00-12:00" />
+                    <input id="wa_group_schedule_window_1_2" placeholder="14:00-18:00" />
+                    <input id="wa_group_schedule_window_1_3" placeholder="20:00-22:00" />
+                  </div>
+                </div>
+              </div>
+
+              <div class="binding-card" id="wa_binding_card_2">
+                <div class="binding-card-head">
+                  <div class="binding-title">第 2 组群绑定</div>
+                  <span class="binding-badge">逐群独立配置</span>
+                </div>
+                <div class="binding-config-grid">
+                  <div class="field-stack">
+                    <label class="field-hint">群链接</label>
+                    <input id="wa_group_link_2" placeholder="https://chat.whatsapp.com/yyy" />
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">群名称（选填）</label>
+                    <input id="wa_group_name_2" placeholder="例如 印尼注册群 B" />
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">地区</label>
+                    <select id="wa_group_area_2"></select>
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">通知机器人</label>
+                    <select id="wa_group_notify_profile_name_2"></select>
+                  </div>
+                </div>
+                <div class="binding-meta-grid">
+                  <div class="field-stack">
+                    <label class="field-hint">本群监控</label>
+                    <select id="wa_group_enabled_2"><option value="true">监控中</option><option value="false">不监控</option></select>
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">审批人数阈值</label>
+                    <input id="wa_group_approval_count_threshold_2" type="number" min="1" step="1" value="30" placeholder="例如 25 / 28 / 100" />
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">审批超时分钟</label>
+                    <input id="wa_group_approval_timeout_minutes_2" type="number" min="1" step="1" value="30" placeholder="例如 30 / 45 / 90" />
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">自动恢复 worker</label>
+                    <select id="wa_group_auto_recover_worker_2"><option value="true">开启</option><option value="false">关闭</option></select>
+                  </div>
+                </div>
+                <details class="advanced-fields">
+                  <summary>高级项</summary>
+                  <div class="advanced-fields-body">
+                    <div class="advanced-mapping-grid">
+                      <div class="field-stack">
+                        <label class="field-hint">系统映射 registration_group（可留空）</label>
+                        <input id="wa_group_registration_group_2" placeholder="可留空；系统默认按实时探针推断" />
+                      </div>
+                      <div class="field-stack">
+                        <label class="field-hint">系统映射 group_id（可留空）</label>
+                        <input id="wa_group_group_id_2" placeholder="可留空；拿不到时不要手填" />
+                      </div>
+                    </div>
+                  </div>
+                </details>
+                <div class="field-stack" style="margin-top:10px;">
+                  <label class="field-hint">监控时间段（最多3个）</label>
+                  <div class="schedule-inline-grid">
+                    <input id="wa_group_schedule_window_2_1" placeholder="09:00-12:00" />
+                    <input id="wa_group_schedule_window_2_2" placeholder="14:00-18:00" />
+                    <input id="wa_group_schedule_window_2_3" placeholder="20:00-22:00" />
+                  </div>
+                </div>
+              </div>
+
+              <div class="binding-card" id="wa_binding_card_3">
+                <div class="binding-card-head">
+                  <div class="binding-title">第 3 组群绑定</div>
+                  <span class="binding-badge">逐群独立配置</span>
+                </div>
+                <div class="binding-config-grid">
+                  <div class="field-stack">
+                    <label class="field-hint">群链接</label>
+                    <input id="wa_group_link_3" placeholder="https://chat.whatsapp.com/zzz" />
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">群名称（选填）</label>
+                    <input id="wa_group_name_3" placeholder="例如 印尼注册群 C" />
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">地区</label>
+                    <select id="wa_group_area_3"></select>
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">通知机器人</label>
+                    <select id="wa_group_notify_profile_name_3"></select>
+                  </div>
+                </div>
+                <div class="binding-meta-grid">
+                  <div class="field-stack">
+                    <label class="field-hint">本群监控</label>
+                    <select id="wa_group_enabled_3"><option value="true">监控中</option><option value="false">不监控</option></select>
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">审批人数阈值</label>
+                    <input id="wa_group_approval_count_threshold_3" type="number" min="1" step="1" value="30" placeholder="例如 25 / 28 / 100" />
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">审批超时分钟</label>
+                    <input id="wa_group_approval_timeout_minutes_3" type="number" min="1" step="1" value="30" placeholder="例如 30 / 45 / 90" />
+                  </div>
+                  <div class="field-stack">
+                    <label class="field-hint">自动恢复 worker</label>
+                    <select id="wa_group_auto_recover_worker_3"><option value="true">开启</option><option value="false">关闭</option></select>
+                  </div>
+                </div>
+                <details class="advanced-fields">
+                  <summary>高级项</summary>
+                  <div class="advanced-fields-body">
+                    <div class="advanced-mapping-grid">
+                      <div class="field-stack">
+                        <label class="field-hint">系统映射 registration_group（可留空）</label>
+                        <input id="wa_group_registration_group_3" placeholder="可留空；系统默认按实时探针推断" />
+                      </div>
+                      <div class="field-stack">
+                        <label class="field-hint">系统映射 group_id（可留空）</label>
+                        <input id="wa_group_group_id_3" placeholder="可留空；拿不到时不要手填" />
+                      </div>
+                    </div>
+                  </div>
+                </details>
+                <div class="field-stack" style="margin-top:10px;">
+                  <label class="field-hint">监控时间段（最多3个）</label>
+                  <div class="schedule-inline-grid">
+                    <input id="wa_group_schedule_window_3_1" placeholder="09:00-12:00" />
+                    <input id="wa_group_schedule_window_3_2" placeholder="14:00-18:00" />
+                    <input id="wa_group_schedule_window_3_3" placeholder="20:00-22:00" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top:14px; display:flex; gap:8px;">
+            <button type="button" onclick="saveApprovalAccount()">保存审批账号</button>
+            <button type="button" class="secondary" onclick="clearApprovalAccountForm()">清空表单</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class=\"card\">
+      <h2 style=\"margin-top:0;\">地区选项源</h2>
+      <div class=\"field-stack\" style=\"margin-top:12px;\">
+        <label class=\"field-hint\">地区选项（每行一个）</label>
+        <textarea id=\"area_options_text\" rows=\"5\" placeholder=\"Indonesia\\nBrazil\\nMexico\"></textarea>
+      </div>
+      <div style=\"margin-top:12px; display:flex; gap:8px;\">
+        <button type=\"button\" onclick=\"saveAreaOptions()\">保存地区选项</button>
+      </div>
+    </div>
+
+    <div class=\"card\">
+      <h2 style=\"margin-top:0;\">日志与状态入口</h2>
+      <div class=\"muted\" id=\"productionOpsPathsHint\" style=\"margin-top:12px;\">状态文件路径加载中…</div>
+    </div>
+
+
+
+    <div id=\"productionOpsToast\" class=\"toast\"></div>
+    <div id=\"approvalQrModal\" class=\"qr-modal\" onclick=\"dismissApprovalQrModal(event)\">
+      <div class=\"qr-modal-card\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"approvalQrModalTitle\" onclick=\"event.stopPropagation()\">
+        <div class=\"qr-modal-head\">
+          <div>
+            <h3 id=\"approvalQrModalTitle\">账号激活二维码</h3>
+            <div class=\"muted\" id=\"approvalQrModalSubtitle\">请使用对应 WhatsApp 账号扫码。</div>
+          </div>
+          <button type=\"button\" class=\"secondary\" onclick=\"closeApprovalQrModal()\">关闭</button>
+        </div>
+        <div class=\"qr-modal-body\">
+          <div id=\"approvalQrModalStatus\" class=\"qr-modal-status muted\">正在准备二维码…</div>
+          <div id=\"approvalQrModalContent\"></div>
+          <div class=\"qr-modal-actions\">
+            <button type=\"button\" onclick=\"retryApprovalQrModal()\">重新生成二维码</button>
+            <button type=\"button\" class=\"secondary\" onclick=\"refreshApprovalQrModal()\">刷新状态</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+<script>
+async function loadJson(url, options) {
+  const res = await fetch(url, options || {});
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const data = await res.json();
+      detail = data.detail || JSON.stringify(data);
+    } catch (_) {}
+    throw new Error(detail || `Failed to load ${url}: ${res.status}`);
+  }
+  return await res.json();
+}
+function showToast(message, type='success') {
+  const toast = document.getElementById('productionOpsToast');
+  toast.textContent = message;
+  toast.className = `toast ${type}`;
+  toast.style.display = 'block';
+  clearTimeout(window.__productionOpsToastTimer);
+  window.__productionOpsToastTimer = setTimeout(() => { toast.style.display = 'none'; }, 2400);
+}
+function accountDisplayName(accountKey) {
+  const normalized = String(accountKey || '').trim();
+  const rows = Array.isArray(window.__approvalAccounts) ? window.__approvalAccounts : [];
+  const row = rows.find(item => String(item.account_key || '').trim() === normalized);
+  return row?.account_name || normalized || '该账号';
+}
+function mergeApprovalSessionState(previousState, nextState) {
+  const previous = previousState && typeof previousState === 'object' ? previousState : {};
+  const next = nextState && typeof nextState === 'object' ? nextState : {};
+  const merged = {...previous, ...next};
+  if (!next.qr_ascii && previous.qr_ascii) merged.qr_ascii = previous.qr_ascii;
+  if (!next.qr_text && previous.qr_text) merged.qr_text = previous.qr_text;
+  if (!next.last_qr_at && previous.last_qr_at) merged.last_qr_at = previous.last_qr_at;
+  if (!next.auth_path && previous.auth_path) merged.auth_path = previous.auth_path;
+  if (!next.client_id && previous.client_id) merged.client_id = previous.client_id;
+  return merged;
+}
+function closeApprovalQrModal() {
+  clearTimeout(window.__approvalQrModalRefreshTimer);
+  window.__approvalQrModalRefreshTimer = null;
+  const closingAccountKey = String(window.__approvalQrModalState?.accountKey || '').trim();
+  if (closingAccountKey && window.__approvalSessionStateByAccount && window.__approvalSessionStateByAccount[closingAccountKey]) {
+    window.__approvalSessionStateByAccount[closingAccountKey] = {
+      ...window.__approvalSessionStateByAccount[closingAccountKey],
+      qr_ascii: null,
+      qr_text: null,
+      qr_available: false,
+    };
+    renderApprovalAccountRows();
+  }
+  window.__approvalQrModalState = {
+    ...(window.__approvalQrModalState || {}),
+    open: false,
+    loading: false,
+  };
+  const modal = document.getElementById('approvalQrModal');
+  if (modal) modal.classList.remove('is-open');
+}
+function dismissApprovalQrModal(event) {
+  if (event && event.target && event.target.id === 'approvalQrModal') closeApprovalQrModal();
+}
+function scheduleApprovalQrModalRefresh() {
+  clearTimeout(window.__approvalQrModalRefreshTimer);
+  window.__approvalQrModalRefreshTimer = null;
+  const state = window.__approvalQrModalState || {};
+  const sessionState = state.sessionState && typeof state.sessionState === 'object' ? state.sessionState : {};
+  if (!state.open || state.loading || state.error || sessionState.login_verified) return;
+  window.__approvalQrModalRefreshTimer = setTimeout(() => {
+    refreshApprovalQrModal().catch(err => {
+      openApprovalQrModal(state.accountKey, {loading: false, error: err.message || '刷新状态失败'});
+    });
+  }, 3000);
+}
+function renderApprovalQrModal() {
+  const modal = document.getElementById('approvalQrModal');
+  const statusEl = document.getElementById('approvalQrModalStatus');
+  const contentEl = document.getElementById('approvalQrModalContent');
+  const titleEl = document.getElementById('approvalQrModalTitle');
+  const subtitleEl = document.getElementById('approvalQrModalSubtitle');
+  if (!modal || !statusEl || !contentEl || !titleEl || !subtitleEl) return;
+  const state = window.__approvalQrModalState || {};
+  if (!state.open || !state.accountKey) {
+    clearTimeout(window.__approvalQrModalRefreshTimer);
+    window.__approvalQrModalRefreshTimer = null;
+    modal.classList.remove('is-open');
+    return;
+  }
+  const accountName = accountDisplayName(state.accountKey);
+  const sessionState = state.sessionState && typeof state.sessionState === 'object' ? state.sessionState : {};
+  const loading = Boolean(state.loading);
+  const error = String(state.error || '').trim();
+  titleEl.textContent = `${accountName} · 激活二维码`;
+  subtitleEl.textContent = '请使用这个 WhatsApp 账号，在“关联设备”里扫码。';
+  if (loading) {
+    statusEl.innerHTML = '<div class="qr-loading">正在拉起独立 Runtime 并生成二维码，请保持这个弹窗打开。</div>';
+  } else if (error) {
+    statusEl.innerHTML = `<span style="color:#b91c1c;">${error}</span>`;
+  } else if (sessionState.login_verified) {
+    statusEl.innerHTML = '<span style="color:#166534;">已完成登录检测：账号已登录，可以正常使用。</span>';
+    if (!state.successAnnounced) {
+      window.__approvalQrModalState = {...state, successAnnounced: true};
+      showToast('账号已登录，可以正常使用', 'success');
+    }
+  } else if (sessionState.qr_available) {
+    const suffix = sessionState.last_qr_at ? ` · 最近出码：${sessionState.last_qr_at}` : '';
+    statusEl.innerHTML = `<span style="color:#1d4ed8;">二维码已准备好，请尽快扫码${suffix}</span>`;
+  } else {
+    statusEl.textContent = '正在等待二维码返回…';
+  }
+  if (sessionState.qr_ascii) {
+    const safeQr = String(sessionState.qr_ascii || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    contentEl.innerHTML = `<div class="field-hint">绑定二维码</div><div class="qr-shell"><pre>${safeQr}</pre></div><div class="muted" style="margin-top:10px;">扫码后系统会自动做一次登录检测，通过后会提示“账号已登录，可以正常使用”。</div>`;
+  } else if (loading) {
+    contentEl.innerHTML = '<div class="mini-note">正在生成二维码，通常几秒内返回；若首次拉起 runtime 稍慢，也会继续在这个弹窗内刷新结果。</div>';
+  } else if (sessionState.login_verified) {
+    contentEl.innerHTML = `<div class="mini-note">${sessionState.login_check_message || '账号已登录，可以正常使用。'}</div>`;
+  } else {
+    contentEl.innerHTML = '<div class="mini-note">暂未拿到二维码。你可以点下方“刷新状态”继续等待，或“重新生成二维码”重新拉起。</div>';
+  }
+  modal.classList.add('is-open');
+  scheduleApprovalQrModalRefresh();
+}
+function openApprovalQrModal(accountKey, options = {}) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) return;
+  const currentState = window.__approvalQrModalState || {};
+  const sessionSource = options.sessionState || (window.__approvalSessionStateByAccount && window.__approvalSessionStateByAccount[normalized]) || {};
+  const mergedSessionState = mergeApprovalSessionState(currentState.sessionState, sessionSource);
+  const successAnnounced = options.resetSuccessAnnounced ? false : Boolean(options.successAnnounced ?? (currentState.accountKey === normalized ? currentState.successAnnounced : false));
+  window.__approvalQrModalState = {
+    open: true,
+    accountKey: normalized,
+    sessionState: mergedSessionState,
+    loading: Boolean(options.loading),
+    error: options.error || '',
+    successAnnounced,
+  };
+  renderApprovalQrModal();
+}
+async function refreshApprovalQrModal() {
+  const accountKey = String(window.__approvalQrModalState?.accountKey || '').trim();
+  if (!accountKey) return;
+  await refreshApprovalAccountSession(accountKey, {silent: true, keepModal: true});
+}
+async function retryApprovalQrModal() {
+  const accountKey = String(window.__approvalQrModalState?.accountKey || '').trim();
+  if (!accountKey) return;
+  await startApprovalAccountSession(accountKey, {fromModal: true});
+}
+function renderStatusMeta(elId, rows) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const safeRows = Array.isArray(rows) ? rows : [];
+  el.innerHTML = safeRows.map(row => `<div class="k">${row[0]}</div><div>${row[1]}</div>`).join('');
+}
+function toggleSwitch(inputId, enabled, wrapperId) {
+  const input = document.getElementById(inputId);
+  if (input) input.value = enabled ? 'true' : 'false';
+  const wrapper = document.getElementById(wrapperId);
+  if (wrapper) {
+    Array.from(wrapper.querySelectorAll('button')).forEach((button, index) => {
+      const shouldActive = (enabled && index === 0) || (!enabled && index === 1);
+      button.classList.toggle('active', shouldActive);
+    });
+  }
+  const stateLabel = document.getElementById(`${inputId}_state`);
+  if (stateLabel) stateLabel.textContent = `当前：${enabled ? '开启' : '关闭'}`;
+}
+function collectIndexedValues(prefix, count) {
+  const values = [];
+  for (let i = 1; i <= count; i += 1) {
+    const el = document.getElementById(`${prefix}${i}`);
+    const value = String(el?.value || '').trim();
+    if (value) values.push(value);
+  }
+  return values;
+}
+function fillIndexedValues(prefix, values, count) {
+  const safeValues = Array.isArray(values) ? values : [];
+  for (let i = 1; i <= count; i += 1) {
+    const el = document.getElementById(`${prefix}${i}`);
+    if (el) el.value = safeValues[i - 1] || '';
+  }
+}
+function clearInlineField(inputId, label) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  input.value = '';
+  showToast(`${label}已删除`, 'success');
+}
+function saveInlineField(label, inputId) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  const value = String(input.value || '').trim();
+  if (!value) throw new Error(`${label}不能为空`);
+  input.value = value;
+  showToast(`${label}已保存到表单`, 'success');
+}
+function clearInlineGroupBinding(index) {
+  const input = document.getElementById(`wa_group_link_${index}`);
+  const areaSelect = document.getElementById(`wa_group_area_${index}`);
+  if (input) input.value = '';
+  if (areaSelect) areaSelect.value = '';
+  showToast(`第${index}组群链接已删除`, 'success');
+}
+function saveInlineGroupBinding(index) {
+  const input = document.getElementById(`wa_group_link_${index}`);
+  const areaSelect = document.getElementById(`wa_group_area_${index}`);
+  const link = String(input?.value || '').trim();
+  const area = String(areaSelect?.value || '').trim();
+  if (!link) throw new Error(`第${index}组群链接不能为空`);
+  if (!area) throw new Error(`第${index}组群链接必须选择地区`);
+  if (input) input.value = link;
+  showToast(`第${index}组群链接和地区已保存到表单`, 'success');
+}
+function slugifyAccountKey(text) {
+  const raw = String(text || '').trim().toLowerCase();
+  const normalized = raw.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return normalized || `wa-account-${Date.now()}`;
+}
+function ensureApprovalAccountKey() {
+  const keyField = document.getElementById('wa_account_key');
+  const current = String(keyField?.value || '').trim();
+  if (current) return current;
+  const name = document.getElementById('wa_account_name').value;
+  const type = document.getElementById('wa_responsible_type').value === 'official_group' ? 'official' : 'registration';
+  const generated = `${type}-${slugifyAccountKey(name)}`;
+  if (keyField) keyField.value = generated;
+  return generated;
+}
+function renderNotifyRobotSelect(options, currentValue='', elementId='wa_group_notify_profile_name_1') {
+  const select = document.getElementById(elementId);
+  if (!select) return;
+  const rows = Array.isArray(options) ? options : [];
+  const normalizedCurrent = String(currentValue || '').trim();
+  if (!rows.length) {
+    select.innerHTML = '<option value="">暂无可用机器人</option>';
+    return;
+  }
+  const normalizedRows = rows.map(item => ({
+    value: String(item.profile_name || '').trim(),
+    label: String(item.label || item.robot_name || item.profile_name || '').trim(),
+  })).filter(item => item.value);
+  if (normalizedCurrent && !normalizedRows.some(item => item.value === normalizedCurrent)) {
+    normalizedRows.push({value: normalizedCurrent, label: normalizedCurrent});
+  }
+  select.innerHTML = ['<option value="">请选择通知机器人</option>', ...normalizedRows.map(item => {
+    const selected = item.value === normalizedCurrent ? ' selected' : '';
+    return `<option value="${item.value}"${selected}>${item.label}</option>`;
+  })].join('');
+  if (normalizedCurrent) {
+    select.value = normalizedCurrent;
+  }
+}
+function renderAllGroupNotifyRobotSelects(options, currentValues=[]) {
+  const safeValues = Array.isArray(currentValues) ? currentValues : [];
+  for (let i = 1; i <= 3; i += 1) {
+    renderNotifyRobotSelect(options, safeValues[i - 1] || '', `wa_group_notify_profile_name_${i}`);
+  }
+}
+function renderAreaSelect(options, currentValue='', elementId='wa_group_area_1') {
+  const select = document.getElementById(elementId);
+  if (!select) return;
+  const rows = Array.isArray(options) ? options : [];
+  const normalizedCurrent = String(currentValue || '').trim();
+  if (!rows.length) {
+    select.innerHTML = '<option value="">暂无地区选项</option>';
+    return;
+  }
+  const normalizedRows = rows.map(item => ({
+    value: String(item.value || item.label || '').trim(),
+    label: String(item.label || item.value || '').trim(),
+  })).filter(item => item.value);
+  if (normalizedCurrent && !normalizedRows.some(item => item.value === normalizedCurrent)) {
+    normalizedRows.push({value: normalizedCurrent, label: normalizedCurrent});
+  }
+  select.innerHTML = ['<option value="">请选择地区</option>', ...normalizedRows.map(item => {
+    const selected = item.value === normalizedCurrent ? ' selected' : '';
+    return `<option value="${item.value}"${selected}>${item.label}</option>`;
+  })].join('');
+  if (normalizedCurrent) {
+    select.value = normalizedCurrent;
+  }
+}
+function renderAllGroupAreaSelects(options, currentValues=[]) {
+  const safeValues = Array.isArray(currentValues) ? currentValues : [];
+  for (let i = 1; i <= 3; i += 1) {
+    renderAreaSelect(options, safeValues[i - 1] || '', `wa_group_area_${i}`);
+  }
+}
+function collectGroupScheduleWindows(groupIndex) {
+  const rows = [];
+  for (let i = 1; i <= 3; i += 1) {
+    const value = String(document.getElementById(`wa_group_schedule_window_${groupIndex}_${i}`)?.value || '').trim();
+    if (!value) continue;
+    const parts = value.split('-').map(item => item.trim());
+    rows.push({start: parts[0] || '', end: parts[1] || ''});
+  }
+  return rows;
+}
+function fillGroupScheduleWindows(groupIndex, values) {
+  const safeValues = Array.isArray(values) ? values : [];
+  for (let i = 1; i <= 3; i += 1) {
+    const input = document.getElementById(`wa_group_schedule_window_${groupIndex}_${i}`);
+    if (!input) continue;
+    const row = safeValues[i - 1] || {};
+    const start = String(row.start || '').trim();
+    const end = String(row.end || '').trim();
+    input.value = start && end ? `${start}-${end}` : '';
+  }
+}
+function collectGroupBindings(count) {
+  const rows = [];
+  for (let i = 1; i <= count; i += 1) {
+    const link = String(document.getElementById(`wa_group_link_${i}`)?.value || '').trim();
+    const groupName = String(document.getElementById(`wa_group_name_${i}`)?.value || '').trim();
+    const area = String(document.getElementById(`wa_group_area_${i}`)?.value || '').trim();
+    const notifyProfileName = String(document.getElementById(`wa_group_notify_profile_name_${i}`)?.value || '').trim();
+    const enabled = document.getElementById(`wa_group_enabled_${i}`)?.value !== 'false';
+    const registrationGroup = String(document.getElementById(`wa_group_registration_group_${i}`)?.value || '').trim();
+    const groupId = String(document.getElementById(`wa_group_group_id_${i}`)?.value || '').trim();
+    const approvalCountThreshold = Number(document.getElementById(`wa_group_approval_count_threshold_${i}`)?.value || 0);
+    const approvalTimeoutMinutes = Number(document.getElementById(`wa_group_approval_timeout_minutes_${i}`)?.value || 0);
+    const autoRecoverWorker = document.getElementById(`wa_group_auto_recover_worker_${i}`)?.value === 'true';
+    const scheduleWindows = collectGroupScheduleWindows(i);
+    if (!link && !groupName && !area && !notifyProfileName && !registrationGroup && !groupId && !scheduleWindows.length) continue;
+    if (link && !area) throw new Error(`第${i}组群链接必须选择地区后才能保存`);
+    if (!link && area) throw new Error(`第${i}组地区已选择，但缺少群链接`);
+    if (link && !notifyProfileName) throw new Error(`第${i}组群链接必须选择通知机器人后才能保存`);
+    rows.push({
+      link,
+      group_name: groupName,
+      area,
+      notify_profile_name: notifyProfileName,
+      enabled,
+      registration_group: registrationGroup,
+      group_id: groupId,
+      approval_count_threshold: approvalCountThreshold,
+      approval_timeout_minutes: approvalTimeoutMinutes,
+      auto_recover_worker: autoRecoverWorker,
+      schedule_windows: scheduleWindows,
+    });
+  }
+  return rows;
+}
+async function reloadAreaOptions(currentValues=[]) {
+  const data = await loadJson('/api/ops/whatsapp-approval-area-options');
+  window.__approvalAreaOptions = Array.isArray(data.options) ? data.options : [];
+  renderAllGroupAreaSelects(window.__approvalAreaOptions, currentValues);
+  const sourceOptions = Array.isArray(data.source_options) && data.source_options.length ? data.source_options : window.__approvalAreaOptions;
+  const text = sourceOptions.map(item => String(item.value || item.label || '').trim()).filter(Boolean).join('\\n');
+  const textarea = document.getElementById('area_options_text');
+  if (textarea) textarea.value = text;
+}
+async function saveAreaOptions() {
+  const textarea = document.getElementById('area_options_text');
+  const options = String(textarea?.value || '').split('\\n').map(item => item.trim()).filter(Boolean);
+  const data = await loadJson('/api/ops/whatsapp-approval-area-options', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({options}),
+  });
+  window.__approvalAreaOptions = Array.isArray(data.options) ? data.options : [];
+  renderAllGroupAreaSelects(window.__approvalAreaOptions, [1, 2, 3].map(index => String(document.getElementById(`wa_group_area_${index}`)?.value || '').trim()));
+  const sourceOptions = Array.isArray(data.source_options) && data.source_options.length ? data.source_options : window.__approvalAreaOptions;
+  if (textarea) textarea.value = sourceOptions.map(item => String(item.value || item.label || '').trim()).filter(Boolean).join('\\n');
+  showToast('保存地区选项成功', 'success');
+}
+function renderBindingCardState(index, binding) {
+  const card = document.getElementById(`wa_binding_card_${index}`);
+  if (!card) return;
+  const hasLink = Boolean(String(binding?.link || '').trim());
+  card.classList.toggle('is-empty', !hasLink);
+}
+function bindingSummaryHtml(binding) {
+  const scheduleText = Array.isArray(binding.schedule_windows) && binding.schedule_windows.length
+    ? binding.schedule_windows.map(item => `${item.start}-${item.end}`).join(' / ')
+    : '未设置（默认全天）';
+  const verifier = binding.membership_verifier || {};
+  const monitoringEnabled = binding.enabled !== false;
+  const bindingBadgeText = !monitoringEnabled ? '不监控' : (binding.schedule_runtime?.active_now ? '当前生效' : '时段外待命');
+  const bindingTitle = binding.group_name || binding.link || '未配置群链接';
+  const verifierDetail = String(verifier.detail || '').trim();
+  const showVerifierDetail = Boolean(verifierDetail) && !['inferred_live_probe_ready'].includes(String(verifier.status || '').trim());
+  return `<div class="binding-card ${binding.link ? '' : 'is-empty'}">
+    <div class="binding-card-head">
+      <div>
+        <div class="binding-title">${bindingTitle}</div>
+        <div class="muted" style="margin-top:4px;">${binding.link || '-'} · ${binding.area || '-'} · ${binding.notify_robot_name || binding.notify_profile_name || '-'}</div>
+      </div>
+      <span class="binding-badge">${bindingBadgeText}</span>
+    </div>
+    <div class="binding-meta-grid">
+      <div><div class="field-hint">本群监控</div><div>${monitoringEnabled ? '监控中' : '不监控'}</div></div>
+      <div><div class="field-hint">审批条件</div><div>${binding.approval_rule_text || '-'}</div></div>
+      <div><div class="field-hint">自动恢复</div><div>${binding.auto_recover_worker ? '开启' : '关闭'}</div></div>
+      <div><div class="field-hint">时间段</div><div>${scheduleText}</div></div>
+      <div><div class="field-hint">真实校验</div><div>${verifier.ready ? 'ready' : 'pending'} · ${verifier.status || '-'}</div></div>
+    </div>
+    ${showVerifierDetail ? `<div class="mini-note" style="margin-top:8px;">${verifierDetail}</div>` : ''}
+  </div>`;
+}
+function accountCardHtml(row) {
+  const groupBindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
+    ? row.group_binding_runtimes
+    : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
+  const verificationChecks = Array.isArray(row.verification_checks) ? row.verification_checks : [];
+  const verificationText = verificationChecks.length
+    ? verificationChecks.map(item => `${item.ok ? '✅' : '⚠️'} ${item.detail || item.code || '-'}`).join('<br/>')
+    : '-';
+  const sessionState = (window.__approvalSessionStateByAccount && window.__approvalSessionStateByAccount[row.account_key]) || row.session_state || {};
+  const accountKeyEscaped = String(row.account_key || '').replace(/'/g, "&#39;");
+  const pendingAction = (window.__approvalTogglePendingByAccount || {})[String(row.account_key || '').trim()] || '';
+  const monitorButtonClass = pendingAction ? 'pending' : (row.enabled ? 'enabled' : 'disabled');
+  const monitorButtonText = pendingAction === 'enabling'
+    ? '正在开启'
+    : (pendingAction === 'disabling' ? '正在关闭' : (row.enabled ? '监控中' : '已关闭'));
+  const isSessionLoading = Boolean(window.__approvalSessionLoadingByAccount && window.__approvalSessionLoadingByAccount[row.account_key]);
+  const loginStatusText = sessionState.login_verified
+    ? '账号已登录，可以正常使用'
+    : (sessionState.login_check_message || (sessionState.qr_available ? '已出二维码，待扫码登录' : '未登录'));
+  const qrBlock = sessionState.qr_ascii
+    ? `<div style="margin-top:10px;"><div class="field-hint" style="margin-bottom:6px;">绑定二维码</div><pre style="margin:0; padding:12px; overflow:auto; background:#0f172a; color:#e2e8f0; border-radius:12px; font-size:10px; line-height:1.05;">${String(sessionState.qr_ascii || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre><div class="muted" style="margin-top:6px;">请用这个账号的 WhatsApp - 关联设备 扫描上面的二维码。</div></div>`
+    : '';
+  const noteValue = String(row.notes || '').trim();
+  return `<div class="account-card">
+    <h3>
+      <span class="account-head-left">
+        <span class="account-head-title">${row.account_name || row.account_key || ''}</span>
+        <button type="button" class="card-monitor-toggle ${monitorButtonClass}" onclick="setApprovalAccountEnabled('${accountKeyEscaped}', ${row.enabled ? 'false' : 'true'})" ${pendingAction ? 'disabled' : ''}>${monitorButtonText}</button>
+      </span>
+      <span><span class="status-dot ${row.status_color || 'gray'}"></span>${row.status_text || '-'}</span>
+    </h3>
+    <div class="account-meta">
+      <div class="k">账号键</div><div>${row.account_key || '-'}</div>
+      <div class="k">负责类型</div><div>${row.responsible_type === 'official_group' ? '官方群' : '注册群'}</div>
+      <div class="k">群数量</div><div>${row.group_count || 0}</div>
+      <div class="k">配置状态</div><div>${row.verification_status_label || row.verification_status || '-'}</div>
+      <div class="k">登录状态</div><div>${loginStatusText}</div>
+      ${noteValue ? `<div class="k">备注</div><div>${noteValue}</div>` : ''}
+    </div>
+    <div style="margin-top:14px;">
+      <div class="field-hint" style="margin-bottom:8px;">逐群绑定详情</div>
+      <div class="binding-list">${groupBindings.length ? groupBindings.map(bindingSummaryHtml).join('') : '<div class="binding-card is-empty">暂无群绑定</div>'}</div>
+    </div>
+    <details class="advanced-fields" style="margin-top:14px;">
+      <summary>校验摘要</summary>
+      <div class="advanced-fields-body"><div class="muted">${verificationText}</div></div>
+    </details>
+    ${qrBlock}
+    <div class="link-actions">
+      <button type="button" class="secondary" onclick="fillApprovalAccountForm('${accountKeyEscaped}')">回填编辑</button>
+      <button type="button" class="${isSessionLoading ? 'button-loading' : ''}" ${isSessionLoading ? 'disabled' : ''} onclick="startApprovalAccountSession('${accountKeyEscaped}')">${isSessionLoading ? '生成中…' : '生成二维码'}</button>
+      <button type="button" class="secondary" onclick="deleteApprovalAccount('${accountKeyEscaped}')">删除账号</button>
+    </div>
+    <details class="advanced-fields" style="margin-top:10px;">
+      <summary>更多操作</summary>
+      <div class="advanced-fields-body">
+        <div class="link-actions" style="margin-top:0;">
+          <button type="button" onclick="startApprovalAccountRuntime('${accountKeyEscaped}')">启动独立 Runtime</button>
+          <button type="button" class="secondary" onclick="stopApprovalAccountRuntime('${accountKeyEscaped}')">停止 Runtime</button>
+          <button type="button" class="secondary" onclick="refreshApprovalAccountSession('${accountKeyEscaped}')">刷新状态</button>
+          <button type="button" class="secondary" onclick="resetApprovalAccountSession('${accountKeyEscaped}')">重置会话</button>
+        </div>
+      </div>
+    </details>
+  </div>`;
+}
+function renderApprovalAccountRows() {
+  document.getElementById('approvalAccountRows').innerHTML = window.__approvalAccounts.length
+    ? window.__approvalAccounts.map(accountCardHtml).join('')
+    : '<div class="muted">暂无 WhatsApp 审批账号，请先新增。</div>';
+}
+async function startApprovalAccountRuntime(accountKey) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) throw new Error('account_key is required');
+  const data = await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(normalized)}/runtime/start`, {method: 'POST'});
+  await reloadApprovalAccounts();
+  showToast('独立 Runtime 已启动', 'success');
+  return data;
+}
+async function stopApprovalAccountRuntime(accountKey) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) throw new Error('account_key is required');
+  const data = await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(normalized)}/runtime/stop`, {method: 'POST'});
+  await reloadApprovalAccounts();
+  showToast('独立 Runtime 已停止', 'success');
+  return data;
+}
+async function refreshApprovalAccountSession(accountKey, options = {}) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) return;
+  const data = await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(normalized)}/session`);
+  window.__approvalSessionStateByAccount = window.__approvalSessionStateByAccount || {};
+  window.__approvalSessionStateByAccount[normalized] = mergeApprovalSessionState(window.__approvalSessionStateByAccount[normalized], data.session || {});
+  renderApprovalAccountRows();
+  if (options.keepModal && window.__approvalQrModalState?.accountKey === normalized) {
+    openApprovalQrModal(normalized, {sessionState: window.__approvalSessionStateByAccount[normalized], loading: false});
+  }
+  return data;
+}
+async function startApprovalAccountSession(accountKey, options = {}) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) throw new Error('account_key is required');
+  window.__approvalSessionLoadingByAccount = window.__approvalSessionLoadingByAccount || {};
+  window.__approvalSessionLoadingByAccount[normalized] = true;
+  renderApprovalAccountRows();
+  openApprovalQrModal(normalized, {loading: true, sessionState: (window.__approvalSessionStateByAccount || {})[normalized] || {}, resetSuccessAnnounced: true});
+  try {
+    const data = await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(normalized)}/session/start`, {method: 'POST'});
+    window.__approvalSessionStateByAccount = window.__approvalSessionStateByAccount || {};
+    window.__approvalSessionStateByAccount[normalized] = mergeApprovalSessionState(window.__approvalSessionStateByAccount[normalized], data.session || {});
+    renderApprovalAccountRows();
+    openApprovalQrModal(normalized, {sessionState: window.__approvalSessionStateByAccount[normalized], loading: false});
+    showToast('二维码已生成，请直接在弹窗里扫码', 'success');
+    return data;
+  } catch (error) {
+    openApprovalQrModal(normalized, {loading: false, error: error.message || '生成二维码失败'});
+    throw error;
+  } finally {
+    window.__approvalSessionLoadingByAccount[normalized] = false;
+    renderApprovalAccountRows();
+  }
+}
+async function resetApprovalAccountSession(accountKey) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) throw new Error('account_key is required');
+  const data = await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(normalized)}/session/reset`, {method: 'POST'});
+  window.__approvalSessionStateByAccount = window.__approvalSessionStateByAccount || {};
+  window.__approvalSessionStateByAccount[normalized] = mergeApprovalSessionState(window.__approvalSessionStateByAccount[normalized], data.session || {});
+  renderApprovalAccountRows();
+  openApprovalQrModal(normalized, {sessionState: window.__approvalSessionStateByAccount[normalized], loading: false, resetSuccessAnnounced: true});
+  showToast('会话已重置，并重新生成新的绑定二维码', 'success');
+  return data;
+}
+function parseScheduleWindowsText(text) {
+  const rows = String(text || '').split('\\n').map(item => item.trim()).filter(Boolean);
+  return rows.map(item => {
+    const parts = item.split('-').map(part => part.trim());
+    return {start: parts[0] || '', end: parts[1] || ''};
+  });
+}
+async function reloadApprovalAccounts() {
+  const data = await loadJson('/api/ops/whatsapp-approval-accounts');
+  const previousSessionState = window.__approvalSessionStateByAccount || {};
+  window.__approvalAccounts = Array.isArray(data.rows) ? data.rows : [];
+  window.__approvalSessionStateByAccount = Object.fromEntries(window.__approvalAccounts.map(item => {
+    const accountKey = String(item.account_key || '').trim();
+    return [accountKey, mergeApprovalSessionState(previousSessionState[accountKey], item.session_state || {})];
+  }).filter(item => item[0]));
+  window.__notifyRobotOptions = Array.isArray(data.notify_robot_options) ? data.notify_robot_options : [];
+  window.__approvalAreaOptions = Array.isArray(data.area_options) ? data.area_options : [];
+  renderAllGroupNotifyRobotSelects(
+    window.__notifyRobotOptions,
+    [1, 2, 3].map(index => String(document.getElementById(`wa_group_notify_profile_name_${index}`)?.value || '').trim()),
+  );
+  renderAllGroupAreaSelects(
+    window.__approvalAreaOptions,
+    [1, 2, 3].map(index => String(document.getElementById(`wa_group_area_${index}`)?.value || '').trim()),
+  );
+  renderApprovalAccountRows();
+  if (window.__approvalQrModalState?.open && window.__approvalQrModalState.accountKey) {
+    const modalAccountKey = String(window.__approvalQrModalState.accountKey || '').trim();
+    openApprovalQrModal(modalAccountKey, {
+      sessionState: window.__approvalSessionStateByAccount[modalAccountKey] || {},
+      loading: Boolean(window.__approvalSessionLoadingByAccount && window.__approvalSessionLoadingByAccount[modalAccountKey]),
+    });
+  }
+  const summary = data.summary || {};
+  document.getElementById('waAccountCount').textContent = String(summary.total_accounts ?? 0);
+  document.getElementById('waEnabledAccountCount').textContent = String(summary.active_now_accounts ?? 0);
+  renderRegistrationGroupOverview();
+}
+async function reloadApprovalCandidates() {
+  const data = await loadJson('/api/ops/whatsapp-approval-candidates');
+  const summary = data.summary || {};
+  const framework = data.verifier_framework || {};
+  renderStatusMeta('approvalCandidateMeta', [
+    ['eligible', String(summary.eligible_count ?? 0)],
+    ['注册群', String(summary.registration_group_count ?? 0)],
+    ['官方群', String(summary.official_group_count ?? 0)],
+    ['真实校验ready', String(summary.verifier_ready_count ?? 0)],
+  ]);
+  renderStatusMeta('approvalVerifierMeta', [
+    ['状态', framework.status || '-'],
+    ['real_membership_check_ready', String(Boolean(framework.real_membership_check_ready))],
+    ['requires_manual_seed', String(Boolean(framework.requires_manual_seed))],
+    ['说明', framework.detail || '-'],
+  ]);
+}
+function fillApprovalAccountForm(accountKey) {
+  const rows = Array.isArray(window.__approvalAccounts) ? window.__approvalAccounts : [];
+  const row = rows.find(item => String(item.account_key || '') === String(accountKey || ''));
+  if (!row) return;
+  document.getElementById('wa_account_key').value = row.account_key || '';
+  document.getElementById('wa_account_name').value = row.account_name || '';
+  document.getElementById('wa_responsible_type').value = row.responsible_type || 'registration_group';
+  document.getElementById('wa_enabled').value = Boolean(row.enabled) ? 'true' : 'false';
+  const groupBindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
+    ? row.group_binding_runtimes
+    : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
+  fillIndexedValues('wa_group_link_', groupBindings.map(item => item.link || ''), 3);
+  fillIndexedValues('wa_group_name_', groupBindings.map(item => item.group_name || ''), 3);
+  renderAllGroupAreaSelects(window.__approvalAreaOptions, groupBindings.map(item => item.area || ''));
+  renderAllGroupNotifyRobotSelects(window.__notifyRobotOptions, groupBindings.map(item => item.notify_profile_name || ''));
+  for (let i = 1; i <= 3; i += 1) {
+    const binding = groupBindings[i - 1] || {};
+    document.getElementById(`wa_group_enabled_${i}`).value = binding.enabled === false ? 'false' : 'true';
+    document.getElementById(`wa_group_registration_group_${i}`).value = String(binding.registration_group || '');
+    document.getElementById(`wa_group_group_id_${i}`).value = String(binding.group_id || '');
+    document.getElementById(`wa_group_approval_count_threshold_${i}`).value = String(binding.approval_count_threshold || 30);
+    document.getElementById(`wa_group_approval_timeout_minutes_${i}`).value = String(binding.approval_timeout_minutes || 30);
+    document.getElementById(`wa_group_auto_recover_worker_${i}`).value = binding.auto_recover_worker === false ? 'false' : 'true';
+    fillGroupScheduleWindows(i, binding.schedule_windows || []);
+    renderBindingCardState(i, binding);
+  }
+  document.getElementById('wa_notes').value = row.notes || '';
+  document.getElementById('wa_account_name').scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+function clearApprovalAccountForm() {
+  document.getElementById('wa_account_key').value = '';
+  document.getElementById('wa_account_name').value = '';
+  document.getElementById('wa_responsible_type').value = 'registration_group';
+  document.getElementById('wa_enabled').value = 'true';
+  fillIndexedValues('wa_group_link_', [], 3);
+  fillIndexedValues('wa_group_name_', [], 3);
+  renderAllGroupAreaSelects(window.__approvalAreaOptions, []);
+  renderAllGroupNotifyRobotSelects(window.__notifyRobotOptions, []);
+  for (let i = 1; i <= 3; i += 1) {
+    document.getElementById(`wa_group_enabled_${i}`).value = 'true';
+    document.getElementById(`wa_group_registration_group_${i}`).value = '';
+    document.getElementById(`wa_group_group_id_${i}`).value = '';
+    document.getElementById(`wa_group_approval_count_threshold_${i}`).value = '30';
+    document.getElementById(`wa_group_approval_timeout_minutes_${i}`).value = '30';
+    document.getElementById(`wa_group_auto_recover_worker_${i}`).value = 'true';
+    fillGroupScheduleWindows(i, []);
+    renderBindingCardState(i, {});
+  }
+  document.getElementById('wa_notes').value = '';
+}
+async function saveApprovalAccount() {
+  const accountKey = ensureApprovalAccountKey();
+  if (!accountKey) throw new Error('account_key is required.');
+  const groupLinkBindings = collectGroupBindings(3);
+  const primaryBinding = groupLinkBindings[0] || {};
+  const payload = {
+    account_name: document.getElementById('wa_account_name').value.trim(),
+    responsible_type: document.getElementById('wa_responsible_type').value,
+    enabled: document.getElementById('wa_enabled').value === 'true',
+    group_link_bindings: groupLinkBindings,
+    group_links: groupLinkBindings.map(item => item.link),
+    area: primaryBinding.area || '',
+    notify_profile_name: primaryBinding.notify_profile_name || '',
+    approval_count_threshold: Number(primaryBinding.approval_count_threshold || 0),
+    approval_timeout_minutes: Number(primaryBinding.approval_timeout_minutes || 0),
+    auto_recover_worker: primaryBinding.auto_recover_worker !== false,
+    schedule_windows: Array.isArray(primaryBinding.schedule_windows) ? primaryBinding.schedule_windows : [],
+    notes: document.getElementById('wa_notes').value.trim(),
+  };
+  await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(accountKey)}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+  showToast('保存 WhatsApp 审批账号成功', 'success');
+  await reloadApprovalAccounts();
+}
+async function setApprovalAccountEnabled(accountKey, enabled) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) throw new Error('account_key is required.');
+  window.__approvalTogglePendingByAccount = window.__approvalTogglePendingByAccount || {};
+  window.__approvalTogglePendingByAccount[normalized] = enabled ? 'enabling' : 'disabling';
+  renderApprovalAccountRows();
+  const rows = Array.isArray(window.__approvalAccounts) ? window.__approvalAccounts : [];
+  const row = rows.find(item => String(item.account_key || '') === normalized);
+  if (!row) {
+    delete window.__approvalTogglePendingByAccount[normalized];
+    renderApprovalAccountRows();
+    throw new Error(`account not found: ${normalized}`);
+  }
+  const bindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
+    ? row.group_binding_runtimes
+    : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
+  const payload = {
+    account_name: String(row.account_name || '').trim(),
+    responsible_type: String(row.responsible_type || 'registration_group').trim() || 'registration_group',
+    enabled: Boolean(enabled),
+    group_link_bindings: bindings.map(item => ({
+      link: String(item.link || '').trim(),
+      group_name: String(item.group_name || '').trim(),
+      area: String(item.area || '').trim(),
+      notify_profile_name: String(item.notify_profile_name || '').trim(),
+      enabled: item.enabled !== false,
+      registration_group: String(item.registration_group || '').trim(),
+      group_id: String(item.group_id || '').trim(),
+      approval_count_threshold: Number(item.approval_count_threshold || 0),
+      approval_timeout_minutes: Number(item.approval_timeout_minutes || 0),
+      auto_recover_worker: item.auto_recover_worker !== false,
+      schedule_windows: Array.isArray(item.schedule_windows) ? item.schedule_windows.map(win => ({
+        start: String(win.start || '').trim(),
+        end: String(win.end || '').trim(),
+      })) : [],
+    })),
+    group_links: bindings.map(item => String(item.link || '').trim()).filter(Boolean),
+    area: String(row.area || '').trim(),
+    notify_profile_name: String(row.notify_profile_name || '').trim(),
+    approval_count_threshold: Number(row.approval_count_threshold || 0),
+    approval_timeout_minutes: Number(row.approval_timeout_minutes || 0),
+    auto_recover_worker: row.auto_recover_worker !== false,
+    schedule_windows: Array.isArray(row.schedule_windows) ? row.schedule_windows.map(win => ({
+      start: String(win.start || '').trim(),
+      end: String(win.end || '').trim(),
+    })) : [],
+    notes: String(row.notes || '').trim(),
+  };
+  try {
+    await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(normalized)}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    await reloadApprovalAccounts();
+    showToast(`已${enabled ? '开启' : '关闭'}账号监控`, 'success');
+  } finally {
+    delete window.__approvalTogglePendingByAccount[normalized];
+    renderApprovalAccountRows();
+  }
+}
+async function deleteApprovalAccount(accountKey) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) return;
+  await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(normalized)}`, {method: 'DELETE'});
+  if (document.getElementById('wa_account_key').value.trim() === normalized) {
+    clearApprovalAccountForm();
+  }
+  showToast(`删除审批账号成功：${normalized}`, 'success');
+  await reloadApprovalAccounts();
+}
+async function reloadOfficialBridgeSummary() {
+  const data = await loadJson('/api/ops/official-group-bridge-summary');
+  window.__officialBridgeSummaryData = data;
+  const health = data.health || {};
+  const summary = data.summary || {};
+  document.getElementById('officialPendingCount').textContent = String(summary.pending_count ?? 0);
+  renderStatusMeta('officialBridgeSummaryMeta', [
+    ['状态', health.status || '-'],
+    ['模式', health.mode || '-'],
+    ['目标群数', String(Object.keys(summary.by_target_group || {}).length)],
+    ['待处理', String(summary.pending_count ?? 0)],
+    ['今日新增', String(summary.today_created_count ?? 0)],
+    ['timeout>1h', String(summary.pending_timeout_over_1h_count ?? 0)],
+  ]);
+}
+function renderRegistrationGroupOverview() {
+  if (!document.getElementById('workerHealthMeta')) return;
+  const rows = Array.isArray(window.__approvalAccounts) ? window.__approvalAccounts : [];
+  const registrationRows = rows.filter(item => String(item.responsible_type || '') === 'registration_group');
+  const bindings = registrationRows.flatMap(item => Array.isArray(item.group_binding_runtimes) && item.group_binding_runtimes.length
+    ? item.group_binding_runtimes
+    : (Array.isArray(item.group_link_bindings) ? item.group_link_bindings : []));
+  const monitoredBindings = bindings.filter(item => item?.enabled !== false);
+  const activeBindings = monitoredBindings.filter(item => Boolean(item?.schedule_runtime?.active_now)).length;
+  const readyBindings = monitoredBindings.filter(item => Boolean(item?.membership_verifier?.ready)).length;
+  const runtime = (window.__productionOpsDaemonData || {}).runtime || {};
+  const status = runtime.status || {};
+  const workerState = status.worker_state || {};
+  const probeCandidates = [status.decision_group_state?.payload, status.fresh_probe?.payload, status.worker_state?.payload]
+    .filter(item => item && typeof item === 'object');
+  const probeNames = [...new Set(probeCandidates.map(item => String(item.group_name || item.group_id || '').trim()).filter(Boolean))];
+  const pendingValues = probeCandidates.map(item => Number(item.pending_count)).filter(item => Number.isFinite(item));
+  renderStatusMeta('workerHealthMeta', [
+    ['状态', workerState.ok ? 'healthy' : 'unhealthy'],
+    ['注册账号', String(registrationRows.length)],
+    ['绑定群数', String(bindings.length)],
+    ['当前生效', `${activeBindings}/${bindings.length || 0}`],
+    ['真实校验', `${readyBindings}/${bindings.length || 0}`],
+    ['当前探针', probeNames[0] || '-'],
+    ['待审批', pendingValues.length ? String(Math.max(...pendingValues)) : '-'],
+  ]);
+}
+function applyProductionOpsDaemonConfig(data) {
+  window.__productionOpsDaemonData = data;
+  const config = data.config || {};
+  const runtime = data.runtime || {};
+  const status = runtime.status || {};
+  const workerState = status.worker_state || {};
+  const releaseEvaluation = status.release_evaluation || {};
+  const formalApproval = status.formal_approval || {};
+  const releasePayload = releaseEvaluation.payload || {};
+  const checkedAt = status.checked_at || '暂无';
+  const pendingIncidents = Array.isArray(status.incidents) ? status.incidents.length : 0;
+  const notificationCount = Array.isArray(status.notifications) ? status.notifications.length : 0;
+  const launchdState = runtime.launch_agent_installed ? 'installed' : 'not_installed';
+  document.getElementById('daemonEnabledState').textContent = config.enabled ? 'ON' : 'OFF';
+  document.getElementById('productionOpsRuntimeHint').textContent = `launchd=${launchdState} · 最近检查=${checkedAt} · incidents=${pendingIncidents} · notifications=${notificationCount}`;
+  document.getElementById('productionOpsPathsHint').textContent = `状态文件：${runtime.status_path || '-'} · 运行时配置：${runtime.env_path || '-'}${pendingIncidents ? ` · 当前异常数：${pendingIncidents}` : ''}`;
+  renderRegistrationGroupOverview();
+}
+async function reloadProductionOpsDaemonConfig() {
+  const data = await loadJson('/api/ops/production-ops-daemon');
+  applyProductionOpsDaemonConfig(data);
+}
+reloadProductionOpsDaemonConfig().catch(err => showToast(err.message, 'error'));
+reloadAreaOptions().catch(err => showToast(err.message, 'error'));
+reloadApprovalAccounts().catch(err => showToast(err.message, 'error'));
+reloadOfficialBridgeSummary().catch(err => showToast(err.message, 'error'));
+setInterval(() => {
+  reloadProductionOpsDaemonConfig().catch(err => showToast(err.message, 'error'));
+  reloadAreaOptions().catch(err => showToast(err.message, 'error'));
+  reloadApprovalAccounts().catch(err => showToast(err.message, 'error'));
+  reloadOfficialBridgeSummary().catch(err => showToast(err.message, 'error'));
+}, 15000);
+</script>
 </body>
 </html>
 """
@@ -1044,7 +2370,7 @@ OPS_PAGE_HTML = """
     .toast.success { background: #065f46; }
     .toast.error { background: #991b1b; }
     .page-shell { max-width: 1360px; margin: 0 auto; }
-    .shell-nav { display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 16px 0; }
+    .shell-nav { position: sticky; top: 0; z-index: 20; display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 16px 0; padding: 10px 0 12px; background: rgba(246,248,251,.96); backdrop-filter: blur(8px); }
     .shell-nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:6px 10px; border-radius:999px; background:#eef2ff; }
     .hero { background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; padding:20px; box-shadow: 0 1px 3px rgba(0,0,0,.06); margin-bottom:16px; }
     .hero .eyebrow { color:#6366f1; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
@@ -1059,6 +2385,7 @@ OPS_PAGE_HTML = """
     <div class="shell-nav">
       <a href="/ops">运营工作台</a>
       <a href="/ops/intake-bot-presets">收口配置中心</a>
+      <a href="/ops/production-ops">群审批控制台</a>
       <a href="/ops/official-group-bridge">官方群审批桥接台</a>
     </div>
     <div class="hero">
@@ -1066,7 +2393,7 @@ OPS_PAGE_HTML = """
       <h1>运营工作台</h1>
       <div class="subtitle">运营操作台 MVP · 面向人工处理、队列推进与异常回查的统一工作台。</div>
       <div class=\"muted\">数据来源：/api/ops/dashboard/summary · /api/ops/manual-review-queue · /api/ops/bind-queue · /api/ops/group-queue · /api/ops/parser-quality-summary</div>
-      <div class=\"muted\" style=\"margin-top:8px;\"><a href=\"/ops/intake-bot-presets\">前往收口机器人配置中心</a></div>
+      <div class=\"muted\" style=\"margin-top:8px;\"><a href=\"/ops/intake-bot-presets\">前往收口机器人配置中心</a> · <a href=\"/ops/production-ops\">前往群审批控制台</a></div>
     </div>
 
   <div class=\"card\" style=\"margin-top:16px;\">
@@ -1644,6 +2971,10 @@ class RegistrationGroupApprovalDecisionRequest(BaseModel):
     area: str = 'Indonesia'
     remark: Optional[str] = None
     force_immediate: bool = False
+    expected_pending_count: Optional[int] = None
+    expected_member_count: Optional[int] = None
+    expected_requester_ids: Optional[List[str]] = None
+    expected_requesters: Optional[List[Dict[str, Any]]] = None
 
 
 class OfficialGroupApprovalCheckRequest(BaseModel):
@@ -1723,6 +3054,58 @@ class GuildExecutorUpdateRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class ProductionOpsDaemonConfigUpdateRequest(BaseModel):
+    enabled: bool = False
+    registration_group: Optional[str] = None
+    api_base_url: Optional[str] = None
+    worker_base_url: Optional[str] = None
+    interval_seconds: float = 20.0
+    notify_chat_id: Optional[str] = None
+    area: Optional[str] = None
+    remark: Optional[str] = None
+    approved_count: int = 1
+    auto_recover_worker: bool = True
+
+
+class ApprovalScheduleWindowRequest(BaseModel):
+    start: str
+    end: str
+
+
+class ApprovalGroupBindingRequest(BaseModel):
+    link: Optional[str] = None
+    group_name: Optional[str] = None
+    area: Optional[str] = None
+    notify_profile_name: Optional[str] = None
+    enabled: Optional[bool] = True
+    registration_group: Optional[str] = None
+    group_id: Optional[str] = None
+    approval_count_threshold: Optional[int] = None
+    approval_timeout_minutes: Optional[int] = None
+    auto_recover_worker: Optional[bool] = None
+    schedule_windows: list[ApprovalScheduleWindowRequest] = []
+
+
+class WhatsAppApprovalAccountUpdateRequest(BaseModel):
+    account_name: str
+    responsible_type: str
+    group_links: list[str] = []
+    group_link_bindings: list[ApprovalGroupBindingRequest] = []
+    area: Optional[str] = None
+    notify_profile_name: Optional[str] = None
+    approval_rule: Optional[str] = None
+    approval_count_threshold: Optional[int] = None
+    approval_timeout_minutes: Optional[int] = None
+    auto_recover_worker: bool = True
+    schedule_windows: list[ApprovalScheduleWindowRequest] = []
+    enabled: bool = True
+    notes: Optional[str] = None
+
+
+class WhatsAppApprovalAreaOptionsUpdateRequest(BaseModel):
+    options: list[str]
+
+
 class SubmissionResubmitRequest(BaseModel):
     corrected_by: str
     submitted_at: str
@@ -1751,6 +3134,107 @@ GUILD_EXECUTOR_PROXY_REGION_OPTIONS: list[dict[str, str]] = [
     {'value': '福州', 'label': '福州'},
 ]
 GUILD_EXECUTOR_PROXY_REGION_VALUES: set[str] = {item['value'] for item in GUILD_EXECUTOR_PROXY_REGION_OPTIONS}
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PRODUCTION_OPS_DAEMON_LABEL = 'com.chauncey.mcn.production-ops-daemon'
+PRODUCTION_OPS_DAEMON_LAUNCH_AGENT_PATH = Path.home() / 'Library' / 'LaunchAgents' / f'{PRODUCTION_OPS_DAEMON_LABEL}.plist'
+PRODUCTION_OPS_DAEMON_ENV_PATH = PROJECT_ROOT / 'data' / 'production_ops_daemon.env'
+PRODUCTION_OPS_DAEMON_STATUS_PATH = PROJECT_ROOT / 'data' / 'production_ops_daemon_status.json'
+PRODUCTION_OPS_DAEMON_INSTALL_SCRIPT = PROJECT_ROOT / 'scripts' / 'install_production_ops_daemon_launch_agent.sh'
+PRODUCTION_OPS_DAEMON_UNINSTALL_SCRIPT = PROJECT_ROOT / 'scripts' / 'uninstall_production_ops_daemon_launch_agent.sh'
+WHATSAPP_APPROVAL_DEFAULT_COUNT_THRESHOLD = 30
+WHATSAPP_APPROVAL_DEFAULT_TIMEOUT_MINUTES = 30
+WHATSAPP_APPROVAL_WORKER_ROOT = PROJECT_ROOT / 'webjs-approval-worker'
+WHATSAPP_APPROVAL_WORKER_AUTH_ACCOUNTS_DIR=WHATSAPP_APPROVAL_WORKER_ROOT / '.wwebjs_auth_accounts'
+WHATSAPP_APPROVAL_WORKER_RUNTIME_DIR = PROJECT_ROOT / 'data' / 'whatsapp_approval_worker_runtimes'
+WHATSAPP_APPROVAL_WORKER_LOG_DIR = PROJECT_ROOT / 'logs' / 'whatsapp_approval_workers'
+WHATSAPP_APPROVAL_WORKER_RESTART_SCRIPT = PROJECT_ROOT / 'scripts' / 'restart_registration_group_webjs_worker.sh'
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return default
+    return normalized if normalized > 0 else default
+
+
+def _legacy_approval_thresholds(rule: str) -> tuple[int, int]:
+    normalized = str(rule or '').strip()
+    if normalized == 'timeout_30m':
+        return WHATSAPP_APPROVAL_DEFAULT_COUNT_THRESHOLD, WHATSAPP_APPROVAL_DEFAULT_TIMEOUT_MINUTES
+    return WHATSAPP_APPROVAL_DEFAULT_COUNT_THRESHOLD, WHATSAPP_APPROVAL_DEFAULT_TIMEOUT_MINUTES
+
+
+def _approval_condition_text(count_threshold: int, timeout_minutes: int) -> str:
+    return f'满{count_threshold}人或满{timeout_minutes}分钟放行（满足其一即可）'
+
+
+def _normalize_schedule_windows_payload(items: list[Any]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        start = str(item.get('start') or '').strip()
+        end = str(item.get('end') or '').strip()
+        if not re.fullmatch(r'\d{2}:\d{2}', start) or not re.fullmatch(r'\d{2}:\d{2}', end):
+            continue
+        normalized.append({'start': start, 'end': end})
+    return normalized
+
+
+WHATSAPP_APPROVAL_DEFAULT_AREA_OPTIONS: list[dict[str, str]] = [
+    {'value': 'Indonesia', 'label': 'Indonesia'},
+    {'value': 'Brazil', 'label': 'Brazil'},
+    {'value': 'Mexico', 'label': 'Mexico'},
+]
+
+
+def _normalize_area_options(options: list[str]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in options:
+        value = str(item or '').strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append({'value': value, 'label': value})
+    return normalized
+
+
+def _normalize_group_link_bindings(bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in bindings or []:
+        if not isinstance(item, dict):
+            continue
+        link = str(item.get('link') or '').strip()
+        area = str(item.get('area') or '').strip()
+        if not link:
+            continue
+        key = (link, area)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({
+            'link': link,
+            'group_name': str(item.get('group_name') or '').strip(),
+            'area': area,
+            'notify_profile_name': str(item.get('notify_profile_name') or '').strip(),
+            'enabled': False if item.get('enabled') is False else True,
+            'registration_group': str(item.get('registration_group') or '').strip(),
+            'group_id': str(item.get('group_id') or '').strip(),
+            'approval_count_threshold': item.get('approval_count_threshold'),
+            'approval_timeout_minutes': item.get('approval_timeout_minutes'),
+            'auto_recover_worker': item.get('auto_recover_worker'),
+            'schedule_windows': item.get('schedule_windows') if isinstance(item.get('schedule_windows'), list) else [],
+        })
+    return normalized
+
+
+WHATSAPP_APPROVAL_AREA_OPTIONS: list[dict[str, str]] = _normalize_area_options(
+    [item['value'] for item in WHATSAPP_APPROVAL_DEFAULT_AREA_OPTIONS]
+)
+WHATSAPP_APPROVAL_AREA_VALUES: set[str] = {item['value'] for item in WHATSAPP_APPROVAL_AREA_OPTIONS}
 
 
 class ApprovalBatchEvaluateRequest(BaseModel):
@@ -1772,14 +3256,21 @@ class Database:
         if self.db_path != ":memory:":
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
+    def _configure_connection(self, conn: sqlite3.Connection) -> None:
+        conn.row_factory = sqlite3.Row
+        conn.execute('PRAGMA busy_timeout = 30000')
+        if self.db_path != ":memory:":
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA synchronous=NORMAL')
+
     def connect(self) -> sqlite3.Connection:
         if self.db_path == ":memory:":
             if self._memory_conn is None:
-                self._memory_conn = sqlite3.connect(":memory:", check_same_thread=False)
-                self._memory_conn.row_factory = sqlite3.Row
+                self._memory_conn = sqlite3.connect(":memory:", check_same_thread=False, timeout=30.0)
+                self._configure_connection(self._memory_conn)
             return self._memory_conn
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        self._configure_connection(conn)
         return conn
 
     def _init_schema(self) -> None:
@@ -1959,6 +3450,45 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS production_ops_daemon_configs (
+                    config_name TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    registration_group TEXT NOT NULL,
+                    api_base_url TEXT NOT NULL,
+                    worker_base_url TEXT NOT NULL,
+                    interval_seconds REAL NOT NULL DEFAULT 20,
+                    notify_chat_id TEXT,
+                    area TEXT,
+                    remark TEXT,
+                    approved_count INTEGER NOT NULL DEFAULT 1,
+                    auto_recover_worker INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS whatsapp_approval_accounts (
+                    account_key TEXT PRIMARY KEY,
+                    account_name TEXT NOT NULL,
+                    responsible_type TEXT NOT NULL,
+                    group_links TEXT NOT NULL DEFAULT '[]',
+                    area TEXT,
+                    notify_profile_name TEXT,
+                    approval_rule TEXT NOT NULL DEFAULT 'count_30',
+                    approval_count_threshold INTEGER NOT NULL DEFAULT 30,
+                    approval_timeout_minutes INTEGER NOT NULL DEFAULT 30,
+                    auto_recover_worker INTEGER NOT NULL DEFAULT 1,
+                    schedule_windows TEXT NOT NULL DEFAULT '[]',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    verification_status TEXT NOT NULL DEFAULT 'pending_verification',
+                    notes TEXT,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS whatsapp_approval_area_options (
+                    option_key TEXT PRIMARY KEY,
+                    options_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS lead_status_history (
                     history_id TEXT PRIMARY KEY,
                     lead_id TEXT NOT NULL,
@@ -2103,6 +3633,12 @@ class Database:
             "ALTER TABLE operator_notifications ADD COLUMN read_by TEXT",
             "ALTER TABLE intake_bot_presets ADD COLUMN robot_name TEXT",
             "ALTER TABLE automation_tasks ADD COLUMN started_at TEXT",
+            "ALTER TABLE whatsapp_approval_accounts ADD COLUMN area TEXT",
+            "ALTER TABLE whatsapp_approval_accounts ADD COLUMN notify_profile_name TEXT",
+            "ALTER TABLE whatsapp_approval_accounts ADD COLUMN approval_rule TEXT NOT NULL DEFAULT 'count_30'",
+            "ALTER TABLE whatsapp_approval_accounts ADD COLUMN approval_count_threshold INTEGER NOT NULL DEFAULT 30",
+            "ALTER TABLE whatsapp_approval_accounts ADD COLUMN approval_timeout_minutes INTEGER NOT NULL DEFAULT 30",
+            "ALTER TABLE whatsapp_approval_accounts ADD COLUMN auto_recover_worker INTEGER NOT NULL DEFAULT 1",
         ]:
             try:
                 conn.execute(statement)
@@ -2224,7 +3760,7 @@ class LiveLarkReplyAdapter:
 
 
 class Service:
-    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, registration_group_approval_executor: Any = None, official_group_approval_executor: Any = None, official_group_target_map: Optional[Dict[str, str]] = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False, crm_retry_delays_seconds: Optional[List[int]] = None, crm_retry_max_attempts: int = 3, bind_retry_max_attempts: int = 2) -> None:
+    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, registration_group_approval_executor: Any = None, official_group_approval_executor: Any = None, official_group_target_map: Optional[Dict[str, str]] = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False, crm_retry_delays_seconds: Optional[List[int]] = None, crm_retry_max_attempts: int = 3, bind_retry_max_attempts: int = 2, official_group_approval_webhook_url: Optional[str] = None) -> None:
         self.db = db
         self.crm_adapter = crm_adapter
         self.ocr_adapter = ocr_adapter
@@ -2247,6 +3783,7 @@ class Service:
             for k, v in dict(official_group_target_map or {}).items()
             if str(k).strip() and str(v).strip()
         }
+        self.official_group_approval_webhook_url = str(official_group_approval_webhook_url or '').strip() or None
         self.auto_bind_simulation_success_rate = max(0.0, min(1.0, float(auto_bind_simulation_success_rate or 0.5)))
         self._bind_random = random.Random(auto_bind_simulation_seed) if auto_bind_simulation_seed is not None else random.Random()
         self.media_cache_dir = Path(media_cache_dir or './data/lark_media_cache')
@@ -2369,6 +3906,32 @@ class Service:
             conn.commit()
             return {'event_id': event_id, 'queued': True, 'duplicate': False, 'status': 'queued'}
 
+    def _persist_ingress_job_result(self, *, row: sqlite3.Row, event: sqlite3.Row, status: str, error_text: Optional[str], result: Dict[str, Any]) -> None:
+        last_exc: Optional[Exception] = None
+        for attempt in range(5):
+            try:
+                with self.db.connect() as conn:
+                    conn.execute('BEGIN IMMEDIATE')
+                    now = utc_now()
+                    conn.execute("UPDATE ingress_jobs SET status = ?, last_error = ?, updated_at = ? WHERE job_id = ?", (status, error_text, now, row['job_id']))
+                    conn.execute("UPDATE ingress_events SET status = ?, result_snapshot = ?, updated_at = ?, processed_at = ? WHERE event_id = ?", (status, json.dumps(result, ensure_ascii=False), now, now, row['event_id']))
+                    self._record_audit_event(
+                        conn,
+                        event_type='ingress_event_processed',
+                        event_source=event['ingress_type'],
+                        payload={'status': status, 'error': error_text, 'result': result},
+                        ingress_event_id=row['event_id'],
+                    )
+                    conn.commit()
+                    return
+            except sqlite3.OperationalError as exc:
+                if 'locked' not in str(exc).lower():
+                    raise
+                last_exc = exc
+                time.sleep(0.2 * (attempt + 1))
+        if last_exc is not None:
+            raise last_exc
+
     def process_next_ingress_job(self) -> Optional[Dict[str, Any]]:
         with self.db.connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
@@ -2410,18 +3973,7 @@ class Service:
             result = {'accepted': False, 'reason': 'ingress_processing_failed', 'error': str(exc)}
             status = 'failed'
             error_text = str(exc)
-        with self.db.connect() as conn:
-            now = utc_now()
-            conn.execute("UPDATE ingress_jobs SET status = ?, last_error = ?, updated_at = ? WHERE job_id = ?", (status, error_text, now, row['job_id']))
-            conn.execute("UPDATE ingress_events SET status = ?, result_snapshot = ?, updated_at = ?, processed_at = ? WHERE event_id = ?", (status, json.dumps(result, ensure_ascii=False), now, now, row['event_id']))
-            self._record_audit_event(
-                conn,
-                event_type='ingress_event_processed',
-                event_source=event['ingress_type'],
-                payload={'status': status, 'error': error_text, 'result': result},
-                ingress_event_id=row['event_id'],
-            )
-            conn.commit()
+        self._persist_ingress_job_result(row=row, event=event, status=status, error_text=error_text, result=result)
         return {'event_id': row['event_id'], 'status': status, 'result': result}
 
     def _build_bind_execution_result(self, *, task_id: str) -> BindCheckResultRequest:
@@ -6975,7 +8527,8 @@ class Service:
         normalized_group = str(registration_group or '').strip()
         if not normalized_group:
             raise HTTPException(status_code=400, detail='registration_group is required')
-        executor = self.registration_group_approval_executor
+        routed_runtime = self._resolve_whatsapp_approval_runtime_executor(target_group=normalized_group, responsible_type='registration_group')
+        executor = (routed_runtime or {}).get('executor') or self.registration_group_approval_executor
         if executor is None:
             return {
                 'configured': False,
@@ -6998,6 +8551,12 @@ class Service:
             normalized.setdefault('pending_count', None)
             normalized.setdefault('member_count', None)
             normalized.setdefault('requester_ids', [])
+            if routed_runtime:
+                normalized['routed_runtime'] = {
+                    'account_key': routed_runtime.get('account_key'),
+                    'account_name': routed_runtime.get('account_name'),
+                    'base_url': (routed_runtime.get('runtime_state') or {}).get('base_url'),
+                }
             return normalized
         raise HTTPException(status_code=400, detail='registration group approval executor group_state not supported')
 
@@ -7073,6 +8632,108 @@ class Service:
             }
         return self._registration_group_approval_decision_sync(payload, approval_run_id=approval_run_id)
 
+    @staticmethod
+    def _registration_group_requester_fingerprint(group_state: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        fingerprint: List[Dict[str, Any]] = []
+        for item in (group_state or {}).get('requesters') or []:
+            if not isinstance(item, dict):
+                continue
+            requester_id = str(item.get('requesterId') or '').strip()
+            if not requester_id:
+                continue
+            fingerprint.append({
+                'requesterId': requester_id,
+                'requestedAtUnix': item.get('requestedAtUnix'),
+            })
+        fingerprint.sort(key=lambda item: (item['requesterId'], '' if item.get('requestedAtUnix') is None else str(item.get('requestedAtUnix'))))
+        return fingerprint
+
+    @staticmethod
+    def _registration_group_expected_group_state(payload: RegistrationGroupApprovalDecisionRequest) -> Optional[Dict[str, Any]]:
+        expected_requesters: List[Dict[str, Any]] = []
+        for item in payload.expected_requesters or []:
+            if not isinstance(item, dict):
+                continue
+            requester_id = str(item.get('requesterId') or '').strip()
+            if not requester_id:
+                continue
+            expected_requesters.append({
+                'requesterId': requester_id,
+                'requestedAtUnix': item.get('requestedAtUnix'),
+            })
+        expected_requester_ids = [
+            str(item).strip() for item in (payload.expected_requester_ids or []) if str(item).strip()
+        ]
+        if not expected_requesters and not expected_requester_ids and payload.expected_pending_count is None and payload.expected_member_count is None:
+            return None
+        return {
+            'pending_count': payload.expected_pending_count,
+            'member_count': payload.expected_member_count,
+            'requester_ids': expected_requester_ids,
+            'requesters': expected_requesters,
+        }
+
+    def _registration_group_queue_changed_before_execute_response(
+        self,
+        *,
+        payload: RegistrationGroupApprovalDecisionRequest,
+        decision: str,
+        approval_run_id: str,
+        started: float,
+        expected_group_state: Dict[str, Any],
+        current_group_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        total_elapsed_seconds = round(time.perf_counter() - started, 3)
+        expected_fingerprint = self._registration_group_requester_fingerprint(expected_group_state)
+        current_fingerprint = self._registration_group_requester_fingerprint(current_group_state)
+        evidence_summary = {
+            'pending_before': expected_group_state.get('pending_count'),
+            'pending_after': current_group_state.get('pending_count'),
+            'member_count_before': expected_group_state.get('member_count'),
+            'member_count_after': current_group_state.get('member_count'),
+            'queue_delta': True,
+            'member_count_delta': None,
+            'member_confirmed': False,
+            'approval_may_have_executed': False,
+            'target_member_name': None,
+            'target_member_phone_raw': None,
+            'target_member_phone_normalized': None,
+        }
+        try:
+            if expected_group_state.get('member_count') is not None and current_group_state.get('member_count') is not None:
+                evidence_summary['member_count_delta'] = int(current_group_state.get('member_count')) - int(expected_group_state.get('member_count'))
+        except Exception:
+            evidence_summary['member_count_delta'] = None
+        return {
+            'registration_group': payload.registration_group,
+            'decision': decision,
+            'approval_run_id': approval_run_id,
+            'executed': False,
+            'verified': False,
+            'verification_pending': False,
+            'crm_recorded': False,
+            'status': 'failed',
+            'result_code': 'requester_fingerprint_changed_before_approval',
+            'result_reason': 'registration group queue changed before approval execution; retry with a fresh snapshot',
+            'approved_count': max(1, int(payload.approved_count or 1)),
+            'approved_at': payload.decided_at,
+            'elapsed_seconds': total_elapsed_seconds,
+            'crm_elapsed_seconds': 0.0,
+            'total_elapsed_seconds': total_elapsed_seconds,
+            'force_immediate': payload.force_immediate,
+            'target_member': {},
+            'evidence_summary': evidence_summary,
+            'raw_result': {
+                'approval_run_id': approval_run_id,
+                'execution_disposition': 'blocked_before_execution',
+                'expected_group_state': expected_group_state,
+                'current_group_state': current_group_state,
+                'expected_requester_fingerprint': expected_fingerprint,
+                'current_requester_fingerprint': current_fingerprint,
+            },
+            'crm_batch': None,
+        }
+
     def _registration_group_approval_decision_sync(
         self,
         payload: RegistrationGroupApprovalDecisionRequest,
@@ -7083,10 +8744,71 @@ class Service:
         decision = str(payload.decision or 'approve').strip().lower() or 'approve'
         if decision != 'approve':
             raise HTTPException(status_code=400, detail='unsupported decision')
-        executor = self.registration_group_approval_executor
+        routed_runtime = self._resolve_whatsapp_approval_runtime_executor(target_group=str(payload.registration_group or '').strip(), responsible_type='registration_group')
+        executor = (routed_runtime or {}).get('executor') or self.registration_group_approval_executor
         if executor is None:
             raise HTTPException(status_code=400, detail='registration group approval executor not configured')
         approval_run_id = str(approval_run_id or '').strip() or f"registration_group_approval_{uuid.uuid4().hex[:12]}"
+        expected_group_state = self._registration_group_expected_group_state(payload)
+        current_group_state = self.registration_group_approval_executor_group_state(payload.registration_group)
+        current_pending_count = max(0, int(current_group_state.get('pending_count') or 0))
+        if current_pending_count <= 0:
+            total_elapsed_seconds = round(time.perf_counter() - started, 3)
+            return {
+                'registration_group': payload.registration_group,
+                'decision': decision,
+                'approval_run_id': approval_run_id,
+                'executed': False,
+                'verified': False,
+                'verification_pending': False,
+                'crm_recorded': False,
+                'status': 'failed',
+                'result_code': 'no_pending_request',
+                'result_reason': 'registration group has no pending requests at execution time',
+                'approved_count': 0,
+                'approved_at': payload.decided_at,
+                'elapsed_seconds': total_elapsed_seconds,
+                'crm_elapsed_seconds': 0.0,
+                'total_elapsed_seconds': total_elapsed_seconds,
+                'force_immediate': payload.force_immediate,
+                'target_member': {},
+                'evidence_summary': {
+                    'pending_before': current_pending_count,
+                    'pending_after': current_pending_count,
+                    'member_count_before': current_group_state.get('member_count'),
+                    'member_count_after': current_group_state.get('member_count'),
+                    'queue_delta': False,
+                    'member_count_delta': 0,
+                    'member_confirmed': False,
+                    'approval_may_have_executed': False,
+                    'target_member_name': None,
+                    'target_member_phone_raw': None,
+                    'target_member_phone_normalized': None,
+                },
+                'raw_result': {
+                    'approval_run_id': approval_run_id,
+                    'current_group_state': current_group_state,
+                    'execution_disposition': 'blocked_before_execution',
+                },
+                'crm_batch': None,
+            }
+        if expected_group_state is not None:
+            expected_fingerprint = self._registration_group_requester_fingerprint(expected_group_state)
+            current_fingerprint = self._registration_group_requester_fingerprint(current_group_state)
+            fingerprint_changed = bool(expected_fingerprint) and expected_fingerprint != current_fingerprint
+            pending_changed = (
+                payload.expected_pending_count is not None
+                and int(payload.expected_pending_count) != current_pending_count
+            )
+            if fingerprint_changed or pending_changed:
+                return self._registration_group_queue_changed_before_execute_response(
+                    payload=payload,
+                    decision=decision,
+                    approval_run_id=approval_run_id,
+                    started=started,
+                    expected_group_state=expected_group_state,
+                    current_group_state=current_group_state,
+                )
         execution_context = {
             'registration_group': payload.registration_group,
             'decision': decision,
@@ -7099,11 +8821,20 @@ class Service:
             'source_ad': payload.source_ad,
             'target_name_hint': payload.target_name_hint,
             'target_phone_hint': payload.target_phone_hint,
-            'approved_count': payload.approved_count,
+            'approved_count': min(max(1, int(payload.approved_count or 1)), current_pending_count),
             'area': payload.area,
             'remark': payload.remark,
             'force_immediate': payload.force_immediate,
             'approval_run_id': approval_run_id,
+            'latest_group_state_before_approve': current_group_state,
+            'expected_group_state': expected_group_state,
+            'approval_runtime_route': {
+                'account_key': (routed_runtime or {}).get('account_key'),
+                'account_name': (routed_runtime or {}).get('account_name'),
+                'base_url': ((routed_runtime or {}).get('runtime_state') or {}).get('base_url'),
+                'binding': (routed_runtime or {}).get('binding') or {},
+                'responsible_type': 'registration_group',
+            } if routed_runtime else None,
         }
         executor_timeout_seconds = max(10.0, float(os.getenv('REGISTRATION_GROUP_APPROVAL_EXECUTOR_TIMEOUT_SECONDS', '45') or 45))
         if hasattr(executor, 'approve') and callable(getattr(executor, 'approve')):
@@ -7195,19 +8926,6 @@ class Service:
                         approved_success_count += 1
                 except Exception:
                     continue
-        if (
-            verified
-            and requested_approved_count > 1
-            and approved_success_count is not None
-            and approved_success_count < requested_approved_count
-        ):
-            verified = False
-            raw_result['verification_consistency_error'] = 'batch_success_count_mismatch'
-            raw_result['verification_consistency_detail'] = {
-                'requested_approved_count': requested_approved_count,
-                'approved_success_count': approved_success_count,
-            }
-        verification_pending = bool(not verified and evidence_summary.get('approval_may_have_executed'))
         observed_queue_consumed_count = None
         pending_before = evidence_summary.get('pending_before')
         pending_after = evidence_summary.get('pending_after')
@@ -7217,8 +8935,28 @@ class Service:
             except Exception:
                 observed_queue_consumed_count = None
         approved_count = requested_approved_count
-        if verified and observed_queue_consumed_count and observed_queue_consumed_count > approved_count:
+        if (
+            verified
+            and requested_approved_count > 1
+            and approved_success_count is not None
+            and approved_success_count < requested_approved_count
+        ):
+            raw_result['verification_consistency_error'] = 'batch_success_count_mismatch'
+            raw_result['verification_consistency_detail'] = {
+                'requested_approved_count': requested_approved_count,
+                'approved_success_count': approved_success_count,
+            }
+            if observed_queue_consumed_count and observed_queue_consumed_count > 0 and evidence_summary.get('approval_may_have_executed'):
+                approved_count = observed_queue_consumed_count
+                raw_result['verification_consistency_detail'].update({
+                    'resolved_approved_count': approved_count,
+                    'resolution': 'queue_consumed',
+                })
+            else:
+                verified = False
+        if verified and observed_queue_consumed_count and observed_queue_consumed_count > 0:
             approved_count = observed_queue_consumed_count
+        verification_pending = bool(not verified and evidence_summary.get('approval_may_have_executed'))
         approved_at = str(result.get('approved_at') or result.get('finished_at') or payload.decided_at)
         target_member = result.get('target_member') or {}
         resolved_source_ad = payload.source_ad or ' '.join(
@@ -7335,8 +9073,6 @@ class Service:
                 'executed': False,
                 **check_result,
             }
-        if self.official_group_approval_executor is None:
-            raise HTTPException(status_code=400, detail='official group approval executor not configured')
         decided_at = parse_iso_datetime(payload.decided_at).isoformat()
         with self.db.connect() as conn:
             lead_row = conn.execute("SELECT * FROM leads WHERE lead_id = ?", (payload.lead_id,)).fetchone()
@@ -7346,12 +9082,44 @@ class Service:
             task = self._latest_group_join_task(conn, lead_id=str(payload.lead_id or '').strip())
             if not task:
                 raise HTTPException(status_code=400, detail='group_join task not found for lead')
-        executor_result = self.official_group_approval_executor.approve(
-            target_group=str(payload.target_group or '').strip(),
-            lead=lead,
-            crm_snapshot=check_result.get('crm_snapshot') or {},
-            task=task,
-        ) or {}
+        routed_runtime = self._resolve_whatsapp_approval_runtime_executor(target_group=str(payload.target_group or '').strip(), responsible_type='official_group')
+        if routed_runtime:
+            runtime_executor = routed_runtime['executor']
+            runtime_context = {
+                'registration_group': str(payload.target_group or '').strip(),
+                'decision': decision,
+                'decided_at': payload.decided_at,
+                'decided_by': payload.decided_by,
+                'decided_by_name': payload.decided_by_name,
+                'source_platform': payload.source_platform,
+                'source_campaign': payload.source_campaign,
+                'source_adset': payload.source_adset,
+                'source_ad': payload.source_ad,
+                'target_name_hint': str(lead.get('name') or lead.get('full_name') or '').strip() or None,
+                'target_phone_hint': str(lead.get('mobile') or '').strip() or None,
+                'approved_count': 1,
+                'area': str(lead.get('country') or lead.get('area') or 'Indonesia').strip() or 'Indonesia',
+                'remark': payload.remark,
+                'force_immediate': True,
+                'approval_run_id': f"official_group_approval_{uuid.uuid4().hex[:12]}",
+                'approval_runtime_route': {
+                    'account_key': routed_runtime.get('account_key'),
+                    'account_name': routed_runtime.get('account_name'),
+                    'base_url': (routed_runtime.get('runtime_state') or {}).get('base_url'),
+                    'binding': routed_runtime.get('binding') or {},
+                    'responsible_type': 'official_group',
+                },
+            }
+            executor_result = runtime_executor.approve(runtime_context) or {}
+        else:
+            if self.official_group_approval_executor is None:
+                raise HTTPException(status_code=400, detail='official group approval executor not configured')
+            executor_result = self.official_group_approval_executor.approve(
+                target_group=str(payload.target_group or '').strip(),
+                lead=lead,
+                crm_snapshot=check_result.get('crm_snapshot') or {},
+                task=task,
+            ) or {}
         executor_raw_result = dict(executor_result.get('raw_result') or {})
         execution_disposition = str(executor_raw_result.get('execution_disposition') or '').strip().lower()
         retryable = bool(executor_raw_result.get('retryable'))
@@ -7895,6 +9663,611 @@ class Service:
             row['robot_name'] = robot_name or normalized_profile
         return rows
 
+    def _list_notify_robot_options(self) -> list[Dict[str, Any]]:
+        self.ensure_current_intake_preset()
+        options: list[Dict[str, Any]] = []
+        for row in self._fetch_intake_bot_preset_rows():
+            profile_name = str(row.get('profile_name') or '').strip()
+            if not profile_name:
+                continue
+            robot_name = str(row.get('robot_name') or profile_name).strip() or profile_name
+            label = robot_name if robot_name == profile_name else f'{robot_name} ({profile_name})'
+            options.append({
+                'profile_name': profile_name,
+                'robot_name': robot_name,
+                'label': label,
+                'app_id': str(row.get('app_id') or '').strip(),
+            })
+        return options
+
+    def list_whatsapp_approval_area_options(self) -> Dict[str, Any]:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT options_json, updated_at FROM whatsapp_approval_area_options WHERE option_key = 'default'"
+            ).fetchone()
+            account_rows = conn.execute(
+                "SELECT area, group_links FROM whatsapp_approval_accounts"
+            ).fetchall()
+        source_options = list(WHATSAPP_APPROVAL_DEFAULT_AREA_OPTIONS)
+        updated_at = None
+        configured_values: list[str] = []
+        if row:
+            try:
+                loaded = json.loads(str(row['options_json'] or '[]'))
+            except Exception:
+                loaded = []
+            normalized = _normalize_area_options(loaded if isinstance(loaded, list) else [])
+            if normalized:
+                source_options = normalized
+            updated_at = row['updated_at']
+        for account_row in account_rows:
+            area_value = str(account_row['area'] or '').strip()
+            if area_value:
+                configured_values.append(area_value)
+            try:
+                loaded_group_links = json.loads(str(account_row['group_links'] or '[]'))
+            except Exception:
+                loaded_group_links = []
+            if isinstance(loaded_group_links, list):
+                for item in loaded_group_links:
+                    if isinstance(item, dict):
+                        binding_area = str(item.get('area') or '').strip()
+                        if binding_area:
+                            configured_values.append(binding_area)
+        merged = _normalize_area_options([*(item['value'] for item in source_options), *configured_values])
+        return {
+            'options': merged,
+            'source_options': source_options,
+            'updated_at': updated_at,
+        }
+
+    def update_whatsapp_approval_area_options(self, payload: WhatsAppApprovalAreaOptionsUpdateRequest) -> Dict[str, Any]:
+        normalized = _normalize_area_options(payload.options or [])
+        if not normalized:
+            raise HTTPException(status_code=400, detail='at least one area option is required')
+        row = {
+            'option_key': 'default',
+            'options_json': json.dumps([item['value'] for item in normalized], ensure_ascii=False),
+            'updated_at': utc_now(),
+        }
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO whatsapp_approval_area_options (option_key, options_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(option_key)
+                DO UPDATE SET options_json = excluded.options_json,
+                              updated_at = excluded.updated_at
+                """,
+                (row['option_key'], row['options_json'], row['updated_at']),
+            )
+            conn.commit()
+        return {
+            'saved': True,
+            'options': normalized,
+            'source_options': normalized,
+            'updated_at': row['updated_at'],
+        }
+
+    def _notify_robot_name(self, profile_name: Optional[str]) -> str:
+        normalized = str(profile_name or '').strip()
+        if not normalized:
+            return ''
+        for option in self._list_notify_robot_options():
+            if str(option.get('profile_name') or '').strip() == normalized:
+                return str(option.get('robot_name') or normalized).strip() or normalized
+        return normalized
+
+    @staticmethod
+    def _whatsapp_approval_session_account_key(account_key: str) -> str:
+        normalized = re.sub(r'[^a-z0-9]+', '-', str(account_key or '').strip().lower()).strip('-')
+        return normalized or 'default'
+
+    def _whatsapp_approval_session_client_id(self, account_key: str) -> str:
+        return f"wa-approval-{self._whatsapp_approval_session_account_key(account_key)}"
+
+    def _whatsapp_approval_session_auth_path(self, account_key: str) -> Path:
+        return WHATSAPP_APPROVAL_WORKER_AUTH_ACCOUNTS_DIR / self._whatsapp_approval_session_account_key(account_key)
+
+    def _whatsapp_approval_runtime_state_path(self, account_key: str) -> Path:
+        return WHATSAPP_APPROVAL_WORKER_RUNTIME_DIR / f"{self._whatsapp_approval_session_account_key(account_key)}.json"
+
+    def _whatsapp_approval_runtime_log_path(self, account_key: str) -> Path:
+        return WHATSAPP_APPROVAL_WORKER_LOG_DIR / f"{self._whatsapp_approval_session_account_key(account_key)}.log"
+
+    def _pick_whatsapp_approval_runtime_port(self) -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(('127.0.0.1', 0))
+            return int(sock.getsockname()[1])
+
+    @staticmethod
+    def _pid_running(pid: Any) -> bool:
+        try:
+            normalized = int(pid)
+        except (TypeError, ValueError):
+            return False
+        if normalized <= 0:
+            return False
+        try:
+            os.kill(normalized, 0)
+        except OSError:
+            return False
+        return True
+
+    def _list_whatsapp_approval_runtime_processes(self, auth_path: str) -> List[int]:
+        normalized_auth_path = str(auth_path or '').strip()
+        if not normalized_auth_path:
+            return []
+        try:
+            result = subprocess.run(
+                ['ps', '-axo', 'pid=,command='],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except Exception:
+            return []
+        matched: List[int] = []
+        for raw_line in str(result.stdout or '').splitlines():
+            line = str(raw_line or '').strip()
+            if not line or normalized_auth_path not in line:
+                continue
+            parts = line.split(None, 1)
+            if not parts:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            if pid > 0 and pid not in matched:
+                matched.append(pid)
+        return matched
+
+    def _terminate_whatsapp_approval_runtime_processes(self, pids: List[int]) -> None:
+        seen: List[int] = []
+        for raw_pid in pids:
+            try:
+                pid = int(raw_pid)
+            except (TypeError, ValueError):
+                continue
+            if pid <= 0 or pid in seen:
+                continue
+            seen.append(pid)
+            if not self._pid_running(pid):
+                continue
+            try:
+                os.kill(pid, 15)
+            except OSError:
+                continue
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            remaining = [pid for pid in seen if self._pid_running(pid)]
+            if not remaining:
+                return
+            time.sleep(0.2)
+        for pid in seen:
+            if not self._pid_running(pid):
+                continue
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+
+    def _read_whatsapp_approval_runtime_meta(self, account_key: str) -> Dict[str, Any]:
+        path = self._whatsapp_approval_runtime_state_path(account_key)
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding='utf-8'))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _write_whatsapp_approval_runtime_meta(self, account_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        path = self._whatsapp_approval_runtime_state_path(account_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        row = dict(payload or {})
+        row['account_key'] = str(account_key or '').strip()
+        path.write_text(json.dumps(row, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        return row
+
+    def _request_whatsapp_approval_worker_health(self, base_url: str) -> Dict[str, Any]:
+        normalized_base_url = str(base_url or '').strip().rstrip('/')
+        if not normalized_base_url:
+            raise RuntimeError('worker base_url is required')
+        response = requests.get(f'{normalized_base_url}/health', timeout=10.0)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError('worker health must be a JSON object')
+        return payload
+
+    def _current_whatsapp_approval_worker_health(self) -> Dict[str, Any]:
+        config = self.get_production_ops_daemon_config().get('config') or {}
+        worker_base_url = str(config.get('worker_base_url') or 'http://127.0.0.1:8787').strip().rstrip('/')
+        return self._request_whatsapp_approval_worker_health(worker_base_url)
+
+    def _build_whatsapp_approval_runtime_state(
+        self,
+        account_key: str,
+        *,
+        worker_health: Optional[Dict[str, Any]] = None,
+        allow_shared_fallback: bool = True,
+    ) -> Dict[str, Any]:
+        normalized_key = str(account_key or '').strip()
+        expected_client_id = self._whatsapp_approval_session_client_id(normalized_key)
+        expected_approval_client_id = f"{expected_client_id}-approval"
+        expected_auth_path = str(self._whatsapp_approval_session_auth_path(normalized_key))
+        meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
+        base_runtime = {
+            'account_key': normalized_key,
+            'mode': 'dedicated_runtime',
+            'source': 'dedicated' if meta else 'shared',
+            'configured': bool(meta),
+            'active': False,
+            'pid': meta.get('pid'),
+            'port': meta.get('port'),
+            'base_url': str(meta.get('base_url') or '').strip() or None,
+            'auth_path': str(meta.get('auth_path') or expected_auth_path).strip(),
+            'client_id': str(meta.get('client_id') or expected_client_id).strip(),
+            'log_path': str(meta.get('log_path') or self._whatsapp_approval_runtime_log_path(normalized_key)).strip(),
+            'meta_path': str(self._whatsapp_approval_runtime_state_path(normalized_key)),
+            'started_at': meta.get('started_at'),
+            'stopped_at': meta.get('stopped_at'),
+            'status': 'not_started',
+            'ready': False,
+            'authenticated': False,
+            'session_target_match': False,
+            'status_text': '尚未启动独立 Runtime',
+            'health_error': None,
+        }
+        if meta:
+            pid_running = self._pid_running(meta.get('pid')) or bool(worker_health)
+            if not pid_running and worker_health is None and base_runtime['base_url']:
+                try:
+                    worker_health = self._request_whatsapp_approval_worker_health(base_runtime['base_url'])
+                    pid_running = True
+                except Exception as exc:
+                    base_runtime['health_error'] = str(exc)
+            base_runtime['active'] = pid_running
+            if pid_running:
+                health_payload = worker_health
+                if health_payload is None and base_runtime['base_url']:
+                    try:
+                        health_payload = self._request_whatsapp_approval_worker_health(base_runtime['base_url'])
+                    except Exception as exc:
+                        base_runtime['health_error'] = str(exc)
+                if isinstance(health_payload, dict) and health_payload:
+                    approval_payload = health_payload.get('approval_client') if isinstance(health_payload.get('approval_client'), dict) else {}
+                    current_client_id = str(approval_payload.get('client_id') or health_payload.get('client_id') or '').strip()
+                    current_auth_path = str(approval_payload.get('auth_path') or health_payload.get('auth_path') or '').strip()
+                    base_runtime['status'] = str(approval_payload.get('status') or health_payload.get('status') or '').strip() or 'running'
+                    base_runtime['ready'] = bool(approval_payload.get('ready'))
+                    base_runtime['authenticated'] = bool(approval_payload.get('authenticated'))
+                    base_runtime['session_target_match'] = bool(current_client_id in {expected_client_id, expected_approval_client_id} and current_auth_path == expected_auth_path)
+                    base_runtime['status_text'] = '独立 Runtime 运行中'
+                else:
+                    base_runtime['status'] = 'running'
+                    base_runtime['status_text'] = '独立 Runtime 已启动，健康检查暂未就绪'
+            else:
+                base_runtime['status'] = 'stopped'
+                base_runtime['status_text'] = '独立 Runtime 已停止'
+            return base_runtime
+
+        if allow_shared_fallback:
+            health_payload = worker_health
+            if health_payload is None:
+                try:
+                    health_payload = self._current_whatsapp_approval_worker_health()
+                except Exception as exc:
+                    base_runtime['source'] = 'unavailable'
+                    base_runtime['health_error'] = str(exc)
+                    base_runtime['status'] = 'unavailable'
+                    base_runtime['status_text'] = '共享 8787 worker 当前不可达'
+                    return base_runtime
+            approval_payload = health_payload.get('approval_client') if isinstance(health_payload.get('approval_client'), dict) else {}
+            current_client_id = str(approval_payload.get('client_id') or health_payload.get('client_id') or '').strip()
+            current_auth_path = str(approval_payload.get('auth_path') or health_payload.get('auth_path') or '').strip()
+            config = self.get_production_ops_daemon_config().get('config') or {}
+            shared_base_url = str(config.get('worker_base_url') or 'http://127.0.0.1:8787').strip().rstrip('/')
+            port_match = re.search(r':(\d+)$', shared_base_url)
+            base_runtime.update({
+                'active': True,
+                'port': int(port_match.group(1)) if port_match else None,
+                'base_url': shared_base_url,
+                'status': str(approval_payload.get('status') or health_payload.get('status') or '').strip() or 'shared',
+                'ready': bool(approval_payload.get('ready')),
+                'authenticated': bool(approval_payload.get('authenticated')),
+                'session_target_match': bool(current_client_id in {expected_client_id, expected_approval_client_id} and current_auth_path == expected_auth_path),
+                'status_text': '当前仍在复用共享 8787 worker',
+            })
+        return base_runtime
+
+    def _build_runtime_registration_group_executor(self, base_url: str):
+        from app.registration_group_webjs_executor import WebjsBridgeRegistrationGroupApprovalExecutor
+
+        fallback = self.registration_group_approval_executor
+        token = str(getattr(fallback, 'token', '') or os.getenv('REGISTRATION_GROUP_APPROVAL_WEBJS_TOKEN') or '').strip() or None
+        timeout_seconds = float(getattr(fallback, 'timeout_seconds', 35.0) or 35.0)
+        return WebjsBridgeRegistrationGroupApprovalExecutor(
+            base_url=str(base_url or '').strip(),
+            token=token,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _find_whatsapp_approval_account_binding(self, *, responsible_type: str, target_group: str) -> Optional[Dict[str, Any]]:
+        normalized_target = str(target_group or '').strip().lower()
+        normalized_type = str(responsible_type or '').strip().lower()
+        if not normalized_target or not normalized_type:
+            return None
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT account_key, account_name, responsible_type, group_links, enabled FROM whatsapp_approval_accounts WHERE responsible_type = ? AND enabled = 1 ORDER BY updated_at DESC, account_key ASC",
+                (normalized_type,),
+            ).fetchall()
+        for row in rows:
+            payload = dict(row)
+            try:
+                bindings = json.loads(payload.get('group_links') or '[]')
+            except Exception:
+                bindings = []
+            normalized_bindings = _normalize_group_link_bindings(bindings if isinstance(bindings, list) else [])
+            for binding in normalized_bindings:
+                if binding.get('enabled') is False:
+                    continue
+                candidates = {
+                    str(binding.get('group_name') or '').strip().lower(),
+                    str(binding.get('registration_group') or '').strip().lower(),
+                    str(binding.get('group_id') or '').strip().lower(),
+                    str(binding.get('link') or '').strip().lower(),
+                }
+                candidates.discard('')
+                if normalized_target in candidates:
+                    return {
+                        'account_key': str(payload.get('account_key') or '').strip(),
+                        'account_name': str(payload.get('account_name') or '').strip(),
+                        'responsible_type': normalized_type,
+                        'binding': dict(binding),
+                    }
+        return None
+
+    def _resolve_whatsapp_approval_runtime_executor(self, *, target_group: str, responsible_type: str) -> Optional[Dict[str, Any]]:
+        match = self._find_whatsapp_approval_account_binding(responsible_type=responsible_type, target_group=target_group)
+        if not match:
+            return None
+        runtime_state = self._build_whatsapp_approval_runtime_state(match['account_key'], allow_shared_fallback=False)
+        if not runtime_state.get('active') or not runtime_state.get('base_url'):
+            return None
+        executor = self._build_runtime_registration_group_executor(str(runtime_state.get('base_url') or ''))
+        return {
+            'account_key': match['account_key'],
+            'account_name': match.get('account_name'),
+            'binding': match.get('binding') or {},
+            'runtime_state': runtime_state,
+            'executor': executor,
+        }
+
+    def _render_whatsapp_approval_qr_ascii(self, qr_text: str) -> str:
+        normalized_qr = str(qr_text or '').strip()
+        if not normalized_qr:
+            return ''
+        script = "const qrcode=require('qrcode-terminal'); qrcode.generate(process.argv[1], {small:true});"
+        completed = subprocess.run(
+            ['node', '-e', script, normalized_qr],
+            cwd=str(WHATSAPP_APPROVAL_WORKER_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError((completed.stderr or completed.stdout or 'failed to render qr').strip())
+        return str(completed.stdout or '').strip()
+
+    def _build_whatsapp_approval_session_state(
+        self,
+        account_key: str,
+        *,
+        worker_health: Optional[Dict[str, Any]] = None,
+        include_qr_ascii: bool = False,
+    ) -> Dict[str, Any]:
+        normalized_key = str(account_key or '').strip()
+        expected_client_id = self._whatsapp_approval_session_client_id(normalized_key)
+        expected_approval_client_id = f'{expected_client_id}-approval'
+        expected_auth_path = self._whatsapp_approval_session_auth_path(normalized_key)
+        payload = dict(worker_health or {})
+        approval_payload = payload.get('approval_client') if isinstance(payload.get('approval_client'), dict) else {}
+        selected_payload = approval_payload if approval_payload else payload
+        current_client_id = str(selected_payload.get('client_id') or payload.get('client_id') or '').strip()
+        current_auth_path = str(selected_payload.get('auth_path') or payload.get('auth_path') or '').strip()
+        qr_text = str(selected_payload.get('last_qr') or payload.get('last_qr') or '').strip()
+        session_target_match = bool(
+            current_client_id in {expected_client_id, expected_approval_client_id}
+            and current_auth_path == str(expected_auth_path)
+        )
+        authenticated = bool(selected_payload.get('authenticated'))
+        ready = bool(selected_payload.get('ready'))
+        login_verified = bool(authenticated and session_target_match)
+        session = {
+            'account_key': normalized_key,
+            'auth_strategy': str(selected_payload.get('auth_strategy') or payload.get('auth_strategy') or '').strip(),
+            'status': str(selected_payload.get('status') or payload.get('status') or '').strip(),
+            'ready': ready,
+            'authenticated': authenticated,
+            'client_id': current_client_id,
+            'expected_client_id': expected_client_id,
+            'expected_approval_client_id': expected_approval_client_id,
+            'auth_path': current_auth_path,
+            'expected_auth_path': str(expected_auth_path),
+            'session_target_match': session_target_match,
+            'qr_available': bool(qr_text),
+            'qr_text': qr_text if qr_text else None,
+            'qr_ascii': None,
+            'last_qr_at': selected_payload.get('last_qr_at') or payload.get('last_qr_at'),
+            'bound': authenticated and session_target_match,
+            'mode': 'dedicated_localauth',
+            'login_verified': login_verified,
+            'login_check_status': 'passed' if login_verified else ('waiting_for_scan' if qr_text else 'pending_runtime'),
+            'login_check_message': '账号已登录，可以正常使用。' if login_verified else ('已生成二维码，等待扫码完成登录。' if qr_text else '正在准备登录会话，请稍候。'),
+        }
+        if include_qr_ascii and qr_text:
+            session['qr_ascii'] = self._render_whatsapp_approval_qr_ascii(qr_text)
+        return session
+
+    def _get_whatsapp_approval_account_row(self, account_key: str) -> Optional[Dict[str, Any]]:
+        normalized_key = str(account_key or '').strip()
+        if not normalized_key:
+            return None
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT account_key, account_name, responsible_type, group_links, area, notify_profile_name, approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker, schedule_windows, enabled, verification_status, notes, updated_at FROM whatsapp_approval_accounts WHERE account_key = ?",
+                (normalized_key,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_whatsapp_approval_account_runtime(self, account_key: str) -> Dict[str, Any]:
+        account_row = self._get_whatsapp_approval_account_row(account_key)
+        if not account_row:
+            raise HTTPException(status_code=404, detail='whatsapp approval account not found')
+        runtime_state = self._build_whatsapp_approval_runtime_state(account_key)
+        return {
+            'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=runtime_state),
+            'runtime': runtime_state,
+        }
+
+    def start_whatsapp_approval_account_runtime(self, account_key: str, *, reset: bool = False) -> Dict[str, Any]:
+        account_row = self._get_whatsapp_approval_account_row(account_key)
+        if not account_row:
+            raise HTTPException(status_code=404, detail='whatsapp approval account not found')
+        normalized_key = str(account_key or '').strip()
+        if self._read_whatsapp_approval_runtime_meta(normalized_key):
+            self.stop_whatsapp_approval_account_runtime(normalized_key)
+        auth_path = self._whatsapp_approval_session_auth_path(normalized_key)
+        auth_path.parent.mkdir(parents=True, exist_ok=True)
+        if reset and auth_path.exists():
+            shutil.rmtree(auth_path)
+        port = self._pick_whatsapp_approval_runtime_port()
+        base_url = f'http://127.0.0.1:{port}'
+        log_path = self._whatsapp_approval_runtime_log_path(normalized_key)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env.update({
+            'REGISTRATION_GROUP_APPROVAL_WEBJS_PORT': str(port),
+            'REGISTRATION_GROUP_APPROVAL_WEBJS_HOST': '127.0.0.1',
+            'REGISTRATION_GROUP_APPROVAL_WEBJS_AUTH_MODE': 'dedicated_localauth',
+            'REGISTRATION_GROUP_APPROVAL_WEBJS_AUTH_DATA_PATH': str(auth_path),
+            'REGISTRATION_GROUP_APPROVAL_WEBJS_CLIENT_ID': self._whatsapp_approval_session_client_id(normalized_key),
+            'REGISTRATION_GROUP_APPROVAL_WEBJS_EVENT_LOG': str(log_path.with_suffix('.jsonl')),
+        })
+        with log_path.open('a', encoding='utf-8') as log_file:
+            proc = subprocess.Popen(
+                ['npm', 'start'],
+                cwd=str(WHATSAPP_APPROVAL_WORKER_ROOT),
+                env=env,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        meta = self._write_whatsapp_approval_runtime_meta(normalized_key, {
+            'account_key': normalized_key,
+            'pid': proc.pid,
+            'port': port,
+            'base_url': base_url,
+            'auth_path': str(auth_path),
+            'client_id': self._whatsapp_approval_session_client_id(normalized_key),
+            'log_path': str(log_path),
+            'started_at': utc_now(),
+            'reset': reset,
+        })
+        deadline = time.time() + 20.0
+        worker_health: Dict[str, Any] = {}
+        last_error = ''
+        while time.time() < deadline:
+            try:
+                worker_health = self._request_whatsapp_approval_worker_health(base_url)
+                break
+            except Exception as exc:
+                last_error = str(exc)
+                time.sleep(0.5)
+        if not worker_health:
+            self.stop_whatsapp_approval_account_runtime(normalized_key)
+            raise HTTPException(status_code=500, detail=last_error or 'failed to start dedicated whatsapp approval runtime')
+        runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, worker_health=worker_health, allow_shared_fallback=False)
+        return {
+            'started': True,
+            'reset': reset,
+            'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=runtime_state, worker_health=worker_health),
+            'runtime': runtime_state,
+            'meta': meta,
+        }
+
+    def stop_whatsapp_approval_account_runtime(self, account_key: str) -> Dict[str, Any]:
+        normalized_key = str(account_key or '').strip()
+        meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
+        pid = meta.get('pid')
+        auth_path = str(meta.get('auth_path') or self._whatsapp_approval_auth_path(normalized_key)).strip()
+        runtime_pids: List[int] = []
+        if pid:
+            try:
+                runtime_pids.append(int(pid))
+            except (TypeError, ValueError):
+                pass
+        runtime_pids.extend(self._list_whatsapp_approval_runtime_processes(auth_path))
+        self._terminate_whatsapp_approval_runtime_processes(runtime_pids)
+        if meta:
+            meta['stopped_at'] = utc_now()
+            self._write_whatsapp_approval_runtime_meta(normalized_key, meta)
+        runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, allow_shared_fallback=False)
+        runtime_state['active'] = False
+        runtime_state['status'] = 'stopped'
+        runtime_state['status_text'] = '独立 Runtime 已停止'
+        return {
+            'stopped': True,
+            'runtime': runtime_state,
+        }
+
+    def get_whatsapp_approval_account_session(self, account_key: str, *, include_qr_ascii: bool = True) -> Dict[str, Any]:
+        account_row = self._get_whatsapp_approval_account_row(account_key)
+        if not account_row:
+            raise HTTPException(status_code=404, detail='whatsapp approval account not found')
+        runtime_state = self._build_whatsapp_approval_runtime_state(account_key)
+        worker_health = {}
+        if runtime_state.get('active') and runtime_state.get('base_url') and runtime_state.get('source') == 'dedicated':
+            worker_health = self._request_whatsapp_approval_worker_health(str(runtime_state.get('base_url') or ''))
+        elif runtime_state.get('source') == 'shared':
+            worker_health = self._current_whatsapp_approval_worker_health()
+        return {
+            'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=runtime_state, worker_health=worker_health),
+            'runtime': runtime_state,
+            'session': self._build_whatsapp_approval_session_state(account_key, worker_health=worker_health, include_qr_ascii=include_qr_ascii),
+        }
+
+    def start_whatsapp_approval_account_session(self, account_key: str, *, reset: bool = False) -> Dict[str, Any]:
+        account_row = self._get_whatsapp_approval_account_row(account_key)
+        if not account_row:
+            raise HTTPException(status_code=404, detail='whatsapp approval account not found')
+        runtime_result = self.start_whatsapp_approval_account_runtime(account_key, reset=reset)
+        runtime_state = runtime_result.get('runtime') or {}
+        base_url = str(runtime_state.get('base_url') or '').strip()
+        worker_health: Dict[str, Any] = {}
+        try:
+            response = requests.post(f'{base_url}/warmup', timeout=15.0)
+            response.raise_for_status()
+            worker_health = response.json()
+            if not isinstance(worker_health, dict):
+                raise HTTPException(status_code=500, detail='runtime warmup must return a JSON object')
+        except Exception:
+            worker_health = self._request_whatsapp_approval_worker_health(base_url)
+        runtime_state = self._build_whatsapp_approval_runtime_state(account_key, worker_health=worker_health, allow_shared_fallback=False)
+        return {
+            'started': True,
+            'reset': reset,
+            'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=runtime_state, worker_health=worker_health),
+            'runtime': runtime_state,
+            'session': self._build_whatsapp_approval_session_state(account_key, worker_health=worker_health, include_qr_ascii=True),
+        }
+
+    def reset_whatsapp_approval_account_session(self, account_key: str) -> Dict[str, Any]:
+        return self.start_whatsapp_approval_account_session(account_key, reset=True)
+
     def _upsert_intake_bot_preset_row(self, *, profile_name: str, app_id: Optional[str], robot_name: Optional[str], default_app: str, default_guild: str, enabled: int = 1) -> Dict[str, Any]:
         normalized_profile_name = str(profile_name or '').strip()
         normalized_robot_name = str(robot_name or '').strip() or normalized_profile_name
@@ -7936,6 +10309,937 @@ class Service:
         return {
             'rows': rows,
             'proxy_region_options': GUILD_EXECUTOR_PROXY_REGION_OPTIONS,
+        }
+
+    def _official_group_bridge_console_base_url(self) -> Optional[str]:
+        webhook_url = str(self.official_group_approval_webhook_url or '').strip()
+        if not webhook_url:
+            return None
+        if webhook_url.endswith('/official-group/approve'):
+            return webhook_url[:-len('/official-group/approve')]
+        return webhook_url.rstrip('/')
+
+    def _official_group_bridge_summary_payload(self) -> Dict[str, Any]:
+        base_url = self._official_group_bridge_console_base_url()
+        if not base_url:
+            return {'configured': False, 'health': {}, 'summary': {}}
+        def _get_json(url: str) -> Dict[str, Any]:
+            response = requests.get(url, timeout=10.0)
+            response.raise_for_status()
+            return response.json()
+        try:
+            health = _get_json(f'{base_url}/ops/official-group-bridge/health')
+        except Exception as exc:
+            health = {'status': 'unreachable', 'error': str(exc)}
+        try:
+            summary = _get_json(f'{base_url}/ops/official-group-bridge/summary')
+        except Exception as exc:
+            summary = {'status': 'unreachable', 'error': str(exc)}
+        return {
+            'configured': True,
+            'base_url': base_url,
+            'health': health,
+            'summary': summary,
+        }
+
+    def _current_local_minutes(self) -> int:
+        now = datetime.now().astimezone()
+        return (now.hour * 60) + now.minute
+
+    def _schedule_window_contains_minutes(self, start: str, end: str, minute_of_day: int) -> bool:
+        start_hour, start_minute = [int(part) for part in start.split(':', 1)]
+        end_hour, end_minute = [int(part) for part in end.split(':', 1)]
+        start_total = (start_hour * 60) + start_minute
+        end_total = (end_hour * 60) + end_minute
+        if start_total <= end_total:
+            return start_total <= minute_of_day <= end_total
+        return minute_of_day >= start_total or minute_of_day <= end_total
+
+    def _schedule_runtime(self, schedule_windows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        normalized_windows: List[Dict[str, str]] = []
+        for item in schedule_windows or []:
+            start = str((item or {}).get('start') or '').strip()
+            end = str((item or {}).get('end') or '').strip()
+            if re.fullmatch(r'\d{2}:\d{2}', start) and re.fullmatch(r'\d{2}:\d{2}', end):
+                normalized_windows.append({'start': start, 'end': end})
+        if not normalized_windows:
+            return {
+                'configured': False,
+                'active_now': True,
+                'status': 'always_on',
+                'label': '未设置时间段（默认全天）',
+            }
+        current_minute = self._current_local_minutes()
+        active_now = any(self._schedule_window_contains_minutes(item['start'], item['end'], current_minute) for item in normalized_windows)
+        return {
+            'configured': True,
+            'active_now': active_now,
+            'status': 'active_window' if active_now else 'outside_window',
+            'label': '当前时段生效中' if active_now else '当前不在监控时段',
+        }
+
+    def _production_ops_daemon_snapshot(self) -> Dict[str, Any]:
+        return self.get_production_ops_daemon_config()
+
+    @staticmethod
+    def _extract_live_group_probe(production_ops: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        runtime = dict((production_ops or {}).get('runtime') or {})
+        status = dict(runtime.get('status') or {})
+        candidates = [
+            ('decision_group_state', ((status.get('decision_group_state') or {}).get('payload') if isinstance(status.get('decision_group_state'), dict) else None)),
+            ('fresh_probe', ((status.get('fresh_probe') or {}).get('payload') if isinstance(status.get('fresh_probe'), dict) else None)),
+            ('worker_state', ((status.get('worker_state') or {}).get('payload') if isinstance(status.get('worker_state'), dict) else None)),
+        ]
+        for source, payload in candidates:
+            if not isinstance(payload, dict):
+                continue
+            group_name = str(payload.get('group_name') or '').strip()
+            group_id = str(payload.get('group_id') or '').strip()
+            pending_count = payload.get('pending_count')
+            member_count = payload.get('member_count')
+            if group_name or group_id or pending_count is not None or member_count is not None:
+                return {
+                    'source': source,
+                    'group_name': group_name,
+                    'group_id': group_id,
+                    'pending_count': pending_count,
+                    'member_count': member_count,
+                    'requester_ids': list(payload.get('requester_ids') or []),
+                    'requesters': list(payload.get('requesters') or []),
+                }
+        return {
+            'source': None,
+            'group_name': '',
+            'group_id': '',
+            'pending_count': None,
+            'member_count': None,
+            'requester_ids': [],
+            'requesters': [],
+        }
+
+    def _approval_membership_verifier_state(self, *, responsible_type: str, production_ops: Optional[Dict[str, Any]] = None, official_bridge: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if str(responsible_type or '').strip() != 'registration_group':
+            return {
+                'ready': False,
+                'requires_manual_seed': True,
+                'status': 'not_supported',
+                'detail': '官方群当前仅接入 bridge 健康度与请求队列摘要，真实群成员/管理员权限校验执行器尚未接入。',
+                'source': 'official_group_bridge_only',
+                'probe': {},
+            }
+        executor_health = self.registration_group_approval_executor_health()
+        supports = {str(item).strip() for item in (executor_health.get('supports') or []) if str(item).strip()}
+        probe = self._extract_live_group_probe(production_ops)
+        has_live_probe = bool(probe.get('group_name') or probe.get('group_id') or probe.get('member_count') is not None)
+        ready = bool(has_live_probe and ('strict_queue_and_member_verify' in supports or 'approve' in supports))
+        if ready:
+            group_label = str(probe.get('group_name') or probe.get('group_id') or '-').strip() or '-'
+            pending_text = probe.get('pending_count') if probe.get('pending_count') is not None else '-'
+            member_text = probe.get('member_count') if probe.get('member_count') is not None else '-'
+            detail = f'已接入真实注册群状态探针：{group_label}（待审批 {pending_text}，成员 {member_text}）。当前共享执行器可实际读取群状态，可用于成员/管理员权限校验。'
+            status = 'live_probe_ready'
+            requires_manual_seed = False
+        elif executor_health.get('configured'):
+            detail = '注册群审批执行器已配置，但当前未拿到可用的实时群状态探针结果；暂不能判定真实成员/管理员权限。'
+            status = 'probe_unavailable'
+            requires_manual_seed = True
+        else:
+            detail = '注册群审批执行器未配置，暂不能做真实群成员/管理员权限校验。'
+            status = 'executor_unconfigured'
+            requires_manual_seed = True
+        return {
+            'ready': ready,
+            'requires_manual_seed': requires_manual_seed,
+            'status': status,
+            'detail': detail,
+            'source': probe.get('source'),
+            'probe': probe,
+        }
+
+    @staticmethod
+    def _binding_membership_verifier_state(binding: Dict[str, Any], account_verifier: Dict[str, Any], *, responsible_type: str) -> Dict[str, Any]:
+        if str(responsible_type or '').strip() != 'registration_group':
+            return {
+                'ready': False,
+                'requires_manual_seed': True,
+                'status': 'not_supported',
+                'detail': '官方群绑定当前不支持逐群真实成员/管理员权限校验。',
+            }
+        probe = dict(account_verifier.get('probe') or {})
+        if not account_verifier.get('ready'):
+            return {
+                'ready': False,
+                'requires_manual_seed': True,
+                'status': account_verifier.get('status') or 'probe_unavailable',
+                'detail': account_verifier.get('detail') or '当前未拿到共享执行器实时探针结果。',
+            }
+        binding_group = str(binding.get('registration_group') or '').strip()
+        binding_group_id = str(binding.get('group_id') or '').strip()
+        probe_group = str(probe.get('group_name') or '').strip()
+        probe_group_id = str(probe.get('group_id') or '').strip()
+        if binding_group or binding_group_id:
+            group_ok = (not binding_group) or (binding_group and binding_group == probe_group)
+            group_id_ok = (not binding_group_id) or (binding_group_id and binding_group_id == probe_group_id)
+            if group_ok and group_id_ok:
+                return {
+                    'ready': True,
+                    'requires_manual_seed': False,
+                    'status': 'mapped_live_probe_ready',
+                    'detail': f'已按绑定映射命中真实探针：{binding_group or probe_group or "-"} / {binding_group_id or probe_group_id or "-"}',
+                }
+            mismatch = []
+            if binding_group and binding_group != probe_group:
+                mismatch.append(f'registration_group={binding_group} ≠ {probe_group or "-"}')
+            if binding_group_id and binding_group_id != probe_group_id:
+                mismatch.append(f'group_id={binding_group_id} ≠ {probe_group_id or "-"}')
+            return {
+                'ready': False,
+                'requires_manual_seed': True,
+                'status': 'mapping_mismatch',
+                'detail': '绑定映射与当前真实探针不一致：' + '；'.join(mismatch),
+            }
+        return {
+            'ready': True,
+            'requires_manual_seed': False,
+            'status': 'inferred_live_probe_ready',
+            'detail': '',
+        }
+
+    def _build_whatsapp_approval_account_runtime(self, row: Dict[str, Any], *, production_ops: Optional[Dict[str, Any]] = None, official_bridge: Optional[Dict[str, Any]] = None, worker_health: Optional[Dict[str, Any]] = None, runtime_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        serialized = dict(row)
+        raw_group_links = []
+        try:
+            raw_group_links = json.loads(serialized.get('group_links') or '[]')
+        except Exception:
+            raw_group_links = []
+        if not isinstance(raw_group_links, list):
+            raw_group_links = []
+        default_area = str(serialized.get('area') or '').strip()
+        default_notify_profile_name = str(serialized.get('notify_profile_name') or '').strip()
+        legacy_count_threshold, legacy_timeout_minutes = _legacy_approval_thresholds(serialized.get('approval_rule'))
+        default_approval_count_threshold = _coerce_positive_int(serialized.get('approval_count_threshold'), legacy_count_threshold)
+        default_approval_timeout_minutes = _coerce_positive_int(serialized.get('approval_timeout_minutes'), legacy_timeout_minutes)
+        default_auto_recover_worker = bool(serialized.get('auto_recover_worker'))
+        account_schedule_windows = _normalize_schedule_windows_payload(json.loads(serialized.get('schedule_windows') or '[]') if str(serialized.get('schedule_windows') or '').strip() else []) if isinstance(serialized.get('schedule_windows'), str) else _normalize_schedule_windows_payload(serialized.get('schedule_windows') or [])
+
+        group_link_bindings: list[dict[str, Any]] = []
+        for item in raw_group_links:
+            if isinstance(item, dict):
+                link = str(item.get('link') or '').strip()
+                area = str(item.get('area') or '').strip()
+                registration_group = str(item.get('registration_group') or '').strip()
+                group_id = str(item.get('group_id') or '').strip()
+                if link:
+                    group_link_bindings.append({
+                        'link': link,
+                        'group_name': str(item.get('group_name') or '').strip(),
+                        'area': area,
+                        'notify_profile_name': str(item.get('notify_profile_name') or default_notify_profile_name).strip(),
+                        'enabled': False if item.get('enabled') is False else True,
+                        'registration_group': registration_group,
+                        'group_id': group_id,
+                        'approval_count_threshold': item.get('approval_count_threshold'),
+                        'approval_timeout_minutes': item.get('approval_timeout_minutes'),
+                        'auto_recover_worker': item.get('auto_recover_worker'),
+                        'schedule_windows': item.get('schedule_windows') if isinstance(item.get('schedule_windows'), list) else account_schedule_windows,
+                    })
+            else:
+                link = str(item or '').strip()
+                if link:
+                    group_link_bindings.append({
+                        'link': link,
+                        'group_name': '',
+                        'area': default_area,
+                        'notify_profile_name': default_notify_profile_name,
+                        'registration_group': '',
+                        'group_id': '',
+                        'approval_count_threshold': default_approval_count_threshold,
+                        'approval_timeout_minutes': default_approval_timeout_minutes,
+                        'auto_recover_worker': default_auto_recover_worker,
+                        'schedule_windows': account_schedule_windows,
+                    })
+
+        group_link_bindings = _normalize_group_link_bindings(group_link_bindings)
+        for item in group_link_bindings:
+            item['notify_profile_name'] = str(item.get('notify_profile_name') or default_notify_profile_name).strip()
+            item['approval_count_threshold'] = _coerce_positive_int(item.get('approval_count_threshold'), default_approval_count_threshold)
+            item['approval_timeout_minutes'] = _coerce_positive_int(item.get('approval_timeout_minutes'), default_approval_timeout_minutes)
+            item['auto_recover_worker'] = default_auto_recover_worker if item.get('auto_recover_worker') is None else bool(item.get('auto_recover_worker'))
+            item['schedule_windows'] = _normalize_schedule_windows_payload(item.get('schedule_windows') or account_schedule_windows)
+            item['schedule_runtime'] = self._schedule_runtime(item['schedule_windows'])
+            item['notify_robot_name'] = self._notify_robot_name(item.get('notify_profile_name'))
+            item['approval_rule_text'] = _approval_condition_text(item['approval_count_threshold'], item['approval_timeout_minutes'])
+        serialized['group_link_bindings'] = group_link_bindings
+        serialized['group_links'] = [str(item.get('link') or '').strip() for item in group_link_bindings if str(item.get('link') or '').strip()]
+        if not default_area and group_link_bindings:
+            default_area = str(group_link_bindings[0].get('area') or '').strip()
+        serialized['enabled'] = bool(serialized.get('enabled'))
+        serialized['group_count'] = len(serialized['group_links'])
+
+        production_ops = production_ops or self._production_ops_daemon_snapshot()
+        production_runtime = production_ops.get('runtime') or {}
+        production_status = production_runtime.get('status') or {}
+        official_bridge = official_bridge or self._official_group_bridge_summary_payload()
+        official_health = official_bridge.get('health') or {}
+        official_summary = official_bridge.get('summary') or {}
+
+        invalid_group_links = []
+        invalid_binding_areas = []
+        missing_binding_notify = []
+        enabled_binding_count = 0
+        binding_runtime_rows: list[dict[str, Any]] = []
+        for item in group_link_bindings:
+            link = str(item.get('link') or '').strip()
+            area = str(item.get('area') or '').strip()
+            notify_profile_name = str(item.get('notify_profile_name') or '').strip()
+            registration_group = str(item.get('registration_group') or '').strip()
+            group_id = str(item.get('group_id') or '').strip()
+            binding_enabled = bool(item.get('enabled', True))
+            link_ok = bool(re.fullmatch(r'https://chat\.whatsapp\.com/[A-Za-z0-9_-]+', link))
+            if not link_ok:
+                invalid_group_links.append(link)
+            if not area:
+                invalid_binding_areas.append(link)
+            if not notify_profile_name:
+                missing_binding_notify.append(link)
+            if binding_enabled:
+                enabled_binding_count += 1
+            binding_runtime_rows.append({
+                'link': link,
+                'group_name': str(item.get('group_name') or '').strip(),
+                'area': area,
+                'notify_profile_name': notify_profile_name,
+                'enabled': binding_enabled,
+                'registration_group': registration_group,
+                'group_id': group_id,
+                'notify_robot_name': item.get('notify_robot_name') or self._notify_robot_name(notify_profile_name),
+                'approval_count_threshold': item.get('approval_count_threshold'),
+                'approval_timeout_minutes': item.get('approval_timeout_minutes'),
+                'approval_rule_text': item.get('approval_rule_text') or _approval_condition_text(
+                    _coerce_positive_int(item.get('approval_count_threshold'), default_approval_count_threshold),
+                    _coerce_positive_int(item.get('approval_timeout_minutes'), default_approval_timeout_minutes),
+                ),
+                'auto_recover_worker': bool(item.get('auto_recover_worker')),
+                'schedule_windows': item.get('schedule_windows') or [],
+                'schedule_runtime': item.get('schedule_runtime') or self._schedule_runtime(item.get('schedule_windows') or []),
+                'link_ok': link_ok,
+            })
+
+        if serialized.get('responsible_type') == 'registration_group':
+            service_ready = True
+            service_scope = {
+                'code': 'registration_group_console',
+                'label': '注册群账号级守护',
+                'ready': service_ready,
+                'detail': '当前账号已具备独立守护配置；共享 daemon 运行态请以上方实时状态卡片为准' if service_ready else '当前账号守护配置未就绪',
+                'runtime': {
+                    'launch_agent_installed': bool(production_runtime.get('launch_agent_installed')),
+                    'checked_at': (production_status.get('status') or {}).get('checked_at') if isinstance(production_status.get('status'), dict) else production_status.get('checked_at'),
+                    'runtime_mode': 'shared-daemon-status + account-scoped-configuration',
+                },
+            }
+        else:
+            service_ready = official_bridge.get('configured') and official_health.get('status') == 'healthy'
+            service_scope = {
+                'code': 'official_group_bridge',
+                'label': '官方群审批桥接台',
+                'ready': bool(service_ready),
+                'detail': '官方群 bridge 健康，可继续接统一调度' if service_ready else '官方群 bridge 未就绪，需先恢复 bridge 服务',
+                'runtime': {
+                    'mode': official_health.get('mode'),
+                    'pending_count': official_summary.get('pending_count'),
+                    'resolved_count': official_summary.get('resolved_count'),
+                },
+            }
+
+        active_binding_count = sum(1 for item in binding_runtime_rows if item.get('enabled') and (item.get('schedule_runtime') or {}).get('active_now'))
+        all_binding_areas_ok = not invalid_binding_areas
+        all_binding_notify_ok = not missing_binding_notify
+        all_binding_rules_ok = all(
+            _coerce_positive_int(item.get('approval_count_threshold'), default_approval_count_threshold) > 0
+            and _coerce_positive_int(item.get('approval_timeout_minutes'), default_approval_timeout_minutes) > 0
+            for item in binding_runtime_rows
+        )
+        has_monitored_bindings = enabled_binding_count > 0
+
+        membership_verifier = self._approval_membership_verifier_state(
+            responsible_type=str(serialized.get('responsible_type') or '').strip(),
+            production_ops=production_ops,
+            official_bridge=official_bridge,
+        )
+        binding_verifiers = [
+            self._binding_membership_verifier_state(item, membership_verifier, responsible_type=str(serialized.get('responsible_type') or '').strip())
+            for item in binding_runtime_rows
+        ]
+        for item, verifier in zip(binding_runtime_rows, binding_verifiers):
+            item['membership_verifier'] = verifier
+        monitored_binding_verifiers = [
+            verifier for item, verifier in zip(binding_runtime_rows, binding_verifiers) if item.get('enabled')
+        ]
+        bindings_membership_ready = bool(monitored_binding_verifiers) and all(bool(item.get('ready')) for item in monitored_binding_verifiers)
+        if not monitored_binding_verifiers:
+            bindings_membership_ready = bool(membership_verifier.get('ready')) if not binding_runtime_rows else False
+        account_membership_verifier = {
+            **membership_verifier,
+            'ready': bindings_membership_ready,
+            'requires_manual_seed': any(bool(item.get('requires_manual_seed')) for item in monitored_binding_verifiers) if monitored_binding_verifiers else bool(membership_verifier.get('requires_manual_seed')),
+            'binding_count': len(monitored_binding_verifiers),
+        }
+
+        verification_checks = [
+            {
+                'code': 'group_link_format',
+                'ok': not invalid_group_links,
+                'detail': '群链接格式有效' if not invalid_group_links else f'存在 {len(invalid_group_links)} 条群链接格式异常',
+            },
+            {
+                'code': 'group_link_area_binding',
+                'ok': all_binding_areas_ok,
+                'detail': '每条群链接都已绑定地区' if all_binding_areas_ok else f'存在 {len(invalid_binding_areas)} 条群链接未绑定地区',
+            },
+            {
+                'code': 'binding_notify_robot',
+                'ok': all_binding_notify_ok,
+                'detail': '每条群绑定都已配置通知机器人' if all_binding_notify_ok else f'存在 {len(missing_binding_notify)} 条群绑定未配置通知机器人',
+            },
+            {
+                'code': 'binding_approval_rule',
+                'ok': all_binding_rules_ok,
+                'detail': '每条群绑定都已配置审批条件' if all_binding_rules_ok else '存在群绑定审批条件不完整',
+            },
+            {
+                'code': 'binding_schedule_window',
+                'ok': True,
+                'detail': f'当前有 {active_binding_count}/{enabled_binding_count or 0} 条已监控群绑定在监控时段内生效',
+            },
+            {
+                'code': 'binding_monitor_enabled',
+                'ok': has_monitored_bindings,
+                'detail': f'当前已开启 {enabled_binding_count}/{len(binding_runtime_rows) or 0} 条群绑定监控' if has_monitored_bindings else '当前未开启任何群绑定监控',
+            },
+            {
+                'code': 'service_scope_ready',
+                'ok': bool(service_scope.get('ready')),
+                'detail': service_scope.get('detail') or '-',
+            },
+            {
+                'code': 'admin_membership_verification',
+                'ok': bool(account_membership_verifier.get('ready')),
+                'detail': account_membership_verifier.get('detail') or '-',
+            },
+        ]
+
+        config_ready = (
+            not invalid_group_links
+            and all_binding_areas_ok
+            and all_binding_notify_ok
+            and all_binding_rules_ok
+            and has_monitored_bindings
+            and bool(service_scope.get('ready'))
+        )
+        if invalid_group_links:
+            verification_status = 'invalid_group_links'
+        elif not has_monitored_bindings:
+            verification_status = 'monitor_disabled'
+        elif config_ready:
+            verification_status = 'ready'
+        else:
+            verification_status = 'service_unready'
+
+        account_active_now = active_binding_count > 0 if binding_runtime_rows else True
+        primary_binding = binding_runtime_rows[0] if binding_runtime_rows else {}
+        schedule_runtime = primary_binding.get('schedule_runtime') or self._schedule_runtime(account_schedule_windows)
+        serialized['schedule_active_now'] = bool(account_active_now)
+        serialized['schedule_runtime'] = schedule_runtime
+        serialized['area'] = default_area
+        serialized['notify_profile_name'] = str(primary_binding.get('notify_profile_name') or default_notify_profile_name).strip()
+        serialized['notify_robot_name'] = str(primary_binding.get('notify_robot_name') or self._notify_robot_name(serialized['notify_profile_name'])).strip()
+        serialized['approval_count_threshold'] = _coerce_positive_int(primary_binding.get('approval_count_threshold'), default_approval_count_threshold)
+        serialized['approval_timeout_minutes'] = _coerce_positive_int(primary_binding.get('approval_timeout_minutes'), default_approval_timeout_minutes)
+        serialized['approval_rule_text'] = primary_binding.get('approval_rule_text') or _approval_condition_text(serialized['approval_count_threshold'], serialized['approval_timeout_minutes'])
+        serialized['approval_condition_text'] = serialized['approval_rule_text']
+        serialized['auto_recover_worker'] = default_auto_recover_worker if primary_binding.get('auto_recover_worker') is None else bool(primary_binding.get('auto_recover_worker'))
+        serialized['schedule_windows'] = account_schedule_windows
+        serialized['group_binding_runtimes'] = binding_runtime_rows
+        runtime_state = runtime_state or self._build_whatsapp_approval_runtime_state(serialized.get('account_key') or '', worker_health=worker_health)
+        serialized['runtime_state'] = runtime_state
+        if runtime_state.get('active') and worker_health:
+            session_state = self._build_whatsapp_approval_session_state(serialized.get('account_key') or '', worker_health=worker_health, include_qr_ascii=False)
+        else:
+            session_state = self._build_whatsapp_approval_session_state(serialized.get('account_key') or '', worker_health=worker_health if runtime_state.get('source') == 'shared' else {}, include_qr_ascii=False)
+        serialized['session_state'] = session_state
+
+        production_ready = bool(config_ready and session_state.get('login_verified'))
+        if production_ready:
+            verification_status = 'ready'
+        elif invalid_group_links:
+            verification_status = 'invalid_group_links'
+        elif not has_monitored_bindings:
+            verification_status = 'monitor_disabled'
+        elif not config_ready:
+            verification_status = 'service_unready'
+        else:
+            verification_status = 'login_unready'
+
+        if not serialized['enabled']:
+            runtime_status = 'disabled'
+            status_color = 'gray'
+            status_text = '已关闭'
+            next_action = '如需纳入自动监控，请先开启账号'
+        elif not has_monitored_bindings:
+            runtime_status = 'blocked'
+            status_color = 'gray'
+            status_text = '未监控'
+            next_action = '至少开启 1 个群监控后再纳入自动审批'
+        elif invalid_group_links or not config_ready:
+            runtime_status = 'blocked'
+            status_color = 'amber'
+            status_text = '待补齐'
+            next_action = '先补齐群绑定配置，再纳入统一调度'
+        elif not session_state.get('login_verified'):
+            runtime_status = 'blocked'
+            status_color = 'amber'
+            status_text = '待登录'
+            next_action = '先完成扫码登录并通过可用性检测'
+        elif not account_active_now:
+            runtime_status = 'off_schedule'
+            status_color = 'blue'
+            status_text = '时段外待命'
+            next_action = '等待进入任一群绑定监控时段后自动生效'
+        else:
+            runtime_status = 'active'
+            status_color = 'green'
+            status_text = '运行中'
+            next_action = '可直接纳入统一调度'
+
+        serialized['verification_status'] = verification_status
+        serialized['verification_status_label'] = {
+            'ready': '可投产',
+            'invalid_group_links': '群链接配置异常',
+            'monitor_disabled': '未启用监控群',
+            'service_unready': '服务未就绪',
+            'login_unready': '待登录',
+        }.get(verification_status, verification_status)
+        serialized['membership_verifier'] = account_membership_verifier
+        serialized['verification_scope_text'] = account_membership_verifier.get('detail') if account_membership_verifier.get('ready') else '当前控制台配置与调度就绪度已完成；逐群映射或真实成员/管理员权限校验结果见下方 admin_membership_verification。'
+        serialized['verification_checks'] = verification_checks
+        serialized['service_scope'] = service_scope
+        serialized['runtime_status'] = runtime_status
+        serialized['status_color'] = status_color
+        serialized['status_text'] = status_text
+        serialized['next_action'] = next_action
+        return serialized
+
+    def list_whatsapp_approval_accounts(self) -> Dict[str, Any]:
+        production_ops = self._production_ops_daemon_snapshot()
+        official_bridge = self._official_group_bridge_summary_payload()
+        try:
+            shared_worker_health = self._current_whatsapp_approval_worker_health()
+        except Exception:
+            shared_worker_health = {}
+        rows: list[Dict[str, Any]] = []
+        with self.db.connect() as conn:
+            raw_rows = conn.execute(
+                "SELECT account_key, account_name, responsible_type, group_links, area, notify_profile_name, approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker, schedule_windows, enabled, verification_status, notes, updated_at FROM whatsapp_approval_accounts ORDER BY updated_at DESC, account_key ASC"
+            ).fetchall()
+        for raw_row in raw_rows:
+            row = dict(raw_row)
+            account_key = str(row.get('account_key') or '').strip()
+            has_dedicated_meta = bool(self._read_whatsapp_approval_runtime_meta(account_key))
+            account_worker_health: Dict[str, Any] = {}
+            runtime_state = self._build_whatsapp_approval_runtime_state(
+                account_key,
+                worker_health=None if has_dedicated_meta else shared_worker_health,
+            )
+            if runtime_state.get('source') == 'shared':
+                account_worker_health = shared_worker_health
+            elif runtime_state.get('active') and runtime_state.get('base_url'):
+                try:
+                    account_worker_health = self._request_whatsapp_approval_worker_health(str(runtime_state.get('base_url') or ''))
+                    runtime_state = self._build_whatsapp_approval_runtime_state(account_key, worker_health=account_worker_health, allow_shared_fallback=False)
+                except Exception:
+                    account_worker_health = {}
+            rows.append(self._build_whatsapp_approval_account_runtime(row, production_ops=production_ops, official_bridge=official_bridge, worker_health=account_worker_health, runtime_state=runtime_state))
+        area_option_payload = self.list_whatsapp_approval_area_options()
+        return {
+            'rows': rows,
+            'notify_robot_options': self._list_notify_robot_options(),
+            'area_options': area_option_payload['options'],
+            'area_option_source': area_option_payload['source_options'],
+            'summary': {
+                'total_accounts': len(rows),
+                'enabled_accounts': sum(1 for row in rows if row.get('enabled')),
+                'registration_group_accounts': sum(1 for row in rows if row.get('responsible_type') == 'registration_group'),
+                'official_group_accounts': sum(1 for row in rows if row.get('responsible_type') == 'official_group'),
+                'active_now_accounts': sum(1 for row in rows if row.get('runtime_status') == 'active'),
+                'ready_accounts': sum(1 for row in rows if row.get('verification_status') == 'ready'),
+                'verification_pending_accounts': sum(1 for row in rows if row.get('verification_status') != 'ready'),
+            },
+        }
+
+    def list_whatsapp_approval_candidates(self) -> Dict[str, Any]:
+        account_state = self.list_whatsapp_approval_accounts()
+        rows = []
+        for row in account_state.get('rows') or []:
+            membership_verifier = dict(row.get('membership_verifier') or {})
+            candidate_status = 'eligible' if row.get('runtime_status') == 'active' and row.get('verification_status') == 'ready' else 'not_ready'
+            verification_scope = {
+                'configuration_ready': row.get('verification_status') == 'ready',
+                'schedule_active_now': bool(row.get('schedule_active_now')),
+                'service_scope_ready': bool((row.get('service_scope') or {}).get('ready')),
+                'real_membership_check_ready': bool(membership_verifier.get('ready')),
+                'requires_manual_seed': bool(membership_verifier.get('requires_manual_seed', not membership_verifier.get('ready'))),
+            }
+            rows.append({
+                'account_key': row.get('account_key'),
+                'account_name': row.get('account_name'),
+                'responsible_type': row.get('responsible_type'),
+                'candidate_status': candidate_status,
+                'runtime_status': row.get('runtime_status'),
+                'verification_status': row.get('verification_status'),
+                'status_text': row.get('status_text'),
+                'group_count': row.get('group_count'),
+                'next_action': row.get('next_action'),
+                'verification_scope': verification_scope,
+                'membership_verifier': membership_verifier,
+            })
+        rows.sort(key=lambda item: (0 if item.get('candidate_status') == 'eligible' else 1, str(item.get('account_key') or '')))
+        verifier_ready_count = sum(1 for row in rows if (row.get('verification_scope') or {}).get('real_membership_check_ready'))
+        any_manual_seed = any((row.get('verification_scope') or {}).get('requires_manual_seed') for row in rows)
+        framework_status = 'live_probe_ready' if verifier_ready_count else ('seed_required' if any_manual_seed else 'unavailable')
+        if verifier_ready_count:
+            framework_detail = '已接入真实注册群状态探针；具备实时群成员/管理员权限校验能力的账号会在候选池中标记为 real_membership_check_ready=true。'
+        elif any_manual_seed:
+            framework_detail = '部分账号仍缺真实成员/管理员校验探针，需继续补齐执行器种子或 bridge 能力。'
+        else:
+            framework_detail = '当前没有可用于真实成员/管理员权限校验的账号执行器。'
+        return {
+            'rows': rows,
+            'summary': {
+                'eligible_count': sum(1 for row in rows if row.get('candidate_status') == 'eligible'),
+                'registration_group_count': sum(1 for row in rows if row.get('responsible_type') == 'registration_group'),
+                'official_group_count': sum(1 for row in rows if row.get('responsible_type') == 'official_group'),
+                'verifier_ready_count': verifier_ready_count,
+            },
+            'verifier_framework': {
+                'status': framework_status,
+                'real_membership_check_ready': bool(verifier_ready_count),
+                'requires_manual_seed': any_manual_seed,
+                'detail': framework_detail,
+            },
+        }
+
+    def update_whatsapp_approval_account(self, account_key: str, payload: WhatsAppApprovalAccountUpdateRequest) -> Dict[str, Any]:
+        normalized_key = str(account_key or '').strip()
+        if not normalized_key:
+            raise HTTPException(status_code=400, detail='account_key is required')
+        account_name = str(payload.account_name or '').strip()
+        if not account_name:
+            raise HTTPException(status_code=400, detail='account_name is required')
+        responsible_type = str(payload.responsible_type or '').strip()
+        if responsible_type not in {'registration_group', 'official_group'}:
+            raise HTTPException(status_code=400, detail='responsible_type must be registration_group or official_group')
+        raw_bindings = [
+            {
+                'link': str(item.link or '').strip(),
+                'group_name': str(item.group_name or '').strip(),
+                'area': str(item.area or '').strip(),
+                'notify_profile_name': str(item.notify_profile_name or '').strip(),
+                'enabled': False if item.enabled is False else True,
+                'registration_group': str(item.registration_group or '').strip(),
+                'group_id': str(item.group_id or '').strip(),
+                'approval_count_threshold': item.approval_count_threshold,
+                'approval_timeout_minutes': item.approval_timeout_minutes,
+                'auto_recover_worker': item.auto_recover_worker,
+                'schedule_windows': [
+                    {'start': str(window.start or '').strip(), 'end': str(window.end or '').strip()}
+                    for window in (item.schedule_windows or [])
+                ],
+            }
+            for item in (payload.group_link_bindings or [])
+        ]
+        if not raw_bindings:
+            fallback_links = [str(item or '').strip() for item in (payload.group_links or []) if str(item or '').strip()]
+            fallback_area = str(payload.area or '').strip()
+            fallback_notify = str(payload.notify_profile_name or '').strip()
+            legacy_count_threshold, legacy_timeout_minutes = _legacy_approval_thresholds(payload.approval_rule)
+            fallback_count = _coerce_positive_int(payload.approval_count_threshold, legacy_count_threshold)
+            fallback_timeout = _coerce_positive_int(payload.approval_timeout_minutes, legacy_timeout_minutes)
+            fallback_schedule_windows = [
+                {'start': str(item.start or '').strip(), 'end': str(item.end or '').strip()}
+                for item in (payload.schedule_windows or [])
+            ]
+            raw_bindings = [{
+                'link': link,
+                'group_name': '',
+                'area': fallback_area,
+                'notify_profile_name': fallback_notify,
+                'enabled': True,
+                'registration_group': '',
+                'group_id': '',
+                'approval_count_threshold': fallback_count,
+                'approval_timeout_minutes': fallback_timeout,
+                'auto_recover_worker': payload.auto_recover_worker,
+                'schedule_windows': fallback_schedule_windows,
+            } for link in fallback_links]
+        group_link_bindings = []
+        for index, item in enumerate(raw_bindings, start=1):
+            link = str(item.get('link') or '').strip()
+            area = str(item.get('area') or '').strip()
+            notify_profile_name = str(item.get('notify_profile_name') or '').strip()
+            registration_group = str(item.get('registration_group') or '').strip()
+            group_id = str(item.get('group_id') or '').strip()
+            if not link and not area and not notify_profile_name and not registration_group and not group_id:
+                continue
+            if link and not area:
+                raise HTTPException(status_code=400, detail=f'group link #{index} must select an area')
+            if area and not link:
+                raise HTTPException(status_code=400, detail=f'group link #{index} is missing its link')
+            if not notify_profile_name:
+                raise HTTPException(status_code=400, detail=f'group link #{index} must select a notify robot')
+            schedule_windows = _normalize_schedule_windows_payload(item.get('schedule_windows') or [])
+            if any(not re.fullmatch(r'\d{2}:\d{2}', str(window.get('start') or '')) or not re.fullmatch(r'\d{2}:\d{2}', str(window.get('end') or '')) for window in (item.get('schedule_windows') or [])):
+                raise HTTPException(status_code=400, detail=f'group link #{index} schedule window must use HH:MM format')
+            group_link_bindings.append({
+                'link': link,
+                'group_name': str(item.get('group_name') or '').strip(),
+                'area': area,
+                'notify_profile_name': notify_profile_name,
+                'enabled': False if item.get('enabled') is False else True,
+                'registration_group': registration_group,
+                'group_id': group_id,
+                'approval_count_threshold': item.get('approval_count_threshold'),
+                'approval_timeout_minutes': item.get('approval_timeout_minutes'),
+                'auto_recover_worker': item.get('auto_recover_worker'),
+                'schedule_windows': schedule_windows,
+            })
+        group_link_bindings = _normalize_group_link_bindings(group_link_bindings)
+        group_links = [item['link'] for item in group_link_bindings]
+        if not group_links:
+            raise HTTPException(status_code=400, detail='at least one group link is required')
+        if len(group_links) > 3:
+            raise HTTPException(status_code=400, detail='each WhatsApp admin account can manage at most 3 groups in this console')
+        area_options = self.list_whatsapp_approval_area_options()['options']
+        area_values = {str(item.get('value') or '').strip() for item in area_options}
+        area_values.discard('')
+        for index, item in enumerate(group_link_bindings, start=1):
+            if str(item.get('area') or '').strip() not in area_values:
+                raise HTTPException(status_code=400, detail=f'group link #{index} area must be selected from configured options')
+        area = str(group_link_bindings[0].get('area') or '').strip()
+        valid_notify_profiles = {str(item.get('profile_name') or '').strip() for item in self._list_notify_robot_options()}
+        valid_notify_profiles.discard('')
+        for index, item in enumerate(group_link_bindings, start=1):
+            binding_notify_profile_name = str(item.get('notify_profile_name') or '').strip()
+            if binding_notify_profile_name not in valid_notify_profiles:
+                raise HTTPException(status_code=400, detail=f'group link #{index} notify_profile_name must be selected from configured Lark robots')
+            item['approval_count_threshold'] = _coerce_positive_int(item.get('approval_count_threshold'), WHATSAPP_APPROVAL_DEFAULT_COUNT_THRESHOLD)
+            item['approval_timeout_minutes'] = _coerce_positive_int(item.get('approval_timeout_minutes'), WHATSAPP_APPROVAL_DEFAULT_TIMEOUT_MINUTES)
+            if item['approval_count_threshold'] <= 0:
+                raise HTTPException(status_code=400, detail=f'group link #{index} approval_count_threshold must be a positive integer')
+            if item['approval_timeout_minutes'] <= 0:
+                raise HTTPException(status_code=400, detail=f'group link #{index} approval_timeout_minutes must be a positive integer')
+            item['auto_recover_worker'] = bool(item.get('auto_recover_worker')) if item.get('auto_recover_worker') is not None else bool(payload.auto_recover_worker)
+        primary_binding = group_link_bindings[0]
+        notify_profile_name = str(primary_binding.get('notify_profile_name') or '').strip()
+        approval_count_threshold = _coerce_positive_int(primary_binding.get('approval_count_threshold'), WHATSAPP_APPROVAL_DEFAULT_COUNT_THRESHOLD)
+        approval_timeout_minutes = _coerce_positive_int(primary_binding.get('approval_timeout_minutes'), WHATSAPP_APPROVAL_DEFAULT_TIMEOUT_MINUTES)
+        schedule_windows = _normalize_schedule_windows_payload(primary_binding.get('schedule_windows') or [])
+        row = {
+            'account_key': normalized_key,
+            'account_name': account_name,
+            'responsible_type': responsible_type,
+            'group_links': json.dumps(group_link_bindings, ensure_ascii=False),
+            'area': area,
+            'notify_profile_name': notify_profile_name,
+            'approval_rule': 'threshold_or_timeout',
+            'approval_count_threshold': approval_count_threshold,
+            'approval_timeout_minutes': approval_timeout_minutes,
+            'auto_recover_worker': 1 if primary_binding.get('auto_recover_worker') else 0,
+            'schedule_windows': json.dumps(schedule_windows, ensure_ascii=False),
+            'enabled': 1 if payload.enabled else 0,
+            'verification_status': 'pending_verification',
+            'notes': str(payload.notes or '').strip(),
+            'updated_at': utc_now(),
+        }
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO whatsapp_approval_accounts (
+                    account_key, account_name, responsible_type, group_links, area, notify_profile_name, approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker, schedule_windows,
+                    enabled, verification_status, notes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_key)
+                DO UPDATE SET account_name = excluded.account_name,
+                              responsible_type = excluded.responsible_type,
+                              group_links = excluded.group_links,
+                              area = excluded.area,
+                              notify_profile_name = excluded.notify_profile_name,
+                              approval_rule = excluded.approval_rule,
+                              approval_count_threshold = excluded.approval_count_threshold,
+                              approval_timeout_minutes = excluded.approval_timeout_minutes,
+                              auto_recover_worker = excluded.auto_recover_worker,
+                              schedule_windows = excluded.schedule_windows,
+                              enabled = excluded.enabled,
+                              verification_status = excluded.verification_status,
+                              notes = excluded.notes,
+                              updated_at = excluded.updated_at
+                """,
+                (
+                    row['account_key'], row['account_name'], row['responsible_type'], row['group_links'], row['area'], row['notify_profile_name'], row['approval_rule'], row['approval_count_threshold'], row['approval_timeout_minutes'], row['auto_recover_worker'], row['schedule_windows'],
+                    row['enabled'], row['verification_status'], row['notes'], row['updated_at'],
+                ),
+            )
+            conn.commit()
+        return {
+            'saved': True,
+            'account': self._build_whatsapp_approval_account_runtime(row),
+        }
+
+    def delete_whatsapp_approval_account(self, account_key: str) -> Dict[str, Any]:
+        normalized_key = str(account_key or '').strip()
+        if not normalized_key:
+            raise HTTPException(status_code=400, detail='account_key is required')
+        self.stop_whatsapp_approval_account_runtime(normalized_key)
+        with self.db.connect() as conn:
+            conn.execute('DELETE FROM whatsapp_approval_accounts WHERE account_key = ?', (normalized_key,))
+            conn.commit()
+        return {'deleted': True, 'account_key': normalized_key}
+
+    def _default_production_ops_daemon_config(self) -> Dict[str, Any]:
+        launch_agent_installed = PRODUCTION_OPS_DAEMON_LAUNCH_AGENT_PATH.exists()
+        return {
+            'config_name': 'default',
+            'enabled': launch_agent_installed,
+            'registration_group': '🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎',
+            'api_base_url': 'http://127.0.0.1:8011',
+            'worker_base_url': 'http://127.0.0.1:8787',
+            'interval_seconds': 20.0,
+            'notify_chat_id': str(os.getenv('FEISHU_HOME_CHANNEL') or '').strip(),
+            'area': 'Indonesia',
+            'remark': 'production auto approval daemon',
+            'approved_count': 1,
+            'auto_recover_worker': True,
+            'updated_at': utc_now(),
+        }
+
+    def _persist_production_ops_daemon_env(self, row: Dict[str, Any]) -> None:
+        if self.db.db_path == ':memory:' or str(os.getenv('PRODUCTION_OPS_DAEMON_SKIP_RUNTIME_SYNC') or '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+            return
+        env_rows = {
+            'PRODUCTION_OPS_API_BASE_URL': str(row.get('api_base_url') or '').strip(),
+            'PRODUCTION_OPS_WORKER_BASE_URL': str(row.get('worker_base_url') or '').strip(),
+            'PRODUCTION_OPS_REGISTRATION_GROUP': str(row.get('registration_group') or '').strip(),
+            'PRODUCTION_OPS_INTERVAL_SECONDS': str(row.get('interval_seconds') or 20),
+            'PRODUCTION_OPS_NOTIFY_CHAT_ID': str(row.get('notify_chat_id') or '').strip(),
+            'PRODUCTION_OPS_AREA': str(row.get('area') or '').strip(),
+            'PRODUCTION_OPS_REMARK': str(row.get('remark') or '').strip(),
+            'PRODUCTION_OPS_APPROVED_COUNT': str(row.get('approved_count') or 1),
+            'PRODUCTION_OPS_AUTO_RECOVER_WORKER': '1' if row.get('auto_recover_worker') else '0',
+        }
+        lines = [f"{key}={shlex.quote(value)}" for key, value in env_rows.items()]
+        PRODUCTION_OPS_DAEMON_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PRODUCTION_OPS_DAEMON_ENV_PATH.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+    def _sync_production_ops_daemon_launch_agent(self, *, enabled: bool) -> Dict[str, Any]:
+        if self.db.db_path == ':memory:' or str(os.getenv('PRODUCTION_OPS_DAEMON_SKIP_RUNTIME_SYNC') or '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+            return {'attempted': False, 'skipped': True}
+        script_path = PRODUCTION_OPS_DAEMON_INSTALL_SCRIPT if enabled else PRODUCTION_OPS_DAEMON_UNINSTALL_SCRIPT
+        completed = subprocess.run([str(script_path)], capture_output=True, text=True, cwd=str(PROJECT_ROOT))
+        return {
+            'attempted': True,
+            'enabled': enabled,
+            'returncode': completed.returncode,
+            'stdout': completed.stdout,
+            'stderr': completed.stderr,
+            'ok': completed.returncode == 0,
+        }
+
+    def get_production_ops_daemon_config(self) -> Dict[str, Any]:
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT config_name, enabled, registration_group, api_base_url, worker_base_url, interval_seconds, notify_chat_id, area, remark, approved_count, auto_recover_worker, updated_at FROM production_ops_daemon_configs WHERE config_name = 'default'"
+            ).fetchone()
+        if not row:
+            config = self._default_production_ops_daemon_config()
+        else:
+            config = dict(row)
+            config['enabled'] = bool(config.get('enabled'))
+            config['auto_recover_worker'] = bool(config.get('auto_recover_worker'))
+        runtime_status = {}
+        if PRODUCTION_OPS_DAEMON_STATUS_PATH.exists():
+            try:
+                runtime_status = json.loads(PRODUCTION_OPS_DAEMON_STATUS_PATH.read_text(encoding='utf-8'))
+                if not isinstance(runtime_status, dict):
+                    runtime_status = {}
+            except Exception:
+                runtime_status = {}
+        return {
+            'config': config,
+            'runtime': {
+                'launch_agent_installed': PRODUCTION_OPS_DAEMON_LAUNCH_AGENT_PATH.exists(),
+                'status_path': str(PRODUCTION_OPS_DAEMON_STATUS_PATH),
+                'env_path': str(PRODUCTION_OPS_DAEMON_ENV_PATH),
+                'status': runtime_status,
+            },
+        }
+
+    def update_production_ops_daemon_config(self, payload: ProductionOpsDaemonConfigUpdateRequest) -> Dict[str, Any]:
+        existing = self.get_production_ops_daemon_config()['config']
+        registration_group = str(payload.registration_group or '').strip() or str(existing.get('registration_group') or self._default_production_ops_daemon_config().get('registration_group') or '').strip()
+        row = {
+            'config_name': 'default',
+            'enabled': 1 if payload.enabled else 0,
+            'registration_group': registration_group,
+            'api_base_url': str(payload.api_base_url or existing.get('api_base_url') or 'http://127.0.0.1:8011').strip(),
+            'worker_base_url': str(payload.worker_base_url or existing.get('worker_base_url') or 'http://127.0.0.1:8787').strip(),
+            'interval_seconds': max(5.0, float(payload.interval_seconds or existing.get('interval_seconds') or 20.0)),
+            'notify_chat_id': str(payload.notify_chat_id or '').strip(),
+            'area': str(payload.area or existing.get('area') or 'Indonesia').strip(),
+            'remark': str(payload.remark or existing.get('remark') or 'production auto approval daemon').strip(),
+            'approved_count': max(1, int(payload.approved_count or existing.get('approved_count') or 1)),
+            'auto_recover_worker': 1 if payload.auto_recover_worker else 0,
+            'updated_at': utc_now(),
+        }
+        if not row['api_base_url']:
+            raise HTTPException(status_code=400, detail='api_base_url is required')
+        if not row['worker_base_url']:
+            raise HTTPException(status_code=400, detail='worker_base_url is required')
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO production_ops_daemon_configs (
+                    config_name, enabled, registration_group, api_base_url, worker_base_url, interval_seconds,
+                    notify_chat_id, area, remark, approved_count, auto_recover_worker, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(config_name)
+                DO UPDATE SET enabled = excluded.enabled,
+                              registration_group = excluded.registration_group,
+                              api_base_url = excluded.api_base_url,
+                              worker_base_url = excluded.worker_base_url,
+                              interval_seconds = excluded.interval_seconds,
+                              notify_chat_id = excluded.notify_chat_id,
+                              area = excluded.area,
+                              remark = excluded.remark,
+                              approved_count = excluded.approved_count,
+                              auto_recover_worker = excluded.auto_recover_worker,
+                              updated_at = excluded.updated_at
+                """,
+                (
+                    row['config_name'], row['enabled'], row['registration_group'], row['api_base_url'], row['worker_base_url'], row['interval_seconds'],
+                    row['notify_chat_id'], row['area'], row['remark'], row['approved_count'], row['auto_recover_worker'], row['updated_at'],
+                ),
+            )
+            conn.commit()
+        self._persist_production_ops_daemon_env({**row, 'enabled': bool(row['enabled']), 'auto_recover_worker': bool(row['auto_recover_worker'])})
+        runtime_sync = self._sync_production_ops_daemon_launch_agent(enabled=bool(row['enabled']))
+        return {
+            'saved': True,
+            'config': {
+                **row,
+                'enabled': bool(row['enabled']),
+                'auto_recover_worker': bool(row['auto_recover_worker']),
+            },
+            'runtime_sync': runtime_sync,
         }
 
     def guild_executor_health(self) -> Dict[str, Any]:
@@ -9147,6 +12451,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         crm_retry_delays_seconds=crm_retry_delays_seconds,
         crm_retry_max_attempts=int(crm_retry_max_attempts or 3),
         bind_retry_max_attempts=int(bind_retry_max_attempts or 2),
+        official_group_approval_webhook_url=official_group_approval_webhook_url,
     )
     _schedule_registration_group_executor_warmup(registration_group_approval_executor)
     print(
@@ -9161,6 +12466,41 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     app = FastAPI(title="MCN AI Automation")
     app.state.service = service
 
+    def _official_group_bridge_console_base_url() -> Optional[str]:
+        webhook_url = str(official_group_approval_webhook_url or '').strip()
+        if not webhook_url:
+            return None
+        return webhook_url.replace('/official-group/approve', '')
+
+    def _official_group_bridge_summary_payload() -> Dict[str, Any]:
+        base_url = _official_group_bridge_console_base_url()
+        if not base_url:
+            return {
+                'configured': False,
+                'health': {},
+                'summary': {},
+            }
+
+        def _get_json(url: str) -> Dict[str, Any]:
+            response = requests.get(url, timeout=10.0)
+            response.raise_for_status()
+            return response.json()
+
+        try:
+            health = _get_json(f"{base_url}/ops/official-group-bridge/health")
+        except Exception as exc:
+            health = {'status': 'unreachable', 'error': str(exc)}
+        try:
+            summary = _get_json(f"{base_url}/ops/official-group-bridge/summary")
+        except Exception as exc:
+            summary = {'status': 'unreachable', 'error': str(exc)}
+        return {
+            'configured': True,
+            'base_url': base_url,
+            'health': health,
+            'summary': summary,
+        }
+
     @app.get("/health")
     def health() -> Dict[str, str]:
         return {"status": "ok"}
@@ -9172,6 +12512,18 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     @app.get('/ops/intake-bot-presets', response_class=HTMLResponse)
     def intake_bot_presets_page() -> str:
         return INTAKE_BOT_PRESETS_PAGE_HTML
+
+    @app.get('/ops/production-ops', response_class=HTMLResponse)
+    def production_ops_page() -> str:
+        return PRODUCTION_OPS_PAGE_HTML
+
+    @app.get('/ops/official-group-bridge')
+    def official_group_bridge_page_redirect() -> RedirectResponse:
+        bridge_url = str(official_group_approval_webhook_url or '').strip()
+        if not bridge_url:
+            raise HTTPException(status_code=404, detail='official_group_bridge_not_configured')
+        bridge_page_url = bridge_url.replace('/official-group/approve', '/ops/official-group-bridge')
+        return RedirectResponse(url=bridge_page_url, status_code=307)
 
     @app.get('/api/ops/runtime-health')
     def ops_runtime_health() -> Dict[str, Any]:
@@ -9337,6 +12689,66 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     @app.get('/api/ops/guild-executors')
     def ops_guild_executors():
         return service.list_guild_executors()
+
+    @app.get('/api/ops/production-ops-daemon')
+    def ops_production_ops_daemon():
+        return service.get_production_ops_daemon_config()
+
+    @app.get('/api/ops/whatsapp-approval-accounts')
+    def ops_whatsapp_approval_accounts():
+        return service.list_whatsapp_approval_accounts()
+
+    @app.get('/api/ops/whatsapp-approval-accounts/{account_key}/runtime')
+    def ops_whatsapp_approval_account_runtime(account_key: str):
+        return service.get_whatsapp_approval_account_runtime(account_key)
+
+    @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/start')
+    def ops_whatsapp_approval_account_runtime_start(account_key: str):
+        return service.start_whatsapp_approval_account_runtime(account_key)
+
+    @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/stop')
+    def ops_whatsapp_approval_account_runtime_stop(account_key: str):
+        return service.stop_whatsapp_approval_account_runtime(account_key)
+
+    @app.get('/api/ops/whatsapp-approval-accounts/{account_key}/session')
+    def ops_whatsapp_approval_account_session(account_key: str):
+        return service.get_whatsapp_approval_account_session(account_key)
+
+    @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/session/start')
+    def ops_whatsapp_approval_account_session_start(account_key: str):
+        return service.start_whatsapp_approval_account_session(account_key)
+
+    @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/session/reset')
+    def ops_whatsapp_approval_account_session_reset(account_key: str):
+        return service.reset_whatsapp_approval_account_session(account_key)
+
+    @app.get('/api/ops/whatsapp-approval-area-options')
+    def ops_whatsapp_approval_area_options():
+        return service.list_whatsapp_approval_area_options()
+
+    @app.post('/api/ops/whatsapp-approval-area-options')
+    def ops_whatsapp_approval_area_options_update(payload: WhatsAppApprovalAreaOptionsUpdateRequest):
+        return service.update_whatsapp_approval_area_options(payload)
+
+    @app.get('/api/ops/whatsapp-approval-candidates')
+    def ops_whatsapp_approval_candidates():
+        return service.list_whatsapp_approval_candidates()
+
+    @app.post('/api/ops/whatsapp-approval-accounts/{account_key}')
+    def ops_whatsapp_approval_account_update(account_key: str, payload: WhatsAppApprovalAccountUpdateRequest):
+        return service.update_whatsapp_approval_account(account_key, payload)
+
+    @app.delete('/api/ops/whatsapp-approval-accounts/{account_key}')
+    def ops_whatsapp_approval_account_delete(account_key: str):
+        return service.delete_whatsapp_approval_account(account_key)
+
+    @app.get('/api/ops/official-group-bridge-summary')
+    def ops_official_group_bridge_summary():
+        return _official_group_bridge_summary_payload()
+
+    @app.post('/api/ops/production-ops-daemon')
+    def ops_production_ops_daemon_update(payload: ProductionOpsDaemonConfigUpdateRequest):
+        return service.update_production_ops_daemon_config(payload)
 
     @app.get('/api/ops/guild-executors/health')
     def ops_guild_executors_health():

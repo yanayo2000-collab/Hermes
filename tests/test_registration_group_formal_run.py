@@ -50,6 +50,15 @@ def test_execute_formal_registration_group_approval_posts_then_polls_until_done(
         decided_by='Hermes',
         decided_by_name='Song Yuqi',
         approved_count=1,
+        expected_group_state={
+            'pending_count': 2,
+            'member_count': 4,
+            'requester_ids': ['aaa@lid', 'bbb@lid'],
+            'requesters': [
+                {'requesterId': 'aaa@lid', 'requestedAtUnix': 100},
+                {'requesterId': 'bbb@lid', 'requestedAtUnix': 200},
+            ],
+        },
         poll_interval_seconds=0.01,
         poll_timeout_seconds=5.0,
     )
@@ -60,6 +69,10 @@ def test_execute_formal_registration_group_approval_posts_then_polls_until_done(
     assert transport.calls[0]['method'] == 'POST'
     assert transport.calls[0]['url'] == 'http://127.0.0.1:8011/api/registration-groups/approval-decisions'
     assert transport.calls[0]['payload']['registration_group'] == '8️⃣5️⃣'
+    assert transport.calls[0]['payload']['expected_pending_count'] == 2
+    assert transport.calls[0]['payload']['expected_member_count'] == 4
+    assert transport.calls[0]['payload']['expected_requester_ids'] == ['aaa@lid', 'bbb@lid']
+    assert transport.calls[0]['payload']['expected_requesters'][0]['requesterId'] == 'aaa@lid'
     assert transport.calls[1]['url'].endswith('/api/registration-groups/approval-decisions/registration_group_approval_test_1')
 
 

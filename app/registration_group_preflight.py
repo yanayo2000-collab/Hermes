@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 
-EXPECTED_AUTH_STRATEGY='ChromeProfileCopy+NoAuth'
+DEFAULT_EXPECTED_AUTH_STRATEGY = 'ChromeProfileCopy+NoAuth'
+
+
+def _normalize_expected_auth_strategy(value: Any) -> str:
+    normalized = str(value or '').strip()
+    return normalized or DEFAULT_EXPECTED_AUTH_STRATEGY
 
 
 def _as_int(value: Any) -> Optional[int]:
@@ -30,6 +35,13 @@ def _requester_fingerprint(payload: Optional[Dict[str, Any]]) -> List[Tuple[str,
     if entries:
         return sorted(entries)
     return sorted((requester_id, None) for requester_id in _as_requester_ids(payload))
+
+
+def requester_fingerprint_entries(payload: Optional[Dict[str, Any]]) -> List[Dict[str, Optional[int]]]:
+    return [
+        {'requesterId': requester_id, 'requestedAtUnix': requested_at}
+        for requester_id, requested_at in _requester_fingerprint(payload)
+    ]
 
 
 def _requester_ids_match(worker: Dict[str, Any], fresh: Dict[str, Any]) -> bool:
@@ -81,6 +93,7 @@ def evaluate_registration_group_webjs_preflight(
     worker_group_state: Optional[Dict[str, Any]],
     fresh_group_state: Optional[Dict[str, Any]],
     last_verified_group_state: Optional[Dict[str, Any]] = None,
+    expected_auth_strategy: Optional[str] = None,
 ) -> Dict[str, Any]:
     worker_health = dict(worker_health or {})
     worker_warmup = dict(worker_warmup or {})
@@ -90,13 +103,14 @@ def evaluate_registration_group_webjs_preflight(
 
     reasons: List[str] = []
     warnings: List[str] = []
+    expected_auth_strategy = _normalize_expected_auth_strategy(expected_auth_strategy)
     auth_strategy = str(worker_health.get('auth_strategy') or '').strip()
     worker_ready = bool(worker_health.get('ready'))
     worker_authenticated = bool(worker_health.get('authenticated'))
     worker_status = str(worker_health.get('status') or '').strip()
     warmup_outcome = str(worker_warmup.get('warmup_outcome') or '').strip()
 
-    if auth_strategy and auth_strategy != EXPECTED_AUTH_STRATEGY:
+    if auth_strategy and auth_strategy != expected_auth_strategy:
         reasons.append('unexpected_auth_strategy')
     if not worker_ready or not worker_authenticated or worker_status not in {'warm', 'ready'}:
         reasons.append('worker_not_ready')
@@ -151,7 +165,7 @@ def evaluate_registration_group_webjs_preflight(
     return {
         'ok': ok,
         'registration_group': str(registration_group or '').strip(),
-        'expected_auth_strategy': EXPECTED_AUTH_STRATEGY,
+        'expected_auth_strategy': expected_auth_strategy,
         'stale_session_detected': stale_session_detected,
         'reasons': reasons,
         'warnings': warnings,

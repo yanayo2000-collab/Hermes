@@ -5,7 +5,7 @@ import os
 import subprocess
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -177,7 +177,7 @@ def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
         incidents.append({
             'severity': 'critical',
             'code': 'backend_unhealthy',
-            'summary': 'intake backend health check failed',
+            'summary': '后端健康检查失败',
             'details': backend,
             'dedupe_key': 'backend_unhealthy',
         })
@@ -186,7 +186,7 @@ def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
         incidents.append({
             'severity': 'critical',
             'code': 'worker_state_failed',
-            'summary': 'worker group-state probe failed',
+            'summary': '群状态探测失败',
             'details': worker,
             'dedupe_key': 'worker_state_failed',
         })
@@ -195,52 +195,197 @@ def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
         incidents.append({
             'severity': 'critical',
             'code': 'release_evaluation_failed',
-            'summary': 'release evaluation failed',
+            'summary': '批次放行评估失败',
             'details': release,
             'dedupe_key': 'release_evaluation_failed',
         })
     action = cycle.get('formal_approval') or {}
     if action.get('triggered') and not action.get('ok'):
-        approval_run_id = str(((action.get('result') or {}).get('formal_run') or {}).get('approval_run_id') or '')
-        dedupe_suffix = approval_run_id or str(action.get('fingerprint') or 'unknown')
+        fingerprint = str(action.get('fingerprint') or '').strip()
+        approval_run_id = str(((action.get('result') or {}).get('formal_run') or {}).get('approval_run_id') or '').strip()
+        dedupe_suffix = fingerprint or 'unknown'
+        formal_run = ((action.get('result') or {}).get('formal_run') or {})
+        formal_result = (formal_run.get('result') or {}) if isinstance(formal_run, dict) else {}
         incidents.append({
             'severity': 'critical',
             'code': 'formal_approval_failed',
-            'summary': 'formal approval run finished without verified+crm_recorded success',
-            'details': action,
+            'summary': '正式审批未闭环',
+            'details': {
+                'fingerprint': fingerprint,
+                'pending_count': action.get('pending_count'),
+                'release_count': action.get('release_count'),
+                'reason_code': action.get('reason_code'),
+                'returncode': action.get('returncode'),
+                'approval_run_id': approval_run_id,
+                'verified': formal_result.get('verified'),
+                'crm_recorded': formal_result.get('crm_recorded'),
+                'result_code': formal_result.get('result_code'),
+            },
             'dedupe_key': f'formal_approval_failed:{dedupe_suffix}',
+        })
+    startup_batch = cycle.get('startup_initial_batch') or {}
+    if startup_batch.get('triggered') and not startup_batch.get('ok'):
+        session_id = str(startup_batch.get('session_id') or '').strip()
+        approval_run_id = str(((startup_batch.get('result') or {}).get('formal_run') or {}).get('approval_run_id') or '').strip()
+        dedupe_suffix = session_id or 'unknown'
+        attempt_results = startup_batch.get('attempt_results') or []
+        last_attempt = attempt_results[-1] if isinstance(attempt_results, list) and attempt_results else {}
+        last_result = (last_attempt.get('result') or {}) if isinstance(last_attempt, dict) else {}
+        last_formal_run = (last_result.get('formal_run') or {}) if isinstance(last_result, dict) else {}
+        last_formal_result = (last_formal_run.get('result') or {}) if isinstance(last_formal_run, dict) else {}
+        incidents.append({
+            'severity': 'critical',
+            'code': 'startup_initial_batch_failed',
+            'summary': '启动首批审批失败',
+            'details': {
+                'session_id': session_id,
+                'pending_count': startup_batch.get('pending_count'),
+                'attempts': startup_batch.get('attempts'),
+                'max_retries': startup_batch.get('max_retries'),
+                'retries_exhausted': startup_batch.get('retries_exhausted'),
+                'last_returncode': last_attempt.get('returncode') if isinstance(last_attempt, dict) else None,
+                'last_approval_run_id': str(last_formal_run.get('approval_run_id') or '').strip() or approval_run_id or None,
+                'last_verified': last_formal_result.get('verified'),
+                'last_crm_recorded': last_formal_result.get('crm_recorded'),
+                'last_result_code': last_formal_result.get('result_code'),
+            },
+            'dedupe_key': f'startup_initial_batch_failed:{dedupe_suffix}',
         })
     cycle_error = str(cycle.get('cycle_error') or '').strip()
     if cycle_error:
         incidents.append({
             'severity': 'critical',
             'code': 'daemon_cycle_error',
-            'summary': cycle_error,
+            'summary': '守护任务异常',
             'details': {'error': cycle_error},
             'dedupe_key': f'daemon_cycle_error:{cycle_error}',
         })
     return incidents
 
 
+def _format_alert_time(checked_at: str) -> str:
+    raw = str(checked_at or '').strip() or utc_now_iso()
+    try:
+        normalized = raw.replace('Z', '+00:00')
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(timezone(timedelta(hours=8)))
+        return dt.strftime('%Y-%m-%d %H:%M:%S UTC+8')
+    except Exception:
+        return raw
+
+
+
+def _compact_reason_text(incident: Dict[str, Any], cycle: Dict[str, Any]) -> str:
+    code = str(incident.get('code') or '').strip()
+    details = incident.get('details') or {}
+    action = cycle.get('formal_approval') or {}
+    formal_run = ((action.get('result') or {}).get('formal_run') or {}) if isinstance(action, dict) else {}
+    formal_result = (formal_run.get('result') or {}) if isinstance(formal_run, dict) else {}
+
+    if code == 'formal_approval_failed':
+        returncode = action.get('returncode') if action.get('returncode') is not None else details.get('returncode')
+        verified = formal_result.get('verified')
+        if verified is None:
+            verified = details.get('verified')
+        crm_recorded = formal_result.get('crm_recorded')
+        if crm_recorded is None:
+            crm_recorded = details.get('crm_recorded')
+
+        if returncode not in (None, 0):
+            return '审批脚本执行失败'
+        if verified is True and crm_recorded is False:
+            return '审批成功，但 CRM 写入失败'
+        if verified is False and crm_recorded is True:
+            return 'CRM 已写入，但审批结果未核验成功'
+        if verified is False and crm_recorded is False:
+            return '审批与 CRM 写入结果均未确认成功'
+        if verified is False:
+            return '审批结果未核验成功'
+        if crm_recorded is False:
+            return '审批已提交，但 CRM 未确认写入'
+        return '审批已执行，但未形成成功闭环'
+
+    if code == 'release_evaluation_failed':
+        error = str(details.get('error') or '').strip()
+        return error or '批次放行评估接口调用失败'
+
+    if code == 'backend_unhealthy':
+        error = str(details.get('error') or '').strip()
+        return error or '后端健康检查失败'
+
+    if code == 'worker_state_failed':
+        error = str(details.get('error') or '').strip()
+        return error or 'worker 群状态探测失败'
+
+    if code == 'startup_initial_batch_failed':
+        retries_exhausted = details.get('retries_exhausted')
+        last_verified = details.get('last_verified')
+        last_crm_recorded = details.get('last_crm_recorded')
+        if last_verified is True and last_crm_recorded is False:
+            return '启动首批审批成功，但 CRM 写入失败'
+        if last_verified is False and last_crm_recorded is True:
+            return '启动首批 CRM 已写入，但审批结果未核验成功'
+        if retries_exhausted:
+            return '启动首批审批失败，自动重试已结束并转入常规监控'
+        return '启动首批审批失败'
+
+    snippet = json.dumps(details, ensure_ascii=False) if details else ''
+    if len(snippet) > 120:
+        snippet = snippet[:120] + '...'
+    return snippet or '未知原因'
+
+
+
+def _compact_count_line(incident: Dict[str, Any], cycle: Dict[str, Any]) -> Optional[str]:
+    code = str(incident.get('code') or '').strip()
+    details = incident.get('details') or {}
+    action = cycle.get('formal_approval') or {}
+    startup = cycle.get('startup_initial_batch') or {}
+    release = cycle.get('release_evaluation') or {}
+
+    label = '人数'
+    candidates: List[Any] = []
+    if code == 'formal_approval_failed':
+        candidates = [action.get('release_count'), details.get('release_count'), action.get('pending_count'), details.get('pending_count')]
+        label = '批次人数'
+    elif code == 'startup_initial_batch_failed':
+        candidates = [startup.get('pending_count'), details.get('pending_count')]
+        label = '待审批人数'
+    elif code == 'release_evaluation_failed':
+        payload = release.get('payload') if isinstance(release.get('payload'), dict) else {}
+        candidates = [payload.get('release_count'), release.get('release_count'), details.get('release_count')]
+        label = '待放行人数'
+
+    for value in candidates:
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            return f'{label}: {count}'
+    return None
+
+
+
 def format_lark_alert(service_name: str, incident: Dict[str, Any], cycle: Dict[str, Any]) -> str:
-    checked_at = str(cycle.get('checked_at') or utc_now_iso())
+    checked_at = _format_alert_time(str(cycle.get('checked_at') or utc_now_iso()))
+    severity = str(incident.get('severity') or 'info').upper()
     lines = [
-        f'[{service_name}] {incident.get("severity", "info").upper()} {incident.get("code", "incident")}',
+        f'[{service_name}] {severity} {incident.get("code", "incident")}',
         str(incident.get('summary') or '').strip(),
-        f'checked_at: {checked_at}',
+        f'时间: {checked_at}',
     ]
     registration_group = str(cycle.get('registration_group') or '').strip()
     if registration_group:
-        lines.append(f'registration_group: {registration_group}')
-    action = cycle.get('formal_approval') or {}
-    if action.get('triggered'):
-        lines.append(f'fingerprint: {action.get("fingerprint") or ""}')
-    details = incident.get('details')
-    if details:
-        snippet = json.dumps(details, ensure_ascii=False)
-        if len(snippet) > 1200:
-            snippet = snippet[:1200] + '...'
-        lines.append(f'details: {snippet}')
+        lines.append(f'注册群: {registration_group}')
+    count_line = _compact_count_line(incident, cycle)
+    if count_line:
+        lines.append(count_line)
+    reason = _compact_reason_text(incident, cycle)
+    if reason:
+        lines.append(f'原因: {reason}')
     return '\n'.join(line for line in lines if line)
 
 

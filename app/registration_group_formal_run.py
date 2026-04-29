@@ -2,11 +2,26 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _normalized_expected_requesters(expected_group_state: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for item in (expected_group_state or {}).get('requesters') or []:
+        if not isinstance(item, dict):
+            continue
+        requester_id = str(item.get('requesterId') or '').strip()
+        if not requester_id:
+            continue
+        normalized.append({
+            'requesterId': requester_id,
+            'requestedAtUnix': item.get('requestedAtUnix'),
+        })
+    return normalized
 
 
 def execute_formal_registration_group_approval(
@@ -20,6 +35,7 @@ def execute_formal_registration_group_approval(
     decided_by: str = 'Hermes',
     decided_by_name: str = 'Song Yuqi',
     approved_count: int = 1,
+    expected_group_state: Optional[Dict[str, Any]] = None,
     poll_interval_seconds: float = 0.5,
     poll_timeout_seconds: float = 60.0,
     now_fn: Callable[[], float] = time.monotonic,
@@ -38,6 +54,13 @@ def execute_formal_registration_group_approval(
         'remark': str(remark or '').strip() or None,
         'force_immediate': True,
     }
+    if expected_group_state:
+        payload['expected_pending_count'] = expected_group_state.get('pending_count')
+        payload['expected_member_count'] = expected_group_state.get('member_count')
+        payload['expected_requester_ids'] = [
+            str(item).strip() for item in (expected_group_state.get('requester_ids') or []) if str(item).strip()
+        ]
+        payload['expected_requesters'] = _normalized_expected_requesters(expected_group_state)
     anchor_utc = _utc_now_iso()
     started = now_fn()
     accepted_response = fetch_json(

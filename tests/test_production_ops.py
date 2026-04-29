@@ -53,30 +53,124 @@ def test_build_incidents_emits_backend_and_formal_approval_failures():
             'fingerprint': 'abc',
             'result': {'formal_run': {'approval_run_id': 'run-123'}},
         },
+        'startup_initial_batch': {
+            'triggered': True,
+            'ok': False,
+            'session_id': 'session-1',
+            'result': {'formal_run': {'approval_run_id': 'startup-run-1'}},
+        },
     }
 
     incidents = build_incidents(cycle)
 
-    assert [item['code'] for item in incidents] == ['backend_unhealthy', 'formal_approval_failed']
-    assert incidents[1]['dedupe_key'] == 'formal_approval_failed:run-123'
+    assert [item['code'] for item in incidents] == ['backend_unhealthy', 'formal_approval_failed', 'startup_initial_batch_failed']
+    assert incidents[0]['summary'] == '后端健康检查失败'
+    assert incidents[1]['summary'] == '正式审批未闭环'
+    assert incidents[1]['dedupe_key'] == 'formal_approval_failed:abc'
+    assert incidents[1]['details']['fingerprint'] == 'abc'
+    assert incidents[2]['summary'] == '启动首批审批失败'
+    assert incidents[2]['dedupe_key'] == 'startup_initial_batch_failed:session-1'
+    assert incidents[2]['details']['session_id'] == 'session-1'
 
 
-def test_format_lark_alert_contains_summary_and_details():
+def test_build_incidents_uses_stable_unknown_dedupe_when_ids_missing():
+    cycle = {
+        'backend_health': {'ok': True},
+        'worker_state': {'ok': True},
+        'release_evaluation': {'ok': True},
+        'formal_approval': {
+            'triggered': True,
+            'ok': False,
+            'result': {'formal_run': {'approval_run_id': 'run-123'}},
+        },
+        'startup_initial_batch': {
+            'triggered': True,
+            'ok': False,
+            'result': {'formal_run': {'approval_run_id': 'startup-run-1'}},
+        },
+    }
+
+    incidents = build_incidents(cycle)
+
+    assert incidents[0]['dedupe_key'] == 'formal_approval_failed:unknown'
+    assert incidents[1]['dedupe_key'] == 'startup_initial_batch_failed:unknown'
+
+
+def test_format_lark_alert_contains_summary_and_reason():
     cycle = {
         'checked_at': '2026-04-28T10:00:00+00:00',
         'registration_group': 'RG',
-        'formal_approval': {'triggered': True, 'fingerprint': 'abc'},
+        'formal_approval': {
+            'triggered': True,
+            'fingerprint': 'abc',
+            'returncode': 2,
+            'release_count': 8,
+        },
     }
     incident = {
         'severity': 'critical',
         'code': 'formal_approval_failed',
-        'summary': 'formal approval run failed',
-        'details': {'returncode': 2},
+        'summary': '正式审批失败',
+        'details': {'returncode': 2, 'release_count': 8},
     }
 
     text = format_lark_alert('production-ops-daemon', incident, cycle)
 
     assert '[production-ops-daemon] CRITICAL formal_approval_failed' in text
-    assert 'registration_group: RG' in text
-    assert 'fingerprint: abc' in text
-    assert '"returncode": 2' in text
+    assert '时间: 2026-04-28 18:00:00 UTC+8' in text
+    assert '注册群: RG' in text
+    assert '批次人数: 8' in text
+    assert '原因: 审批脚本执行失败' in text
+
+
+def test_format_lark_alert_uses_compact_startup_reason_without_raw_details():
+    cycle = {
+        'checked_at': '2026-04-28T10:00:00+00:00',
+        'registration_group': 'RG',
+        'startup_initial_batch': {
+            'triggered': True,
+            'ok': False,
+            'pending_count': 12,
+            'retries_exhausted': True,
+        },
+    }
+    incident = {
+        'severity': 'critical',
+        'code': 'startup_initial_batch_failed',
+        'summary': '启动首批审批失败',
+        'details': {
+            'pending_count': 12,
+            'retries_exhausted': True,
+            'blob': 'x' * 1000,
+        },
+    }
+
+    text = format_lark_alert('production-ops-daemon', incident, cycle)
+
+    assert '待审批人数: 12' in text
+    assert '原因: 启动首批审批失败，自动重试已结束并转入常规监控' in text
+    assert '详情:' not in text
+    assert 'blob' not in text
+
+
+def test_format_lark_alert_uses_compact_release_reason_without_raw_details():
+    cycle = {
+        'checked_at': '2026-04-28T10:00:00+00:00',
+        'registration_group': 'RG',
+        'release_evaluation': {
+            'ok': False,
+            'payload': {'release_count': 14},
+        },
+    }
+    incident = {
+        'severity': 'critical',
+        'code': 'release_evaluation_failed',
+        'summary': '批次放行评估失败',
+        'details': {'error': '<urlopen error [Errno 61] Connection refused>', 'release_count': 14},
+    }
+
+    text = format_lark_alert('production-ops-daemon', incident, cycle)
+
+    assert '待放行人数: 14' in text
+    assert '原因: <urlopen error [Errno 61] Connection refused>' in text
+    assert '详情:' not in text

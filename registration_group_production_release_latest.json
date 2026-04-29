@@ -1,89 +1,119 @@
 {
   "status": "waiting",
   "anchor_utc": "2026-04-28T02:39:17.311213+00:00",
-  "checked_at_utc": "2026-04-28T03:00:41.126027+00:00",
+  "checked_at_utc": "2026-04-28T03:31:52.949688+00:00",
   "registration_group": "🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎",
   "group_state": {
     "group_id": "120363425215002840@g.us",
     "group_name": "🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎",
-    "pending_count": 6,
-    "member_count": 333,
+    "pending_count": 9,
+    "member_count": 339,
     "requester_ids": [
-      "13606624202907@lid",
-      "182072991858888@lid",
-      "203122509139976@lid",
-      "239431793545466@lid",
-      "74659802419327@lid",
-      "88399788662948@lid"
+      "14019494731820@lid",
+      "153258039492776@lid",
+      "168260125368322@lid",
+      "220830743187531@lid",
+      "251625675468996@lid",
+      "273950697345114@lid",
+      "76128429584469@lid",
+      "81519049744432@lid",
+      "86986006212782@lid"
     ],
     "requesters": [
       {
-        "requesterId": "13606624202907@lid",
-        "phoneRaw": "+13606624202907@lid",
-        "phoneNormalized": "+13606624202907@lid",
-        "displayName": "unknown",
+        "requesterId": "14019494731820@lid",
+        "phoneRaw": "+14019494731820@lid",
+        "phoneNormalized": "+14019494731820@lid",
+        "displayName": "lafi",
         "requestMethod": "InviteLink",
-        "requestedAtUnix": 1777344692,
-        "requestedAtIso": "2026-04-28T02:51:32.000Z"
+        "requestedAtUnix": 1777346262,
+        "requestedAtIso": "2026-04-28T03:17:42.000Z"
       },
       {
-        "requesterId": "182072991858888@lid",
-        "phoneRaw": "+182072991858888@lid",
-        "phoneNormalized": "+182072991858888@lid",
-        "displayName": "Dapur buk nong",
+        "requesterId": "153258039492776@lid",
+        "phoneRaw": "+153258039492776@lid",
+        "phoneNormalized": "+153258039492776@lid",
+        "displayName": "່\n່",
         "requestMethod": "InviteLink",
-        "requestedAtUnix": 1777345128,
-        "requestedAtIso": "2026-04-28T02:58:48.000Z"
+        "requestedAtUnix": 1777346042,
+        "requestedAtIso": "2026-04-28T03:14:02.000Z"
       },
       {
-        "requesterId": "203122509139976@lid",
-        "phoneRaw": "+203122509139976@lid",
-        "phoneNormalized": "+203122509139976@lid",
-        "displayName": "ccekk...",
+        "requesterId": "168260125368322@lid",
+        "phoneRaw": "+168260125368322@lid",
+        "phoneNormalized": "+168260125368322@lid",
+        "displayName": "M!πd@ M°®@ $!#£q√",
         "requestMethod": "InviteLink",
-        "requestedAtUnix": 1777344768,
-        "requestedAtIso": "2026-04-28T02:52:48.000Z"
+        "requestedAtUnix": 1777345999,
+        "requestedAtIso": "2026-04-28T03:13:19.000Z"
       },
       {
-        "requesterId": "239431793545466@lid",
-        "phoneRaw": "+239431793545466@lid",
-        "phoneNormalized": "+239431793545466@lid",
-        "displayName": "Diana Harahap",
+        "requesterId": "220830743187531@lid",
+        "phoneRaw": "+220830743187531@lid",
+        "phoneNormalized": "+220830743187531@lid",
+        "displayName": "🥀Ayya🥀",
         "requestMethod": "InviteLink",
-        "requestedAtUnix": 1777345085,
-        "requestedAtIso": "2026-04-28T02:58:05.000Z"
+        "requestedAtUnix": 1777346236,
+        "requestedAtIso": "2026-04-28T03:17:16.000Z"
       },
       {
-        "requesterId": "74659802419327@lid",
-        "phoneRaw": "+74659802419327@lid",
-        "phoneNormalized": "+74659802419327@lid",
-        "displayName": "tyr",
+        "requesterId": "251625675468996@lid",
+        "phoneRaw": "+251625675468996@lid",
+        "phoneNormalized": "+251625675468996@lid",
+        "displayName": "ayee",
         "requestMethod": "InviteLink",
-        "requestedAtUnix": 1777345237,
-        "requestedAtIso": "2026-04-28T03:00:37.000Z"
+        "requestedAtUnix": 1777345882,
+        "requestedAtIso": "2026-04-28T03:11:22.000Z"
       },
       {
-        "requesterId": "88399788662948@lid",
-        "phoneRaw": "+88399788662948@lid",
-        "phoneNormalized": "+88399788662948@lid",
-        "displayName": "reee🔱",
+        "requesterId": "273950697345114@lid",
+        "phoneRaw": "+273950697345114@lid",
+        "phoneNormalized": "+273950697345114@lid",
+        "displayName": "z?",
         "requestMethod": "InviteLink",
-        "requestedAtUnix": 1777345114,
-        "requestedAtIso": "2026-04-28T02:58:34.000Z"
+        "requestedAtUnix": 1777346248,
+        "requestedAtIso": "2026-04-28T03:17:28.000Z"
+      },
+      {
+        "requesterId": "76128429584469@lid",
+        "phoneRaw": "+76128429584469@lid",
+        "phoneNormalized": "+76128429584469@lid",
+        "displayName": "Callmeia",
+        "requestMethod": "InviteLink",
+        "requestedAtUnix": 1777346283,
+        "requestedAtIso": "2026-04-28T03:18:03.000Z"
+      },
+      {
+        "requesterId": "81519049744432@lid",
+        "phoneRaw": "+81519049744432@lid",
+        "phoneNormalized": "+81519049744432@lid",
+        "displayName": "rel",
+        "requestMethod": "InviteLink",
+        "requestedAtUnix": 1777346277,
+        "requestedAtIso": "2026-04-28T03:17:57.000Z"
+      },
+      {
+        "requesterId": "86986006212782@lid",
+        "phoneRaw": "+86986006212782@lid",
+        "phoneNormalized": "+86986006212782@lid",
+        "displayName": "Dell",
+        "requestMethod": "InviteLink",
+        "requestedAtUnix": 1777346241,
+        "requestedAtIso": "2026-04-28T03:17:21.000Z"
       }
     ]
   },
   "release": {
     "approval_type": "registration_group",
     "registration_group": "🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎",
-    "pending_count": 6,
-    "oldest_pending_at": "2026-04-28T02:51:32.000Z",
+    "pending_count": 9,
+    "oldest_pending_at": "2026-04-28T03:11:22.000Z",
     "ready": false,
     "release_count": 0,
     "reason_code": "waiting_for_batch",
     "batch_size": 30,
     "timeout_minutes": 30,
-    "elapsed_minutes": 9
+    "elapsed_minutes": 20
   },
-  "requester_fingerprint": "13606624202907@lid@1777344692|182072991858888@lid@1777345128|203122509139976@lid@1777344768|239431793545466@lid@1777345085|74659802419327@lid@1777345237|88399788662948@lid@1777345114"
+  "requester_fingerprint": "14019494731820@lid@1777346262|153258039492776@lid@1777346042|168260125368322@lid@1777345999|220830743187531@lid@1777346236|251625675468996@lid@1777345882|273950697345114@lid@1777346248|76128429584469@lid@1777346283|81519049744432@lid@1777346277|86986006212782@lid@1777346241"
 }

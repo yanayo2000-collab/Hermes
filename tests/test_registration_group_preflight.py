@@ -205,3 +205,23 @@ def test_preflight_treats_matching_requester_fingerprint_as_same_new_queue():
     assert result['ok'] is True
     assert result['stale_session_detected'] is False
     assert 'new_queue_detected_since_last_verified' in result['warnings']
+
+
+def test_preflight_allows_dedicated_localauth_when_expected_auth_strategy_matches():
+    result = evaluate_registration_group_webjs_preflight(
+        registration_group='8️⃣5️⃣',
+        worker_health={
+            'status': 'warm',
+            'auth_strategy': 'LocalAuth',
+            'ready': True,
+            'authenticated': True,
+        },
+        worker_warmup={'status': 'warm', 'warmup_outcome': 'ready'},
+        worker_group_state={'pending_count': 2, 'member_count': 4},
+        fresh_group_state={'pending_count': 2, 'member_count': 4},
+        expected_auth_strategy='LocalAuth',
+    )
+
+    assert result['ok'] is True
+    assert result['expected_auth_strategy'] == 'LocalAuth'
+    assert result['reasons'] == []

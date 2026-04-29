@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -15,7 +16,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from app.registration_group_preflight import evaluate_registration_group_webjs_preflight
+from app.registration_group_preflight import DEFAULT_EXPECTED_AUTH_STRATEGY, evaluate_registration_group_webjs_preflight
 
 DEFAULT_WORKER_EVENT_LOG = ROOT_DIR / 'webjs-approval-worker' / 'logs' / 'registration_group_webjs_worker.jsonl'
 
@@ -139,6 +140,16 @@ def _collect_snapshot(api_base_url: str, worker_base_url: str, registration_grou
     }
 
 
+def _resolve_expected_auth_strategy(cli_value: Optional[str]) -> str:
+    raw = str(cli_value or '').strip()
+    if raw:
+        return raw
+    auth_mode = str(os.getenv('REGISTRATION_GROUP_APPROVAL_WEBJS_AUTH_MODE') or '').strip().lower()
+    if auth_mode == 'dedicated_localauth':
+        return 'LocalAuth'
+    return DEFAULT_EXPECTED_AUTH_STRATEGY
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='Preflight check for registration-group webjs bridge and optional stale-session recovery.')
     parser.add_argument('--api-base-url', default='http://127.0.0.1:8011')
@@ -149,8 +160,10 @@ def main() -> int:
     parser.add_argument('--auto-recover', action='store_true')
     parser.add_argument('--restart-wait-seconds', type=float, default=8.0)
     parser.add_argument('--worker-event-log', default=str(DEFAULT_WORKER_EVENT_LOG))
+    parser.add_argument('--expected-auth-strategy', default='')
     args = parser.parse_args()
 
+    expected_auth_strategy = _resolve_expected_auth_strategy(args.expected_auth_strategy)
     worker_event_log = Path(args.worker_event_log).expanduser().resolve()
     snapshot = _collect_snapshot(args.api_base_url, args.worker_base_url, args.registration_group, args.fresh_probe_cmd, worker_event_log)
     report = evaluate_registration_group_webjs_preflight(
@@ -160,6 +173,7 @@ def main() -> int:
         worker_group_state=snapshot['worker_group_state'],
         fresh_group_state=snapshot['fresh_group_state'],
         last_verified_group_state=snapshot['last_verified_group_state'],
+        expected_auth_strategy=expected_auth_strategy,
     )
     if snapshot.get('fresh_probe_skipped') and not report.get('ok'):
         snapshot = _collect_snapshot(args.api_base_url, args.worker_base_url, args.registration_group, args.fresh_probe_cmd, worker_event_log, allow_fast_probe_skip=False)
@@ -170,6 +184,7 @@ def main() -> int:
             worker_group_state=snapshot['worker_group_state'],
             fresh_group_state=snapshot['fresh_group_state'],
             last_verified_group_state=snapshot['last_verified_group_state'],
+            expected_auth_strategy=expected_auth_strategy,
         )
     output: Dict[str, Any] = {'preflight': report, 'snapshot': snapshot}
 
@@ -200,6 +215,7 @@ def main() -> int:
                     worker_group_state=post_snapshot['worker_group_state'],
                     fresh_group_state=post_snapshot['fresh_group_state'],
                     last_verified_group_state=post_snapshot['last_verified_group_state'],
+                    expected_auth_strategy=expected_auth_strategy,
                 )
                 output['post_recovery'] = {
                     'preflight': post_report,

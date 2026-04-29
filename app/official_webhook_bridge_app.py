@@ -64,8 +64,8 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
     pre { white-space: pre-wrap; word-break: break-word; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 10px; font-size: 12px; max-height: 240px; overflow: auto; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .page-shell { max-width: 1360px; margin: 0 auto; }
-    .shell-nav { display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 16px 0; }
-    .shell-nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:6px 10px; border-radius:999px; background:#eef2ff; }
+    .shell-nav { position: sticky; top: 0; z-index: 20; display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 18px 0; padding: 12px 0 14px; background: rgba(243,246,251,.92); backdrop-filter: blur(10px); }
+    .shell-nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:8px 12px; border-radius:999px; background:#eef4ff; border:1px solid #d8e5ff; }
     .hero { background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:20px; box-shadow:0 1px 3px rgba(0,0,0,.06); margin-bottom:16px; }
     .hero .eyebrow { color:#6366f1; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
     .hero .subtitle { color:#4b5563; font-size:14px; margin-top:8px; }
@@ -74,15 +74,16 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
 <body>
   <div class="page-shell">
     <div class="shell-nav">
-      <a href="/ops">运营工作台</a>
-      <a href="/ops/intake-bot-presets">收口配置中心</a>
-      <a href="/ops/official-group-bridge">官方群审批桥接台</a>
+      <a href="__OPS_BASE_URL__/ops">运营工作台</a>
+      <a href="__OPS_BASE_URL__/ops/intake-bot-presets">收口配置中心</a>
+      <a href="__OPS_BASE_URL__/ops/production-ops">群审批控制台</a>
+      <a href="__OPS_BASE_URL__/ops/official-group-bridge">官方群审批桥接台</a>
     </div>
     <div class="hero">
       <div class="eyebrow">Bridge Queue</div>
       <h1>官方群审批桥接台</h1>
       <div class="subtitle">用于长期运营 manual_queue 请求池，支持待处理筛选、详情查看和人工 resolve。接口基于 /ops/official-group-bridge/requests。</div>
-      <div class=\"muted\" style=\"margin-top:8px;\"><a href=\"/ops\">返回运营工作台</a></div>
+      <div class=\"muted\" style=\"margin-top:8px;\"><a href=\"__OPS_BASE_URL__/ops\">返回运营工作台</a></div>
     </div>
 
   <div class=\"card\">
@@ -861,6 +862,11 @@ class OfficialGroupBridgeState:
 def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     cfg = dict(settings or {})
     verify_token = cfg.get('WHATSAPP_WEBHOOK_VERIFY_TOKEN') or os.getenv('WHATSAPP_WEBHOOK_VERIFY_TOKEN')
+    ops_base_url = str(
+        cfg.get('OFFICIAL_GROUP_BRIDGE_CONSOLE_BASE_URL')
+        or os.getenv('OFFICIAL_GROUP_BRIDGE_CONSOLE_BASE_URL')
+        or 'http://127.0.0.1:8011'
+    ).rstrip('/')
     webhook_state = WebhookState()
     bridge_state = OfficialGroupBridgeState(
         token=cfg.get('OFFICIAL_GROUP_BRIDGE_TOKEN') or os.getenv('OFFICIAL_GROUP_BRIDGE_TOKEN'),
@@ -940,7 +946,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
 
     @app.get('/ops/official-group-bridge', response_class=HTMLResponse)
     def official_group_bridge_page() -> str:
-        return OFFICIAL_GROUP_BRIDGE_PAGE_HTML
+        return OFFICIAL_GROUP_BRIDGE_PAGE_HTML.replace('__OPS_BASE_URL__', ops_base_url)
 
     @app.get('/ops/official-group-bridge/health')
     def official_group_bridge_health() -> Dict[str, Any]:

@@ -9,20 +9,25 @@ const { withTimeout } = require('./promise_timeout');
 
 const PORT = Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_PORT || 8787);
 const HOST = process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_HOST || '127.0.0.1';
-const AUTH_DATA_PATH = process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_AUTH_PATH || path.join(process.cwd(), '.wwebjs_auth');
+const AUTH_DATA_PATH = process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_AUTH_DATA_PATH || path.join(process.cwd(), '.wwebjs_auth');
 const CLIENT_ID = process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_CLIENT_ID || 'registration-group-approval';
 const HEADLESS = String(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_HEADLESS || 'true').trim().toLowerCase() !== 'false';
 const QR_TIMEOUT_MS = Math.max(3000, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_QR_TIMEOUT_MS || 15000));
-const APPROVAL_CALL_TIMEOUT_MS = Math.max(2000, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_APPROVE_CALL_TIMEOUT_MS || 10000));
-const APPROVAL_PER_REQUESTER_TIMEOUT_MS = Math.max(1200, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_PER_REQUESTER_TIMEOUT_MS || 3500));
+const APPROVAL_CALL_TIMEOUT_MS = Math.max(2000, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_APPROVE_CALL_TIMEOUT_MS || 15000));
+const APPROVAL_PER_REQUESTER_TIMEOUT_MS = Math.max(1200, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_PER_REQUESTER_TIMEOUT_MS || 5000));
 const APPROVAL_PER_REQUESTER_SLEEP_MS = Math.max(0, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_PER_REQUESTER_SLEEP_MS || 50));
-const APPROVAL_VERIFY_WAIT_MS = Math.max(300, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_VERIFY_WAIT_MS || 900));
-const APPROVAL_VERIFY_RETRIES = Math.max(1, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_VERIFY_RETRIES || 3));
+const APPROVAL_VERIFY_WAIT_MS = Math.max(300, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_VERIFY_WAIT_MS || 1200));
+const APPROVAL_VERIFY_RETRIES = Math.max(1, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_VERIFY_RETRIES || 4));
 const CHROME_EXECUTABLE = process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_CHROME_EXECUTABLE || process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 const WORKER_EVENT_LOG = process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_EVENT_LOG || path.join(process.cwd(), 'logs', 'registration_group_webjs_worker.jsonl');
+const AUTH_MODE = String(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_AUTH_MODE || '').trim().toLowerCase();
 const CHROME_USER_DATA_ROOT = process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_CHROME_USER_DATA_ROOT || '';
 const CHROME_PROFILE_DIR = process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_CHROME_PROFILE_DIR || '';
-const REUSE_CHROME_PROFILE = Boolean(String(CHROME_USER_DATA_ROOT).trim() && String(CHROME_PROFILE_DIR).trim());
+const REUSE_CHROME_PROFILE = AUTH_MODE
+  ? AUTH_MODE === 'chrome_profile_copy'
+  : Boolean(String(CHROME_USER_DATA_ROOT).trim() && String(CHROME_PROFILE_DIR).trim());
+const SHARED_APPROVAL_CLIENT = !REUSE_CHROME_PROFILE;
+const POST_APPROVE_PROBE_REFRESH_ENABLED = String(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_POST_APPROVE_PROBE_REFRESH || 'false').trim().toLowerCase() === 'true';
 
 const stateAuthStrategy = REUSE_CHROME_PROFILE ? 'ChromeProfileCopy+NoAuth' : 'LocalAuth';
 const stateAuthPath = REUSE_CHROME_PROFILE
@@ -55,7 +60,7 @@ const approvalState = {
   authenticated: false,
   auth_strategy: stateAuthStrategy,
   mode: 'real_webjs',
-  client_id: `${CLIENT_ID}-approval`,
+  client_id: SHARED_APPROVAL_CLIENT ? CLIENT_ID : `${CLIENT_ID}-approval`,
   auth_path: stateAuthPath,
   last_error: null,
   last_started_at: new Date().toISOString(),
@@ -87,6 +92,27 @@ function updateState(patch) {
 
 function updateApprovalState(patch) {
   Object.assign(approvalState, patch || {});
+}
+
+function syncApprovalStateFromPrimary() {
+  if (!SHARED_APPROVAL_CLIENT) return;
+  updateApprovalState({
+    status: state.status,
+    ready: state.ready,
+    authenticated: state.authenticated,
+    auth_strategy: state.auth_strategy,
+    mode: state.mode,
+    client_id: CLIENT_ID,
+    auth_path: state.auth_path,
+    last_error: state.last_error,
+    last_started_at: state.last_started_at,
+    last_action_at: state.last_action_at,
+    last_qr_at: state.last_qr_at,
+    last_qr: state.last_qr,
+    last_disconnected_reason: state.last_disconnected_reason,
+    chrome_profile_source: state.chrome_profile_source || null,
+    chrome_profile_mode: state.chrome_profile_mode || null,
+  });
 }
 
 function logEvent(kind, payload) {
@@ -229,6 +255,13 @@ async function resetClientSession(reason) {
 }
 
 async function resetApprovalClientSession(reason) {
+  if (SHARED_APPROVAL_CLIENT) {
+    await resetClientSession(reason);
+    approvalClient = client;
+    approvalInitPromise = initPromise;
+    syncApprovalStateFromPrimary();
+    return;
+  }
   const existing = approvalClient;
   approvalClient = null;
   approvalInitPromise = null;
@@ -377,11 +410,14 @@ async function ensureClientStarted() {
     try {
       qrcodeTerminal.generate(qr, { small: true });
     } catch (_) {}
+    syncApprovalStateFromPrimary();
+    settleWaiters(approvalQrWaiters, { kind: 'qr', qr });
     settleWaiters(qrWaiters, { kind: 'qr', qr });
   });
 
   client.on('authenticated', () => {
     updateState({ authenticated: true, status: 'authenticated', last_error: null });
+    syncApprovalStateFromPrimary();
   });
 
   client.on('ready', () => {
@@ -393,6 +429,8 @@ async function ensureClientStarted() {
       last_qr: null,
       last_action_at: new Date().toISOString(),
     });
+    syncApprovalStateFromPrimary();
+    settleWaiters(approvalReadyWaiters, { kind: 'ready' });
     settleWaiters(readyWaiters, { kind: 'ready' });
   });
 
@@ -404,6 +442,9 @@ async function ensureClientStarted() {
       last_error: message || 'auth_failure',
     });
     const error = new Error(message || 'auth_failure');
+    syncApprovalStateFromPrimary();
+    rejectWaiters(approvalReadyWaiters, error);
+    rejectWaiters(approvalQrWaiters, error);
     rejectWaiters(readyWaiters, error);
     rejectWaiters(qrWaiters, error);
   });
@@ -416,6 +457,7 @@ async function ensureClientStarted() {
       last_disconnected_reason: String(reason || ''),
       last_error: String(reason || 'disconnected'),
     });
+    syncApprovalStateFromPrimary();
   });
 
   initPromise = client.initialize()
@@ -432,6 +474,13 @@ async function ensureClientStarted() {
 }
 
 async function ensureApprovalClientStarted() {
+  if (SHARED_APPROVAL_CLIENT) {
+    const activeClient = await ensureClientStarted();
+    approvalClient = activeClient;
+    approvalInitPromise = initPromise;
+    syncApprovalStateFromPrimary();
+    return approvalClient;
+  }
   if (approvalClient) {
     return approvalClient;
   }
@@ -576,18 +625,24 @@ async function resolveApprovalGroup(target) {
 
 async function getRequestEnrichedWithClient(activeClient, group) {
   const requests = await group.getGroupMembershipRequests();
-  const enriched = [];
-  for (const item of requests) {
-    const requesterId = safeString(item && item.id);
-    let contact = null;
-    try {
-      if (requesterId) {
-        contact = await activeClient.getContactById(requesterId);
+  const requesterIds = requests.map((item) => safeString(item && item.id));
+  const contacts = await Promise.all(
+    requesterIds.map(async (requesterId) => {
+      if (!requesterId) return null;
+      try {
+        return await activeClient.getContactById(requesterId);
+      } catch (_) {
+        return null;
       }
-    } catch (_) {}
+    }),
+  );
+
+  return requests.map((item, index) => {
+    const requesterId = requesterIds[index] || '';
+    const contact = contacts[index] || null;
     const phone = requesterId ? requesterId.replace(/@c\.us$/, '') : null;
     const displayName = contact ? (contact.pushname || contact.name || contact.shortName || null) : null;
-    enriched.push({
+    return {
       requesterId,
       phoneRaw: phone ? `+${phone}` : null,
       phoneNormalized: phone ? `+${phone}` : null,
@@ -595,9 +650,8 @@ async function getRequestEnrichedWithClient(activeClient, group) {
       requestMethod: item && item.requestMethod ? item.requestMethod : null,
       requestedAtUnix: item && item.t ? item.t : null,
       requestedAtIso: item && item.t ? new Date(item.t * 1000).toISOString() : null,
-    });
-  }
-  return enriched;
+    };
+  });
 }
 
 async function getRequestEnriched(group) {
@@ -640,14 +694,14 @@ function selectRequests(requests, context) {
 }
 
 async function groupState(context) {
-  if (!state.ready) {
-    throw new Error(state.last_qr ? 'client awaiting qr scan' : 'client is not ready');
+  if (!approvalState.ready) {
+    throw new Error(approvalState.last_qr ? 'approval client awaiting qr scan' : 'approval client is not ready');
   }
-  const group = await resolveGroup(context.registration_group);
+  const group = await resolveApprovalGroup(context.registration_group);
   const groupId = safeString(group.id);
   const groupName = group.name || context.registration_group;
   const memberCount = Array.isArray(group.participants) ? group.participants.length : null;
-  const requests = await getRequestEnriched(group);
+  const requests = await getApprovalRequestEnriched(group);
   return {
     group_id: groupId,
     group_name: groupName,
@@ -1068,18 +1122,19 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/group-state') {
       const payload = await collectJson(req);
       state.last_action_at = new Date().toISOString();
+      approvalState.last_action_at = new Date().toISOString();
       const result = await withActionLock(async () => {
-        await ensureClientStarted();
-        await waitForReady(QR_TIMEOUT_MS).catch(() => {
-          if (!state.ready) {
-            throw new Error(state.last_qr ? 'client awaiting qr scan' : 'client not ready');
+        await ensureApprovalClientStarted();
+        await waitForApprovalReady(QR_TIMEOUT_MS).catch(() => {
+          if (!approvalState.ready) {
+            throw new Error(approvalState.last_qr ? 'approval client awaiting qr scan' : 'approval client not ready');
           }
         });
         return groupState(payload);
       });
       logEvent('group_state', {
         registration_group: payload.registration_group || null,
-        auth_strategy: state.auth_strategy,
+        auth_strategy: approvalState.auth_strategy,
         group_id: result.group_id || null,
         group_name: result.group_name || payload.registration_group || null,
         pending_count: result.pending_count,
@@ -1121,7 +1176,13 @@ const server = http.createServer(async (req, res) => {
         requester_ids: (rawResult.selected_candidates || []).map((row) => row.requesterId).filter(Boolean),
         target_requester_id: targetMember.requester_id || null,
       });
-      scheduleProbeClientRefresh(`post_approve:${rawResult.approval_run_id || payload.approval_run_id || 'unknown'}`);
+      if (POST_APPROVE_PROBE_REFRESH_ENABLED) {
+        scheduleProbeClientRefresh(`post_approve:${rawResult.approval_run_id || payload.approval_run_id || 'unknown'}`);
+      } else {
+        logEvent('probe_client_refresh_skipped', {
+          reason: `post_approve:${rawResult.approval_run_id || payload.approval_run_id || 'unknown'}`,
+        });
+      }
       sendJson(res, 200, result);
       return;
     }
