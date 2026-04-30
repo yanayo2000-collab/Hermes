@@ -2,6 +2,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const qrcodeTerminal = require('qrcode-terminal');
 const { Client, LocalAuth, NoAuth } = require('whatsapp-web.js');
 const { createApprovalRunStore } = require('./approval_run_store');
@@ -28,6 +29,7 @@ const REUSE_CHROME_PROFILE = AUTH_MODE
   : Boolean(String(CHROME_USER_DATA_ROOT).trim() && String(CHROME_PROFILE_DIR).trim());
 const SHARED_APPROVAL_CLIENT = !REUSE_CHROME_PROFILE;
 const POST_APPROVE_PROBE_REFRESH_ENABLED = String(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_POST_APPROVE_PROBE_REFRESH || 'false').trim().toLowerCase() === 'true';
+const PUPPETEER_PROTOCOL_TIMEOUT_MS = Math.max(30000, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_PROTOCOL_TIMEOUT_MS || 180000));
 
 const stateAuthStrategy = REUSE_CHROME_PROFILE ? 'ChromeProfileCopy+NoAuth' : 'LocalAuth';
 const stateAuthPath = REUSE_CHROME_PROFILE
@@ -143,6 +145,28 @@ function rejectWaiters(waiters, error) {
   });
 }
 
+function handleClientInitializeFailure(error) {
+  const failure = error instanceof Error ? error : new Error(String(error || 'client_initialize_failed'));
+  updateState({ status: 'failed', ready: false, authenticated: false, last_error: String(failure && failure.stack ? failure.stack : failure) });
+  rejectWaiters(readyWaiters, failure);
+  rejectWaiters(qrWaiters, failure);
+  client = null;
+  initPromise = null;
+  cleanupRuntimeChromeUserDataDir('probe');
+  return failure;
+}
+
+function handleApprovalClientInitializeFailure(error) {
+  const failure = error instanceof Error ? error : new Error(String(error || 'approval_client_initialize_failed'));
+  updateApprovalState({ status: 'failed', ready: false, authenticated: false, last_error: String(failure && failure.stack ? failure.stack : failure) });
+  rejectWaiters(approvalReadyWaiters, failure);
+  rejectWaiters(approvalQrWaiters, failure);
+  approvalClient = null;
+  approvalInitPromise = null;
+  cleanupRuntimeChromeUserDataDir('approval');
+  return failure;
+}
+
 function waitForReady(timeoutMs) {
   if (state.ready) {
     return Promise.resolve({ kind: 'ready' });
@@ -220,6 +244,11 @@ function isRecoverableApprovalClientError(error) {
   );
 }
 
+function isBrowserAlreadyRunningError(error) {
+  const message = String(error && error.message ? error.message : error || '');
+  return message.includes('The browser is already running for');
+}
+
 function normalizePhone(value) {
   return String(value || '').replace(/[^\d+]/g, '');
 }
@@ -230,6 +259,85 @@ function safeString(value) {
   if (typeof value === 'object' && value._serialized) return value._serialized;
   if (typeof value === 'object' && value.user) return String(value.user);
   return String(value);
+}
+
+function resolveLocalAuthSessionDir(dataPath, clientId) {
+  const basePath = path.resolve(String(dataPath || '').trim() || '.');
+  const normalizedClientId = String(clientId || '').trim();
+  return path.join(basePath, normalizedClientId ? `session-${normalizedClientId}` : 'session');
+}
+
+function parseChromeProcessesUsingUserDataDir(psOutput, userDataDir) {
+  const normalizedDir = path.resolve(String(userDataDir || '').trim());
+  if (!normalizedDir) return [];
+  return String(psOutput || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.match(/^(\d+)\s+(.*)$/);
+      if (!match) return null;
+      const pid = Number(match[1]);
+      const command = match[2] || '';
+      if (!/(^|\s|\/)(chrome|chromium)(\s|$)/i.test(command)) {
+        return null;
+      }
+      const dirMatch = command.match(/--user-data-dir(?:=(?:"([^"]+)"|'([^']+)'|(\S+))|\s+(?:"([^"]+)"|'([^']+)'|(\S+)))/);
+      const processUserDataDir = path.resolve(String((dirMatch && (dirMatch[1] || dirMatch[2] || dirMatch[3] || dirMatch[4] || dirMatch[5] || dirMatch[6])) || '').trim() || '.');
+      if (!dirMatch || processUserDataDir !== normalizedDir) {
+        return null;
+      }
+      return { pid, command, userDataDir: processUserDataDir };
+    })
+    .filter((entry) => entry && Number.isFinite(entry.pid) && entry.pid > 0);
+}
+
+function recoverLocalAuthBrowserConflict(options = {}) {
+  const userDataDir = path.resolve(String(options.userDataDir || '').trim() || '.');
+  const fsApi = options.fsApi || fs;
+  const runner = options.execFileSync || execFileSync;
+  const psOutput = options.psOutput == null
+    ? String(runner('ps', ['-Ao', 'pid=,command='], { encoding: 'utf8' }) || '')
+    : String(options.psOutput || '');
+  const cleanedLockFiles = [];
+  const killedPids = [];
+  const lockFileNames = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+  lockFileNames.forEach((name) => {
+    const filePath = path.join(userDataDir, name);
+    if (!fsApi.existsSync(filePath)) return;
+    try {
+      fsApi.rmSync(filePath, { recursive: true, force: true });
+      cleanedLockFiles.push(filePath);
+    } catch (_) {}
+  });
+
+  const matchingProcesses = parseChromeProcessesUsingUserDataDir(psOutput, userDataDir);
+  matchingProcesses.forEach((entry) => {
+    try {
+      runner('kill', ['-TERM', String(entry.pid)], { encoding: 'utf8' });
+      killedPids.push(entry.pid);
+    } catch (_) {}
+  });
+
+  return {
+    user_data_dir: userDataDir,
+    cleaned_lock_files: cleanedLockFiles,
+    killed_pids: killedPids,
+  };
+}
+
+async function runBrowserConflictRecoveryFlow(options = {}) {
+  const error = options.error;
+  const reuseChromeProfile = Boolean(options.reuseChromeProfile);
+  const browserConflictRecoveryAttempted = Boolean(options.browserConflictRecoveryAttempted);
+  if (!reuseChromeProfile && !browserConflictRecoveryAttempted && isBrowserAlreadyRunningError(error)) {
+    const recovery = await options.recover();
+    if (options.onRecovered) {
+      await options.onRecovered(recovery);
+    }
+    return options.retry();
+  }
+  return options.onFinalFailure(error);
 }
 
 function cleanupRuntimeChromeUserDataDir(target = 'probe') {
@@ -357,11 +465,16 @@ function prepareCopiedChromeProfile(target = 'probe') {
   };
 }
 
-async function ensureClientStarted() {
+async function ensureClientStarted(options = {}) {
+  const browserConflictRecoveryAttempted = Boolean(options.browserConflictRecoveryAttempted);
+  const returnInitPromise = Boolean(options.returnInitPromise);
   if (client) {
-    return client;
+    return returnInitPromise ? Promise.resolve() : client;
   }
   if (initPromise) {
+    if (returnInitPromise) {
+      return initPromise;
+    }
     await initPromise;
     return client;
   }
@@ -369,6 +482,7 @@ async function ensureClientStarted() {
   updateState({ status: 'initializing', last_error: null });
   const puppeteer = {
     headless: HEADLESS,
+    protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT_MS,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   };
   if (CHROME_EXECUTABLE) {
@@ -470,30 +584,61 @@ async function ensureClientStarted() {
   });
 
   initPromise = client.initialize()
-    .catch((error) => {
-      updateState({ status: 'failed', ready: false, authenticated: false, last_error: String(error && error.stack ? error.stack : error) });
-      throw error;
-    })
-    .finally(() => {
+    .catch((error) => runBrowserConflictRecoveryFlow({
+      error,
+      reuseChromeProfile: REUSE_CHROME_PROFILE,
+      browserConflictRecoveryAttempted,
+      recover: async () => {
+        const localAuthSessionDir = resolveLocalAuthSessionDir(AUTH_DATA_PATH, CLIENT_ID);
+        return recoverLocalAuthBrowserConflict({ userDataDir: localAuthSessionDir });
+      },
+      onRecovered: async (browserConflictRecovery) => {
+        const localAuthSessionDir = resolveLocalAuthSessionDir(AUTH_DATA_PATH, CLIENT_ID);
+        if (browserConflictRecovery.cleaned_lock_files.length || browserConflictRecovery.killed_pids.length) {
+          logEvent('local_auth_browser_conflict_recovered', {
+            target: 'probe',
+            user_data_dir: localAuthSessionDir,
+            cleaned_lock_files: browserConflictRecovery.cleaned_lock_files,
+            killed_pids: browserConflictRecovery.killed_pids,
+          });
+        }
+        client = null;
+        cleanupRuntimeChromeUserDataDir('probe');
+        updateState({ status: 'recovering_browser_conflict', ready: false, authenticated: false, last_error: String(error && error.message ? error.message : error) });
+      },
+      retry: () => ensureClientStarted({ browserConflictRecoveryAttempted: true, returnInitPromise: true }),
+      onFinalFailure: (finalError) => {
+        throw handleClientInitializeFailure(finalError);
+      },
+    }));
+  const activeInitPromise = initPromise;
+  activeInitPromise.finally(() => {
+    if (initPromise === activeInitPromise) {
       initPromise = null;
-    });
+    }
+  });
 
   await Promise.resolve();
-  return client;
+  return returnInitPromise ? initPromise : client;
 }
 
-async function ensureApprovalClientStarted() {
+async function ensureApprovalClientStarted(options = {}) {
+  const browserConflictRecoveryAttempted = Boolean(options.browserConflictRecoveryAttempted);
+  const returnInitPromise = Boolean(options.returnInitPromise);
   if (SHARED_APPROVAL_CLIENT) {
     const activeClient = await ensureClientStarted();
     approvalClient = activeClient;
     approvalInitPromise = initPromise;
     syncApprovalStateFromPrimary();
-    return approvalClient;
+    return returnInitPromise ? approvalInitPromise : approvalClient;
   }
   if (approvalClient) {
-    return approvalClient;
+    return returnInitPromise ? Promise.resolve() : approvalClient;
   }
   if (approvalInitPromise) {
+    if (returnInitPromise) {
+      return approvalInitPromise;
+    }
     await approvalInitPromise;
     return approvalClient;
   }
@@ -501,6 +646,7 @@ async function ensureApprovalClientStarted() {
   updateApprovalState({ status: 'initializing', last_error: null });
   const puppeteer = {
     headless: HEADLESS,
+    protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT_MS,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   };
   if (CHROME_EXECUTABLE) {
@@ -590,16 +736,42 @@ async function ensureApprovalClientStarted() {
   });
 
   approvalInitPromise = approvalClient.initialize()
-    .catch((error) => {
-      updateApprovalState({ status: 'failed', ready: false, authenticated: false, last_error: String(error && error.stack ? error.stack : error) });
-      throw error;
-    })
-    .finally(() => {
+    .catch((error) => runBrowserConflictRecoveryFlow({
+      error,
+      reuseChromeProfile: REUSE_CHROME_PROFILE,
+      browserConflictRecoveryAttempted,
+      recover: async () => {
+        const approvalLocalAuthSessionDir = resolveLocalAuthSessionDir(AUTH_DATA_PATH, `${CLIENT_ID}-approval`);
+        return recoverLocalAuthBrowserConflict({ userDataDir: approvalLocalAuthSessionDir });
+      },
+      onRecovered: async (browserConflictRecovery) => {
+        const approvalLocalAuthSessionDir = resolveLocalAuthSessionDir(AUTH_DATA_PATH, `${CLIENT_ID}-approval`);
+        if (browserConflictRecovery.cleaned_lock_files.length || browserConflictRecovery.killed_pids.length) {
+          logEvent('local_auth_browser_conflict_recovered', {
+            target: 'approval',
+            user_data_dir: approvalLocalAuthSessionDir,
+            cleaned_lock_files: browserConflictRecovery.cleaned_lock_files,
+            killed_pids: browserConflictRecovery.killed_pids,
+          });
+        }
+        approvalClient = null;
+        cleanupRuntimeChromeUserDataDir('approval');
+        updateApprovalState({ status: 'recovering_browser_conflict', ready: false, authenticated: false, last_error: String(error && error.message ? error.message : error) });
+      },
+      retry: () => ensureApprovalClientStarted({ browserConflictRecoveryAttempted: true, returnInitPromise: true }),
+      onFinalFailure: (finalError) => {
+        throw handleApprovalClientInitializeFailure(finalError);
+      },
+    }));
+  const activeApprovalInitPromise = approvalInitPromise;
+  activeApprovalInitPromise.finally(() => {
+    if (approvalInitPromise === activeApprovalInitPromise) {
       approvalInitPromise = null;
-    });
+    }
+  });
 
   await Promise.resolve();
-  return approvalClient;
+  return returnInitPromise ? approvalInitPromise : approvalClient;
 }
 
 function withActionLock(fn) {
@@ -740,8 +912,16 @@ async function getApprovalRequestEnriched(group) {
 }
 
 function scoreRequest(entry, hints) {
-  const normalizedHint = normalizePhone(hints.targetPhoneHint);
-  const normalizedEntryPhone = normalizePhone(entry.phoneNormalized || entry.phoneRaw || '');
+  const normalizedHint = String(normalizePhone(hints.targetPhoneHint) || '').replace(/\D/g, '');
+  const normalizedEntryPhone = String(
+    normalizePhone(
+      entry.debugLidPhoneRaw
+      || entry.debugContactNumberRaw
+      || entry.phoneNormalized
+      || entry.phoneRaw
+      || ''
+    )
+  ).replace(/\D/g, '');
   const targetNameHint = String(hints.targetNameHint || '').trim().toLowerCase();
   const displayName = String(entry.displayName || '').trim().toLowerCase();
   const phoneExactMatch = Boolean(normalizedHint && normalizedEntryPhone && normalizedHint === normalizedEntryPhone);
@@ -1341,6 +1521,10 @@ module.exports = {
   scoreRequest,
   selectRequests,
   getRequestEnrichedWithClient,
+  resolveLocalAuthSessionDir,
+  parseChromeProcessesUsingUserDataDir,
+  recoverLocalAuthBrowserConflict,
+  runBrowserConflictRecoveryFlow,
 };
 
 process.on('exit', () => {
