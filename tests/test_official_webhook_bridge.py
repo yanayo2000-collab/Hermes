@@ -547,6 +547,37 @@ def test_official_group_bridge_requests_support_filters_detail_and_resolution_au
     assert detail_after.json()['resolution']['resolved_by_name'] == 'Bridge Operator'
 
 
+def test_official_group_bridge_resolution_defaults_match_status_when_fields_omitted():
+    app = create_app({
+        'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123',
+        'OFFICIAL_GROUP_BRIDGE_MODE': 'manual_queue',
+    })
+    client = TestClient(app)
+
+    response = client.post('/official-group/approve', json={
+        'target_group': 'official-group-a',
+        'lead': {'lead_id': 'lead_a'},
+        'crm_snapshot': {'id': 'crm_a'},
+        'task': {'task_id': 'task_a', 'status': 'pending'},
+    })
+    assert response.status_code == 200
+    request_id = response.json()['raw_result']['bridge_request_id']
+
+    manual_resolution = client.post(
+        f'/ops/official-group-bridge/requests/{request_id}/resolve',
+        json={'status': 'manual_required'},
+    )
+    assert manual_resolution.status_code == 200
+    manual_body = manual_resolution.json()
+    assert manual_body['resolution']['result_code'] == 'manual_follow_up_required'
+    assert manual_body['resolution']['result_reason'] == 'manual follow-up required'
+
+    detail = client.get(f'/ops/official-group-bridge/requests/{request_id}').json()
+    assert detail['response']['result_code'] == 'manual_follow_up_required'
+    assert detail['response']['raw_result']['execution_disposition'] == 'manual_required'
+    assert detail['response']['raw_result']['requires_human_action'] is True
+
+
 def test_official_group_bridge_dashboard_page_loads():
     app = create_app({
         'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123',
@@ -567,6 +598,10 @@ def test_official_group_bridge_dashboard_page_loads():
     assert '/ops/official-group-bridge/summary' in text
     assert '待处理请求' in text
     assert '待处理超时请求' in text
+    assert 'approved_by_operator' in text
+    assert 'rejected_by_operator' in text
+    assert 'manual_follow_up_required' in text
+    assert 'applyResolutionTemplate' in text
     assert 'http://127.0.0.1:8011/ops' in text
     assert 'http://127.0.0.1:8011/ops/intake-bot-presets' in text
     assert 'http://127.0.0.1:8011/ops/production-ops' in text

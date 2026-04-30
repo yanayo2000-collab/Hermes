@@ -16,7 +16,11 @@ if str(ROOT_DIR) not in sys.path:
 
 from app.registration_group_formal_run import execute_formal_registration_group_approval
 from app.registration_group_preflight import evaluate_registration_group_webjs_preflight
-from scripts.registration_group_webjs_preflight import DEFAULT_WORKER_EVENT_LOG, _collect_snapshot
+from scripts.registration_group_webjs_preflight import (
+    DEFAULT_WORKER_EVENT_LOG,
+    _collect_snapshot,
+    _resolve_expected_auth_strategy,
+)
 
 
 def _fetch_json(url: str, *, method: str = 'GET', payload: Optional[Dict[str, Any]] = None, timeout: float = 30.0) -> Dict[str, Any]:
@@ -33,8 +37,24 @@ def _fetch_json(url: str, *, method: str = 'GET', payload: Optional[Dict[str, An
     return body
 
 
-def _run_preflight(*, api_base_url: str, worker_base_url: str, registration_group: str, fresh_probe_cmd: str, worker_event_log: Path) -> Dict[str, Any]:
+def _run_preflight(
+    *,
+    api_base_url: str,
+    worker_base_url: str,
+    registration_group: str,
+    fresh_probe_cmd: str,
+    worker_event_log: Path,
+    expected_auth_strategy: str,
+) -> Dict[str, Any]:
     snapshot = _collect_snapshot(api_base_url, worker_base_url, registration_group, fresh_probe_cmd, worker_event_log)
+    worker_health = snapshot.get('worker_health') if isinstance(snapshot.get('worker_health'), dict) else {}
+    approval_client = worker_health.get('approval_client') if isinstance(worker_health.get('approval_client'), dict) else {}
+    requested_expected_auth_strategy = str(expected_auth_strategy or '').strip()
+    inferred_expected_auth_strategy = (
+        str(approval_client.get('auth_strategy') or '').strip()
+        or str(worker_health.get('auth_strategy') or '').strip()
+    )
+    effective_expected_auth_strategy = requested_expected_auth_strategy or inferred_expected_auth_strategy or _resolve_expected_auth_strategy(requested_expected_auth_strategy)
     report = evaluate_registration_group_webjs_preflight(
         registration_group=registration_group,
         worker_health=snapshot['worker_health'],
@@ -42,6 +62,7 @@ def _run_preflight(*, api_base_url: str, worker_base_url: str, registration_grou
         worker_group_state=snapshot['worker_group_state'],
         fresh_group_state=snapshot['fresh_group_state'],
         last_verified_group_state=snapshot.get('last_verified_group_state') or {},
+        expected_auth_strategy=effective_expected_auth_strategy,
     )
     if snapshot.get('fresh_probe_skipped') and not report.get('ok'):
         snapshot = _collect_snapshot(api_base_url, worker_base_url, registration_group, fresh_probe_cmd, worker_event_log, allow_fast_probe_skip=False)
@@ -52,6 +73,7 @@ def _run_preflight(*, api_base_url: str, worker_base_url: str, registration_grou
             worker_group_state=snapshot['worker_group_state'],
             fresh_group_state=snapshot['fresh_group_state'],
             last_verified_group_state=snapshot.get('last_verified_group_state') or {},
+            expected_auth_strategy=effective_expected_auth_strategy,
         )
     return {'preflight': report, 'snapshot': snapshot}
 
@@ -119,9 +141,11 @@ def main() -> int:
     parser.add_argument('--decided-by-name', default='Song Yuqi')
     parser.add_argument('--worker-event-log', default=str(DEFAULT_WORKER_EVENT_LOG))
     parser.add_argument('--backend-restart-cmd', default='./scripts/ensure_registration_group_backend.sh')
+    parser.add_argument('--expected-auth-strategy', default='')
     args = parser.parse_args()
 
     worker_event_log = Path(args.worker_event_log).expanduser().resolve()
+    expected_auth_strategy = str(args.expected_auth_strategy or '').strip()
 
     output: Dict[str, Any] = {
         'backend_health_before': _ensure_backend_healthy(
@@ -141,6 +165,7 @@ def main() -> int:
         registration_group=args.registration_group,
         fresh_probe_cmd=args.fresh_probe_cmd,
         worker_event_log=worker_event_log,
+        expected_auth_strategy=expected_auth_strategy,
     )
     preflight = output['preflight_before']['preflight']
 
@@ -178,6 +203,7 @@ def main() -> int:
             registration_group=args.registration_group,
             fresh_probe_cmd=args.fresh_probe_cmd,
             worker_event_log=worker_event_log,
+            expected_auth_strategy=expected_auth_strategy,
         )
         preflight = output['preflight_after_recovery']['preflight']
 

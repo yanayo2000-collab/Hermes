@@ -148,7 +148,7 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
         <div><label class=\"muted\">resolved_by_name</label><input id=\"resolvedByName\" placeholder=\"处理人名称\" /></div>
         <div><label class=\"muted\">note</label><input id=\"resolveNote\" placeholder=\"处理说明\" /></div>
       </div>
-      <div style=\"margin-top:12px;\"><label class=\"muted\">result_reason</label><textarea id=\"resolveReason\" rows=\"3\">manual review completed</textarea></div>
+      <div style=\"margin-top:12px;\"><label class=\"muted\">result_reason</label><textarea id=\"resolveReason\" rows=\"3\">approved by operator</textarea></div>
       <div style=\"margin-top:12px;\"><div class=\"muted\">请求</div><pre id=\"requestJson\">{}</pre></div>
       <div style=\"margin-top:12px;\"><div class=\"muted\">响应</div><pre id=\"responseJson\">{}</pre></div>
       <div style=\"margin-top:12px;\"><div class=\"muted\">resolution</div><pre id=\"resolutionJson\">null</pre></div>
@@ -157,6 +157,34 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
 
 <script>
 let currentRequestId = null;
+const RESOLUTION_TEMPLATE_DEFAULTS = {
+  success: { result_code: 'approved_by_operator', result_reason: 'approved by operator' },
+  failed: { result_code: 'rejected_by_operator', result_reason: 'rejected by operator' },
+  manual_required: { result_code: 'manual_follow_up_required', result_reason: 'manual follow-up required' },
+  retryable_failed: { result_code: 'retryable_bridge_failure', result_reason: 'retryable bridge failure' },
+};
+
+function knownResolutionTemplateValues(field) {
+  return Object.values(RESOLUTION_TEMPLATE_DEFAULTS).map(item => item[field]);
+}
+
+function applyResolutionTemplate(status, force=false) {
+  const template = RESOLUTION_TEMPLATE_DEFAULTS[status] || { result_code: 'manual_resolution', result_reason: 'manual resolution' };
+  const codeField = document.getElementById('resolveCode');
+  const reasonField = document.getElementById('resolveReason');
+  if (!codeField || !reasonField) return template;
+  const knownCodes = knownResolutionTemplateValues('result_code');
+  const knownReasons = knownResolutionTemplateValues('result_reason');
+  const currentCode = codeField.value.trim();
+  const currentReason = reasonField.value.trim();
+  if (force || !currentCode || knownCodes.includes(currentCode)) {
+    codeField.value = template.result_code;
+  }
+  if (force || !currentReason || knownReasons.includes(currentReason)) {
+    reasonField.value = template.result_reason;
+  }
+  return template;
+}
 
 function fmtTs(ts) {
   if (!ts) return '-';
@@ -230,6 +258,13 @@ async function showRequest(requestId) {
   setJson('requestJson', row.request || {});
   setJson('responseJson', row.response || {});
   setJson('resolutionJson', row.resolution);
+  if (row.resolution && row.resolution.status) {
+    applyResolutionTemplate(row.resolution.status, true);
+    if (row.resolution.result_code) document.getElementById('resolveCode').value = row.resolution.result_code;
+    if (row.resolution.result_reason) document.getElementById('resolveReason').value = row.resolution.result_reason;
+  } else {
+    applyResolutionTemplate('success', true);
+  }
 }
 
 async function resolveCurrent(status) {
@@ -237,10 +272,11 @@ async function resolveCurrent(status) {
     alert('请先选择一条请求');
     return;
   }
+  const template = applyResolutionTemplate(status);
   const payload = {
     status,
-    result_code: document.getElementById('resolveCode').value.trim() || 'manual_resolution',
-    result_reason: document.getElementById('resolveReason').value.trim(),
+    result_code: document.getElementById('resolveCode').value.trim() || template.result_code || 'manual_resolution',
+    result_reason: document.getElementById('resolveReason').value.trim() || template.result_reason || 'manual resolution',
     resolved_by: document.getElementById('resolvedBy').value.trim(),
     resolved_by_name: document.getElementById('resolvedByName').value.trim(),
     note: document.getElementById('resolveNote').value.trim(),
@@ -832,25 +868,43 @@ class OfficialGroupBridgeState:
         status = str(resolution.get('status') or '').strip().lower()
         if status not in {'success', 'retryable_failed', 'manual_required', 'failed'}:
             raise HTTPException(status_code=400, detail='resolution status must be success|retryable_failed|manual_required|failed')
+        default_templates = {
+            'success': {'result_code': 'approved_by_operator', 'result_reason': 'approved by operator'},
+            'failed': {'result_code': 'rejected_by_operator', 'result_reason': 'rejected by operator'},
+            'manual_required': {'result_code': 'manual_follow_up_required', 'result_reason': 'manual follow-up required'},
+            'retryable_failed': {'result_code': 'retryable_bridge_failure', 'result_reason': 'retryable bridge failure'},
+        }
+        template = default_templates.get(status, {'result_code': 'manual_resolution', 'result_reason': 'manual resolution'})
+        result_code = str(resolution.get('result_code') or '').strip() or template['result_code']
+        result_reason = str(resolution.get('result_reason') or '').strip() or template['result_reason']
         record['status'] = 'resolved'
         record['updated_at'] = int(time.time())
         record['resolution'] = {
             'status': status,
-            'result_code': str(resolution.get('result_code') or '').strip(),
-            'result_reason': str(resolution.get('result_reason') or '').strip(),
+            'result_code': result_code,
+            'result_reason': result_reason,
             'resolved_by': str(resolution.get('resolved_by') or '').strip(),
             'resolved_by_name': str(resolution.get('resolved_by_name') or '').strip(),
             'note': str(resolution.get('note') or '').strip(),
         }
+        raw_result = {
+            'target_group': record['request']['target_group'],
+            'bridge_request_id': request_id,
+            'resolution_source': 'ops_manual_resolution',
+        }
+        if status == 'retryable_failed':
+            raw_result['execution_disposition'] = 'retryable_failed'
+            raw_result['retryable'] = True
+        elif status == 'manual_required':
+            raw_result['execution_disposition'] = 'manual_required'
+            raw_result['requires_human_action'] = True
+        elif status != 'success':
+            raw_result['execution_disposition'] = 'failed'
         record['response'] = {
             'status': status,
-            'result_code': record['resolution']['result_code'] or 'manual_resolution',
-            'result_reason': record['resolution']['result_reason'],
-            'raw_result': {
-                'target_group': record['request']['target_group'],
-                'bridge_request_id': request_id,
-                'resolution_source': 'ops_manual_resolution',
-            },
+            'result_code': result_code,
+            'result_reason': result_reason,
+            'raw_result': raw_result,
         }
         return {
             'request_id': request_id,

@@ -20,9 +20,11 @@ from app.production_ops import (
     DEFAULT_TRIGGER_COOLDOWN_SECONDS,
     FeishuNotifier,
     build_incidents,
+    build_success_notifications,
     check_backend_health,
     env_default,
     fetch_json,
+    formal_run_result,
     format_lark_alert,
     load_json_state,
     maybe_restart,
@@ -76,19 +78,33 @@ def _evaluate_release(api_base_url: str, registration_group: str, group_state: D
     )
 
 
-def _build_formal_approval_command(args: argparse.Namespace, approved_count: int) -> List[str]:
+def _build_formal_approval_command(
+    args: argparse.Namespace,
+    approved_count: int,
+    *,
+    registration_group: Optional[str] = None,
+    worker_base_url: Optional[str] = None,
+    fresh_probe_cmd: Optional[str] = None,
+    area: Optional[str] = None,
+    remark: Optional[str] = None,
+) -> List[str]:
+    target_group = str(registration_group or args.registration_group or '').strip()
+    target_worker_base_url = str(worker_base_url or args.worker_base_url or '').strip()
+    target_fresh_probe_cmd = str(fresh_probe_cmd or args.fresh_probe_cmd or '').strip()
+    target_area = str(area or args.area or '').strip() or 'Indonesia'
+    target_remark = str(remark or args.remark or '').strip() or 'production auto approval daemon'
     cmd = [
         sys.executable,
         str(ROOT_DIR / 'scripts' / 'run_registration_group_formal_approval.py'),
         '--api-base-url', args.api_base_url,
-        '--worker-base-url', args.worker_base_url,
-        '--registration-group', args.registration_group,
-        '--fresh-probe-cmd', args.fresh_probe_cmd,
+        '--worker-base-url', target_worker_base_url,
+        '--registration-group', target_group,
+        '--fresh-probe-cmd', target_fresh_probe_cmd,
         '--restart-cmd', args.worker_restart_cmd,
         '--backend-restart-cmd', args.backend_restart_cmd,
         '--restart-wait-seconds', str(args.restart_wait_seconds),
-        '--area', args.area,
-        '--remark', args.remark,
+        '--area', target_area,
+        '--remark', target_remark,
         '--approved-count', str(max(1, int(approved_count))),
         '--poll-interval-seconds', str(args.approval_poll_interval_seconds),
         '--poll-timeout-seconds', str(args.approval_poll_timeout_seconds),
@@ -103,7 +119,7 @@ def _build_formal_approval_command(args: argparse.Namespace, approved_count: int
 
 
 def _formal_run_verified(payload: Dict[str, Any]) -> bool:
-    result = (((payload.get('result') or {}).get('formal_run') or {}).get('result') or {})
+    result = formal_run_result(payload)
     return bool(result.get('verified') and result.get('crm_recorded'))
 
 
@@ -160,66 +176,339 @@ def _resolve_decision_group_state(worker_payload: Dict[str, Any], fresh_payload:
     }
 
 
-def _session_state(state: Dict[str, Any], *, session_id: str, registration_group: str, checked_at: str) -> Dict[str, Any]:
-    monitoring = state.setdefault('monitoring_session', {})
-    current_session_id = str(monitoring.get('session_id') or '').strip()
-    if session_id and current_session_id != session_id:
-        monitoring.clear()
-        monitoring.update({
+def _target_session_config_payload(target: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        'registration_group': str(target.get('registration_group') or '').strip(),
+        'group_name': str(target.get('group_name') or '').strip(),
+        'worker_base_url': str(target.get('worker_base_url') or '').strip(),
+        'account_key': str(target.get('account_key') or '').strip(),
+        'binding_link': str(target.get('binding_link') or '').strip(),
+        'binding_group_name': str(target.get('binding_group_name') or '').strip(),
+        'area': str(target.get('area') or '').strip(),
+        'approval_count_threshold': int(target.get('approval_count_threshold') or 0),
+        'approval_timeout_minutes': int(target.get('approval_timeout_minutes') or 0),
+        'auto_recover_worker': bool(target.get('auto_recover_worker')),
+        'schedule_runtime': target.get('schedule_runtime') or {},
+        'schedule_windows': target.get('schedule_windows') or [],
+    }
+
+
+def _target_session_config_fingerprint(target: Dict[str, Any]) -> str:
+    return json.dumps(_target_session_config_payload(target), ensure_ascii=False, sort_keys=True)
+
+
+def _target_session_key(session_id: str, target: Dict[str, Any]) -> str:
+    registration_group = str(target.get('registration_group') or '').strip()
+    return f"{session_id or 'default'}::{registration_group}::{_target_session_config_fingerprint(target)}"
+
+
+def _session_state(
+    state: Dict[str, Any],
+    *,
+    session_id: str,
+    registration_group: str,
+    checked_at: str,
+    target: Dict[str, Any],
+) -> Dict[str, Any]:
+    session_key = _target_session_key(session_id, target)
+    monitoring_sessions = state.setdefault('monitoring_sessions', {})
+    monitoring = monitoring_sessions.get(session_key)
+    if not isinstance(monitoring, dict):
+        monitoring = {
+            'session_key': session_key,
             'session_id': session_id,
             'registration_group': registration_group,
             'started_at': checked_at,
+            'target_config_fingerprint': _target_session_config_fingerprint(target),
             'startup_initial_batch_done': False,
             'startup_initial_batch_attempts': 0,
             'startup_initial_batch_max_retries': 2,
-        })
-    elif session_id and not monitoring:
-        monitoring.update({
-            'session_id': session_id,
-            'registration_group': registration_group,
-            'started_at': checked_at,
-            'startup_initial_batch_done': False,
-            'startup_initial_batch_attempts': 0,
-            'startup_initial_batch_max_retries': 2,
-        })
+        }
+        monitoring_sessions[session_key] = monitoring
     monitoring.setdefault('startup_initial_batch_attempts', 0)
     monitoring.setdefault('startup_initial_batch_max_retries', 2)
+    state['monitoring_session'] = monitoring
     return monitoring
 
 
-def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]:
-    now = utc_now()
-    cycle: Dict[str, Any] = {
-        'service': SERVICE_NAME,
-        'checked_at': now.isoformat(),
-        'registration_group': args.registration_group,
+def _ordered_cycle_targets(monitor_target: Dict[str, Any], fallback_target: Dict[str, Any]) -> List[Dict[str, Any]]:
+    selected_target = monitor_target.get('selected')
+    candidates = list(monitor_target.get('candidates') or [])
+    ordered: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in [selected_target, *candidates]:
+        if not isinstance(candidate, dict):
+            continue
+        normalized = _normalize_monitor_target(candidate, str(candidate.get('worker_base_url') or ''))
+        if not normalized:
+            continue
+        key = _target_session_key('', normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(normalized)
+    allow_fallback = bool(monitor_target.get('allow_fallback', True))
+    return ordered or ([fallback_target] if allow_fallback and fallback_target else [])
+
+
+def _normalize_monitor_target(target: Dict[str, Any], fallback_worker_base_url: str = '') -> Optional[Dict[str, Any]]:
+    registration_group = str(target.get('registration_group') or '').strip()
+    if not registration_group:
+        return None
+    worker_base_url = str(target.get('worker_base_url') or fallback_worker_base_url or '').strip()
+    group_name = str(target.get('group_name') or registration_group).strip() or registration_group
+    area = str(target.get('area') or '').strip() or 'Indonesia'
+    return {
+        'registration_group': registration_group,
+        'group_name': group_name,
+        'worker_base_url': worker_base_url,
+        'account_key': str(target.get('account_key') or '').strip() or None,
+        'account_name': str(target.get('account_name') or '').strip() or None,
+        'binding_link': str(target.get('binding_link') or '').strip() or None,
+        'binding_group_name': str(target.get('binding_group_name') or '').strip() or None,
+        'area': area,
+        'approval_count_threshold': int(target.get('approval_count_threshold') or 0),
+        'approval_timeout_minutes': int(target.get('approval_timeout_minutes') or 0),
+        'auto_recover_worker': bool(target.get('auto_recover_worker')),
+        'schedule_runtime': target.get('schedule_runtime') or {},
+        'schedule_windows': target.get('schedule_windows') or [],
+        'source': str(target.get('source') or '').strip() or 'fallback_config',
     }
 
-    backend_health = check_backend_health(args.api_base_url, timeout=args.health_timeout_seconds)
-    if not backend_health.get('ok') and args.backend_restart_cmd:
-        restart_result = maybe_restart(args.backend_restart_cmd, timeout=args.restart_command_timeout_seconds)
-        backend_health['restart'] = restart_result
-        time.sleep(max(1.0, float(args.restart_wait_seconds)))
-        after_restart = check_backend_health(args.api_base_url, timeout=args.health_timeout_seconds)
-        backend_health['after_restart'] = after_restart
-        if after_restart.get('ok'):
-            recovered_health = dict(after_restart)
-            recovered_health['restart'] = restart_result
-            recovered_health['recovered_after_restart'] = True
-            cycle['backend_health_recovery'] = {
-                'before_restart': backend_health,
-                'after_restart': after_restart,
+
+def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
+    fallback = _normalize_monitor_target({
+        'registration_group': args.registration_group,
+        'group_name': args.registration_group,
+        'worker_base_url': args.worker_base_url,
+        'area': args.area,
+        'source': 'fallback_config',
+    }, args.worker_base_url)
+    try:
+        payload = fetch_json(f"{args.api_base_url.rstrip('/')}/api/ops/whatsapp-approval-accounts", timeout=30.0)
+    except Exception as exc:
+        return {
+            'selected': fallback,
+            'candidates': [fallback] if fallback else [],
+            'selection_reason': f'fallback_accounts_api_error:{exc}',
+            'allow_fallback': True,
+        }
+
+    rows = payload.get('rows') or []
+    candidates: List[Dict[str, Any]] = []
+    configured_bindings: List[Dict[str, Any]] = []
+    normalized_fallback_group = str(args.registration_group or '').strip().lower()
+
+    def _pick_preferred_target(targets: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not targets:
+            return None
+        if normalized_fallback_group:
+            for candidate in targets:
+                if str(candidate.get('registration_group') or '').strip().lower() == normalized_fallback_group:
+                    return candidate
+                if str(candidate.get('binding_link') or '').strip().lower() == normalized_fallback_group:
+                    return candidate
+                if str(candidate.get('group_name') or '').strip().lower() == normalized_fallback_group:
+                    return candidate
+        return targets[0]
+
+    for row in rows:
+        if str(row.get('responsible_type') or '').strip().lower() != 'registration_group':
+            continue
+        if not bool(row.get('enabled')):
+            continue
+        runtime_state = row.get('runtime_state') if isinstance(row.get('runtime_state'), dict) else {}
+        worker_base_url = str(runtime_state.get('base_url') or '').strip()
+        runtime_active = bool(runtime_state.get('active')) and bool(worker_base_url)
+        account_key = str(row.get('account_key') or '').strip()
+        account_name = str(row.get('account_name') or '').strip()
+        row_area = str(row.get('area') or '').strip() or 'Indonesia'
+        for binding in row.get('group_link_bindings') or []:
+            if not isinstance(binding, dict):
+                continue
+            if binding.get('enabled') is False:
+                continue
+            schedule_runtime = binding.get('schedule_runtime') if isinstance(binding.get('schedule_runtime'), dict) else {}
+            if schedule_runtime.get('configured') and not bool(schedule_runtime.get('active_now')):
+                continue
+            registration_group = (
+                str(binding.get('registration_group') or '').strip()
+                or str(binding.get('group_id') or '').strip()
+                or str(binding.get('link') or '').strip()
+                or str(binding.get('group_name') or '').strip()
+            )
+            normalized = _normalize_monitor_target({
+                'registration_group': registration_group,
+                'group_name': str(binding.get('group_name') or '').strip() or registration_group,
+                'worker_base_url': worker_base_url,
+                'account_key': account_key,
+                'account_name': account_name,
+                'binding_link': str(binding.get('link') or '').strip(),
+                'binding_group_name': str(binding.get('group_name') or '').strip(),
+                'area': str(binding.get('area') or '').strip() or row_area,
+                'approval_count_threshold': binding.get('approval_count_threshold'),
+                'approval_timeout_minutes': binding.get('approval_timeout_minutes'),
+                'auto_recover_worker': binding.get('auto_recover_worker'),
+                'schedule_runtime': schedule_runtime,
+                'schedule_windows': binding.get('schedule_windows') or [],
+                'source': 'account_binding',
+            })
+            if not normalized:
+                continue
+            configured_bindings.append(normalized)
+            if runtime_active and normalized.get('worker_base_url'):
+                candidates.append(normalized)
+
+    if not candidates:
+        if configured_bindings:
+            return {
+                'selected': _pick_preferred_target(configured_bindings),
+                'candidates': configured_bindings,
+                'selection_reason': 'configured_binding_runtime_unavailable',
+                'allow_fallback': False,
             }
-            backend_health = recovered_health
-    cycle['backend_health'] = backend_health
-    if not backend_health.get('ok'):
+        return {
+            'selected': fallback,
+            'candidates': [fallback] if fallback else [],
+            'selection_reason': 'fallback_no_active_monitored_binding',
+            'allow_fallback': True,
+        }
+
+    selected = _pick_preferred_target(candidates)
+    return {
+        'selected': selected,
+        'candidates': candidates,
+        'selection_reason': 'account_binding_active' if selected and selected.get('source') == 'account_binding' else 'fallback_config',
+        'allow_fallback': True,
+    }
+
+
+def _fresh_probe_cmd_for_target(args: argparse.Namespace, registration_group: str) -> str:
+    target_group = str(registration_group or '').strip()
+    if target_group and target_group != str(args.registration_group or '').strip():
+        return _build_default_fresh_probe_cmd(target_group)
+    return str(args.fresh_probe_cmd or '').strip() or _build_default_fresh_probe_cmd(target_group)
+
+
+def _official_group_ready_fingerprint(rows: List[Dict[str, Any]]) -> str:
+    normalized_rows = []
+    for row in rows:
+        normalized_rows.append(
+            f"{str(row.get('registration_group') or '').strip()}:{int(row.get('pending_count') or 0)}:{int(row.get('release_count') or 0)}:{str(row.get('reason_code') or '').strip()}"
+        )
+    return 'official-group-batch:' + '|'.join(sorted(normalized_rows))
+
+
+def _official_group_trigger_cooldown_seconds(args: argparse.Namespace, rows: List[Dict[str, Any]]) -> int:
+    timeout_rows = [max(1, int(row.get('timeout_minutes') or 30)) * 60 for row in rows if str(row.get('reason_code') or '').strip() == 'timeout_flush']
+    if timeout_rows:
+        return min(timeout_rows)
+    return max(1, int(args.trigger_cooldown_seconds))
+
+
+def _dispatch_ready_official_group_batches(args: argparse.Namespace, state: Dict[str, Any], cycle: Dict[str, Any], *, now: datetime) -> None:
+    dispatch_state: Dict[str, Any] = {
+        'triggered': False,
+        'ok': None,
+        'ready_group_count': 0,
+    }
+    cycle['official_group_dispatch'] = dispatch_state
+    try:
+        queue = fetch_json(f"{args.api_base_url.rstrip('/')}/api/ops/approval-batch-queue", timeout=30.0)
+    except Exception as exc:
+        dispatch_state['ok'] = False
+        dispatch_state['error'] = f'queue_fetch_failed:{exc}'
+        return
+    ready_groups = [row for row in list(queue.get('official_groups') or []) if bool(row.get('ready')) and int(row.get('release_count') or 0) > 0]
+    dispatch_state['ready_group_count'] = len(ready_groups)
+    dispatch_state['ready_groups'] = ready_groups
+    if not ready_groups:
+        dispatch_state['ok'] = True
+        return
+    try:
+        executor_health = fetch_json(f"{args.api_base_url.rstrip('/')}/api/ops/official-group-approval-executor-health", timeout=30.0)
+    except Exception as exc:
+        dispatch_state['ok'] = False
+        dispatch_state['error'] = f'executor_health_failed:{exc}'
+        return
+    dispatch_state['executor_health'] = executor_health
+    supports = {str(item).strip() for item in (executor_health.get('supports') or []) if str(item).strip()}
+    if not bool(executor_health.get('configured')) or str(executor_health.get('status') or '').strip().lower() != 'healthy' or 'approve' not in supports:
+        dispatch_state['ok'] = False
+        dispatch_state['blocked'] = 'executor_unready'
+        return
+    fingerprint = _official_group_ready_fingerprint(ready_groups)
+    trigger_cooldown_seconds = _official_group_trigger_cooldown_seconds(args, ready_groups)
+    dispatch_state['fingerprint'] = fingerprint
+    dispatch_state['trigger_cooldown_seconds'] = trigger_cooldown_seconds
+    if not should_trigger_action(state, fingerprint=fingerprint, now=now, cooldown_seconds=trigger_cooldown_seconds):
+        dispatch_state['ok'] = True
+        dispatch_state['cooldown_skip'] = True
+        return
+    payload = {
+        'decided_at': cycle.get('checked_at') or utc_now_iso(),
+        'decided_by': args.decided_by,
+        'decided_by_name': args.decided_by_name,
+    }
+    try:
+        result = fetch_json(
+            f"{args.api_base_url.rstrip('/')}/api/ops/official-group-approval-batches/run-ready",
+            method='POST',
+            payload=payload,
+            timeout=max(30.0, float(args.command_timeout_seconds)),
+        )
+    except Exception as exc:
+        dispatch_state['triggered'] = True
+        dispatch_state['ok'] = False
+        dispatch_state['error'] = str(exc)
+        return
+    record_trigger(state, fingerprint=fingerprint, now=now)
+    dispatch_state['triggered'] = True
+    dispatch_state['ok'] = True
+    dispatch_state['result'] = result
+
+
+def _run_registration_group_cycle(
+    args: argparse.Namespace,
+    state: Dict[str, Any],
+    target: Dict[str, Any],
+    *,
+    now: datetime,
+) -> Dict[str, Any]:
+    target_registration_group = str(target.get('registration_group') or args.registration_group or '').strip()
+    target_group_name = str(target.get('group_name') or target_registration_group).strip() or target_registration_group
+    target_worker_base_url = str(target.get('worker_base_url') or '').strip()
+    if not target_worker_base_url and str(target.get('source') or '').strip() == 'fallback_config':
+        target_worker_base_url = str(args.worker_base_url or '').strip()
+    target_fresh_probe_cmd = _fresh_probe_cmd_for_target(args, target_registration_group)
+    target_area = str(target.get('area') or args.area or '').strip() or 'Indonesia'
+    cycle: Dict[str, Any] = {
+        'registration_group': target_registration_group,
+        'monitor_target': {
+            **target,
+            'group_name': target_group_name,
+            'worker_base_url': target_worker_base_url,
+            'fresh_probe_cmd_source': 'target_specific_default' if target_registration_group != str(args.registration_group or '').strip() else 'configured_or_default',
+        },
+    }
+
+    if not target_worker_base_url:
+        cycle['worker_state'] = {
+            'ok': False,
+            'error': 'worker_base_url_missing_for_selected_binding',
+        }
+        cycle['decision_group_state'] = {
+            'source': 'fail_closed',
+            'mismatch': False,
+            'mismatch_reasons': ['worker_base_url_missing'],
+        }
         return cycle
 
     try:
         worker_payload = fetch_json(
-            f"{args.worker_base_url.rstrip('/')}/group-state",
+            f"{target_worker_base_url.rstrip('/')}/group-state",
             method='POST',
-            payload={'registration_group': args.registration_group},
+            payload={'registration_group': target_registration_group},
             timeout=args.worker_timeout_seconds,
         )
         cycle['worker_state'] = {'ok': True, 'payload': worker_payload}
@@ -227,28 +516,50 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
         cycle['worker_state'] = {'ok': False, 'error': str(exc)}
         return cycle
 
-    try:
-        fresh_payload = _run_fresh_probe(args.fresh_probe_cmd, timeout=args.command_timeout_seconds)
-        decision_group = _resolve_decision_group_state(worker_payload, fresh_payload)
-        cycle['fresh_probe'] = {'ok': True, 'payload': fresh_payload}
-        cycle['decision_group_state'] = decision_group
-    except Exception as exc:
-        cycle['fresh_probe'] = {'ok': False, 'error': str(exc)}
-        cycle['decision_group_state'] = {
-            'source': 'fail_closed',
+    use_worker_state_directly = (
+        cycle.get('monitor_target', {}).get('source') == 'account_binding'
+        and target_worker_base_url != str(args.worker_base_url or '').strip()
+    )
+
+    if use_worker_state_directly:
+        cycle['fresh_probe'] = {
+            'ok': True,
+            'skipped': True,
+            'reason': 'dedicated_runtime_worker_state',
+            'payload': worker_payload,
+        }
+        decision_group = {
+            'payload': worker_payload,
+            'source': 'worker_state',
+            'worker_signature': _group_state_signature(worker_payload),
+            'fresh_signature': _group_state_signature(worker_payload),
             'mismatch': False,
             'mismatch_reasons': [],
         }
-        return cycle
+        cycle['decision_group_state'] = decision_group
+    else:
+        try:
+            fresh_payload = _run_fresh_probe(target_fresh_probe_cmd, timeout=args.command_timeout_seconds)
+            decision_group = _resolve_decision_group_state(worker_payload, fresh_payload)
+            cycle['fresh_probe'] = {'ok': True, 'payload': fresh_payload}
+            cycle['decision_group_state'] = decision_group
+        except Exception as exc:
+            cycle['fresh_probe'] = {'ok': False, 'error': str(exc)}
+            cycle['decision_group_state'] = {
+                'source': 'fail_closed',
+                'mismatch': False,
+                'mismatch_reasons': [],
+            }
+            return cycle
 
     authoritative_payload = decision_group['payload']
-
     session_id = str(getattr(args, 'monitoring_session_id', '') or '').strip()
     monitoring_session = _session_state(
         state,
         session_id=session_id,
-        registration_group=args.registration_group,
-        checked_at=cycle['checked_at'],
+        registration_group=target_registration_group,
+        checked_at=now.isoformat(),
+        target=cycle['monitor_target'],
     )
     pending_count = max(int(authoritative_payload.get('pending_count') or 0), 0)
     cycle['startup_initial_batch'] = {
@@ -267,7 +578,15 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
         current_pending_count = pending_count
         while current_pending_count > 0 and attempts < max_attempts:
             attempts += 1
-            command = _build_formal_approval_command(args, approved_count=current_pending_count)
+            command = _build_formal_approval_command(
+                args,
+                approved_count=current_pending_count,
+                registration_group=target_registration_group,
+                worker_base_url=target_worker_base_url,
+                fresh_probe_cmd=target_fresh_probe_cmd,
+                area=target_area,
+                remark=f"production auto approval daemon · {target_group_name}",
+            )
             result = run_formal_approval_command(command, timeout=args.command_timeout_seconds)
             ok = result.get('returncode') == 0 and _formal_run_verified(result)
             attempt_entry: Dict[str, Any] = {
@@ -283,7 +602,7 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
             attempt_results.append(attempt_entry)
             monitoring_session['startup_initial_batch_attempts'] = attempts
             monitoring_session['startup_initial_batch_pending_count'] = current_pending_count
-            monitoring_session['startup_initial_batch_at'] = cycle['checked_at']
+            monitoring_session['startup_initial_batch_at'] = now.isoformat()
             if ok:
                 monitoring_session['startup_initial_batch_done'] = True
                 record_trigger(state, fingerprint=requester_fingerprint(current_payload), now=now)
@@ -298,12 +617,21 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
                 }
                 return cycle
             try:
-                recheck_payload = _run_fresh_probe(args.fresh_probe_cmd, timeout=args.command_timeout_seconds)
+                if use_worker_state_directly:
+                    recheck_payload = fetch_json(
+                        f"{target_worker_base_url.rstrip('/')}/group-state",
+                        method='POST',
+                        payload={'registration_group': target_registration_group},
+                        timeout=args.worker_timeout_seconds,
+                    )
+                    attempt_entry['recheck_source'] = 'worker_state'
+                else:
+                    recheck_payload = _run_fresh_probe(target_fresh_probe_cmd, timeout=args.command_timeout_seconds)
+                    attempt_entry['recheck_source'] = 'fresh_probe'
                 current_payload = recheck_payload
                 current_pending_count = max(int(recheck_payload.get('pending_count') or 0), 0)
                 attempt_entry['recheck_pending_count'] = current_pending_count
                 attempt_entry['recheck_requester_fingerprint'] = requester_fingerprint(recheck_payload)
-                attempt_entry['recheck_source'] = 'fresh_probe'
                 if current_pending_count <= 0:
                     monitoring_session['startup_initial_batch_done'] = True
                     cycle['startup_initial_batch'] = {
@@ -335,7 +663,7 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
         return cycle
 
     try:
-        release = _evaluate_release(args.api_base_url, args.registration_group, authoritative_payload)
+        release = _evaluate_release(args.api_base_url, target_registration_group, authoritative_payload)
         cycle['release_evaluation'] = {'ok': True, 'payload': release}
     except Exception as exc:
         cycle['release_evaluation'] = {'ok': False, 'error': str(exc)}
@@ -369,7 +697,15 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
 
     release_count = max(1, int(release.get('release_count') or 0))
     cycle['formal_approval']['release_count'] = release_count
-    command = _build_formal_approval_command(args, approved_count=release_count)
+    command = _build_formal_approval_command(
+        args,
+        approved_count=release_count,
+        registration_group=target_registration_group,
+        worker_base_url=target_worker_base_url,
+        fresh_probe_cmd=target_fresh_probe_cmd,
+        area=target_area,
+        remark=f"production auto approval daemon · {target_group_name}",
+    )
     result = run_formal_approval_command(command, timeout=args.command_timeout_seconds)
     ok = result.get('returncode') == 0 and _formal_run_verified(result)
     cycle['formal_approval'] = {
@@ -386,6 +722,80 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
         'trigger_cooldown_seconds': trigger_cooldown_seconds,
     }
     record_trigger(state, fingerprint=fingerprint, now=now)
+    return cycle
+
+
+def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]:
+    now = utc_now()
+    fallback_target = _normalize_monitor_target({
+        'registration_group': args.registration_group,
+        'group_name': args.registration_group,
+        'worker_base_url': args.worker_base_url,
+        'area': args.area,
+        'source': 'fallback_config',
+    }, args.worker_base_url) or {
+        'registration_group': args.registration_group,
+        'group_name': args.registration_group,
+        'worker_base_url': args.worker_base_url,
+        'area': args.area,
+        'source': 'fallback_config',
+    }
+    monitor_target = _resolve_monitor_target(args)
+    ordered_targets = _ordered_cycle_targets(monitor_target, fallback_target)
+    primary_target = ordered_targets[0] if ordered_targets else (monitor_target.get('selected') or fallback_target)
+    cycle: Dict[str, Any] = {
+        'service': SERVICE_NAME,
+        'checked_at': now.isoformat(),
+        'registration_group': str(primary_target.get('registration_group') or args.registration_group or '').strip(),
+        'monitor_target': primary_target,
+        'monitor_targets': {
+            'selection_reason': monitor_target.get('selection_reason'),
+            'candidates': monitor_target.get('candidates') or [],
+            'active_count': len(ordered_targets),
+            'allow_fallback': bool(monitor_target.get('allow_fallback', True)),
+        },
+        'registration_group_cycles': [],
+    }
+
+    backend_health = check_backend_health(args.api_base_url, timeout=args.health_timeout_seconds)
+    if not backend_health.get('ok') and args.backend_restart_cmd:
+        restart_result = maybe_restart(args.backend_restart_cmd, timeout=args.restart_command_timeout_seconds)
+        backend_health['restart'] = restart_result
+        time.sleep(max(1.0, float(args.restart_wait_seconds)))
+        after_restart = check_backend_health(args.api_base_url, timeout=args.health_timeout_seconds)
+        backend_health['after_restart'] = after_restart
+        if after_restart.get('ok'):
+            recovered_health = dict(after_restart)
+            recovered_health['restart'] = restart_result
+            recovered_health['recovered_after_restart'] = True
+            cycle['backend_health_recovery'] = {
+                'before_restart': backend_health,
+                'after_restart': after_restart,
+            }
+            backend_health = recovered_health
+    cycle['backend_health'] = backend_health
+    if not backend_health.get('ok'):
+        return cycle
+
+    target_cycles = [_run_registration_group_cycle(args, state, target, now=now) for target in ordered_targets]
+    cycle['registration_group_cycles'] = target_cycles
+    if target_cycles:
+        primary_cycle = target_cycles[0]
+        for key in (
+            'registration_group',
+            'monitor_target',
+            'worker_state',
+            'fresh_probe',
+            'decision_group_state',
+            'startup_initial_batch',
+            'release_evaluation',
+            'requester_fingerprint',
+            'formal_approval',
+        ):
+            if key in primary_cycle:
+                cycle[key] = primary_cycle[key]
+
+    _dispatch_ready_official_group_batches(args, state, cycle, now=now)
     return cycle
 
 
@@ -490,15 +900,18 @@ def main() -> int:
                 'cycle_error': str(exc),
             }
         incidents = build_incidents(cycle)
-        notifications = _notify_incidents(args, state, cycle, incidents)
+        success_notifications = build_success_notifications(cycle)
+        notifications = _notify_incidents(args, state, cycle, [*incidents, *success_notifications])
         cycle['incidents'] = incidents
+        cycle['success_notifications'] = success_notifications
         cycle['notifications'] = notifications
         save_json_state(status_path, cycle)
         save_json_state(state_path, state)
         print(json.dumps({
             'checked_at': cycle.get('checked_at'),
             'pending_incidents': [item.get('code') for item in incidents],
-            'notified': [item.get('code') for item in incidents if any(n.get('code') == item.get('code') and n.get('status') == 'sent' for n in notifications)],
+            'success_notifications': [item.get('code') for item in success_notifications],
+            'notified': [item.get('code') for item in [*incidents, *success_notifications] if any(n.get('code') == item.get('code') and n.get('status') == 'sent' for n in notifications)],
             'formal_triggered': bool((cycle.get('formal_approval') or {}).get('triggered')),
             'formal_ok': (cycle.get('formal_approval') or {}).get('ok'),
         }, ensure_ascii=False), flush=True)

@@ -98,6 +98,36 @@ def oldest_pending_at_iso(group_state: Dict[str, Any]) -> Optional[str]:
     return min(values)
 
 
+def formal_run_payload(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    if isinstance(payload.get('formal_run'), dict):
+        return payload.get('formal_run') or {}
+    result = payload.get('result')
+    if isinstance(result, dict) and isinstance(result.get('formal_run'), dict):
+        return result.get('formal_run') or {}
+    if 'approval_run_id' in payload or 'final_status' in payload:
+        return payload
+    return {}
+
+
+
+def formal_run_result(payload: Any) -> Dict[str, Any]:
+    formal_run = formal_run_payload(payload)
+    if not formal_run:
+        return {}
+    direct = formal_run.get('result')
+    if isinstance(direct, dict):
+        return direct
+    final_status = formal_run.get('final_status')
+    if isinstance(final_status, dict):
+        final_result = final_status.get('result')
+        if isinstance(final_result, dict):
+            return final_result
+    return {}
+
+
+
 def requester_fingerprint(group_state: Dict[str, Any]) -> str:
     requesters = group_state.get('requesters') or []
     parts: List[str] = []
@@ -202,37 +232,43 @@ def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
     action = cycle.get('formal_approval') or {}
     if action.get('triggered') and not action.get('ok'):
         fingerprint = str(action.get('fingerprint') or '').strip()
-        approval_run_id = str(((action.get('result') or {}).get('formal_run') or {}).get('approval_run_id') or '').strip()
+        formal_run = formal_run_payload(action.get('result') or {})
+        approval_run_id = str(formal_run.get('approval_run_id') or '').strip()
         dedupe_suffix = fingerprint or 'unknown'
-        formal_run = ((action.get('result') or {}).get('formal_run') or {})
-        formal_result = (formal_run.get('result') or {}) if isinstance(formal_run, dict) else {}
-        incidents.append({
-            'severity': 'critical',
-            'code': 'formal_approval_failed',
-            'summary': '正式审批未闭环',
-            'details': {
-                'fingerprint': fingerprint,
-                'pending_count': action.get('pending_count'),
-                'release_count': action.get('release_count'),
-                'reason_code': action.get('reason_code'),
-                'returncode': action.get('returncode'),
-                'approval_run_id': approval_run_id,
-                'verified': formal_result.get('verified'),
-                'crm_recorded': formal_result.get('crm_recorded'),
-                'result_code': formal_result.get('result_code'),
-            },
-            'dedupe_key': f'formal_approval_failed:{dedupe_suffix}',
-        })
+        formal_result = formal_run_result(formal_run)
+        verified = formal_result.get('verified')
+        crm_recorded = formal_result.get('crm_recorded')
+        returncode = action.get('returncode')
+        confirmed_failure = returncode not in (None, 0) or verified is False or crm_recorded is False
+        if confirmed_failure:
+            incidents.append({
+                'severity': 'critical',
+                'code': 'formal_approval_failed',
+                'summary': '正式审批未闭环',
+                'details': {
+                    'fingerprint': fingerprint,
+                    'pending_count': action.get('pending_count'),
+                    'release_count': action.get('release_count'),
+                    'reason_code': action.get('reason_code'),
+                    'returncode': returncode,
+                    'approval_run_id': approval_run_id,
+                    'verified': verified,
+                    'crm_recorded': crm_recorded,
+                    'result_code': formal_result.get('result_code'),
+                },
+                'dedupe_key': f'formal_approval_failed:{dedupe_suffix}',
+            })
     startup_batch = cycle.get('startup_initial_batch') or {}
     if startup_batch.get('triggered') and not startup_batch.get('ok'):
         session_id = str(startup_batch.get('session_id') or '').strip()
-        approval_run_id = str(((startup_batch.get('result') or {}).get('formal_run') or {}).get('approval_run_id') or '').strip()
+        formal_run = formal_run_payload(startup_batch.get('result') or {})
+        approval_run_id = str(formal_run.get('approval_run_id') or '').strip()
         dedupe_suffix = session_id or 'unknown'
         attempt_results = startup_batch.get('attempt_results') or []
         last_attempt = attempt_results[-1] if isinstance(attempt_results, list) and attempt_results else {}
         last_result = (last_attempt.get('result') or {}) if isinstance(last_attempt, dict) else {}
-        last_formal_run = (last_result.get('formal_run') or {}) if isinstance(last_result, dict) else {}
-        last_formal_result = (last_formal_run.get('result') or {}) if isinstance(last_formal_run, dict) else {}
+        last_formal_run = formal_run_payload(last_result)
+        last_formal_result = formal_run_result(last_formal_run)
         incidents.append({
             'severity': 'critical',
             'code': 'startup_initial_batch_failed',
@@ -263,6 +299,61 @@ def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
     return incidents
 
 
+def build_success_notifications(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
+    notifications: List[Dict[str, Any]] = []
+
+    action = cycle.get('formal_approval') or {}
+    if action.get('triggered') and action.get('ok'):
+        formal_run = formal_run_payload(action.get('result') or {})
+        formal_result = formal_run_result(formal_run)
+        if formal_run and formal_result.get('verified') is True and formal_result.get('crm_recorded') is True:
+            approval_run_id = str(formal_run.get('approval_run_id') or '').strip()
+            fingerprint = str(action.get('fingerprint') or '').strip()
+            dedupe_suffix = approval_run_id or fingerprint or 'unknown'
+            notifications.append({
+                'severity': 'info',
+                'code': 'formal_approval_succeeded',
+                'summary': '注册群审批成功',
+                'details': {
+                    'approval_run_id': approval_run_id or None,
+                    'fingerprint': fingerprint or None,
+                    'approved_count': formal_result.get('approved_count', action.get('release_count')),
+                    'pending_after': formal_result.get('pending_after'),
+                    'member_count_after': formal_result.get('member_count_after'),
+                    'result_code': formal_result.get('result_code'),
+                    'reason_code': action.get('reason_code'),
+                },
+                'dedupe_key': f'formal_approval_succeeded:{dedupe_suffix}',
+            })
+
+    startup = cycle.get('startup_initial_batch') or {}
+    if startup.get('triggered') and startup.get('ok'):
+        attempt_results = startup.get('attempt_results') or []
+        last_attempt = attempt_results[-1] if isinstance(attempt_results, list) and attempt_results else {}
+        startup_formal_run = formal_run_payload((last_attempt or {}).get('result') or startup.get('result') or {})
+        startup_formal_result = formal_run_result(startup_formal_run)
+        if startup_formal_run and startup_formal_result.get('verified') is True and startup_formal_result.get('crm_recorded') is True:
+            approval_run_id = str(startup_formal_run.get('approval_run_id') or '').strip()
+            session_id = str(startup.get('session_id') or '').strip()
+            dedupe_suffix = approval_run_id or session_id or 'unknown'
+            notifications.append({
+                'severity': 'info',
+                'code': 'startup_initial_batch_succeeded',
+                'summary': '启动首批审批成功',
+                'details': {
+                    'approval_run_id': approval_run_id or None,
+                    'session_id': session_id or None,
+                    'approved_count': startup_formal_result.get('approved_count', startup.get('pending_count')),
+                    'pending_after': startup_formal_result.get('pending_after'),
+                    'member_count_after': startup_formal_result.get('member_count_after'),
+                    'result_code': startup_formal_result.get('result_code'),
+                },
+                'dedupe_key': f'startup_initial_batch_succeeded:{dedupe_suffix}',
+            })
+
+    return notifications
+
+
 def _format_alert_time(checked_at: str) -> str:
     raw = str(checked_at or '').strip() or utc_now_iso()
     try:
@@ -281,8 +372,8 @@ def _compact_reason_text(incident: Dict[str, Any], cycle: Dict[str, Any]) -> str
     code = str(incident.get('code') or '').strip()
     details = incident.get('details') or {}
     action = cycle.get('formal_approval') or {}
-    formal_run = ((action.get('result') or {}).get('formal_run') or {}) if isinstance(action, dict) else {}
-    formal_result = (formal_run.get('result') or {}) if isinstance(formal_run, dict) else {}
+    formal_run = formal_run_payload(action.get('result') or {}) if isinstance(action, dict) else {}
+    formal_result = formal_run_result(formal_run)
 
     if code == 'formal_approval_failed':
         returncode = action.get('returncode') if action.get('returncode') is not None else details.get('returncode')
@@ -295,6 +386,8 @@ def _compact_reason_text(incident: Dict[str, Any], cycle: Dict[str, Any]) -> str
 
         if returncode not in (None, 0):
             return '审批脚本执行失败'
+        if verified is True and crm_recorded is True:
+            return '审批已执行并成功闭环，本条告警应视为误报'
         if verified is True and crm_recorded is False:
             return '审批成功，但 CRM 写入失败'
         if verified is False and crm_recorded is True:
@@ -331,6 +424,68 @@ def _compact_reason_text(incident: Dict[str, Any], cycle: Dict[str, Any]) -> str
             return '启动首批审批失败，自动重试已结束并转入常规监控'
         return '启动首批审批失败'
 
+    if code == 'formal_approval_succeeded':
+        approved_count = formal_result.get('approved_count')
+        if approved_count is None:
+            approved_count = details.get('approved_count')
+        pending_after = formal_result.get('pending_after')
+        if pending_after is None:
+            pending_after = details.get('pending_after')
+        member_count_after = formal_result.get('member_count_after')
+        if member_count_after is None:
+            member_count_after = details.get('member_count_after')
+
+        approved_text = '已审批通过'
+        try:
+            approved_value = int(approved_count)
+        except (TypeError, ValueError):
+            approved_value = None
+        if approved_value is not None and approved_value > 0:
+            approved_text = f'已审批通过 {approved_value} 人'
+
+        suffix_parts: List[str] = []
+        try:
+            pending_after_value = int(pending_after)
+            suffix_parts.append(f'当前待审批 {pending_after_value} 人')
+        except (TypeError, ValueError):
+            pass
+        try:
+            member_after_value = int(member_count_after)
+            suffix_parts.append(f'群成员 {member_after_value} 人')
+        except (TypeError, ValueError):
+            pass
+        if suffix_parts:
+            return approved_text + '，' + '，'.join(suffix_parts)
+        return approved_text
+
+    if code == 'startup_initial_batch_succeeded':
+        approved_count = details.get('approved_count')
+        pending_after = details.get('pending_after')
+        member_count_after = details.get('member_count_after')
+
+        approved_text = '启动首批审批已通过'
+        try:
+            approved_value = int(approved_count)
+        except (TypeError, ValueError):
+            approved_value = None
+        if approved_value is not None and approved_value > 0:
+            approved_text = f'启动首批审批已通过 {approved_value} 人'
+
+        suffix_parts: List[str] = []
+        try:
+            pending_after_value = int(pending_after)
+            suffix_parts.append(f'当前待审批 {pending_after_value} 人')
+        except (TypeError, ValueError):
+            pass
+        try:
+            member_after_value = int(member_count_after)
+            suffix_parts.append(f'群成员 {member_after_value} 人')
+        except (TypeError, ValueError):
+            pass
+        if suffix_parts:
+            return approved_text + '，' + '，'.join(suffix_parts)
+        return approved_text
+
     snippet = json.dumps(details, ensure_ascii=False) if details else ''
     if len(snippet) > 120:
         snippet = snippet[:120] + '...'
@@ -357,6 +512,13 @@ def _compact_count_line(incident: Dict[str, Any], cycle: Dict[str, Any]) -> Opti
         payload = release.get('payload') if isinstance(release.get('payload'), dict) else {}
         candidates = [payload.get('release_count'), release.get('release_count'), details.get('release_count')]
         label = '待放行人数'
+    elif code == 'formal_approval_succeeded':
+        formal_result = formal_run_result(action.get('result') or {})
+        candidates = [formal_result.get('approved_count'), details.get('approved_count'), action.get('release_count')]
+        label = '通过人数'
+    elif code == 'startup_initial_batch_succeeded':
+        candidates = [details.get('approved_count'), startup.get('pending_count')]
+        label = '通过人数'
 
     for value in candidates:
         try:

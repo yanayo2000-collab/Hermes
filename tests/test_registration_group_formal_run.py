@@ -1,5 +1,7 @@
+from pathlib import Path
+
 from app.registration_group_formal_run import execute_formal_registration_group_approval
-from scripts.run_registration_group_formal_approval import _ensure_backend_healthy
+from scripts.run_registration_group_formal_approval import _ensure_backend_healthy, _run_preflight
 
 
 class StubTransport:
@@ -109,6 +111,64 @@ def test_execute_formal_registration_group_approval_raises_on_poll_timeout():
         assert 'registration_group_approval_test_2' in str(exc)
     else:
         raise AssertionError('expected TimeoutError')
+
+
+def test_run_preflight_infers_expected_auth_strategy_from_worker_and_avoids_forced_fresh_probe(monkeypatch):
+    calls = []
+
+    def fake_collect_snapshot(api_base_url, worker_base_url, registration_group, fresh_probe_cmd, worker_event_log, allow_fast_probe_skip=True):
+        calls.append({
+            'api_base_url': api_base_url,
+            'worker_base_url': worker_base_url,
+            'registration_group': registration_group,
+            'fresh_probe_cmd': fresh_probe_cmd,
+            'worker_event_log': str(worker_event_log),
+            'allow_fast_probe_skip': allow_fast_probe_skip,
+        })
+        return {
+            'worker_health': {
+                'status': 'warm',
+                'auth_strategy': 'LocalAuth',
+                'ready': True,
+                'authenticated': True,
+            },
+            'worker_warmup': {'status': 'warm', 'warmup_outcome': 'ready'},
+            'worker_group_state': {'pending_count': 2, 'member_count': 4},
+            'fresh_group_state': {'pending_count': 2, 'member_count': 4},
+            'last_verified_group_state': {},
+            'fresh_probe_skipped': True,
+        }
+
+    def fake_evaluate_registration_group_webjs_preflight(**kwargs):
+        assert kwargs['expected_auth_strategy'] == 'LocalAuth'
+        return {
+            'ok': True,
+            'registration_group': kwargs['registration_group'],
+            'expected_auth_strategy': kwargs['expected_auth_strategy'],
+            'stale_session_detected': False,
+            'reasons': [],
+            'warnings': [],
+        }
+
+    monkeypatch.setattr('scripts.run_registration_group_formal_approval._collect_snapshot', fake_collect_snapshot)
+    monkeypatch.setattr(
+        'scripts.run_registration_group_formal_approval.evaluate_registration_group_webjs_preflight',
+        fake_evaluate_registration_group_webjs_preflight,
+    )
+
+    result = _run_preflight(
+        api_base_url='http://127.0.0.1:8011',
+        worker_base_url='http://127.0.0.1:64332',
+        registration_group='https://chat.whatsapp.com/Bp1WKsmpcbC2RkAyIACeRv',
+        fresh_probe_cmd='node scripts/fresh_webjs_group_state.js test',
+        worker_event_log=Path('/tmp/worker.jsonl'),
+        expected_auth_strategy='',
+    )
+
+    assert result['preflight']['ok'] is True
+    assert result['preflight']['expected_auth_strategy'] == 'LocalAuth'
+    assert len(calls) == 1
+    assert calls[0]['allow_fast_probe_skip'] is True
 
 
 def test_ensure_backend_healthy_restarts_when_initial_health_fails(monkeypatch):

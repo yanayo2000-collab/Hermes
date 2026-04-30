@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.production_ops import (
     build_incidents,
+    build_success_notifications,
     format_lark_alert,
     record_trigger,
     register_notification,
@@ -51,7 +52,18 @@ def test_build_incidents_emits_backend_and_formal_approval_failures():
             'triggered': True,
             'ok': False,
             'fingerprint': 'abc',
-            'result': {'formal_run': {'approval_run_id': 'run-123'}},
+            'returncode': 0,
+            'result': {
+                'formal_run': {
+                    'approval_run_id': 'run-123',
+                    'final_status': {
+                        'result': {
+                            'verified': False,
+                            'crm_recorded': False,
+                        }
+                    },
+                }
+            },
         },
         'startup_initial_batch': {
             'triggered': True,
@@ -81,7 +93,18 @@ def test_build_incidents_uses_stable_unknown_dedupe_when_ids_missing():
         'formal_approval': {
             'triggered': True,
             'ok': False,
-            'result': {'formal_run': {'approval_run_id': 'run-123'}},
+            'returncode': 0,
+            'result': {
+                'formal_run': {
+                    'approval_run_id': 'run-123',
+                    'final_status': {
+                        'result': {
+                            'verified': False,
+                            'crm_recorded': False,
+                        }
+                    },
+                }
+            },
         },
         'startup_initial_batch': {
             'triggered': True,
@@ -94,6 +117,81 @@ def test_build_incidents_uses_stable_unknown_dedupe_when_ids_missing():
 
     assert incidents[0]['dedupe_key'] == 'formal_approval_failed:unknown'
     assert incidents[1]['dedupe_key'] == 'startup_initial_batch_failed:unknown'
+
+
+def test_build_incidents_skips_false_positive_when_final_status_already_succeeded():
+    cycle = {
+        'checked_at': '2026-04-29T05:57:19+00:00',
+        'registration_group': 'RG',
+        'backend_health': {'ok': True},
+        'worker_state': {'ok': True},
+        'release_evaluation': {'ok': True},
+        'formal_approval': {
+            'triggered': True,
+            'ok': False,
+            'fingerprint': 'fp-1',
+            'pending_count': 2,
+            'release_count': 2,
+            'returncode': 0,
+            'result': {
+                'formal_run': {
+                    'approval_run_id': 'run-4654',
+                    'final_status': {
+                        'result': {
+                            'verified': True,
+                            'crm_recorded': True,
+                            'result_code': 'approved',
+                        }
+                    },
+                }
+            },
+        },
+    }
+
+    incidents = build_incidents(cycle)
+
+    assert incidents == []
+
+
+def test_build_success_notifications_emits_registration_group_approval_success_once_per_run():
+    cycle = {
+        'checked_at': '2026-04-29T05:57:32+00:00',
+        'registration_group': 'https://chat.whatsapp.com/Bp1WKsmpcbC2RkAyIACeRv',
+        'formal_approval': {
+            'triggered': True,
+            'ok': True,
+            'fingerprint': 'fp-85',
+            'pending_count': 2,
+            'release_count': 2,
+            'reason_code': 'timeout_flush',
+            'result': {
+                'formal_run': {
+                    'approval_run_id': 'registration_group_approval_4654cdd3a95b',
+                    'final_status': {
+                        'result': {
+                            'verified': True,
+                            'crm_recorded': True,
+                            'result_code': 'approved',
+                            'approved_count': 2,
+                            'pending_after': 0,
+                            'member_count_after': 6,
+                        }
+                    },
+                }
+            },
+        },
+    }
+
+    notifications = build_success_notifications(cycle)
+
+    assert len(notifications) == 1
+    assert notifications[0]['code'] == 'formal_approval_succeeded'
+    assert notifications[0]['severity'] == 'info'
+    assert notifications[0]['summary'] == '注册群审批成功'
+    assert notifications[0]['dedupe_key'] == 'formal_approval_succeeded:registration_group_approval_4654cdd3a95b'
+    assert notifications[0]['details']['approved_count'] == 2
+    assert notifications[0]['details']['pending_after'] == 0
+
 
 
 def test_format_lark_alert_contains_summary_and_reason():
@@ -121,6 +219,48 @@ def test_format_lark_alert_contains_summary_and_reason():
     assert '注册群: RG' in text
     assert '批次人数: 8' in text
     assert '原因: 审批脚本执行失败' in text
+
+
+
+def test_format_lark_alert_contains_compact_success_summary():
+    cycle = {
+        'checked_at': '2026-04-29T05:57:32+00:00',
+        'registration_group': 'RG',
+        'formal_approval': {
+            'triggered': True,
+            'ok': True,
+            'release_count': 2,
+            'result': {
+                'formal_run': {
+                    'approval_run_id': 'run-success',
+                    'final_status': {
+                        'result': {
+                            'verified': True,
+                            'crm_recorded': True,
+                            'approved_count': 2,
+                            'pending_after': 0,
+                            'member_count_after': 6,
+                            'result_code': 'approved',
+                        }
+                    },
+                }
+            },
+        },
+    }
+    notification = {
+        'severity': 'info',
+        'code': 'formal_approval_succeeded',
+        'summary': '注册群审批成功',
+        'details': {'approved_count': 2, 'pending_after': 0, 'member_count_after': 6},
+    }
+
+    text = format_lark_alert('production-ops-daemon', notification, cycle)
+
+    assert '[production-ops-daemon] INFO formal_approval_succeeded' in text
+    assert '时间: 2026-04-29 13:57:32 UTC+8' in text
+    assert '注册群: RG' in text
+    assert '通过人数: 2' in text
+    assert '原因: 已审批通过 2 人，当前待审批 0 人，群成员 6 人' in text
 
 
 def test_format_lark_alert_uses_compact_startup_reason_without_raw_details():

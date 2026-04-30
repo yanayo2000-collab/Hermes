@@ -9,6 +9,63 @@ const registrationGroup = String(process.argv[2] || '').trim();
 const profileDir = String(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_CHROME_PROFILE_DIR || 'Profile 25').trim();
 const chromeRoot = path.resolve(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_CHROME_USER_DATA_ROOT || path.join(process.env.HOME, 'Library/Application Support/Google/Chrome'));
 
+function extractInviteCode(targetValue) {
+  const match = String(targetValue || '').trim().match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/i);
+  return match ? String(match[1] || '').trim() : '';
+}
+
+function inviteInfoGroupId(inviteInfo) {
+  const candidates = [
+    inviteInfo && inviteInfo.id,
+    inviteInfo && inviteInfo.gid,
+    inviteInfo && inviteInfo.groupId,
+    inviteInfo && inviteInfo.chatId,
+    inviteInfo && inviteInfo.groupWid,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (typeof candidate === 'string') {
+      const normalized = String(candidate).trim();
+      if (normalized) return normalized;
+      continue;
+    }
+    if (candidate._serialized) {
+      const normalized = String(candidate._serialized || '').trim();
+      if (normalized) return normalized;
+    }
+  }
+  return '';
+}
+
+async function resolveGroup(activeClient, targetValue) {
+  if (/@g\.us$/.test(targetValue)) {
+    return await activeClient.getChatById(targetValue);
+  }
+  const inviteCode = extractInviteCode(targetValue);
+  if (inviteCode) {
+    try {
+      const inviteInfo = await activeClient.getInviteInfo(inviteCode);
+      const groupId = inviteInfoGroupId(inviteInfo);
+      if (groupId) {
+        const inviteChat = await activeClient.getChatById(groupId);
+        if (inviteChat && inviteChat.isGroup) return inviteChat;
+      }
+    } catch (_) {
+      // fall through to chat list resolution
+    }
+  }
+  const chats = await activeClient.getChats();
+  const exact = chats.find((chat) => chat && chat.isGroup && String(chat.name || '').trim() === targetValue);
+  if (exact) return exact;
+  const fuzzy = chats.find((chat) => chat && chat.isGroup && String(chat.name || '').includes(targetValue));
+  if (fuzzy) return fuzzy;
+  if (inviteCode) {
+    const inviteByCode = chats.find((chat) => chat && chat.isGroup && String(chat.groupInviteCode || '').trim() === inviteCode);
+    if (inviteByCode) return inviteByCode;
+  }
+  throw new Error(`group not found: ${targetValue}`);
+}
+
 if (!registrationGroup) {
   console.error('usage: fresh_webjs_group_state.js <registration_group>');
   process.exit(2);
@@ -43,8 +100,7 @@ const client = new Client({
 let readyTimeout = null;
 
 async function main() {
-  const chats = await client.getChats();
-  const group = chats.find((chat) => chat && chat.isGroup && String(chat.name || '').trim() === registrationGroup);
+  const group = await resolveGroup(client, registrationGroup);
   if (!group) throw new Error(`group not found: ${registrationGroup}`);
   const requests = await group.getGroupMembershipRequests();
   const requesterIds = requests

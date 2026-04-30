@@ -25,11 +25,25 @@ def test_webjs_worker_group_state_uses_same_approval_client_as_real_approval_pat
     assert 'const SHARED_APPROVAL_CLIENT = !REUSE_CHROME_PROFILE;' in server_text
     assert 'function syncApprovalStateFromPrimary() {' in server_text
     assert 'if (SHARED_APPROVAL_CLIENT) {' in server_text
+    assert 'function extractInviteCode(targetValue) {' in server_text
+    assert 'const inviteInfo = await activeClient.getInviteInfo(inviteCode);' in server_text
+    assert 'const groupId = inviteInfoGroupId(inviteInfo);' in server_text
     assert "const group = await resolveApprovalGroup(context.registration_group);" in server_text
     assert "const requests = await getApprovalRequestEnriched(group);" in server_text
     assert "await ensureApprovalClientStarted();" in server_text
     assert "await waitForApprovalReady(QR_TIMEOUT_MS).catch(() => {" in server_text
     assert "auth_strategy: approvalState.auth_strategy," in server_text
+    assert "if (isRecoverableApprovalClientError(error)) {" in server_text
+    assert "return await groupStateWithRecovery(payload);" in server_text
+
+
+def test_fresh_group_state_script_supports_invite_links_and_group_ids():
+    script_text = Path('scripts/fresh_webjs_group_state.js').read_text()
+
+    assert 'async function resolveGroup(activeClient, targetValue) {' in script_text
+    assert 'const inviteInfo = await activeClient.getInviteInfo(inviteCode);' in script_text
+    assert 'const groupId = inviteInfoGroupId(inviteInfo);' in script_text
+    assert 'const group = await resolveGroup(client, registrationGroup);' in script_text
 
 
 def test_webjs_worker_restart_script_supports_dedicated_localauth_mode():

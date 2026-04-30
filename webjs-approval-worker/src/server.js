@@ -211,6 +211,15 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isRecoverableApprovalClientError(error) {
+  const message = String(error && error.message ? error.message : error || '');
+  return (
+    message.includes('Attempted to use detached Frame')
+    || message.includes('Execution context was destroyed')
+    || message.includes('Runtime.callFunctionOn')
+  );
+}
+
 function normalizePhone(value) {
   return String(value || '').replace(/[^\d+]/g, '');
 }
@@ -599,6 +608,34 @@ function withActionLock(fn) {
   return run;
 }
 
+function extractInviteCode(targetValue) {
+  const match = String(targetValue || '').trim().match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]+)/i);
+  return match ? String(match[1] || '').trim() : '';
+}
+
+function inviteInfoGroupId(inviteInfo) {
+  const candidates = [
+    inviteInfo && inviteInfo.id,
+    inviteInfo && inviteInfo.gid,
+    inviteInfo && inviteInfo.groupId,
+    inviteInfo && inviteInfo.chatId,
+    inviteInfo && inviteInfo.groupWid,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (typeof candidate === 'string') {
+      const normalized = String(candidate).trim();
+      if (normalized) return normalized;
+      continue;
+    }
+    if (candidate._serialized) {
+      const normalized = String(candidate._serialized || '').trim();
+      if (normalized) return normalized;
+    }
+  }
+  return '';
+}
+
 async function resolveGroupWithClient(activeClient, target) {
   const targetValue = String(target || '').trim();
   if (!targetValue) {
@@ -607,11 +644,28 @@ async function resolveGroupWithClient(activeClient, target) {
   if (/@g\.us$/.test(targetValue)) {
     return await activeClient.getChatById(targetValue);
   }
+  const inviteCode = extractInviteCode(targetValue);
+  if (inviteCode) {
+    try {
+      const inviteInfo = await activeClient.getInviteInfo(inviteCode);
+      const groupId = inviteInfoGroupId(inviteInfo);
+      if (groupId) {
+        const inviteChat = await activeClient.getChatById(groupId);
+        if (inviteChat && inviteChat.isGroup) return inviteChat;
+      }
+    } catch (_) {
+      // fall through to chat list resolution
+    }
+  }
   const chats = await activeClient.getChats();
   const exact = chats.find((chat) => chat.isGroup && String(chat.name || '').trim() === targetValue);
   if (exact) return exact;
   const fuzzy = chats.find((chat) => chat.isGroup && String(chat.name || '').includes(targetValue));
   if (fuzzy) return fuzzy;
+  if (inviteCode) {
+    const inviteByCode = chats.find((chat) => chat.isGroup && String(chat.groupInviteCode || '').trim() === inviteCode);
+    if (inviteByCode) return inviteByCode;
+  }
   throw new Error(`group not found: ${targetValue}`);
 }
 
@@ -636,12 +690,32 @@ async function getRequestEnrichedWithClient(activeClient, group) {
       }
     }),
   );
+  let lidPhoneMap = new Map();
+  if (activeClient && typeof activeClient.getContactLidAndPhone === 'function') {
+    try {
+      const lidPhoneRows = await activeClient.getContactLidAndPhone(requesterIds.filter(Boolean));
+      lidPhoneMap = new Map(
+        (Array.isArray(lidPhoneRows) ? lidPhoneRows : []).map((item) => [
+          safeString(item && item.lid),
+          safeString(item && item.pn),
+        ]),
+      );
+    } catch (_) {
+      lidPhoneMap = new Map();
+    }
+  }
 
   return requests.map((item, index) => {
     const requesterId = requesterIds[index] || '';
     const contact = contacts[index] || null;
-    const phone = requesterId ? requesterId.replace(/@c\.us$/, '') : null;
+    const contactNumberRaw = (safeString(contact && contact.number) || '').replace(/^\+/, '');
+    const lidPhoneRaw = (safeString(lidPhoneMap.get(requesterId)) || '').replace(/@(c|lid)\.us$/, '').replace(/^\+/, '');
+    const contactNumberMasked = /\*/.test(contactNumberRaw);
+    const requesterDigits = requesterId ? requesterId.replace(/@(c|lid)\.us$/, '').replace(/@lid$/, '') : '';
+    const contactNumberLooksLikeLid = Boolean(requesterId.endsWith('@lid') && contactNumberRaw && contactNumberRaw === requesterDigits);
+    const phone = ((!contactNumberMasked && !contactNumberLooksLikeLid && contactNumberRaw) || lidPhoneRaw || contactNumberRaw || requesterDigits || null);
     const displayName = contact ? (contact.pushname || contact.name || contact.shortName || null) : null;
+
     return {
       requesterId,
       phoneRaw: phone ? `+${phone}` : null,
@@ -650,6 +724,9 @@ async function getRequestEnrichedWithClient(activeClient, group) {
       requestMethod: item && item.requestMethod ? item.requestMethod : null,
       requestedAtUnix: item && item.t ? item.t : null,
       requestedAtIso: item && item.t ? new Date(item.t * 1000).toISOString() : null,
+      debugContactNumberRaw: contactNumberRaw || null,
+      debugLidPhoneRaw: lidPhoneRaw || null,
+      debugContactNumberMasked: contactNumberMasked,
     };
   });
 }
@@ -663,41 +740,50 @@ async function getApprovalRequestEnriched(group) {
 }
 
 function scoreRequest(entry, hints) {
-  let score = 0;
   const normalizedHint = normalizePhone(hints.targetPhoneHint);
   const normalizedEntryPhone = normalizePhone(entry.phoneNormalized || entry.phoneRaw || '');
   const targetNameHint = String(hints.targetNameHint || '').trim().toLowerCase();
   const displayName = String(entry.displayName || '').trim().toLowerCase();
-  if (normalizedHint && normalizedEntryPhone && normalizedHint === normalizedEntryPhone) score += 100;
-  if (targetNameHint && displayName && displayName === targetNameHint) score += 60;
-  if (targetNameHint && displayName && displayName.includes(targetNameHint)) score += 20;
-  return score;
+  const phoneExactMatch = Boolean(normalizedHint && normalizedEntryPhone && normalizedHint === normalizedEntryPhone);
+  const nameExactMatch = Boolean(targetNameHint && displayName && displayName === targetNameHint);
+  const nameContainsMatch = Boolean(targetNameHint && displayName && displayName.includes(targetNameHint));
+  let score = 0;
+  if (phoneExactMatch) score += 100;
+  if (nameExactMatch) score += 60;
+  if (nameContainsMatch) score += 20;
+  return {
+    score,
+    phoneExactMatch,
+    nameExactMatch,
+    nameContainsMatch,
+  };
 }
 
 function selectRequests(requests, context) {
   const approvedCount = Math.max(1, Number(context.approved_count || 1));
+  const hasPhoneHint = Boolean(normalizePhone(context.target_phone_hint));
+  const hasNameHint = Boolean(String(context.target_name_hint || '').trim());
+  const hasIdentityHints = hasPhoneHint || hasNameHint;
   const ranked = requests
-    .map((entry, index) => ({ entry, index, score: scoreRequest(entry, { targetPhoneHint: context.target_phone_hint, targetNameHint: context.target_name_hint }) }))
+    .map((entry, index) => {
+      const match = scoreRequest(entry, {
+        targetPhoneHint: context.target_phone_hint,
+        targetNameHint: context.target_name_hint,
+      });
+      return { entry, index, ...match };
+    })
     .sort((a, b) => b.score - a.score || a.index - b.index);
-  const selected = [];
-  if (ranked.length === 0) return selected;
-  if (ranked[0].score > 0) {
-    selected.push(ranked[0]);
+  if (ranked.length === 0) return [];
+  if (!hasIdentityHints) {
+    return ranked.slice(0, approvedCount);
   }
-  for (const item of ranked) {
-    if (selected.length >= approvedCount) break;
-    if (!selected.find((existing) => existing.entry.requesterId === item.entry.requesterId)) {
-      selected.push(item);
-    }
+  if (hasPhoneHint) {
+    return ranked.filter((item) => item.phoneExactMatch).slice(0, approvedCount);
   }
-  return selected.slice(0, approvedCount);
+  return ranked.filter((item) => item.nameExactMatch).slice(0, approvedCount);
 }
 
-async function groupState(context) {
-  if (!approvalState.ready) {
-    throw new Error(approvalState.last_qr ? 'approval client awaiting qr scan' : 'approval client is not ready');
-  }
-  const group = await resolveApprovalGroup(context.registration_group);
+async function buildGroupStateFromGroup(context, group) {
   const groupId = safeString(group.id);
   const groupName = group.name || context.registration_group;
   const memberCount = Array.isArray(group.participants) ? group.participants.length : null;
@@ -710,6 +796,26 @@ async function groupState(context) {
     requester_ids: requests.map((row) => row.requesterId).filter(Boolean),
     requesters: requests,
   };
+}
+
+async function groupState(context) {
+  if (!approvalState.ready) {
+    throw new Error(approvalState.last_qr ? 'approval client awaiting qr scan' : 'approval client is not ready');
+  }
+  const group = await resolveApprovalGroup(context.registration_group);
+  return buildGroupStateFromGroup(context, group);
+}
+
+async function groupStateWithRecovery(context) {
+  try {
+    return await groupState(context);
+  } catch (error) {
+    if (isRecoverableApprovalClientError(error)) {
+      const group = await reloadApprovalGroupFromFreshSession(context, error && error.stack ? error.stack : error);
+      return await buildGroupStateFromGroup(context, group);
+    }
+    throw error;
+  }
 }
 
 async function reloadGroupFromFreshSession(context, reason) {
@@ -1130,7 +1236,7 @@ const server = http.createServer(async (req, res) => {
             throw new Error(approvalState.last_qr ? 'approval client awaiting qr scan' : 'approval client not ready');
           }
         });
-        return groupState(payload);
+        return await groupStateWithRecovery(payload);
       });
       logEvent('group_state', {
         registration_group: payload.registration_group || null,
@@ -1213,20 +1319,29 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
-  const startupRecord = {
-    status: 'listening',
-    host: HOST,
-    port: PORT,
-    provider: state.provider,
-    mode: state.mode,
-    auth_strategy: state.auth_strategy,
-    chrome_profile_source: state.chrome_profile_source || null,
-    event_log: WORKER_EVENT_LOG,
-  };
-  logEvent('startup', startupRecord);
-  console.log(JSON.stringify(startupRecord));
-});
+if (require.main === module) {
+  server.listen(PORT, HOST, () => {
+    const startupRecord = {
+      status: 'listening',
+      host: HOST,
+      port: PORT,
+      provider: state.provider,
+      mode: state.mode,
+      auth_strategy: state.auth_strategy,
+      chrome_profile_source: state.chrome_profile_source || null,
+      event_log: WORKER_EVENT_LOG,
+    };
+    logEvent('startup', startupRecord);
+    console.log(JSON.stringify(startupRecord));
+  });
+}
+
+module.exports = {
+  normalizePhone,
+  scoreRequest,
+  selectRequests,
+  getRequestEnrichedWithClient,
+};
 
 process.on('exit', () => {
   cleanupRuntimeChromeUserDataDir('probe');
