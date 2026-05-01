@@ -409,6 +409,9 @@ def _compact_reason_text(incident: Dict[str, Any], cycle: Dict[str, Any]) -> str
         return error or '后端健康检查失败'
 
     if code == 'worker_state_failed':
+        recovery = details.get('recovery') if isinstance(details.get('recovery'), dict) else {}
+        if recovery.get('attempted'):
+            return '自动重连失败，已重试后仍不可用'
         error = str(details.get('error') or '').strip()
         return error or 'worker 群状态探测失败'
 

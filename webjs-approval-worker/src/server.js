@@ -612,14 +612,24 @@ async function ensureClientStarted(options = {}) {
       },
     }));
   const activeInitPromise = initPromise;
-  activeInitPromise.finally(() => {
-    if (initPromise === activeInitPromise) {
-      initPromise = null;
-    }
-  });
+  activeInitPromise.then(
+    () => {
+      if (initPromise === activeInitPromise) {
+        initPromise = null;
+      }
+    },
+    () => {
+      if (initPromise === activeInitPromise) {
+        initPromise = null;
+      }
+    },
+  );
 
-  await Promise.resolve();
-  return returnInitPromise ? initPromise : client;
+  if (returnInitPromise) {
+    return activeInitPromise;
+  }
+  await activeInitPromise;
+  return client;
 }
 
 async function ensureApprovalClientStarted(options = {}) {
@@ -764,14 +774,24 @@ async function ensureApprovalClientStarted(options = {}) {
       },
     }));
   const activeApprovalInitPromise = approvalInitPromise;
-  activeApprovalInitPromise.finally(() => {
-    if (approvalInitPromise === activeApprovalInitPromise) {
-      approvalInitPromise = null;
-    }
-  });
+  activeApprovalInitPromise.then(
+    () => {
+      if (approvalInitPromise === activeApprovalInitPromise) {
+        approvalInitPromise = null;
+      }
+    },
+    () => {
+      if (approvalInitPromise === activeApprovalInitPromise) {
+        approvalInitPromise = null;
+      }
+    },
+  );
 
-  await Promise.resolve();
-  return returnInitPromise ? approvalInitPromise : approvalClient;
+  if (returnInitPromise) {
+    return activeApprovalInitPromise;
+  }
+  await activeApprovalInitPromise;
+  return approvalClient;
 }
 
 function withActionLock(fn) {

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.production_ops import build_success_notifications
-from scripts.production_ops_daemon import _notify_incidents, run_cycle
+from scripts.production_ops_daemon import _notify_incidents, _run_registration_group_cycle, run_cycle
 
 
 class Args:
@@ -53,6 +54,102 @@ def test_run_cycle_backend_recovery_does_not_raise_after_restart(monkeypatch):
     assert cycle['backend_health']['restart']['attempted'] is True
     assert cycle['worker_state']['ok'] is True
     assert cycle['fresh_probe']['ok'] is True
+
+
+def test_registration_group_cycle_restarts_account_runtime_before_reporting_worker_state_failed(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.restart_wait_seconds = 0.0
+    target = {
+        'registration_group': 'https://chat.whatsapp.com/test',
+        'group_name': '测试群',
+        'worker_base_url': 'http://127.0.0.1:61150',
+        'account_key': 'wa-admin-demo-1',
+        'account_name': 'WA Admin',
+        'binding_link': 'https://chat.whatsapp.com/test',
+        'binding_group_name': '测试群',
+        'notify_profile_name': 'wa-approval-broadcast',
+        'notify_robot_name': '审批bot01',
+        'area': 'Indonesia',
+        'approval_count_threshold': 30,
+        'approval_timeout_minutes': 30,
+        'auto_recover_worker': True,
+        'schedule_runtime': {'configured': True, 'active_now': True},
+        'schedule_windows': [],
+        'source': 'account_binding',
+    }
+    calls = []
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        calls.append((url, method, payload))
+        if url == 'http://127.0.0.1:61150/group-state':
+            raise RuntimeError('<urlopen error [Errno 61] Connection refused>')
+        if url == 'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/wa-admin-demo-1/runtime/start':
+            return {'runtime': {'active': True, 'base_url': 'http://127.0.0.1:62000'}}
+        if url == 'http://127.0.0.1:62000/group-state':
+            return {
+                'group_id': 'g',
+                'group_name': '测试群',
+                'pending_count': 0,
+                'member_count': 5,
+                'requesters': [],
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon.time.sleep', lambda seconds: None)
+
+    cycle = _run_registration_group_cycle(args, {}, target, now=datetime(2026, 4, 30, 7, 0, tzinfo=timezone.utc))
+
+    assert cycle['worker_state']['ok'] is True
+    assert cycle['worker_state']['recovered_after_restart'] is True
+    assert cycle['worker_state']['recovery']['mode'] == 'account_runtime_start'
+    assert cycle['worker_state']['recovery']['account_key'] == 'wa-admin-demo-1'
+    assert cycle['monitor_target']['worker_base_url'] == 'http://127.0.0.1:62000'
+    assert [entry[0] for entry in calls] == [
+        'http://127.0.0.1:61150/group-state',
+        'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/wa-admin-demo-1/runtime/start',
+        'http://127.0.0.1:62000/group-state',
+    ]
+
+
+def test_registration_group_cycle_does_not_restart_legacy_shared_worker_for_fallback_target(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.restart_wait_seconds = 0.0
+    args.worker_base_url = 'http://127.0.0.1:61150'
+    args.worker_restart_cmd = '/Users/chauncey/work/mcn-ai-automation/scripts/restart_registration_group_webjs_worker.sh'
+    target = {
+        'registration_group': 'https://chat.whatsapp.com/test',
+        'group_name': '测试群',
+        'worker_base_url': 'http://127.0.0.1:61150',
+        'area': 'Indonesia',
+        'approval_count_threshold': 0,
+        'approval_timeout_minutes': 0,
+        'auto_recover_worker': True,
+        'schedule_runtime': {},
+        'schedule_windows': [],
+        'source': 'fallback_config',
+    }
+    restart_calls = []
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url == 'http://127.0.0.1:61150/group-state':
+            raise RuntimeError('<urlopen error [Errno 61] Connection refused>')
+        raise AssertionError(url)
+
+    def fake_restart(command, *, timeout):
+        restart_calls.append((command, timeout))
+        return {'attempted': True, 'ok': True, 'command': command}
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon.maybe_restart', fake_restart)
+    monkeypatch.setattr('scripts.production_ops_daemon.time.sleep', lambda seconds: None)
+
+    cycle = _run_registration_group_cycle(args, {}, target, now=datetime(2026, 4, 30, 7, 0, tzinfo=timezone.utc))
+
+    assert cycle['worker_state']['ok'] is False
+    assert cycle['worker_state']['recovery']['attempted'] is False
+    assert cycle['worker_state']['recovery']['reason'] == 'non_binding_target_recovery_disabled'
+    assert restart_calls == []
 
 
 def test_run_cycle_runs_startup_initial_batch_once_for_new_monitoring_session(monkeypatch):
@@ -426,7 +523,7 @@ def test_notify_incidents_sends_success_notification_once_per_approval_run(monke
             sent_texts.append(text)
             return {'code': 0}
 
-    monkeypatch.setattr('scripts.production_ops_daemon._build_notifier_from_args', lambda args: DummyNotifier())
+    monkeypatch.setattr('scripts.production_ops_daemon._build_notifier_from_args', lambda args, cycle=None: DummyNotifier())
 
     first = _notify_incidents(args, state, cycle, success_notifications)
     second = _notify_incidents(args, state, cycle, success_notifications)
@@ -522,7 +619,7 @@ def test_notify_incidents_sends_startup_initial_batch_success_once(monkeypatch):
             sent_texts.append(text)
             return {'code': 0}
 
-    monkeypatch.setattr('scripts.production_ops_daemon._build_notifier_from_args', lambda args: DummyNotifier())
+    monkeypatch.setattr('scripts.production_ops_daemon._build_notifier_from_args', lambda args, cycle=None: DummyNotifier())
 
     first = _notify_incidents(args, state, cycle, success_notifications)
     second = _notify_incidents(args, state, cycle, success_notifications)
@@ -533,6 +630,63 @@ def test_notify_incidents_sends_startup_initial_batch_success_once(monkeypatch):
     assert '启动首批审批成功' in sent_texts[0]
     assert '通过人数: 2' in sent_texts[0]
     assert second == []
+
+
+
+def test_notify_incidents_prefers_binding_notify_profile_credentials(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.notify_enabled = True
+    args.feishu_app_id = 'cli_wrong_default'
+    args.feishu_app_secret = 'wrong-secret'
+    args.notify_chat_id = 'oc_wrong_default'
+    args.feishu_domain = 'lark'
+    args.notify_cooldown_seconds = 900
+    state = {}
+    cycle = {
+        'checked_at': '2026-04-30T02:48:58+00:00',
+        'registration_group': 'RG',
+        'monitor_target': {
+            'notify_profile_name': 'wa-approval-broadcast',
+            'notify_robot_name': '审批bot01',
+        },
+    }
+    incidents = [{
+        'severity': 'info',
+        'code': 'startup_initial_batch_succeeded',
+        'summary': '启动首批审批成功',
+        'details': {'approved_count': 2, 'pending_after': 0, 'member_count_after': 5},
+        'dedupe_key': 'startup_initial_batch_succeeded:test-routing',
+    }]
+    captured = {}
+
+    class DummyNotifier:
+        def __init__(self, *, app_id, app_secret, chat_id, domain='lark'):
+            captured['init'] = {
+                'app_id': app_id,
+                'app_secret': app_secret,
+                'chat_id': chat_id,
+                'domain': domain,
+            }
+
+        def send_text(self, text):
+            captured['text'] = text
+            return {'code': 0}
+
+    monkeypatch.setattr('scripts.production_ops_daemon._load_notify_profile_env', lambda profile_name: {
+        'FEISHU_APP_ID': 'cli_bot01',
+        'FEISHU_APP_SECRET': 'bot01-secret',
+        'FEISHU_HOME_CHANNEL': 'oc_bot01',
+        'FEISHU_DOMAIN': 'lark',
+    })
+    monkeypatch.setattr('scripts.production_ops_daemon.FeishuNotifier', DummyNotifier)
+
+    sent = _notify_incidents(args, state, cycle, incidents)
+
+    assert len(sent) == 1
+    assert sent[0]['status'] == 'sent'
+    assert captured['init']['app_id'] == 'cli_bot01'
+    assert captured['init']['chat_id'] == 'oc_bot01'
+    assert captured['init']['app_secret'] == 'bot01-secret'
 
 
 

@@ -314,3 +314,28 @@ def test_format_lark_alert_uses_compact_release_reason_without_raw_details():
     assert '待放行人数: 14' in text
     assert '原因: <urlopen error [Errno 61] Connection refused>' in text
     assert '详情:' not in text
+
+
+def test_format_lark_alert_uses_compact_worker_recovery_failed_reason():
+    cycle = {
+        'checked_at': '2026-04-30T06:37:42+00:00',
+        'registration_group': 'RG',
+    }
+    incident = {
+        'severity': 'critical',
+        'code': 'worker_state_failed',
+        'summary': '群状态探测失败',
+        'details': {
+            'error': '<urlopen error [Errno 61] Connection refused>',
+            'recovery': {
+                'attempted': True,
+                'mode': 'account_runtime_start',
+                'reason': 'runtime_start_returned_empty_base_url',
+            },
+        },
+    }
+
+    text = format_lark_alert('production-ops-daemon', incident, cycle)
+
+    assert '原因: 自动重连失败，已重试后仍不可用' in text
+    assert '<urlopen error [Errno 61] Connection refused>' not in text

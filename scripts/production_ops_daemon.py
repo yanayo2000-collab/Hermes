@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -176,6 +177,73 @@ def _resolve_decision_group_state(worker_payload: Dict[str, Any], fresh_payload:
     }
 
 
+def _recover_worker_for_target(
+    args: argparse.Namespace,
+    target: Dict[str, Any],
+    *,
+    failed_worker_base_url: str,
+    error: Exception,
+) -> Dict[str, Any]:
+    recovery: Dict[str, Any] = {
+        'attempted': False,
+        'status': 'skipped',
+        'reason': 'auto_recover_disabled' if not getattr(args, 'auto_recover_worker', False) else 'unhandled_target',
+        'failed_worker_base_url': failed_worker_base_url,
+        'error': str(error),
+    }
+    if not getattr(args, 'auto_recover_worker', False):
+        return recovery
+
+    source = str(target.get('source') or '').strip()
+    account_key = str(target.get('account_key') or '').strip()
+    if source != 'account_binding':
+        recovery['reason'] = 'non_binding_target_recovery_disabled'
+        return recovery
+
+    if source == 'account_binding' and account_key:
+        recovery['attempted'] = True
+        recovery['mode'] = 'account_runtime_start'
+        recovery['account_key'] = account_key
+        try:
+            payload = fetch_json(
+                f"{args.api_base_url.rstrip('/')}/api/ops/whatsapp-approval-accounts/{urllib.parse.quote(account_key, safe='')}/runtime/start",
+                method='POST',
+                payload={},
+                timeout=args.command_timeout_seconds,
+            )
+            runtime = payload.get('runtime') if isinstance(payload.get('runtime'), dict) else {}
+            recovery['payload'] = payload
+            recovery['recovered_worker_base_url'] = str(runtime.get('base_url') or '').strip()
+            if recovery['recovered_worker_base_url']:
+                recovery['status'] = 'ok'
+                time.sleep(max(1.0, float(args.restart_wait_seconds)))
+            else:
+                recovery['status'] = 'failed'
+                recovery['reason'] = 'runtime_start_returned_empty_base_url'
+        except Exception as exc:
+            recovery['status'] = 'failed'
+            recovery['reason'] = str(exc)
+        return recovery
+
+    worker_restart_cmd = str(getattr(args, 'worker_restart_cmd', '') or '').strip()
+    if worker_restart_cmd:
+        recovery['attempted'] = True
+        recovery['mode'] = 'worker_restart_cmd'
+        restart_result = maybe_restart(worker_restart_cmd, timeout=args.restart_command_timeout_seconds)
+        recovery['restart'] = restart_result
+        if restart_result.get('ok'):
+            recovery['status'] = 'ok'
+            recovery['recovered_worker_base_url'] = failed_worker_base_url
+            time.sleep(max(1.0, float(args.restart_wait_seconds)))
+        else:
+            recovery['status'] = 'failed'
+            recovery['reason'] = 'worker_restart_cmd_failed'
+        return recovery
+
+    recovery['reason'] = 'worker_restart_cmd_missing'
+    return recovery
+
+
 def _target_session_config_payload(target: Dict[str, Any]) -> Dict[str, Any]:
     return {
         'registration_group': str(target.get('registration_group') or '').strip(),
@@ -266,6 +334,8 @@ def _normalize_monitor_target(target: Dict[str, Any], fallback_worker_base_url: 
         'account_name': str(target.get('account_name') or '').strip() or None,
         'binding_link': str(target.get('binding_link') or '').strip() or None,
         'binding_group_name': str(target.get('binding_group_name') or '').strip() or None,
+        'notify_profile_name': str(target.get('notify_profile_name') or '').strip() or None,
+        'notify_robot_name': str(target.get('notify_robot_name') or '').strip() or None,
         'area': area,
         'approval_count_threshold': int(target.get('approval_count_threshold') or 0),
         'approval_timeout_minutes': int(target.get('approval_timeout_minutes') or 0),
@@ -345,6 +415,8 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
                 'account_name': account_name,
                 'binding_link': str(binding.get('link') or '').strip(),
                 'binding_group_name': str(binding.get('group_name') or '').strip(),
+                'notify_profile_name': str(binding.get('notify_profile_name') or '').strip(),
+                'notify_robot_name': str(binding.get('notify_robot_name') or '').strip(),
                 'area': str(binding.get('area') or '').strip() or row_area,
                 'approval_count_threshold': binding.get('approval_count_threshold'),
                 'approval_timeout_minutes': binding.get('approval_timeout_minutes'),
@@ -513,8 +585,36 @@ def _run_registration_group_cycle(
         )
         cycle['worker_state'] = {'ok': True, 'payload': worker_payload}
     except Exception as exc:
-        cycle['worker_state'] = {'ok': False, 'error': str(exc)}
-        return cycle
+        recovery = _recover_worker_for_target(
+            args,
+            target,
+            failed_worker_base_url=target_worker_base_url,
+            error=exc,
+        )
+        recovered_worker_base_url = str(recovery.get('recovered_worker_base_url') or '').strip() or target_worker_base_url
+        if recovery.get('status') == 'ok' and recovered_worker_base_url:
+            try:
+                worker_payload = fetch_json(
+                    f"{recovered_worker_base_url.rstrip('/')}/group-state",
+                    method='POST',
+                    payload={'registration_group': target_registration_group},
+                    timeout=args.worker_timeout_seconds,
+                )
+                target_worker_base_url = recovered_worker_base_url
+                cycle['monitor_target']['worker_base_url'] = target_worker_base_url
+                cycle['worker_state'] = {
+                    'ok': True,
+                    'payload': worker_payload,
+                    'recovered_after_restart': True,
+                    'recovery': recovery,
+                }
+            except Exception as retry_exc:
+                recovery['retry_error'] = str(retry_exc)
+                cycle['worker_state'] = {'ok': False, 'error': str(retry_exc), 'recovery': recovery}
+                return cycle
+        else:
+            cycle['worker_state'] = {'ok': False, 'error': str(exc), 'recovery': recovery}
+            return cycle
 
     use_worker_state_directly = (
         cycle.get('monitor_target', {}).get('source') == 'account_binding'
@@ -799,21 +899,52 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
     return cycle
 
 
-def _build_notifier_from_args(args: argparse.Namespace) -> Optional[FeishuNotifier]:
+def _load_notify_profile_env(profile_name: str) -> Dict[str, str]:
+    normalized = str(profile_name or '').strip()
+    if not normalized:
+        return {}
+    env_path = Path.home() / '.hermes' / 'profiles' / normalized / '.env'
+    if not env_path.exists():
+        return {}
+    values: Dict[str, str] = {}
+    try:
+        for raw_line in env_path.read_text(encoding='utf-8').splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key:
+                values[key] = value
+    except Exception:
+        return {}
+    return values
+
+
+
+def _build_notifier_from_args(args: argparse.Namespace, cycle: Optional[Dict[str, Any]] = None) -> Optional[FeishuNotifier]:
     if not args.notify_enabled:
         return None
-    if not args.feishu_app_id or not args.feishu_app_secret or not args.notify_chat_id:
+    target = cycle.get('monitor_target') if isinstance(cycle, dict) else {}
+    profile_name = str((target or {}).get('notify_profile_name') or '').strip()
+    profile_env = _load_notify_profile_env(profile_name) if profile_name else {}
+    app_id = str(profile_env.get('FEISHU_APP_ID') or args.feishu_app_id or '').strip()
+    app_secret = str(profile_env.get('FEISHU_APP_SECRET') or args.feishu_app_secret or '').strip()
+    chat_id = str(profile_env.get('FEISHU_HOME_CHANNEL') or args.notify_chat_id or '').strip()
+    domain = str(profile_env.get('FEISHU_DOMAIN') or args.feishu_domain or 'lark').strip() or 'lark'
+    if not app_id or not app_secret or not chat_id:
         return None
     return FeishuNotifier(
-        app_id=args.feishu_app_id,
-        app_secret=args.feishu_app_secret,
-        chat_id=args.notify_chat_id,
-        domain=args.feishu_domain,
+        app_id=app_id,
+        app_secret=app_secret,
+        chat_id=chat_id,
+        domain=domain,
     )
 
 
 def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Dict[str, Any], incidents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    notifier = _build_notifier_from_args(args)
+    notifier = _build_notifier_from_args(args, cycle)
     now = datetime.fromisoformat(cycle['checked_at']) if cycle.get('checked_at') else utc_now()
     sent: List[Dict[str, Any]] = []
     for incident in incidents:

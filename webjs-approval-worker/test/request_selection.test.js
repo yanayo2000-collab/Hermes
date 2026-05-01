@@ -40,6 +40,21 @@ test('selectRequests returns only the exact phone-matched requester for single-t
   assert.equal(selected[0].phoneExactMatch, true);
 });
 
+test('selectRequests returns only the exact phone-matched requester from debug lid phone when display phone is masked', () => {
+  const requests = [
+    { requesterId: 'req-1@lid', phoneNormalized: '+852****5475', displayName: 'Target User', debugLidPhoneRaw: '85267755475' },
+    { requesterId: 'req-2@lid', phoneNormalized: '+134****0947', displayName: 'Other User', debugLidPhoneRaw: '13434710947' },
+  ];
+  const selected = selectRequests(requests, {
+    approved_count: 1,
+    target_phone_hint: '+852 67755475',
+    target_name_hint: 'Target User',
+  });
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].entry.requesterId, 'req-1@lid');
+  assert.equal(selected[0].phoneExactMatch, true);
+});
+
 test('selectRequests keeps batch behavior when no identity hints are present', () => {
   const requests = [
     { requesterId: 'req-1@c.us', phoneNormalized: '+628****0001', displayName: 'A' },

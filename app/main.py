@@ -3012,6 +3012,8 @@ class OfficialGroupApprovalDecisionRequest(BaseModel):
     source_campaign: Optional[str] = None
     source_adset: Optional[str] = None
     source_ad: Optional[str] = None
+    target_name_hint: Optional[str] = None
+    target_phone_hint: Optional[str] = None
     remark: Optional[str] = None
 
 
@@ -3038,6 +3040,7 @@ class OfficialGroupBatchRunRequest(BaseModel):
     remark: Optional[str] = None
     limit_groups: int = 10
     limit_leads_per_group: Optional[int] = None
+    allow_crm_only_test_match: bool = False
 
 
 class NotificationReadRequest(BaseModel):
@@ -5317,7 +5320,8 @@ class Service:
                         except Exception:
                             pass
                 oldest_pending_at = min(oldest_candidates) if oldest_candidates else now_iso
-                display_group = str(binding.get('group_name') or group_state.get('group_name') or binding_target).strip() or binding_target
+                live_group_name = str(group_state.get('group_name') or '').strip()
+                display_group = live_group_name or str(binding.get('group_name') or binding_target).strip() or binding_target
                 routing_target = (
                     str(binding.get('registration_group') or '').strip()
                     or str(binding.get('link') or '').strip()
@@ -7749,7 +7753,7 @@ class Service:
                 'lead_id': str(lead.get('lead_id') or '').strip(),
                 'phone_keys': phone_keys,
             })
-        selected_rows: List[sqlite3.Row] = []
+        selected_rows: List[Dict[str, Any]] = []
         unmatched_requesters: List[Dict[str, Any]] = []
         used_lead_ids: set[str] = set()
         for requester in list(requesters or [])[:max(0, release_count)]:
@@ -7757,13 +7761,20 @@ class Service:
             requester_phone_keys = set()
             requester_phone_keys.update(self._official_group_phone_match_keys(phone=(requester or {}).get('phoneNormalized')))
             requester_phone_keys.update(self._official_group_phone_match_keys(phone=(requester or {}).get('phoneRaw')))
+            requester_phone_keys.update(self._official_group_phone_match_keys(phone=(requester or {}).get('debugLidPhoneRaw')))
+            requester_phone_keys.update(self._official_group_phone_match_keys(phone=(requester or {}).get('debugContactNumberRaw')))
             requester_phone_keys.update(self._official_group_phone_match_keys(phone=requester_id))
             matches = [
                 entry for entry in candidate_entries
                 if entry['lead_id'] and entry['lead_id'] not in used_lead_ids and requester_phone_keys.intersection(entry['phone_keys'])
             ]
             if len(matches) == 1:
-                selected_rows.append(matches[0]['lead_row'])
+                matched_lead = dict(matches[0]['lead_row'])
+                requester_phone_candidates = self._official_group_requester_phone_candidates(requester)
+                matched_lead['matched_requester_phone_hint'] = requester_phone_candidates[0] if requester_phone_candidates else None
+                matched_lead['matched_requester_name_hint'] = str((requester or {}).get('displayName') or '').strip() or None
+                matched_lead['matched_requester_id'] = requester_id or None
+                selected_rows.append(matched_lead)
                 used_lead_ids.add(matches[0]['lead_id'])
                 continue
             unmatched_requesters.append({
@@ -7771,11 +7782,167 @@ class Service:
                 'display_name': str((requester or {}).get('displayName') or '').strip() or None,
                 'phone_raw': str((requester or {}).get('phoneRaw') or '').strip() or None,
                 'phone_normalized': str((requester or {}).get('phoneNormalized') or '').strip() or None,
+                'debugLidPhoneRaw': str((requester or {}).get('debugLidPhoneRaw') or '').strip() or None,
+                'debugContactNumberRaw': str((requester or {}).get('debugContactNumberRaw') or '').strip() or None,
                 'requested_at_iso': str((requester or {}).get('requestedAtIso') or '').strip() or None,
                 'requested_at_unix': (requester or {}).get('requestedAtUnix'),
                 'match_count': len(matches),
             })
         return selected_rows, unmatched_requesters
+
+    def _official_group_requester_phone_candidates(self, requester: Dict[str, Any]) -> List[str]:
+        candidates: List[str] = []
+        seen: set[str] = set()
+
+        def add_candidate(value: Any) -> None:
+            raw = str(value or '').strip()
+            if not raw:
+                return
+            digits = ''.join(ch for ch in raw if ch.isdigit())
+            if digits and digits not in seen:
+                seen.add(digits)
+                candidates.append(digits)
+            if raw.startswith('+'):
+                try:
+                    normalized_mobile, normalized_area_code, _ = normalize_phone_identity(mobile=raw, area_code=0, country='')
+                except Exception:
+                    normalized_mobile, normalized_area_code = digits, 0
+                normalized_mobile = str(normalized_mobile or '').strip()
+                if normalized_mobile and normalized_mobile not in seen:
+                    seen.add(normalized_mobile)
+                    candidates.append(normalized_mobile)
+                if normalized_mobile and normalized_area_code:
+                    prefixed = f'{int(normalized_area_code)}{normalized_mobile}'
+                    if prefixed not in seen:
+                        seen.add(prefixed)
+                        candidates.append(prefixed)
+            elif digits:
+                for prefix in sorted(PHONE_PREFIX_COUNTRY_MAP.keys(), key=len, reverse=True):
+                    if digits.startswith(prefix) and len(digits) > len(prefix) + 5:
+                        local = digits[len(prefix):]
+                        if local and local not in seen:
+                            seen.add(local)
+                            candidates.append(local)
+                        break
+
+        add_candidate((requester or {}).get('debugLidPhoneRaw'))
+        add_candidate((requester or {}).get('debugContactNumberRaw'))
+        add_candidate((requester or {}).get('phoneNormalized'))
+        add_candidate((requester or {}).get('phone_normalized'))
+        add_candidate((requester or {}).get('phoneRaw'))
+        add_candidate((requester or {}).get('phone_raw'))
+        add_candidate((requester or {}).get('requesterId'))
+        add_candidate((requester or {}).get('requester_id'))
+        return candidates
+
+    def _find_crm_customer_for_official_group_requester(self, requester: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        if self.crm_adapter is None:
+            return None, None
+        for mobile_candidate in self._official_group_requester_phone_candidates(requester):
+            try:
+                row = self.crm_adapter.find_customer(mobile=mobile_candidate)
+            except Exception:
+                row = None
+            if row:
+                return dict(row), mobile_candidate
+        return None, None
+
+    def _materialize_crm_only_test_lead_for_official_group_requester(
+        self,
+        *,
+        requester: Dict[str, Any],
+        crm_row: Dict[str, Any],
+        target_group: str,
+        created_at: str,
+    ) -> Optional[Dict[str, Any]]:
+        matched_mobile = str(crm_row.get('mobile') or '').strip()
+        if not matched_mobile:
+            return None
+        full_phone_candidates = self._official_group_requester_phone_candidates(requester)
+        inferred_area_code = 0
+        inferred_country = ''
+        for candidate in full_phone_candidates:
+            if candidate.endswith(matched_mobile) and len(candidate) > len(matched_mobile):
+                prefix = candidate[:-len(matched_mobile)]
+                if prefix in PHONE_PREFIX_COUNTRY_MAP:
+                    inferred_area_code = int(prefix)
+                    inferred_country = PHONE_PREFIX_COUNTRY_MAP[prefix]
+                    break
+        runtime_mobile = matched_mobile
+        for candidate in full_phone_candidates:
+            if candidate.endswith(matched_mobile) and len(candidate) > len(matched_mobile):
+                runtime_mobile = candidate
+                break
+        lead_payload = LeadUpsertRequest(
+            trace_id=f"official-group-crm-only:{str((requester or {}).get('requesterId') or '').strip() or uuid.uuid4().hex[:12]}",
+            source_platform='official_group_crm_only_test',
+            source_page_id='official_group_crm_only_test',
+            country=inferred_country or 'Unknown',
+            area_code=inferred_area_code,
+            mobile=runtime_mobile,
+            yw_id=str(crm_row.get('ywId') or '').strip() or None,
+            app_name=str(crm_row.get('appName') or '').strip() or None,
+            dept_name=str(crm_row.get('deptName') or '').strip() or None,
+            pendaftaran_group=str(crm_row.get('pendaftaranGroup') or '').strip() or None,
+            parser_status='crm_only_test_match',
+            parser_version='official_group_crm_only_test_v1',
+            parser_raw_text=json.dumps({'requester': requester, 'crm_row': crm_row}, ensure_ascii=False),
+            occurred_at=created_at,
+        )
+        lead_result = self.upsert_lead(lead_payload)
+        lead_id = str(lead_result.get('lead_id') or '').strip()
+        if not lead_id:
+            return None
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE leads
+                SET yw_id = ?,
+                    app_name = ?,
+                    dept_name = ?,
+                    pendaftaran_group = ?,
+                    matched_customer_id = ?,
+                    current_status = 'bind_success',
+                    updated_at = ?
+                WHERE lead_id = ?
+                """,
+                (
+                    str(crm_row.get('ywId') or '').strip() or None,
+                    str(crm_row.get('appName') or '').strip() or None,
+                    str(crm_row.get('deptName') or '').strip() or None,
+                    str(crm_row.get('pendaftaranGroup') or '').strip() or None,
+                    str(crm_row.get('id') or '').strip() or None,
+                    created_at,
+                    lead_id,
+                ),
+            )
+            self._record_verified_crm_state(conn, lead_id=lead_id, crm_payload=dict(crm_row), official_group=None)
+            self._queue_group_join_after_verified_crm(
+                conn,
+                lead_id=lead_id,
+                submission_id=None,
+                account_id=str(crm_row.get('ywId') or '').strip() or None,
+                created_at=created_at,
+            )
+            self._record_audit_event(
+                conn,
+                event_type='official_group_crm_only_test_lead_materialized',
+                event_source='official_group_batch_runner',
+                payload={
+                    'lead_id': lead_id,
+                    'target_group': target_group,
+                    'requester': requester,
+                    'crm_row': crm_row,
+                },
+                lead_id=lead_id,
+            )
+            conn.commit()
+            lead_row = conn.execute("SELECT * FROM leads WHERE lead_id = ?", (lead_id,)).fetchone()
+        if not lead_row:
+            return None
+        lead_payload = dict(lead_row)
+        lead_payload['crm_only_test_target_group'] = target_group
+        return lead_payload
 
     def bind_check_result(self, task_id: str, payload: BindCheckResultRequest) -> Dict[str, Any]:
         now = utc_now()
@@ -8076,10 +8243,17 @@ class Service:
                         existing = self.crm_adapter.find_customer(yw_id=account_id, mobile=lead_dict.get('mobile'))
                         if existing:
                             crm_payload = dict(existing)
-                            crm_payload['wa'] = (payload.raw_result or {}).get('target_group') or ''
+                            raw_result = payload.raw_result or {}
+                            official_group_display_name = self._resolve_official_group_display_name(
+                                target_group=str(raw_result.get('target_group') or '').strip(),
+                                raw_result=raw_result,
+                            )
+                            if official_group_display_name:
+                                crm_payload['wa'] = official_group_display_name
                             crm_payload['pendaftaranGroup'] = lead_dict.get('pendaftaran_group') or existing.get('pendaftaranGroup') or ''
                             crm_response = self.crm_adapter.update_customer(crm_payload)
                             verified_row = None
+                            official_group_for_verify = official_group_display_name or str(raw_result.get('target_group') or '').strip()
                             if crm_response.get('code') == 0:
                                 verified_row = self._find_existing_customer_with_fallback(
                                     yw_id=account_id,
@@ -8087,7 +8261,7 @@ class Service:
                                     app_name=crm_payload.get('appName'),
                                     dept_name=crm_payload.get('deptName'),
                                     registration_group=crm_payload.get('pendaftaranGroup'),
-                                    official_group=crm_payload.get('wa'),
+                                    official_group=official_group_for_verify,
                                 )
                             crm_sync_status = 'success' if crm_response.get('code') == 0 and verified_row else 'failed'
                             if crm_response.get('code') != 0:
@@ -8484,6 +8658,75 @@ class Service:
         value = str(registration_group or '').strip()
         return value or None
 
+    def _resolve_official_group_display_name(
+        self,
+        *,
+        target_group: str,
+        raw_result: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        if isinstance(raw_result, dict):
+            for key in ('group_name', 'official_group_name'):
+                value = str(raw_result.get(key) or '').strip()
+                if value:
+                    return value
+            nested_raw_result = raw_result.get('raw_result')
+            if isinstance(nested_raw_result, dict):
+                for key in ('group_name', 'official_group_name'):
+                    value = str(nested_raw_result.get(key) or '').strip()
+                    if value:
+                        return value
+        binding_match = self._find_whatsapp_approval_account_binding(
+            responsible_type='official_group',
+            target_group=target_group,
+        )
+        binding = binding_match.get('binding') if isinstance(binding_match, dict) else {}
+        if isinstance(binding, dict):
+            value = str(binding.get('group_name') or '').strip()
+            if value:
+                return value
+        return None
+
+    def _official_group_target_aliases(self, *, target_group: str) -> set[str]:
+        aliases: set[str] = set()
+        normalized_target = str(target_group or '').strip()
+        if normalized_target:
+            aliases.add(normalized_target.lower())
+        binding_match = self._find_whatsapp_approval_account_binding(
+            responsible_type='official_group',
+            target_group=normalized_target,
+        )
+        binding = binding_match.get('binding') if isinstance(binding_match, dict) else {}
+        if isinstance(binding, dict):
+            for key in ('group_name', 'registration_group', 'group_id', 'link'):
+                value = str(binding.get(key) or '').strip().lower()
+                if value:
+                    aliases.add(value)
+        aliases.discard('')
+        return aliases
+
+    def _official_group_value_matches_target(self, *, value: Any, target_group: str) -> bool:
+        normalized_value = str(value or '').strip().lower()
+        if not normalized_value:
+            return False
+        if normalized_value in self._official_group_target_aliases(target_group=target_group):
+            return True
+        value_binding_match = self._find_whatsapp_approval_account_binding(
+            responsible_type='official_group',
+            target_group=normalized_value,
+        )
+        value_binding = value_binding_match.get('binding') if isinstance(value_binding_match, dict) else {}
+        if isinstance(value_binding, dict):
+            value_aliases = {
+                str(value_binding.get('group_name') or '').strip().lower(),
+                str(value_binding.get('registration_group') or '').strip().lower(),
+                str(value_binding.get('group_id') or '').strip().lower(),
+                str(value_binding.get('link') or '').strip().lower(),
+            }
+            value_aliases.discard('')
+            if str(target_group or '').strip().lower() in value_aliases:
+                return True
+        return False
+
     def create_registration_group_approval_batch(self, payload: RegistrationGroupApprovalBatchRequest) -> Dict[str, Any]:
         if self.crm_adapter is None:
             raise HTTPException(status_code=400, detail='crm adapter not configured')
@@ -8737,8 +8980,53 @@ class Service:
             'result': dict(row.get('result_snapshot_dict') or {}),
         }
 
+    def _registration_group_active_monitor_target_health(self) -> Optional[Dict[str, Any]]:
+        try:
+            production_ops = self.get_production_ops_daemon_config() or {}
+        except Exception:
+            return None
+        runtime = dict(production_ops.get('runtime') or {})
+        status = dict(runtime.get('status') or {})
+        monitor_target = dict(status.get('monitor_target') or {})
+        if str(monitor_target.get('source') or '').strip() != 'account_binding':
+            return None
+        base_url = str(monitor_target.get('worker_base_url') or '').strip().rstrip('/')
+        if not base_url:
+            return None
+        try:
+            health = self._request_whatsapp_approval_worker_health(base_url)
+        except Exception:
+            return None
+        if not isinstance(health, dict) or not health:
+            return None
+        normalized = dict(health)
+        normalized.setdefault('configured', True)
+        normalized.setdefault('provider', 'whatsapp_webjs_bridge')
+        normalized.setdefault('base_url', base_url)
+        normalized.setdefault('supports', normalized.get('supports') or ['approve', 'strict_queue_and_member_verify', 'crm_batch_writeback_ready'])
+        normalized['routed_via'] = 'production_ops_monitor_target'
+        normalized['monitor_target'] = {
+            'account_key': str(monitor_target.get('account_key') or '').strip() or None,
+            'registration_group': str(monitor_target.get('registration_group') or '').strip() or None,
+            'worker_base_url': base_url,
+            'source': 'account_binding',
+        }
+        return normalized
+
     def registration_group_approval_executor_health(self) -> Dict[str, Any]:
         executor = self.registration_group_approval_executor
+        prefers_active_runtime = (
+            executor is None
+            or type(executor).__name__ == 'WebjsBridgeRegistrationGroupApprovalExecutor'
+            or str(getattr(executor, 'base_url', '') or '').strip().startswith('http://127.0.0.1:8787')
+        )
+        if prefers_active_runtime:
+            routed_health = self._registration_group_active_monitor_target_health()
+            if routed_health:
+                supports = routed_health.get('supports')
+                if supports is None:
+                    routed_health['supports'] = []
+                return routed_health
         if executor is None:
             return {
                 'configured': False,
@@ -9369,8 +9657,15 @@ class Service:
         routed_runtime = self._resolve_whatsapp_approval_runtime_executor(target_group=str(payload.target_group or '').strip(), responsible_type='official_group')
         if routed_runtime:
             runtime_executor = routed_runtime['executor']
+            runtime_binding = routed_runtime.get('binding') or {}
+            runtime_group_target = str(
+                runtime_binding.get('link')
+                or runtime_binding.get('group_id')
+                or payload.target_group
+                or ''
+            ).strip()
             runtime_context = {
-                'registration_group': str(payload.target_group or '').strip(),
+                'registration_group': runtime_group_target,
                 'decision': decision,
                 'decided_at': payload.decided_at,
                 'decided_by': payload.decided_by,
@@ -9379,8 +9674,8 @@ class Service:
                 'source_campaign': payload.source_campaign,
                 'source_adset': payload.source_adset,
                 'source_ad': payload.source_ad,
-                'target_name_hint': str(lead.get('name') or lead.get('full_name') or '').strip() or None,
-                'target_phone_hint': str(lead.get('mobile') or '').strip() or None,
+                'target_name_hint': str(payload.target_name_hint or lead.get('name') or lead.get('full_name') or '').strip() or None,
+                'target_phone_hint': str(payload.target_phone_hint or lead.get('mobile') or '').strip() or None,
                 'approved_count': 1,
                 'area': str(lead.get('country') or lead.get('area') or 'Indonesia').strip() or 'Indonesia',
                 'remark': payload.remark,
@@ -9390,8 +9685,9 @@ class Service:
                     'account_key': routed_runtime.get('account_key'),
                     'account_name': routed_runtime.get('account_name'),
                     'base_url': (routed_runtime.get('runtime_state') or {}).get('base_url'),
-                    'binding': routed_runtime.get('binding') or {},
+                    'binding': runtime_binding,
                     'responsible_type': 'official_group',
+                    'resolved_group_target': runtime_group_target,
                 },
             }
             executor_result = runtime_executor.approve(runtime_context) or {}
@@ -9405,6 +9701,10 @@ class Service:
                 task=task,
             ) or {}
         executor_raw_result = dict(executor_result.get('raw_result') or {})
+        official_group_display_name_for_result = self._resolve_official_group_display_name(
+            target_group=str(payload.target_group or '').strip(),
+            raw_result=executor_raw_result,
+        ) or str(payload.target_group or '').strip()
         execution_disposition = str(executor_raw_result.get('execution_disposition') or '').strip().lower()
         retryable = bool(executor_raw_result.get('retryable'))
         requires_human_action = bool(executor_raw_result.get('requires_human_action'))
@@ -9436,6 +9736,7 @@ class Service:
             raw_result={
                 **dict(executor_result.get('raw_result') or {}),
                 'target_group': str(payload.target_group or '').strip(),
+                'group_name': official_group_display_name_for_result,
                 'decision': decision,
                 'decided_by': payload.decided_by,
                 'decided_by_name': payload.decided_by_name,
@@ -9668,6 +9969,19 @@ class Service:
                         release_count=release_count,
                     )
             for unmatched in unmatched_requesters:
+                crm_only_test_lead = None
+                if payload.allow_crm_only_test_match:
+                    crm_row, _ = self._find_crm_customer_for_official_group_requester(unmatched)
+                    if crm_row:
+                        crm_only_test_lead = self._materialize_crm_only_test_lead_for_official_group_requester(
+                            requester=unmatched,
+                            crm_row=crm_row,
+                            target_group=target_group_filter,
+                            created_at=now_iso,
+                        )
+                if crm_only_test_lead:
+                    lead_rows.append(crm_only_test_lead)
+                    continue
                 skipped_count += 1
                 detail = {
                     'registration_group': registration_group,
@@ -9679,7 +9993,11 @@ class Service:
                 results.append(detail)
             for lead_row in lead_rows:
                 lead = dict(lead_row)
-                target_group = str(self._resolve_official_group_target_group(lead=lead) or '').strip()
+                target_group = str(
+                    lead.get('crm_only_test_target_group')
+                    or self._resolve_official_group_target_group(lead=lead)
+                    or ''
+                ).strip()
                 if not target_group:
                     unresolved_count += 1
                     detail = {
@@ -9712,6 +10030,8 @@ class Service:
                         source_adset=payload.source_adset,
                         source_ad=payload.source_ad,
                         remark=payload.remark,
+                        target_name_hint=str(lead.get('matched_requester_name_hint') or '').strip() or None,
+                        target_phone_hint=str(lead.get('matched_requester_phone_hint') or '').strip() or None,
                     )
                 )
                 results.append(result)
@@ -9728,6 +10048,21 @@ class Service:
             'unresolved_count': unresolved_count,
             'results': results,
         }
+
+    def _official_group_has_abnormal_marker(self, lead: Dict[str, Any]) -> Tuple[bool, List[str]]:
+        if not isinstance(lead, dict):
+            return False, []
+        reasons: List[str] = []
+        current_status = str(lead.get('current_status') or '').strip().lower()
+        review_status = str(lead.get('review_status') or '').strip().lower()
+        routing_decision = str(lead.get('routing_decision') or '').strip().lower()
+        if current_status == 'manual_review_pending':
+            reasons.append('manual_review_pending')
+        if review_status in {'pending', 'retry_requested', 'rejected'}:
+            reasons.append(f'review_status:{review_status}')
+        if routing_decision == 'manual_review':
+            reasons.append('routing_decision:manual_review')
+        return bool(reasons), reasons
 
     def official_group_approval_check(self, payload: OfficialGroupApprovalCheckRequest) -> Dict[str, Any]:
         lead_id = str(payload.lead_id or '').strip()
@@ -9760,6 +10095,7 @@ class Service:
                     or lead.get('crm_verified_app_name')
                     or lead.get('crm_verified_registration_group')
                 )
+            abnormal_flagged, abnormal_reasons = self._official_group_has_abnormal_marker(lead)
             result: Dict[str, Any] = {
                 'lead_id': lead_id,
                 'target_group': target_group,
@@ -9774,18 +10110,14 @@ class Service:
                 'reason_code': 'unknown',
                 'reason_detail': None,
                 'next_action': 'manual_review_official_group_approval',
+                'abnormal_flagged': abnormal_flagged,
+                'abnormal_reasons': abnormal_reasons,
             }
-            if current_status not in {'bind_success', 'group_join_pending', 'group_join_failed'}:
+            if abnormal_flagged:
                 result.update({
-                    'reason_code': 'lead_not_ready_for_official_group',
-                    'reason_detail': 'Lead has not reached the official-group approval stage.',
-                    'next_action': 'wait_for_bind_and_crm',
-                })
-            elif not crm_verified:
-                result.update({
-                    'reason_code': 'crm_verification_missing',
-                    'reason_detail': 'Current submission has not been CRM-verified yet.',
-                    'next_action': 'retry_crm_sync',
+                    'reason_code': 'abnormal_flagged',
+                    'reason_detail': f'Lead is marked abnormal: {", ".join(abnormal_reasons)}',
+                    'next_action': 'manual_review_official_group_approval',
                 })
             elif self.crm_adapter is None:
                 result.update({
@@ -9837,24 +10169,23 @@ class Service:
                         **cached_snapshot,
                         'source': 'local_verified_cache',
                     }
-                if crm_row and str(crm_row.get('wa') or '').strip() == target_group:
+                if crm_row and self._official_group_value_matches_target(
+                    value=crm_row.get('wa'),
+                    target_group=target_group,
+                ):
                     result.update({
                         'reason_code': 'already_in_target_group',
                         'reason_detail': 'CRM already points to the requested official group.',
                         'next_action': 'skip_duplicate_group_approval',
                     })
-                elif not crm_row and str(cached_snapshot.get('wa') or '').strip() == target_group:
+                elif not crm_row and self._official_group_value_matches_target(
+                    value=cached_snapshot.get('wa'),
+                    target_group=target_group,
+                ):
                     result.update({
                         'reason_code': 'already_in_target_group',
                         'reason_detail': 'Local verified CRM snapshot already points to the requested official group.',
                         'next_action': 'skip_duplicate_group_approval',
-                    })
-                elif not crm_row and crm_verified:
-                    result.update({
-                        'eligible': True,
-                        'reason_code': 'eligible',
-                        'reason_detail': 'CRM verification passed from local verified state; live CRM exact lookup returned no row.',
-                        'next_action': 'approve_official_group',
                     })
                 elif not crm_row:
                     result.update({
@@ -9866,7 +10197,7 @@ class Service:
                     result.update({
                         'eligible': True,
                         'reason_code': 'eligible',
-                        'reason_detail': 'CRM verification passed for official-group approval.',
+                        'reason_detail': 'CRM customer found and no abnormal marker is present; official-group approval is allowed.',
                         'next_action': 'approve_official_group',
                     })
             self._record_audit_event(
@@ -11105,9 +11436,10 @@ class Service:
         else:
             verification_status = 'service_unready'
 
-        account_active_now = active_binding_count > 0 if binding_runtime_rows else True
+        account_schedule_runtime = self._schedule_runtime(account_schedule_windows)
+        account_active_now = bool(account_schedule_runtime.get('active_now')) if account_schedule_windows else (active_binding_count > 0 if binding_runtime_rows else True)
         primary_binding = binding_runtime_rows[0] if binding_runtime_rows else {}
-        schedule_runtime = primary_binding.get('schedule_runtime') or self._schedule_runtime(account_schedule_windows)
+        schedule_runtime = account_schedule_runtime if account_schedule_windows else (primary_binding.get('schedule_runtime') or account_schedule_runtime)
         serialized['schedule_active_now'] = bool(account_active_now)
         serialized['schedule_runtime'] = schedule_runtime
         serialized['area'] = default_area
