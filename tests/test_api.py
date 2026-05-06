@@ -1345,6 +1345,179 @@ def test_whatsapp_approval_account_session_accepts_shared_primary_client_login()
     assert body['session']['login_check_status'] == 'passed'
 
 
+def test_whatsapp_approval_account_list_marks_restricted_account_status_from_worker_health():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-admin-restricted', json={
+        'account_name': 'WA Admin Restricted',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/group-restricted',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'approval_count_threshold': 30,
+                'approval_timeout_minutes': 30,
+                'auto_recover_worker': True,
+                'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+            },
+        ],
+        'enabled': True,
+        'notes': 'restricted account',
+    })
+    assert saved.status_code == 200
+
+    runtime_base_url = 'http://127.0.0.1:18810'
+    expected_auth_path = '/Users/chauncey/work/mcn-ai-automation/webjs-approval-worker/.wwebjs_auth_accounts/wa-admin-restricted'
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    health_payload = {
+        'status': 'auth_failure',
+        'ready': False,
+        'authenticated': False,
+        'auth_strategy': 'LocalAuth',
+        'client_id': 'wa-approval-wa-admin-restricted',
+        'auth_path': expected_auth_path,
+        'last_error': 'SMB_TOS_BLOCK: This account can no longer use WhatsApp due to policy violation.',
+        'last_disconnected_reason': 'SMB_TOS_BLOCK',
+        'approval_client': {
+            'status': 'auth_failure',
+            'ready': False,
+            'authenticated': False,
+            'auth_strategy': 'LocalAuth',
+            'client_id': 'wa-approval-wa-admin-restricted-approval',
+            'auth_path': expected_auth_path,
+            'last_error': 'SMB_TOS_BLOCK: This account can no longer use WhatsApp due to policy violation.',
+            'last_disconnected_reason': 'SMB_TOS_BLOCK',
+        },
+    }
+
+    def fake_runtime_state(self, account_key, *, worker_health=None, allow_shared_fallback=True):
+        return {
+            'account_key': account_key,
+            'active': True,
+            'base_url': runtime_base_url,
+            'source': 'dedicated',
+            'status': 'auth_failure',
+            'ready': False,
+            'authenticated': False,
+            'session_target_match': True,
+            'status_text': '独立 Runtime 运行中',
+        }
+
+    with patch('app.main.requests.get', return_value=FakeResponse(health_payload)), patch('app.main.Service._build_whatsapp_approval_runtime_state', new=fake_runtime_state):
+        listed = client.get('/api/ops/whatsapp-approval-accounts')
+
+    assert listed.status_code == 200
+    rows = {row['account_key']: row for row in listed.json()['rows']}
+    row = rows['wa-admin-restricted']
+    assert row['session_state']['login_check_status'] == 'account_restricted'
+    assert '受限' in row['session_state']['login_check_message']
+    assert row['verification_status'] == 'account_restricted'
+    assert row['verification_status_label'] == '账号受限'
+    assert row['runtime_status'] == 'blocked'
+    assert row['status_text'] == '账号受限'
+    assert '核查' in row['next_action']
+
+
+def test_whatsapp_approval_account_list_marks_lost_session_for_plain_auth_failure():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-admin-authfail', json={
+        'account_name': 'WA Admin AuthFail',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/group-authfail',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'approval_count_threshold': 30,
+                'approval_timeout_minutes': 30,
+                'auto_recover_worker': True,
+                'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+            },
+        ],
+        'enabled': True,
+        'notes': 'plain auth failure account',
+    })
+    assert saved.status_code == 200
+
+    runtime_base_url = 'http://127.0.0.1:18811'
+    expected_auth_path = '/Users/chauncey/work/mcn-ai-automation/webjs-approval-worker/.wwebjs_auth_accounts/wa-admin-authfail'
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    health_payload = {
+        'status': 'auth_failure',
+        'ready': False,
+        'authenticated': False,
+        'auth_strategy': 'LocalAuth',
+        'client_id': 'wa-approval-wa-admin-authfail',
+        'auth_path': expected_auth_path,
+        'last_error': 'auth_failure',
+        'approval_client': {
+            'status': 'auth_failure',
+            'ready': False,
+            'authenticated': False,
+            'auth_strategy': 'LocalAuth',
+            'client_id': 'wa-approval-wa-admin-authfail-approval',
+            'auth_path': expected_auth_path,
+            'last_error': 'auth_failure',
+        },
+    }
+
+    def fake_runtime_state(self, account_key, *, worker_health=None, allow_shared_fallback=True):
+        return {
+            'account_key': account_key,
+            'active': True,
+            'base_url': runtime_base_url,
+            'source': 'dedicated',
+            'status': 'auth_failure',
+            'ready': False,
+            'authenticated': False,
+            'session_target_match': True,
+            'status_text': '独立 Runtime 运行中',
+        }
+
+    with patch('app.main.requests.get', return_value=FakeResponse(health_payload)), patch('app.main.Service._build_whatsapp_approval_runtime_state', new=fake_runtime_state):
+        listed = client.get('/api/ops/whatsapp-approval-accounts')
+
+    assert listed.status_code == 200
+    rows = {row['account_key']: row for row in listed.json()['rows']}
+    row = rows['wa-admin-authfail']
+    assert row['session_state']['login_check_status'] == 'auth_failed'
+    assert row['verification_status'] == 'auth_failed'
+    assert row['verification_status_label'] == '登录异常'
+    assert row['runtime_status'] == 'blocked'
+    assert row['status_text'] == '登录异常'
+    assert '重新登录' in row['next_action']
+
+
 def test_whatsapp_approval_account_runtime_can_stop_dedicated_worker():
     client = make_client({
         'LARK_APP_ID': 'cli_test_app',

@@ -1152,7 +1152,13 @@ PRODUCTION_OPS_PAGE_HTML = """
     .status-dot.gray { background:#94a3b8; box-shadow:0 0 0 4px rgba(148,163,184,.15); }
     .status-dot.amber { background:var(--warning); box-shadow:0 0 0 4px rgba(217,119,6,.14); }
     .status-dot.blue { background:var(--brand); box-shadow:0 0 0 4px rgba(37,99,235,.14); }
+    .status-dot.red { background:var(--danger); box-shadow:0 0 0 4px rgba(220,38,38,.14); }
     .account-meta { display:grid; grid-template-columns: 104px 1fr; gap:8px 12px; font-size:13px; }
+    .account-alert { margin-top:12px; padding:12px 14px; border-radius:12px; border:1px solid #e5e7eb; font-size:13px; }
+    .account-alert strong { display:block; margin-bottom:4px; }
+    .account-alert.red { background:#fef2f2; border-color:#fecaca; color:#991b1b; }
+    .account-alert.amber { background:#fffbeb; border-color:#fcd34d; color:#92400e; }
+    .account-alert.blue { background:#eff6ff; border-color:#bfdbfe; color:#1d4ed8; }
     .account-meta .k { color:var(--muted); }
     .link-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
     .binding-list { display:grid; gap:12px; }
@@ -1952,6 +1958,17 @@ function accountCardHtml(row) {
   const loginStatusText = sessionState.login_verified
     ? '账号已登录，可以正常使用'
     : (sessionState.login_check_message || (sessionState.qr_available ? '已出二维码，待扫码登录' : '未登录'));
+  const loginStatusCode = String(sessionState.login_check_status || '').trim();
+  const alertConfig = loginStatusCode === 'account_restricted'
+    ? { level: 'red', title: '账号受限', detail: loginStatusText }
+    : (loginStatusCode === 'auth_failed'
+      ? { level: 'amber', title: '登录异常', detail: loginStatusText }
+      : (loginStatusCode === 'waiting_for_scan'
+        ? { level: 'blue', title: '等待扫码', detail: loginStatusText }
+        : null));
+  const accountAlert = alertConfig
+    ? `<div class="account-alert ${alertConfig.level}"><strong>${alertConfig.title}</strong><div>${alertConfig.detail}</div></div>`
+    : '';
   const qrBlock = sessionState.qr_ascii
     ? `<div style="margin-top:10px;"><div class="field-hint" style="margin-bottom:6px;">绑定二维码</div><pre style="margin:0; padding:12px; overflow:auto; background:#0f172a; color:#e2e8f0; border-radius:12px; font-size:10px; line-height:1.05;">${String(sessionState.qr_ascii || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre><div class="muted" style="margin-top:6px;">请用这个账号的 WhatsApp - 关联设备 扫描上面的二维码。</div></div>`
     : '';
@@ -1972,6 +1989,7 @@ function accountCardHtml(row) {
       <div class="k">登录状态</div><div>${loginStatusText}</div>
       ${noteValue ? `<div class="k">备注</div><div>${noteValue}</div>` : ''}
     </div>
+    ${accountAlert}
     <div style="margin-top:14px;">
       <div class="field-hint" style="margin-bottom:8px;">逐群绑定详情</div>
       <div class="binding-list">${groupBindings.length ? groupBindings.map(bindingSummaryHtml).join('') : '<div class="binding-card is-empty">暂无群绑定</div>'}</div>
@@ -10776,10 +10794,39 @@ class Service:
         authenticated = bool(selected_payload.get('authenticated'))
         ready = bool(selected_payload.get('ready'))
         login_verified = bool(authenticated and session_target_match)
+        session_status = str(selected_payload.get('status') or payload.get('status') or '').strip()
+        last_error = str(selected_payload.get('last_error') or payload.get('last_error') or '').strip()
+        last_disconnected_reason = str(selected_payload.get('last_disconnected_reason') or payload.get('last_disconnected_reason') or '').strip()
+        combined_failure_text = ' '.join(part for part in [session_status, last_error, last_disconnected_reason] if part).lower()
+        restricted_markers = (
+            'smb_tos_block',
+            'policy violation',
+            'account can no longer use whatsapp',
+            'this account can no longer use whatsapp',
+            'temporarily banned',
+            'permanently banned',
+            'account restricted',
+            'account has been banned',
+        )
+        if login_verified:
+            login_check_status = 'passed'
+            login_check_message = '账号已登录，可以正常使用。'
+        elif any(marker in combined_failure_text for marker in restricted_markers):
+            login_check_status = 'account_restricted'
+            login_check_message = '账号疑似受限，需先在手机端核查封禁/限制状态后再处理。'
+        elif qr_text:
+            login_check_status = 'waiting_for_scan'
+            login_check_message = '已生成二维码，等待扫码完成登录。'
+        elif session_status.lower() in {'auth_failure', 'failed', 'disconnected'} or last_error or last_disconnected_reason:
+            login_check_status = 'auth_failed'
+            login_check_message = '登录态异常或已失效，需重新登录后再使用。'
+        else:
+            login_check_status = 'pending_runtime'
+            login_check_message = '正在准备登录会话，请稍候。'
         session = {
             'account_key': normalized_key,
             'auth_strategy': str(selected_payload.get('auth_strategy') or payload.get('auth_strategy') or '').strip(),
-            'status': str(selected_payload.get('status') or payload.get('status') or '').strip(),
+            'status': session_status,
             'ready': ready,
             'authenticated': authenticated,
             'client_id': current_client_id,
@@ -10795,8 +10842,8 @@ class Service:
             'bound': authenticated and session_target_match,
             'mode': 'dedicated_localauth',
             'login_verified': login_verified,
-            'login_check_status': 'passed' if login_verified else ('waiting_for_scan' if qr_text else 'pending_runtime'),
-            'login_check_message': '账号已登录，可以正常使用。' if login_verified else ('已生成二维码，等待扫码完成登录。' if qr_text else '正在准备登录会话，请稍候。'),
+            'login_check_status': login_check_status,
+            'login_check_message': login_check_message,
         }
         if include_qr_ascii and qr_text:
             session['qr_ascii'] = self._render_whatsapp_approval_qr_ascii(qr_text)
@@ -11461,8 +11508,13 @@ class Service:
         serialized['session_state'] = session_state
 
         production_ready = bool(config_ready and session_state.get('login_verified'))
+        login_check_status = str(session_state.get('login_check_status') or '').strip()
         if production_ready:
             verification_status = 'ready'
+        elif login_check_status == 'account_restricted':
+            verification_status = 'account_restricted'
+        elif login_check_status == 'auth_failed':
+            verification_status = 'auth_failed'
         elif invalid_group_links:
             verification_status = 'invalid_group_links'
         elif not has_monitored_bindings:
@@ -11487,6 +11539,16 @@ class Service:
             status_color = 'amber'
             status_text = '待补齐'
             next_action = '先补齐群绑定配置，再纳入统一调度'
+        elif login_check_status == 'account_restricted':
+            runtime_status = 'blocked'
+            status_color = 'red'
+            status_text = '账号受限'
+            next_action = '先在手机端核查封禁/限制状态，确认恢复后再重新登录'
+        elif login_check_status == 'auth_failed':
+            runtime_status = 'blocked'
+            status_color = 'amber'
+            status_text = '登录异常'
+            next_action = '先重新登录账号，再继续可用性检测'
         elif not session_state.get('login_verified'):
             runtime_status = 'blocked'
             status_color = 'amber'
@@ -11510,6 +11572,8 @@ class Service:
             'monitor_disabled': '未启用监控群',
             'service_unready': '服务未就绪',
             'login_unready': '待登录',
+            'account_restricted': '账号受限',
+            'auth_failed': '登录异常',
         }.get(verification_status, verification_status)
         serialized['membership_verifier'] = account_membership_verifier
         serialized['verification_scope_text'] = account_membership_verifier.get('detail') if account_membership_verifier.get('ready') else '当前控制台配置与调度就绪度已完成；逐群映射或真实成员/管理员权限校验结果见下方 admin_membership_verification。'
