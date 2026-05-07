@@ -416,6 +416,83 @@ def test_official_group_bridge_approve_endpoint_supports_mock_success_and_ops_hi
     assert history_body['requests'][0]['mode'] == 'mock_success'
 
 
+def test_official_group_bridge_passthrough_routes_to_runtime_worker_payload():
+    class StubResponse:
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    class StubSession:
+        def __init__(self):
+            self.posts = []
+            self.gets = []
+
+        def get(self, url, timeout=None):
+            self.gets.append({'url': url, 'timeout': timeout})
+            return StubResponse({
+                'rows': [{
+                    'responsible_type': 'official_group',
+                    'enabled': True,
+                    'group_link_bindings': [{
+                        'enabled': True,
+                        'registration_group': 'official-group-a',
+                        'group_name': '官方群A',
+                        'group_id': '120363400000000001@g.us',
+                        'link': 'https://chat.whatsapp.com/runtimeA',
+                    }],
+                }],
+            })
+
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.posts.append({'url': url, 'json': json, 'headers': headers, 'timeout': timeout})
+            return StubResponse({
+                'status': 'success',
+                'result_code': 'approved',
+                'result_reason': 'runtime approved',
+                'raw_result': {
+                    'group_id': '120363400000000001@g.us',
+                    'group_name': '官方群A',
+                },
+            })
+
+    session = StubSession()
+    app = create_app({
+        'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123',
+        'OFFICIAL_GROUP_BRIDGE_TOKEN': 'bridge-token',
+        'OFFICIAL_GROUP_BRIDGE_MODE': 'passthrough_webhook',
+        'OFFICIAL_GROUP_BRIDGE_UPSTREAM_URL': 'http://127.0.0.1:63568/approve',
+        'OFFICIAL_GROUP_BRIDGE_SESSION': session,
+        'OFFICIAL_GROUP_BRIDGE_DB_PATH': '/tmp/nonexistent-official-bridge-test.db',
+        'OFFICIAL_GROUP_BRIDGE_CONSOLE_BASE_URL': 'http://127.0.0.1:8011',
+    })
+    client = TestClient(app)
+
+    response = client.post(
+        '/official-group/approve',
+        json={
+            'target_group': 'official-group-a',
+            'lead': {'lead_id': 'lead_1', 'mobile': '85200011122', 'name': 'Alice'},
+            'crm_snapshot': {'id': 'crm_1', 'mobile': '85200011122'},
+            'task': {'task_id': 'task_1', 'status': 'pending'},
+        },
+        headers={'Authorization': 'Bearer bridge-token'},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body['status'] == 'success'
+    assert body['result_code'] == 'approved'
+    assert body['raw_result']['bridge_request_id']
+    assert session.gets[0]['url'] == 'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts'
+    upstream_request = session.posts[0]
+    assert upstream_request['url'] == 'http://127.0.0.1:63568/approve'
+    assert upstream_request['json']['registration_group'] == '120363400000000001@g.us'
+    assert upstream_request['json']['target_phone_hint'] == '85200011122'
+    assert upstream_request['json']['target_name_hint'] == 'Alice'
+    assert upstream_request['json']['approval_run_id'] == body['raw_result']['bridge_request_id']
+
+
 def test_official_group_bridge_manual_queue_supports_manual_resolution():
     app = create_app({
         'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123',
@@ -606,6 +683,38 @@ def test_official_group_bridge_dashboard_page_loads():
     assert 'http://127.0.0.1:8011/ops/intake-bot-presets' in text
     assert 'http://127.0.0.1:8011/ops/production-ops' in text
     assert 'http://127.0.0.1:8011/ops/official-group-bridge' in text
+
+
+def test_official_group_bridge_summary_hides_resolved_only_historical_targets():
+    app = create_app({
+        'WHATSAPP_WEBHOOK_VERIFY_TOKEN': 'token-123',
+        'OFFICIAL_GROUP_BRIDGE_MODE': 'manual_queue',
+    })
+    client = TestClient(app)
+
+    response = client.post('/official-group/approve', json={
+        'target_group': 'official-group-old',
+        'lead': {'lead_id': 'lead_old_only'},
+        'crm_snapshot': {'id': 'crm_old_only'},
+        'task': {'task_id': 'task_old_only', 'status': 'pending'},
+    })
+    assert response.status_code == 200
+    request_id = response.json()['raw_result']['bridge_request_id']
+    resolved = client.post(
+        f'/ops/official-group-bridge/requests/{request_id}/resolve',
+        json={'status': 'failed', 'result_code': 'stale_request_superseded', 'result_reason': 'stale'},
+    )
+    assert resolved.status_code == 200
+
+    summary = client.get('/ops/official-group-bridge/summary')
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body['view_scope'] == 'current_window'
+    assert body['total_count'] == 0
+    assert body['pending_count'] == 0
+    assert body['resolved_count'] == 0
+    assert body['by_target_group'] == {}
+
 
 
 def test_official_group_bridge_summary_and_sorted_requests_expose_timeout_and_trend_metrics():

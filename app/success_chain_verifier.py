@@ -122,6 +122,7 @@ def build_success_chain_report(
         latest_submission = submissions[-1] if submissions else None
         latest_bind_task = _pick_latest(tasks, lambda r: str(r.get('task_type') or '') == 'bind_check')
         latest_crm_log = _pick_latest(sync_logs, lambda r: str(r.get('sync_type') or '') == 'customer_upsert')
+        latest_group_join_task = _pick_latest(tasks, lambda r: str(r.get('task_type') or '') == 'group_join')
 
         requested_mobile = ''.join(ch for ch in str(mobile or '') if ch.isdigit())
         if requested_mobile.startswith('62') and len(requested_mobile) > 2:
@@ -136,15 +137,30 @@ def build_success_chain_report(
         if registration_group:
             parse_ok = parse_ok and str(lead.get('pendaftaran_group') or '') == str(registration_group).strip()
 
-        bind_ok = bool(latest_bind_task and str(latest_bind_task.get('status') or '') == 'success')
+        current_status = str(lead.get('current_status') or '').strip()
+        bind_ok = bool(
+            (latest_bind_task and str(latest_bind_task.get('status') or '') == 'success')
+            or current_status in {'bind_success', 'synced', 'group_join_pending', 'group_join_success', 'group_join_failed'}
+            or str(lead.get('matched_customer_id') or '').strip()
+        )
         crm_response = (latest_crm_log or {}).get('response_snapshot') or {}
-        crm_create_ok = bool((crm_response.get('crm_response') or {}).get('code') == 0)
         crm_verify_ok = bool(
             crm_response.get('verified_after_write')
             or lead.get('crm_verified_at')
             or lead.get('crm_verified_payload')
+            or str(lead.get('crm_verified_registration_group') or '').strip()
+            or str(lead.get('crm_verified_official_group') or '').strip()
         )
-        final_success = bool(parse_ok and bind_ok and crm_create_ok and crm_verify_ok)
+        crm_create_ok = bool(
+            (crm_response.get('crm_response') or {}).get('code') == 0
+            or crm_verify_ok
+        )
+        group_join_ok = bool(
+            (latest_group_join_task and str(latest_group_join_task.get('status') or '') == 'success')
+            or current_status == 'group_join_success'
+            or str(lead.get('crm_verified_official_group') or '').strip()
+        )
+        final_success = bool(parse_ok and bind_ok and crm_create_ok and crm_verify_ok and group_join_ok)
 
         report = {
             "resolved": True,
@@ -189,6 +205,13 @@ def build_success_chain_report(
                     "ok": crm_verify_ok,
                     "verified_after_write": crm_response.get('verified_after_write'),
                     "crm_verified_at": lead.get('crm_verified_at'),
+                },
+                "group_join": {
+                    "ok": group_join_ok,
+                    "task_id": (latest_group_join_task or {}).get('task_id'),
+                    "status": (latest_group_join_task or {}).get('status'),
+                    "result_code": (latest_group_join_task or {}).get('result_code'),
+                    "result_reason": (latest_group_join_task or {}).get('result_reason'),
                 },
             },
             "final_success": final_success,

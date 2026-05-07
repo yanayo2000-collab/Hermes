@@ -1,12 +1,25 @@
 #!/bin/bash
 set -euo pipefail
 cd /Users/chauncey/work/mcn-ai-automation
-export PATH='/Users/chauncey/work/mcn-ai-automation/.venv/bin:/Users/chauncey/.local/bin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/opt/local/bin:/opt/local/sbin'
-export VIRTUAL_ENV=/Users/chauncey/work/mcn-ai-automation/.venv
-export HOME=/Users/chauncey
-export USER=chauncey
-export PYTHONUNBUFFERED=1
-export OFFICIAL_GROUP_BRIDGE_MODE=${OFFICIAL_GROUP_BRIDGE_MODE:-manual_queue}
-export OFFICIAL_GROUP_BRIDGE_TOKEN=${OFFICIAL_GROUP_BRIDGE_TOKEN:-official-group-local-token}
-if lsof -tiTCP:55801 -sTCP:LISTEN >/dev/null 2>&1; then kill $(lsof -tiTCP:55801 -sTCP:LISTEN) || true; sleep 1; fi
-exec /Users/chauncey/work/mcn-ai-automation/.venv/bin/python -m uvicorn app.official_webhook_bridge_app:create_app --factory --host 127.0.0.1 --port 55801
+source /Users/chauncey/work/mcn-ai-automation/scripts/lib/launchd_service.sh
+source /Users/chauncey/work/mcn-ai-automation/scripts/lib/port_utils.sh
+
+LABEL="com.chauncey.mcn.official-group-bridge"
+PLIST_SOURCE="/Users/chauncey/work/mcn-ai-automation/scripts/launchd/$LABEL.plist"
+PLIST_TARGET="$HOME/Library/LaunchAgents/$LABEL.plist"
+
+if [[ -f "$PLIST_TARGET" ]]; then
+  cp "$PLIST_SOURCE" "$PLIST_TARGET"
+  chmod 644 "$PLIST_TARGET"
+  chmod +x /Users/chauncey/work/mcn-ai-automation/scripts/run_official_group_bridge.sh /Users/chauncey/work/mcn-ai-automation/scripts/start_official_group_bridge.sh
+  terminate_listener 55801
+  launchd_bootstrap_service "$LABEL" "$PLIST_TARGET"
+  if wait_for_launchd_http_service "$LABEL" 'http://127.0.0.1:55801/healthz' 30 2; then
+    exit 0
+  fi
+  echo "official group bridge launch agent restart timed out" >&2
+  exit 1
+fi
+
+terminate_listener 55801
+exec /Users/chauncey/work/mcn-ai-automation/scripts/run_official_group_bridge.sh

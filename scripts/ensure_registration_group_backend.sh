@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT_DIR/scripts/lib/launchd_service.sh"
 LOG_DIR="$ROOT_DIR/logs"
 BACKEND_LOG="$LOG_DIR/registration_group_backend.log"
 PLIST_SOURCE="$ROOT_DIR/scripts/launchd/com.chauncey.mcn.registration-group-backend.plist"
@@ -16,15 +17,15 @@ if curl -sf http://127.0.0.1:8011/health >/dev/null 2>&1; then
 fi
 
 if [[ -f "$PLIST_TARGET" ]]; then
-  launchctl bootstrap "gui/$(id -u)" "$PLIST_TARGET" >/dev/null 2>&1 || true
-  launchctl enable "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
-  launchctl kickstart -k "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
+  chmod 644 "$PLIST_TARGET"
+  chmod +x "$ROOT_DIR/scripts/run_registration_group_backend.sh" "$ROOT_DIR/scripts/restart_intake_backend_with_bind.sh"
+  launchd_bootstrap_service "$LABEL" "$PLIST_TARGET"
 else
   if [[ -f "$PLIST_SOURCE" ]]; then
     cp "$PLIST_SOURCE" "$PLIST_TARGET"
-    launchctl bootstrap "gui/$(id -u)" "$PLIST_TARGET" >/dev/null 2>&1 || true
-    launchctl enable "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
-    launchctl kickstart -k "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
+    chmod 644 "$PLIST_TARGET"
+    chmod +x "$ROOT_DIR/scripts/run_registration_group_backend.sh" "$ROOT_DIR/scripts/restart_intake_backend_with_bind.sh"
+    launchd_bootstrap_service "$LABEL" "$PLIST_TARGET"
   else
     nohup "$ROOT_DIR/scripts/restart_intake_backend_with_bind.sh" </dev/null >> "$BACKEND_LOG" 2>&1 &
   fi

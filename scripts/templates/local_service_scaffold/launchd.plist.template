@@ -3,16 +3,16 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.chauncey.mcn.registration-group-backend</string>
+  <string>{{LABEL}}</string>
 
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/chauncey/work/mcn-ai-automation/scripts/run_registration_group_backend.sh</string>
+    <string>{{WORKDIR}}/scripts/run_{{SERVICE_SLUG}}.sh</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/chauncey/work/mcn-ai-automation</string>
+  <string>{{WORKDIR}}</string>
 
   <key>RunAtLoad</key>
   <true/>
@@ -24,19 +24,19 @@
   <integer>5</integer>
 
   <key>StandardOutPath</key>
-  <string>/Users/chauncey/work/mcn-ai-automation/logs/registration_group_backend.launchd.log</string>
+  <string>{{WORKDIR}}/logs/{{LOG_BASENAME}}.launchd.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/chauncey/work/mcn-ai-automation/logs/registration_group_backend.launchd.log</string>
+  <string>{{WORKDIR}}/logs/{{LOG_BASENAME}}.launchd.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/Users/chauncey/work/mcn-ai-automation/.venv/bin:/Users/chauncey/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>{{LAUNCHD_PATH}}</string>
     <key>HOME</key>
-    <string>/Users/chauncey</string>
+    <string>{{HOME_DIR}}</string>
     <key>USER</key>
-    <string>chauncey</string>
+    <string>{{USER_NAME}}</string>
     <key>PYTHONUNBUFFERED</key>
     <string>1</string>
     <key>TERM</key>

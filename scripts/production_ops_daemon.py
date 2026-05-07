@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -49,10 +49,45 @@ def _build_default_fresh_probe_cmd(registration_group: str) -> str:
     return f'node {script} {json.dumps(registration_group, ensure_ascii=False)}'
 
 
-def _evaluate_release(api_base_url: str, registration_group: str, group_state: Dict[str, Any]) -> Dict[str, Any]:
+def _cycle_next_boundary(now: datetime, timeout_minutes: int) -> datetime:
+    interval_seconds = max(int(timeout_minutes or 0), 1) * 60
+    local_tz = timezone(timedelta(hours=8))
+    localized_now = now.astimezone(local_tz)
+    local_day_start = localized_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed_seconds = int((localized_now - local_day_start).total_seconds())
+    next_boundary_seconds = ((elapsed_seconds // interval_seconds) + 1) * interval_seconds
+    next_boundary_local = local_day_start + timedelta(seconds=next_boundary_seconds)
+    return next_boundary_local.astimezone(now.tzinfo or timezone.utc)
+
+
+def _evaluate_release(api_base_url: str, registration_group: str, group_state: Dict[str, Any], *, batch_size: Optional[int] = None, timeout_minutes: Optional[int] = None) -> Dict[str, Any]:
     pending_count = max(int(group_state.get('pending_count') or 0), 0)
     oldest_pending_at = oldest_pending_at_iso(group_state)
-    if pending_count <= 0 or not oldest_pending_at:
+    resolved_batch_size = max(1, int(batch_size or 30))
+    resolved_timeout_minutes = max(1, int(timeout_minutes or 30))
+    now = datetime.fromisoformat(utc_now_iso().replace('Z', '+00:00'))
+    if pending_count <= 0:
+        cycle_end = _cycle_next_boundary(now, resolved_timeout_minutes)
+        remaining_seconds = max(int((cycle_end - now).total_seconds()), 0)
+        remaining_minutes = max((remaining_seconds + 59) // 60, 0)
+        cycle_start = cycle_end - timedelta(minutes=resolved_timeout_minutes)
+        return {
+            'approval_type': 'registration_group',
+            'registration_group': registration_group,
+            'pending_count': pending_count,
+            'oldest_pending_at': oldest_pending_at,
+            'ready': False,
+            'release_count': 0,
+            'reason_code': 'waiting_next_cycle',
+            'batch_size': resolved_batch_size,
+            'timeout_minutes': resolved_timeout_minutes,
+            'elapsed_minutes': max(0, int((now - cycle_start).total_seconds() // 60)),
+            'remaining_minutes': remaining_minutes,
+            'remaining_seconds': remaining_seconds,
+            'cycle_started_at': cycle_start.isoformat(),
+            'cycle_ends_at': cycle_end.isoformat(),
+        }
+    if not oldest_pending_at:
         return {
             'approval_type': 'registration_group',
             'registration_group': registration_group,
@@ -61,9 +96,11 @@ def _evaluate_release(api_base_url: str, registration_group: str, group_state: D
             'ready': False,
             'release_count': 0,
             'reason_code': 'waiting_for_batch',
-            'batch_size': 30,
-            'timeout_minutes': 30,
+            'batch_size': resolved_batch_size,
+            'timeout_minutes': resolved_timeout_minutes,
             'elapsed_minutes': 0,
+            'remaining_minutes': resolved_timeout_minutes,
+            'remaining_seconds': resolved_timeout_minutes * 60,
         }
     return fetch_json(
         f"{api_base_url.rstrip('/')}/api/ops/approval-batches/evaluate",
@@ -74,6 +111,8 @@ def _evaluate_release(api_base_url: str, registration_group: str, group_state: D
             'pending_count': pending_count,
             'oldest_pending_at': oldest_pending_at,
             'now': utc_now_iso(),
+            'batch_size': resolved_batch_size,
+            'timeout_minutes': resolved_timeout_minutes,
         },
         timeout=30.0,
     )
@@ -300,6 +339,8 @@ def _session_state(
 
 
 def _ordered_cycle_targets(monitor_target: Dict[str, Any], fallback_target: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if str(monitor_target.get('selection_reason') or '').strip() == 'configured_binding_outside_schedule':
+        return []
     selected_target = monitor_target.get('selected')
     candidates = list(monitor_target.get('candidates') or [])
     ordered: List[Dict[str, Any]] = []
@@ -367,6 +408,7 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
     rows = payload.get('rows') or []
     candidates: List[Dict[str, Any]] = []
     configured_bindings: List[Dict[str, Any]] = []
+    inactive_bindings: List[Dict[str, Any]] = []
     normalized_fallback_group = str(args.registration_group or '').strip().lower()
 
     def _pick_preferred_target(targets: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -399,8 +441,6 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
             if binding.get('enabled') is False:
                 continue
             schedule_runtime = binding.get('schedule_runtime') if isinstance(binding.get('schedule_runtime'), dict) else {}
-            if schedule_runtime.get('configured') and not bool(schedule_runtime.get('active_now')):
-                continue
             registration_group = (
                 str(binding.get('registration_group') or '').strip()
                 or str(binding.get('group_id') or '').strip()
@@ -427,6 +467,9 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
             })
             if not normalized:
                 continue
+            if schedule_runtime.get('configured') and not bool(schedule_runtime.get('active_now')):
+                inactive_bindings.append(normalized)
+                continue
             configured_bindings.append(normalized)
             if runtime_active and normalized.get('worker_base_url'):
                 candidates.append(normalized)
@@ -437,6 +480,13 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
                 'selected': _pick_preferred_target(configured_bindings),
                 'candidates': configured_bindings,
                 'selection_reason': 'configured_binding_runtime_unavailable',
+                'allow_fallback': False,
+            }
+        if inactive_bindings:
+            return {
+                'selected': _pick_preferred_target(inactive_bindings),
+                'candidates': [],
+                'selection_reason': 'configured_binding_outside_schedule',
                 'allow_fallback': False,
             }
         return {
@@ -540,6 +590,51 @@ def _dispatch_ready_official_group_batches(args: argparse.Namespace, state: Dict
     dispatch_state['result'] = result
 
 
+def _fetch_worker_group_state_with_passive_retry(
+    worker_base_url: str,
+    registration_group: str,
+    *,
+    timeout_seconds: float,
+    passive_retry_wait_seconds: float,
+    passive_retry_count: int = 2,
+) -> Dict[str, Any]:
+    attempts: List[Dict[str, Any]] = []
+    last_error: Exception | None = None
+    total_attempts = max(1, passive_retry_count) + 1
+    for attempt in range(1, total_attempts + 1):
+        try:
+            payload = fetch_json(
+                f"{worker_base_url.rstrip('/')}/group-state",
+                method='POST',
+                payload={'registration_group': registration_group},
+                timeout=timeout_seconds,
+            )
+            return {
+                'ok': True,
+                'payload': payload,
+                'attempts': attempts,
+                'retry_count': len(attempts),
+                'total_attempts': attempt,
+                'recovered_after_retry': bool(attempts),
+            }
+        except Exception as exc:
+            last_error = exc
+            if attempt >= total_attempts:
+                break
+            attempts.append({'attempt': attempt, 'error': str(exc)})
+            time.sleep(passive_retry_wait_seconds)
+    assert last_error is not None
+    return {
+        'ok': False,
+        'error': str(last_error),
+        'attempts': attempts,
+        'retry_count': len(attempts),
+        'total_attempts': total_attempts,
+        'recovered_after_retry': False,
+    }
+
+
+
 def _run_registration_group_cycle(
     args: argparse.Namespace,
     state: Dict[str, Any],
@@ -576,15 +671,23 @@ def _run_registration_group_cycle(
         }
         return cycle
 
-    try:
-        worker_payload = fetch_json(
-            f"{target_worker_base_url.rstrip('/')}/group-state",
-            method='POST',
-            payload={'registration_group': target_registration_group},
-            timeout=args.worker_timeout_seconds,
-        )
+    passive_retry_wait_seconds = max(1.0, min(float(args.restart_wait_seconds or 1.0), 3.0))
+    passive_retry_count = 3 if str(target.get('source') or '').strip() == 'account_binding' else 2
+    worker_fetch = _fetch_worker_group_state_with_passive_retry(
+        target_worker_base_url,
+        target_registration_group,
+        timeout_seconds=args.worker_timeout_seconds,
+        passive_retry_wait_seconds=passive_retry_wait_seconds,
+        passive_retry_count=passive_retry_count,
+    )
+    if worker_fetch.get('ok'):
+        worker_payload = worker_fetch['payload']
         cycle['worker_state'] = {'ok': True, 'payload': worker_payload}
-    except Exception as exc:
+        if worker_fetch.get('recovered_after_retry'):
+            cycle['worker_state']['recovered_after_retry'] = True
+            cycle['worker_state']['retry_attempts'] = worker_fetch.get('attempts') or []
+    else:
+        exc = RuntimeError(str(worker_fetch.get('error') or 'worker_group_state_failed'))
         recovery = _recover_worker_for_target(
             args,
             target,
@@ -593,13 +696,16 @@ def _run_registration_group_cycle(
         )
         recovered_worker_base_url = str(recovery.get('recovered_worker_base_url') or '').strip() or target_worker_base_url
         if recovery.get('status') == 'ok' and recovered_worker_base_url:
-            try:
-                worker_payload = fetch_json(
-                    f"{recovered_worker_base_url.rstrip('/')}/group-state",
-                    method='POST',
-                    payload={'registration_group': target_registration_group},
-                    timeout=args.worker_timeout_seconds,
-                )
+            recovery_retry_wait_seconds = max(2.0, min(float(args.restart_wait_seconds or 2.0), 5.0))
+            recovery_worker_fetch = _fetch_worker_group_state_with_passive_retry(
+                recovered_worker_base_url,
+                target_registration_group,
+                timeout_seconds=args.worker_timeout_seconds,
+                passive_retry_wait_seconds=recovery_retry_wait_seconds,
+                passive_retry_count=4,
+            )
+            if recovery_worker_fetch.get('ok'):
+                worker_payload = recovery_worker_fetch['payload']
                 target_worker_base_url = recovered_worker_base_url
                 cycle['monitor_target']['worker_base_url'] = target_worker_base_url
                 cycle['worker_state'] = {
@@ -607,13 +713,37 @@ def _run_registration_group_cycle(
                     'payload': worker_payload,
                     'recovered_after_restart': True,
                     'recovery': recovery,
+                    'recovery_probe': {
+                        'retry_attempts': recovery_worker_fetch.get('attempts') or [],
+                        'retry_count': int(recovery_worker_fetch.get('retry_count') or 0),
+                        'total_attempts': int(recovery_worker_fetch.get('total_attempts') or 1),
+                        'wait_seconds': recovery_retry_wait_seconds,
+                    },
                 }
-            except Exception as retry_exc:
-                recovery['retry_error'] = str(retry_exc)
-                cycle['worker_state'] = {'ok': False, 'error': str(retry_exc), 'recovery': recovery}
+                if worker_fetch.get('attempts'):
+                    cycle['worker_state']['retry_attempts'] = worker_fetch.get('attempts') or []
+            else:
+                recovery['retry_error'] = str(recovery_worker_fetch.get('error') or 'worker_group_state_failed_after_recovery')
+                recovery['recovery_probe'] = {
+                    'retry_attempts': recovery_worker_fetch.get('attempts') or [],
+                    'retry_count': int(recovery_worker_fetch.get('retry_count') or 0),
+                    'total_attempts': int(recovery_worker_fetch.get('total_attempts') or 1),
+                    'wait_seconds': recovery_retry_wait_seconds,
+                }
+                cycle['worker_state'] = {
+                    'ok': False,
+                    'error': recovery['retry_error'],
+                    'recovery': recovery,
+                    'retry_attempts': worker_fetch.get('attempts') or [],
+                }
                 return cycle
         else:
-            cycle['worker_state'] = {'ok': False, 'error': str(exc), 'recovery': recovery}
+            cycle['worker_state'] = {
+                'ok': False,
+                'error': str(exc),
+                'recovery': recovery,
+                'retry_attempts': worker_fetch.get('attempts') or [],
+            }
             return cycle
 
     use_worker_state_directly = (
@@ -763,7 +893,13 @@ def _run_registration_group_cycle(
         return cycle
 
     try:
-        release = _evaluate_release(args.api_base_url, target_registration_group, authoritative_payload)
+        release = _evaluate_release(
+            args.api_base_url,
+            target_registration_group,
+            authoritative_payload,
+            batch_size=int(target.get('approval_count_threshold') or 0),
+            timeout_minutes=int(target.get('approval_timeout_minutes') or 0),
+        )
         cycle['release_evaluation'] = {'ok': True, 'payload': release}
     except Exception as exc:
         cycle['release_evaluation'] = {'ok': False, 'error': str(exc)}
@@ -858,21 +994,40 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
     }
 
     backend_health = check_backend_health(args.api_base_url, timeout=args.health_timeout_seconds)
-    if not backend_health.get('ok') and args.backend_restart_cmd:
-        restart_result = maybe_restart(args.backend_restart_cmd, timeout=args.restart_command_timeout_seconds)
-        backend_health['restart'] = restart_result
-        time.sleep(max(1.0, float(args.restart_wait_seconds)))
-        after_restart = check_backend_health(args.api_base_url, timeout=args.health_timeout_seconds)
-        backend_health['after_restart'] = after_restart
-        if after_restart.get('ok'):
-            recovered_health = dict(after_restart)
-            recovered_health['restart'] = restart_result
-            recovered_health['recovered_after_restart'] = True
-            cycle['backend_health_recovery'] = {
-                'before_restart': backend_health,
-                'after_restart': after_restart,
-            }
-            backend_health = recovered_health
+    if not backend_health.get('ok'):
+        passive_retry_wait_seconds = max(1.0, min(float(args.restart_wait_seconds or 1.0), 3.0))
+        passive_retry_attempts: List[Dict[str, Any]] = []
+        for attempt in range(1, 3):
+            time.sleep(passive_retry_wait_seconds)
+            retry_health = check_backend_health(args.api_base_url, timeout=args.health_timeout_seconds)
+            passive_retry_attempts.append({'attempt': attempt, **retry_health})
+            if retry_health.get('ok'):
+                recovered_health = dict(retry_health)
+                recovered_health['recovered_after_retry'] = True
+                recovered_health['retry_attempts'] = passive_retry_attempts
+                cycle['backend_health_recovery'] = {
+                    'before_retry': backend_health,
+                    'retry_attempts': passive_retry_attempts,
+                }
+                backend_health = recovered_health
+                break
+        if not backend_health.get('ok') and args.backend_restart_cmd:
+            restart_result = maybe_restart(args.backend_restart_cmd, timeout=args.restart_command_timeout_seconds)
+            backend_health['restart'] = restart_result
+            time.sleep(max(1.0, float(args.restart_wait_seconds)))
+            after_restart = check_backend_health(args.api_base_url, timeout=args.health_timeout_seconds)
+            backend_health['after_restart'] = after_restart
+            if after_restart.get('ok'):
+                recovered_health = dict(after_restart)
+                recovered_health['restart'] = restart_result
+                recovered_health['recovered_after_restart'] = True
+                recovered_health['retry_attempts'] = passive_retry_attempts
+                cycle['backend_health_recovery'] = {
+                    'before_restart': backend_health,
+                    'retry_attempts': passive_retry_attempts,
+                    'after_restart': after_restart,
+                }
+                backend_health = recovered_health
     cycle['backend_health'] = backend_health
     if not backend_health.get('ok'):
         return cycle
@@ -943,26 +1098,65 @@ def _build_notifier_from_args(args: argparse.Namespace, cycle: Optional[Dict[str
     )
 
 
+def _incident_alert_threshold(incident: Dict[str, Any]) -> int:
+    code = str(incident.get('code') or '').strip()
+    if code == 'worker_state_failed':
+        return 3
+    return 1
+
+
 def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Dict[str, Any], incidents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    notifier = _build_notifier_from_args(args, cycle)
     now = datetime.fromisoformat(cycle['checked_at']) if cycle.get('checked_at') else utc_now()
     sent: List[Dict[str, Any]] = []
+    streaks = state.setdefault('incident_streaks', {})
+    current_keys = {str(item.get('dedupe_key') or item.get('code') or 'incident') for item in incidents}
+    for stale_key in list(streaks.keys()):
+        if stale_key not in current_keys:
+            streaks.pop(stale_key, None)
     for incident in incidents:
         dedupe_key = str(incident.get('dedupe_key') or incident.get('code') or 'incident')
+        threshold = max(1, int(_incident_alert_threshold(incident)))
+        streak_record = streaks.get(dedupe_key) or {}
+        streak_count = int(streak_record.get('count') or 0) + 1
+        streaks[dedupe_key] = {
+            'count': streak_count,
+            'threshold': threshold,
+            'code': str(incident.get('code') or '').strip(),
+            'last_seen_at': now.isoformat(),
+        }
+        if streak_count < threshold:
+            continue
         if not register_notification(state, dedupe_key=dedupe_key, now=now, cooldown_seconds=args.notify_cooldown_seconds):
             continue
+        notify_profile_name = str(incident.get('notify_profile_name') or '').strip()
+        notify_robot_name = str(incident.get('notify_robot_name') or '').strip()
+        effective_cycle = cycle
+        if notify_profile_name or notify_robot_name:
+            monitor_target = dict(cycle.get('monitor_target') or {}) if isinstance(cycle.get('monitor_target'), dict) else {}
+            if notify_profile_name:
+                monitor_target['notify_profile_name'] = notify_profile_name
+            if notify_robot_name:
+                monitor_target['notify_robot_name'] = notify_robot_name
+            effective_cycle = {**cycle, 'monitor_target': monitor_target}
+        notifier = _build_notifier_from_args(args, effective_cycle)
         payload = {
             'dedupe_key': dedupe_key,
             'sent_at': now.isoformat(),
             'code': incident.get('code'),
             'severity': incident.get('severity'),
+            'streak_count': streak_count,
+            'threshold': threshold,
         }
+        if notify_profile_name:
+            payload['notify_profile_name'] = notify_profile_name
+        if notify_robot_name:
+            payload['notify_robot_name'] = notify_robot_name
         if notifier is None:
             payload['status'] = 'skipped_no_notifier'
             sent.append(payload)
             continue
         try:
-            response = notifier.send_text(format_lark_alert(SERVICE_NAME, incident, cycle))
+            response = notifier.send_text(format_lark_alert(SERVICE_NAME, incident, effective_cycle))
             payload['status'] = 'sent'
             payload['response'] = response
         except Exception as exc:
@@ -975,8 +1169,8 @@ def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Di
 def main() -> int:
     parser = argparse.ArgumentParser(description='Background production operator for registration-group live monitoring and formal approval.')
     parser.add_argument('--api-base-url', default='http://127.0.0.1:8011')
-    parser.add_argument('--worker-base-url', default='http://127.0.0.1:8787')
-    parser.add_argument('--registration-group', default='🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎')
+    parser.add_argument('--worker-base-url', default='')
+    parser.add_argument('--registration-group', default='')
     parser.add_argument('--fresh-probe-cmd', default='')
     parser.add_argument('--worker-restart-cmd', default=str(ROOT_DIR / 'scripts' / 'restart_registration_group_webjs_worker.sh'))
     parser.add_argument('--backend-restart-cmd', default=str(ROOT_DIR / 'scripts' / 'ensure_registration_group_backend.sh'))

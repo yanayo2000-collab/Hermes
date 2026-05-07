@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd {{WORKDIR}}
+source {{WORKDIR}}/scripts/lib/launchd_service.sh
+source {{WORKDIR}}/scripts/lib/port_utils.sh
+
+LABEL="{{LABEL}}"
+PLIST_SOURCE="{{WORKDIR}}/scripts/launchd/$LABEL.plist"
+PLIST_TARGET="$HOME/Library/LaunchAgents/$LABEL.plist"
+
+if [[ -f "$PLIST_TARGET" ]]; then
+  cp "$PLIST_SOURCE" "$PLIST_TARGET"
+  chmod 644 "$PLIST_TARGET"
+  chmod +x {{WORKDIR}}/scripts/run_{{SERVICE_SLUG}}.sh {{WORKDIR}}/scripts/start_{{SERVICE_SLUG}}.sh
+  terminate_listener {{PORT}}
+  launchd_bootstrap_service "$LABEL" "$PLIST_TARGET"
+  if wait_for_launchd_http_service "$LABEL" '{{HEALTH_URL}}' 30 2; then
+    exit 0
+  fi
+  echo "{{SERVICE_NAME}} launch agent restart timed out" >&2
+  exit 1
+fi
+
+terminate_listener {{PORT}}
+exec {{WORKDIR}}/scripts/run_{{SERVICE_SLUG}}.sh

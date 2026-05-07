@@ -3,12 +3,12 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.chauncey.mcn.registration-group-backend</string>
+  <string>com.chauncey.mcn.official-group-bridge</string>
 
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/chauncey/work/mcn-ai-automation/scripts/run_registration_group_backend.sh</string>
+    <string>/Users/chauncey/work/mcn-ai-automation/scripts/run_official_group_bridge.sh</string>
   </array>
 
   <key>WorkingDirectory</key>
@@ -24,10 +24,10 @@
   <integer>5</integer>
 
   <key>StandardOutPath</key>
-  <string>/Users/chauncey/work/mcn-ai-automation/logs/registration_group_backend.launchd.log</string>
+  <string>/Users/chauncey/work/mcn-ai-automation/logs/official_group_bridge.launchd.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/chauncey/work/mcn-ai-automation/logs/registration_group_backend.launchd.log</string>
+  <string>/Users/chauncey/work/mcn-ai-automation/logs/official_group_bridge.launchd.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd {{WORKDIR}}
+
+export PATH='{{PATH_EXPORT}}'
+export VIRTUAL_ENV={{VENV_PATH}}
+export HOME={{HOME_DIR}}
+export USER={{USER_NAME}}
+export PYTHONUNBUFFERED=1
+{{EXTRA_ENV_EXPORTS}}
+
+exec {{EXEC_COMMAND}}

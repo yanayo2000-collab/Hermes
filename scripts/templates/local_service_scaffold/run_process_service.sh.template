@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd {{WORKDIR}}
+
+{{ENV_LOAD_SNIPPET}}
+{{EXTRA_ENV_EXPORTS}}
+
+exec {{EXEC_COMMAND}}

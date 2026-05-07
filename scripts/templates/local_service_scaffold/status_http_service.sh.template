@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT_DIR/scripts/lib/launchd_service.sh"
+LABEL="{{LABEL}}"
+service_pid="$(lsof -tiTCP:{{PORT}} -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
+service_health="$(curl -s {{HEALTH_URL}} 2>/dev/null || true)"
+launch_state="$(launchd_state "$LABEL")"
+last_exit="$(launchd_last_exit_code "$LABEL")"
+python3 - <<'PY' "$service_pid" "$service_health" "$launch_state" "$last_exit"
+import json, sys
+service_pid, service_health, launch_state, last_exit = sys.argv[1:5]
+out = {
+    '{{SERVICE_KEY}}': {
+        'pid': service_pid or None,
+        'listening': bool(service_pid),
+        'health': json.loads(service_health) if service_health else None,
+    },
+    'launchd': {
+        'label': '{{LABEL}}',
+        'state': launch_state or None,
+        'last_exit_code': last_exit or None,
+    },
+}
+print(json.dumps(out, ensure_ascii=False))
+PY

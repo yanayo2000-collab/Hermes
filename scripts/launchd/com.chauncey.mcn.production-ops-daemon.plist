@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
       <string>/bin/bash</string>
-      <string>/Users/chauncey/work/mcn-ai-automation/scripts/start_production_ops_daemon.sh</string>
+      <string>/Users/chauncey/work/mcn-ai-automation/scripts/run_production_ops_daemon.sh</string>
     </array>
 
     <key>WorkingDirectory</key>

@@ -9,6 +9,9 @@ except ImportError:  # pragma: no cover
 
 
 class WebjsBridgeRegistrationGroupApprovalExecutor:
+    APPROVE_TIMEOUT_BASE_SECONDS = 15.0
+    APPROVE_TIMEOUT_PER_REQUESTER_SECONDS = 3.0
+
     def __init__(
         self,
         *,
@@ -100,6 +103,17 @@ class WebjsBridgeRegistrationGroupApprovalExecutor:
         normalized.setdefault('requester_ids', [])
         return normalized
 
+    def _approve_timeout_seconds(self, context: Dict[str, Any]) -> float:
+        try:
+            approved_count = int((context or {}).get('approved_count') or 1)
+        except (TypeError, ValueError):
+            approved_count = 1
+        approved_count = max(1, approved_count)
+        scaled_timeout = self.APPROVE_TIMEOUT_BASE_SECONDS + (
+            approved_count * self.APPROVE_TIMEOUT_PER_REQUESTER_SECONDS
+        )
+        return max(self.timeout_seconds, float(scaled_timeout))
+
     def approve(self, context: Dict[str, Any]) -> Dict[str, Any]:
         if not self.base_url:
             return {
@@ -115,7 +129,15 @@ class WebjsBridgeRegistrationGroupApprovalExecutor:
                 },
             }
         try:
-            body = self._post_json('/approve', dict(context or {}))
+            response = self.session.post(
+                f'{self.base_url}/approve',
+                json=dict(context or {}),
+                headers=self._headers(),
+                timeout=self._approve_timeout_seconds(context),
+            )
+            body = response.json()
+            if not isinstance(body, dict):
+                raise RuntimeError('webjs bridge returned unexpected payload')
         except Exception as exc:
             return {
                 'status': 'failed',

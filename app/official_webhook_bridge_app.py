@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import time
 import uuid
 from collections import Counter, defaultdict, deque
@@ -638,6 +639,9 @@ class OfficialGroupBridgeState:
         upstream_url: Optional[str] = None,
         upstream_token: Optional[str] = None,
         timeout_seconds: float = 20.0,
+        ops_base_url: Optional[str] = None,
+        db_path: Optional[str] = None,
+        session: Any = None,
     ) -> None:
         self.token = str(token or '').strip() or None
         self.mode = str(mode or 'mock_success').strip().lower() or 'mock_success'
@@ -646,7 +650,12 @@ class OfficialGroupBridgeState:
         self.timeout_seconds = max(3.0, float(timeout_seconds or 20.0))
         self.upstream_url = str(upstream_url or '').strip() or None
         self.upstream_token = str(upstream_token or '').strip() or None
-        self.session = requests.Session() if requests is not None else None
+        self.ops_base_url = str(ops_base_url or '').strip().rstrip('/') or None
+        self.db_path = str(db_path or '').strip() or None
+        if session is not None:
+            self.session = session
+        else:
+            self.session = requests.Session() if requests is not None else None
 
     def _require_auth(self, authorization: Optional[str]) -> None:
         if not self.token:
@@ -706,6 +715,110 @@ class OfficialGroupBridgeState:
             'raw_result': {'target_group': target_group, 'bridge_request_id': request_id},
         }
 
+    @staticmethod
+    def _candidate_target_values(target_group: str, binding: Dict[str, Any]) -> Set[str]:
+        values = {
+            str(target_group or '').strip().lower(),
+            str(binding.get('registration_group') or '').strip().lower(),
+            str(binding.get('group_name') or '').strip().lower(),
+            str(binding.get('group_id') or '').strip().lower(),
+            str(binding.get('link') or '').strip().lower(),
+        }
+        return {value for value in values if value}
+
+    def _resolve_official_group_binding(self, *, target_group: str) -> Optional[Dict[str, Any]]:
+        normalized_target = str(target_group or '').strip().lower()
+        if not normalized_target:
+            return None
+        rows: List[Dict[str, Any]] = []
+        if self.db_path and os.path.exists(self.db_path):
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    db_rows = conn.execute(
+                        "SELECT responsible_type, enabled, group_links FROM whatsapp_approval_accounts WHERE responsible_type = 'official_group'"
+                    ).fetchall()
+                for row in db_rows:
+                    rows.append(dict(row))
+            except Exception:
+                rows = []
+        if not rows and self.session is not None and self.ops_base_url:
+            response = self.session.get(
+                f'{self.ops_base_url}/api/ops/whatsapp-approval-accounts',
+                timeout=self.timeout_seconds,
+            )
+            try:
+                body = response.json()
+            except Exception:
+                body = None
+            if isinstance(body, dict):
+                rows = body.get('rows') or body.get('accounts') or []
+            elif isinstance(body, list):
+                rows = body
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get('responsible_type') or '').strip() != 'official_group':
+                continue
+            if row.get('enabled') is False:
+                continue
+            bindings = row.get('group_binding_runtimes') or row.get('group_link_bindings') or row.get('group_links') or []
+            if isinstance(bindings, str):
+                try:
+                    bindings = json.loads(bindings)
+                except Exception:
+                    bindings = []
+            for binding in bindings:
+                if not isinstance(binding, dict):
+                    continue
+                if binding.get('enabled') is False:
+                    continue
+                if normalized_target in self._candidate_target_values(target_group, binding):
+                    return binding
+        return None
+
+    def _build_runtime_passthrough_payload(self, payload: Dict[str, Any], *, request_id: str) -> Optional[Dict[str, Any]]:
+        target_group = str(payload.get('target_group') or '').strip()
+        if not target_group:
+            return None
+        binding = self._resolve_official_group_binding(target_group=target_group)
+        if not binding:
+            return None
+        registration_group = str(
+            binding.get('group_id')
+            or binding.get('link')
+            or binding.get('registration_group')
+            or ''
+        ).strip()
+        if not registration_group:
+            return None
+        lead = payload.get('lead') or {}
+        crm_snapshot = payload.get('crm_snapshot') or {}
+        task = payload.get('task') or {}
+        target_name_hint = str(
+            lead.get('name')
+            or lead.get('full_name')
+            or crm_snapshot.get('name')
+            or crm_snapshot.get('full_name')
+            or ''
+        ).strip() or None
+        target_phone_hint = str(
+            lead.get('mobile')
+            or crm_snapshot.get('mobile')
+            or ''
+        ).strip() or None
+        return {
+            'registration_group': registration_group,
+            'target_name_hint': target_name_hint,
+            'target_phone_hint': target_phone_hint,
+            'approved_count': 1,
+            'force_immediate': True,
+            'approval_run_id': request_id,
+            'decision': 'approve',
+            'decided_by': 'official_group_bridge',
+            'remark': str(task.get('task_id') or '').strip() or None,
+        }
+
     def _passthrough_response(self, payload: Dict[str, Any], *, request_id: str) -> Dict[str, Any]:
         if not self.upstream_url:
             return {
@@ -724,7 +837,17 @@ class OfficialGroupBridgeState:
         headers = {'Content-Type': 'application/json'}
         if self.upstream_token:
             headers['Authorization'] = f'Bearer {self.upstream_token}'
-        response = self.session.post(self.upstream_url, json=payload, headers=headers, timeout=self.timeout_seconds)
+        upstream_payload = payload
+        if self.upstream_url.rstrip('/').endswith('/approve') and '/official-group/approve' not in self.upstream_url:
+            upstream_payload = self._build_runtime_passthrough_payload(payload, request_id=request_id)
+            if not upstream_payload:
+                return {
+                    'status': 'manual_required',
+                    'result_code': 'upstream_target_unmapped',
+                    'result_reason': 'official group runtime binding could not be resolved for target_group',
+                    'raw_result': {'target_group': payload.get('target_group'), 'bridge_request_id': request_id},
+                }
+        response = self.session.post(self.upstream_url, json=upstream_payload, headers=headers, timeout=self.timeout_seconds)
         try:
             body = response.json()
         except Exception as exc:
@@ -836,12 +959,21 @@ class OfficialGroupBridgeState:
         now = int(time.time())
         records = list(self.recent_requests)
         pending = [record for record in records if record.get('status') == 'pending']
-        resolved = [record for record in records if record.get('status') == 'resolved']
-        timeout_over_1h = [record for record in pending if now - int(record.get('created_at') or now) > 3600]
+        active_target_groups = {
+            str((record.get('request') or {}).get('target_group') or 'unknown')
+            for record in pending
+        }
+        scoped_records = [
+            record for record in records
+            if str((record.get('request') or {}).get('target_group') or 'unknown') in active_target_groups
+        ]
+        scoped_pending = [record for record in scoped_records if record.get('status') == 'pending']
+        scoped_resolved = [record for record in scoped_records if record.get('status') == 'resolved']
+        timeout_over_1h = [record for record in scoped_pending if now - int(record.get('created_at') or now) > 3600]
         by_target_group: Dict[str, Dict[str, int]] = defaultdict(lambda: {'pending_count': 0, 'resolved_count': 0, 'total_count': 0})
         today_start = now - 86400
         today_created_count = 0
-        for record in records:
+        for record in scoped_records:
             target_group = str((record.get('request') or {}).get('target_group') or 'unknown')
             bucket = by_target_group[target_group]
             bucket['total_count'] += 1
@@ -853,9 +985,10 @@ class OfficialGroupBridgeState:
                 today_created_count += 1
         return {
             'mode': self.mode,
-            'total_count': len(records),
-            'pending_count': len(pending),
-            'resolved_count': len(resolved),
+            'view_scope': 'current_window',
+            'total_count': len(scoped_records),
+            'pending_count': len(scoped_pending),
+            'resolved_count': len(scoped_resolved),
             'pending_timeout_over_1h_count': len(timeout_over_1h),
             'today_created_count': today_created_count,
             'by_target_group': dict(by_target_group),
@@ -922,6 +1055,11 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         or 'http://127.0.0.1:8011'
     ).rstrip('/')
     webhook_state = WebhookState()
+    bridge_db_path = str(
+        cfg.get('OFFICIAL_GROUP_BRIDGE_DB_PATH')
+        or os.getenv('OFFICIAL_GROUP_BRIDGE_DB_PATH')
+        or '/Users/chauncey/work/mcn-ai-automation/data/automation.db'
+    ).strip()
     bridge_state = OfficialGroupBridgeState(
         token=cfg.get('OFFICIAL_GROUP_BRIDGE_TOKEN') or os.getenv('OFFICIAL_GROUP_BRIDGE_TOKEN'),
         mode=cfg.get('OFFICIAL_GROUP_BRIDGE_MODE') or os.getenv('OFFICIAL_GROUP_BRIDGE_MODE') or 'manual_queue',
@@ -929,6 +1067,9 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         upstream_url=cfg.get('OFFICIAL_GROUP_BRIDGE_UPSTREAM_URL') or os.getenv('OFFICIAL_GROUP_BRIDGE_UPSTREAM_URL'),
         upstream_token=cfg.get('OFFICIAL_GROUP_BRIDGE_UPSTREAM_TOKEN') or os.getenv('OFFICIAL_GROUP_BRIDGE_UPSTREAM_TOKEN'),
         timeout_seconds=float(cfg.get('OFFICIAL_GROUP_BRIDGE_TIMEOUT_SECONDS') or os.getenv('OFFICIAL_GROUP_BRIDGE_TIMEOUT_SECONDS') or 20.0),
+        ops_base_url=ops_base_url,
+        db_path=bridge_db_path,
+        session=cfg.get('OFFICIAL_GROUP_BRIDGE_SESSION'),
     )
 
     app = FastAPI(title='WhatsApp Webhook Bridge')

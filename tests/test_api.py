@@ -538,9 +538,32 @@ def test_approval_batching_not_ready_before_threshold_or_timeout():
     assert body["reason_code"] == "waiting_for_batch"
 
 
+def test_approval_batching_uses_fixed_cycle_boundary_not_oldest_pending_plus_timeout():
+    client = make_client()
+    response = client.post(
+        "/api/ops/approval-batches/evaluate",
+        json={
+            "approval_type": "official_group",
+            "registration_group": "Official-Fixed-Cycle",
+            "pending_count": 3,
+            "oldest_pending_at": "2026-04-15T10:16:00Z",
+            "now": "2026-04-15T10:20:00Z",
+            "batch_size": 10,
+            "timeout_minutes": 30,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is False
+    assert body["release_count"] == 0
+    assert body["reason_code"] == "waiting_for_batch"
+    assert body["elapsed_minutes"] == 20
+
+
 
 def test_ops_approval_batch_queue_returns_ready_and_waiting_groups():
     client = make_client()
+    client.app.state.service.runtime_health = lambda: {'registration_group_approval': {'configured': False}}
     response = client.get('/api/ops/approval-batch-queue')
     assert response.status_code == 200
     body = response.json()
@@ -642,6 +665,7 @@ def test_production_ops_page_loads():
     assert '刷新状态' in body
     assert '重置会话' in body
     assert '绑定二维码' in body
+    assert '确认删除这个 WhatsApp 账号吗？' in body
     assert '配置状态' in body
     assert '登录状态' in body
     assert 'approvalQrModal' in body
@@ -675,8 +699,40 @@ def test_production_ops_page_loads():
     assert 'toggleSwitch' in body
     assert 'wa_enabled_toggle' not in body
     assert 'setApprovalAccountEnabled' in body
+    assert 'setApprovalBindingEnabled' in body
+    assert 'bindingVerifierStatusText' in body
+    assert 'bindingVerifierReadinessText' in body
+    assert 'mapped_live_probe_ready' in body
+    assert 'inferred_live_probe_ready' in body
+    assert 'monitor_disabled' in body
+    assert 'other_binding_live_probe_active' in body
+    assert 'mapping_mismatch' in body
+    assert 'probe_unavailable' in body
+    assert '已就绪' in body
+    assert '待校验' in body
+
+    assert '真实校验已就绪' in body
+    assert '真实校验可用' in body
+    assert '需人工补齐' in body
+    assert '守护进程=' in body
+    assert '已安装' in body
+    assert '未安装' in body
+    assert '正常' in body
+    assert '异常' in body
+    assert '超时超1小时' in body
+    assert '已就绪' in body
+    assert '待校验' in body
     assert '监控中' in body
     assert '已关闭' in body
+    assert "['eligible'," not in body
+    assert "['real_membership_check_ready'," not in body
+    assert "['requires_manual_seed'," not in body
+    assert "workerState.ok ? 'healthy' : 'unhealthy'" not in body
+    assert "['timeout>1h'," not in body
+    assert '`launchd=${launchdState}`' not in body
+    assert '执行状态' not in body
+    assert '当前不在监控时段，倒计时仅作下一轮参考' not in body
+    assert '当前在监控时段，可按本轮倒计时执行' not in body
     assert 'type=\"hidden\" id=\"wa_account_key\"' in body
     assert 'wa_group_notify_profile_name_1' in body
     assert 'wa_group_approval_count_threshold_1' in body
@@ -684,6 +740,14 @@ def test_production_ops_page_loads():
     assert 'wa_group_auto_recover_worker_1' in body
     assert '本群监控' in body
     assert 'wa_group_enabled_1' in body
+    assert '实时刷新探针' in body
+    assert 'refreshApprovalBindingProbe' in body
+    assert '距离下次审批' in body
+    assert 'formatApprovalCountdownText' in body
+    assert 'startApprovalCountdownTicker' in body
+    assert 'data-next-approval-countdown' in body
+    assert 'data-next-approval-rendered-at-ms' in body
+    assert 'const adjustedRemainingSeconds = Number.isFinite(remainingSeconds) ? Math.max(remainingSeconds - elapsedSeconds, 0) : null;' in body
 
 
 def test_official_group_bridge_page_redirects_to_bridge_service():
@@ -817,7 +881,7 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed():
                 'approval_timeout_minutes': 45,
                 'auto_recover_worker': False,
                 'schedule_windows': [
-                    {'start': '09:00', 'end': '12:00'},
+                    {'start': '00:00', 'end': '23:59'},
                 ],
             },
         ],
@@ -878,7 +942,7 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed():
     assert bindings[1]['approval_timeout_minutes'] == 45
     assert bindings[1]['auto_recover_worker'] is False
     assert bindings[1]['schedule_windows'] == [
-        {'start': '09:00', 'end': '12:00'},
+        {'start': '00:00', 'end': '23:59'},
     ]
     assert body['account']['group_binding_runtimes'][0]['notify_profile_name'] == 'wa-approval-broadcast'
     assert body['account']['group_binding_runtimes'][1]['notify_profile_name'] == 'wa-approval-broadcast'
@@ -888,10 +952,65 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed():
     assert body['account']['group_binding_runtimes'][1]['enabled'] is True
     assert body['account']['notify_profile_name'] == 'wa-approval-broadcast'
     assert body['account']['notify_robot_name'] == '审批bot01'
-    assert body['account']['approval_count_threshold'] == 25
-    assert body['account']['approval_timeout_minutes'] == 28
-    assert body['account']['approval_rule_text'] == '满25人或满28分钟放行（满足其一即可）'
-    assert body['account']['auto_recover_worker'] is True
+    assert body['account']['approval_count_threshold'] == 31
+    assert body['account']['approval_timeout_minutes'] == 45
+    assert body['account']['approval_rule_text'] == '满31人或满45分钟放行（满足其一即可）'
+    assert body['account']['auto_recover_worker'] is False
+    assert body['account']['schedule_windows'] == [
+        {'start': '00:00', 'end': '23:59'},
+    ]
+
+    updated = client.post('/api/ops/whatsapp-approval-accounts/wa-admin-1', json={
+        'account_name': 'WA Admin 1',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/group-a',
+                'group_name': 'PH 审批群 A',
+                'area': 'Philippines',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'enabled': True,
+                'registration_group': 'PH Registrations A',
+                'group_id': '120363425215002841@g.us',
+                'approval_count_threshold': 25,
+                'approval_timeout_minutes': 28,
+                'auto_recover_worker': True,
+                'schedule_windows': [
+                    {'start': '00:00', 'end': '23:59'},
+                    {'start': '14:00', 'end': '18:00'},
+                ],
+            },
+            {
+                'link': 'https://chat.whatsapp.com/group-b',
+                'group_name': 'PH 审批群 B',
+                'area': 'Philippines',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'enabled': False,
+                'registration_group': 'PH Registrations B',
+                'group_id': '120363425215002842@g.us',
+                'approval_count_threshold': 31,
+                'approval_timeout_minutes': 45,
+                'auto_recover_worker': False,
+                'schedule_windows': [
+                    {'start': '09:00', 'end': '12:00'},
+                ],
+            },
+        ],
+        'notify_profile_name': 'wa-approval-broadcast',
+        'approval_count_threshold': 25,
+        'approval_timeout_minutes': 28,
+        'auto_recover_worker': True,
+        'schedule_windows': [
+            {'start': '00:00', 'end': '23:59'},
+            {'start': '14:00', 'end': '18:00'},
+        ],
+        'enabled': True,
+        'notes': 'primary registration approver',
+    })
+    assert updated.status_code == 200
+    updated_bindings = updated.json()['account']['group_binding_runtimes']
+    assert updated_bindings[0]['enabled'] is True
+    assert updated_bindings[1]['enabled'] is False
 
     official_saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-1', json={
         'account_name': 'WA Official 1',
@@ -938,6 +1057,9 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed():
         {'start': '00:00', 'end': '23:59'},
     ]
     assert official_saved.json()['account']['group_binding_runtimes'][0]['notify_profile_name'] == 'wa-approval-broadcast'
+    assert official_saved.json()['account']['group_binding_runtimes'][0]['membership_verifier']['status'] == 'runtime_unavailable'
+    assert official_saved.json()['account']['group_binding_runtimes'][0]['membership_verifier']['detail'] == '当前账号扫码服务未就绪，暂不能做逐群真实校验。'
+    assert official_saved.json()['account']['verification_scope_text'] == '当前控制台配置与调度就绪度已完成；逐群映射或真实校验结果见下方“真实校验”明细。'
     assert official_saved.json()['account']['auto_recover_worker'] is False
 
     listed = client.get('/api/ops/whatsapp-approval-accounts')
@@ -960,6 +1082,277 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed():
     assert candidate_body['rows'][0]['candidate_status'] == 'not_ready'
     assert candidate_body['rows'][0]['verification_scope']['real_membership_check_ready'] is False
     assert candidate_body['rows'][0]['verification_scope']['requires_manual_seed'] is True
+
+
+def test_registration_group_approval_batch_queue_uses_account_rows_and_binding_fallback_keys(monkeypatch):
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+    })
+    service = app.state.service
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda *args, **kwargs: {
+        'active': True,
+        'base_url': 'http://127.0.0.1:60057',
+        'source': 'dedicated_runtime',
+    })
+    monkeypatch.setattr(service, '_build_whatsapp_approval_session_state', lambda *args, **kwargs: {})
+    monkeypatch.setattr(service, 'reconcile_task_residue', lambda: None)
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state_with_retry', lambda base_url, target: {
+        'group_name': '注册测试1',
+        'group_id': '120363422719530134@g.us',
+        'pending_count': 1,
+        'member_count': 12,
+        'requesters': [{
+            'requesterId': 'req-1',
+            'requestedAtIso': '2026-05-06T10:03:34.000Z',
+        }],
+    })
+    client = TestClient(app)
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-batch-queue-reg', json={
+        'account_name': 'WA Batch Queue Reg',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/runtime-group-a',
+            'group_name': '注册测试1',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'registration_group': '',
+            'group_id': '120363422719530134@g.us',
+            'approval_count_threshold': 30,
+            'approval_timeout_minutes': 5,
+            'auto_recover_worker': True,
+            'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+        }],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+
+    queue = client.get('/api/ops/approval-batch-queue')
+    assert queue.status_code == 200
+    rows = queue.json()['registration_groups']
+    assert len(rows) == 1
+    row = rows[0]
+    assert row['source'] == 'registration_runtime_group_state'
+    assert row['registration_group'] == '120363422719530134@g.us'
+    assert row['group_name'] == '注册测试1'
+    assert row['binding_link'] == 'https://chat.whatsapp.com/runtime-group-a'
+    assert row['account_key'] == 'wa-batch-queue-reg'
+    assert row['batch_size'] == 30
+    assert row['timeout_minutes'] == 5
+
+
+
+def test_whatsapp_approval_account_save_autofills_registration_group_name_from_link(monkeypatch):
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+    })
+    service = app.state.service
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda *args, **kwargs: {
+        'active': True,
+        'base_url': 'http://127.0.0.1:8787',
+        'source': 'shared',
+    })
+    monkeypatch.setattr(service, '_build_whatsapp_approval_session_state', lambda *args, **kwargs: {})
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state', lambda base_url, registration_group: {
+        'group_name': '注册测试自动识别',
+        'group_id': '120363400000000111@g.us',
+        'pending_count': 0,
+        'member_count': 12,
+    })
+    client = TestClient(app)
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-auto-name-reg', json={
+        'account_name': 'WA Auto Name Reg',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/auto-name-reg',
+            'group_name': '',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 30,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+            'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+        }],
+        'enabled': True,
+    })
+
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body['account']['group_link_bindings'][0]['group_name'] == '注册测试自动识别'
+    assert body['account']['group_link_bindings'][0]['group_id'] == '120363400000000111@g.us'
+    listed = client.get('/api/ops/whatsapp-approval-accounts').json()
+    row = next(item for item in listed['rows'] if item['account_key'] == 'wa-auto-name-reg')
+    assert row['group_link_bindings'][0]['group_name'] == '注册测试自动识别'
+    assert row['group_binding_runtimes'][0]['group_name'] == '注册测试自动识别'
+    assert row['group_binding_runtimes'][0]['runtime_probe_group_name'] == '注册测试自动识别'
+
+
+def test_whatsapp_approval_account_list_prefers_live_registration_group_name_over_stale_config(monkeypatch):
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+    })
+    service = app.state.service
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda *args, **kwargs: {
+        'active': True,
+        'base_url': 'http://127.0.0.1:8787',
+        'source': 'shared',
+    })
+    monkeypatch.setattr(service, '_build_whatsapp_approval_session_state', lambda *args, **kwargs: {})
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state', lambda base_url, registration_group, timeout_seconds=30.0: {
+        'group_name': '注册测试1',
+        'group_id': '120363422719530134@g.us',
+        'pending_count': 0,
+        'member_count': 12,
+    })
+    client = TestClient(app)
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-stale-reg-name', json={
+        'account_name': 'WA Stale Reg Name',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/stale-reg-name',
+            'group_name': '注册01',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 30,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+            'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+        }],
+        'enabled': True,
+    })
+
+    assert saved.status_code == 200
+    body = client.get('/api/ops/whatsapp-approval-accounts').json()
+    row = next(item for item in body['rows'] if item['account_key'] == 'wa-stale-reg-name')
+    assert row['group_link_bindings'][0]['group_name'] == '注册测试1'
+    assert row['group_link_bindings'][0]['group_id'] == '120363422719530134@g.us'
+    assert row['group_binding_runtimes'][0]['group_name'] == '注册测试1'
+    assert row['group_binding_runtimes'][0]['runtime_probe_group_name'] == '注册测试1'
+    assert row['group_binding_runtimes'][0]['group_id'] == '120363422719530134@g.us'
+
+    body_again = client.get('/api/ops/whatsapp-approval-accounts').json()
+    row_again = next(item for item in body_again['rows'] if item['account_key'] == 'wa-stale-reg-name')
+    assert row_again['group_link_bindings'][0]['group_name'] == '注册测试1'
+    assert row_again['group_binding_runtimes'][0]['group_name'] == '注册测试1'
+
+
+def test_whatsapp_approval_account_list_uses_fail_fast_probe_timeout(monkeypatch):
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+    })
+    service = app.state.service
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda *args, **kwargs: {
+        'active': True,
+        'base_url': 'http://127.0.0.1:8787',
+        'source': 'shared',
+    })
+    monkeypatch.setattr(service, '_build_whatsapp_approval_session_state', lambda *args, **kwargs: {})
+    probe_calls = []
+
+    def fake_group_state_with_retry(base_url, registration_group, *, attempts=3, retry_delay_seconds=0.0, timeout_seconds=30.0):
+        probe_calls.append({
+            'base_url': base_url,
+            'registration_group': registration_group,
+            'attempts': attempts,
+            'timeout_seconds': timeout_seconds,
+        })
+        raise RuntimeError('simulated probe timeout')
+
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state_with_retry', fake_group_state_with_retry)
+    client = TestClient(app)
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-fail-fast-list', json={
+        'account_name': 'WA Fail Fast List',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/fail-fast-list',
+            'group_name': '注册测试超时',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 30,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+            'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+        }],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+    probe_calls.clear()
+
+    listed = client.get('/api/ops/whatsapp-approval-accounts')
+    assert listed.status_code == 200
+    body = listed.json()
+    row = next(item for item in body['rows'] if item['account_key'] == 'wa-fail-fast-list')
+    assert row['group_binding_runtimes'][0]['membership_verifier']['status'] == 'probe_unavailable'
+    assert probe_calls
+    assert probe_calls[0]['attempts'] == 1
+    assert probe_calls[0]['timeout_seconds'] == 2.0
+
+
+
+def test_whatsapp_approval_account_save_autofills_official_group_name_from_link(monkeypatch):
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+        'OFFICIAL_GROUP_APPROVAL_EXECUTOR_KIND': 'webhook',
+        'OFFICIAL_GROUP_APPROVAL_WEBHOOK_URL': 'http://127.0.0.1:55801/official-group/approve',
+    })
+    service = app.state.service
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda *args, **kwargs: {
+        'active': True,
+        'base_url': 'http://127.0.0.1:63568',
+        'source': 'dedicated',
+    })
+    monkeypatch.setattr(service, '_build_whatsapp_approval_session_state', lambda *args, **kwargs: {
+        'login_verified': True,
+    })
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state', lambda base_url, registration_group: {
+        'group_name': '官方群自动识别',
+        'group_id': '120363400000000222@g.us',
+        'pending_count': 0,
+        'member_count': 5,
+        'requesters': [],
+        'requester_ids': [],
+    })
+    client = TestClient(app)
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-auto-name-official', json={
+        'account_name': 'WA Auto Name Official',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/auto-name-official',
+            'group_name': '',
+            'area': 'Brazil',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 10,
+            'approval_timeout_minutes': 10,
+            'auto_recover_worker': True,
+            'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+        }],
+        'enabled': True,
+    })
+
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body['account']['group_link_bindings'][0]['group_name'] == '官方群自动识别'
+    assert body['account']['group_link_bindings'][0]['group_id'] == '120363400000000222@g.us'
+    assert body['account']['group_binding_runtimes'][0]['membership_verifier']['probe']['group_name'] == '官方群自动识别'
 
 
 def test_whatsapp_approval_account_session_start_returns_qr_for_selected_account():
@@ -1769,6 +2162,18 @@ def test_whatsapp_approval_candidates_marks_registration_group_probe_ready_when_
         'responsible_type': 'registration_group',
         'group_link_bindings': [
             {
+                'link': 'https://chat.whatsapp.com/group-live-disabled',
+                'group_name': '旧注册群',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'group_id': '120363499999999999@g.us',
+                'enabled': False,
+                'approval_count_threshold': 30,
+                'approval_timeout_minutes': 30,
+                'auto_recover_worker': True,
+                'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+            },
+            {
                 'link': 'https://chat.whatsapp.com/group-live-a',
                 'area': 'Indonesia',
                 'notify_profile_name': 'wa-approval-broadcast',
@@ -1813,11 +2218,14 @@ def test_whatsapp_approval_candidates_marks_registration_group_probe_ready_when_
     row = listed.json()['rows'][0]
     admin_check = next(item for item in row['verification_checks'] if item['code'] == 'admin_membership_verification')
     assert admin_check['ok'] is True
-    assert '已接入真实注册群状态探针' in admin_check['detail']
+    assert admin_check['detail'] == '已接入群状态探针：待审批 2 人。已有管理员权限。'
     assert row['membership_verifier']['ready'] is True
     assert row['membership_verifier']['requires_manual_seed'] is False
-    assert row['group_binding_runtimes'][0]['membership_verifier']['ready'] is True
-    assert row['group_binding_runtimes'][0]['membership_verifier']['status'] == 'mapped_live_probe_ready'
+    assert row['group_binding_runtimes'][0]['membership_verifier']['ready'] is False
+    assert row['group_binding_runtimes'][0]['membership_verifier']['status'] == 'monitor_disabled'
+    assert row['group_binding_runtimes'][1]['membership_verifier']['ready'] is True
+    assert row['group_binding_runtimes'][1]['membership_verifier']['status'] == 'mapped_live_probe_ready'
+    assert row['group_binding_runtimes'][1]['membership_verifier']['detail'] == '已接入群状态探针：待审批 2 人。已有管理员权限。'
 
     candidates = client.get('/api/ops/whatsapp-approval-candidates')
     assert candidates.status_code == 200
@@ -1827,6 +2235,1029 @@ def test_whatsapp_approval_candidates_marks_registration_group_probe_ready_when_
     assert candidate_body['rows'][0]['verification_scope']['requires_manual_seed'] is False
     assert candidate_body['verifier_framework']['status'] == 'live_probe_ready'
     assert candidate_body['verifier_framework']['real_membership_check_ready'] is True
+
+
+
+def test_whatsapp_approval_candidates_use_binding_specific_live_probe_for_each_enabled_registration_group():
+    executor = StubRegistrationGroupApprovalExecutor(group_state_result={
+        'group_name': '注册测试1',
+        'group_id': '120363422719530134@g.us',
+        'pending_count': 0,
+        'member_count': 4,
+        'requester_ids': [],
+        'requesters': [],
+    })
+    client = make_client({
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-admin-multi-live', json={
+        'account_name': 'WA Admin Multi Live',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/group-live-a',
+                'group_name': '印尼37群',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'group_id': '120363425215002840@g.us',
+                'approval_count_threshold': 30,
+                'approval_timeout_minutes': 30,
+                'auto_recover_worker': True,
+                'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+            },
+            {
+                'link': 'https://chat.whatsapp.com/group-live-b',
+                'group_name': '注册01',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'group_id': '120363422719530134@g.us',
+                'approval_count_threshold': 30,
+                'approval_timeout_minutes': 30,
+                'auto_recover_worker': True,
+                'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+            },
+        ],
+        'enabled': True,
+        'notes': 'multi live verifier account',
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    service._build_whatsapp_approval_runtime_state = lambda *args, **kwargs: {
+        'account_key': 'wa-admin-multi-live',
+        'mode': 'dedicated_runtime',
+        'source': 'dedicated',
+        'configured': True,
+        'active': True,
+        'pid': 12345,
+        'port': 63568,
+        'base_url': 'http://127.0.0.1:63568',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'session_target_match': True,
+        'status_text': '独立 Runtime 运行中',
+        'health_error': None,
+    }
+    service._build_whatsapp_approval_session_state = lambda *args, **kwargs: {
+        'account_key': 'wa-admin-multi-live',
+        'auth_strategy': 'LocalAuth',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'client_id': 'wa-approval-wa-admin-multi-live',
+        'expected_client_id': 'wa-approval-wa-admin-multi-live',
+        'expected_approval_client_id': 'wa-approval-wa-admin-multi-live-approval',
+        'auth_path': '/tmp/wa-admin-multi-live',
+        'expected_auth_path': '/tmp/wa-admin-multi-live',
+        'session_target_match': True,
+        'qr_available': False,
+        'qr_text': None,
+        'qr_ascii': None,
+        'last_qr_at': None,
+        'bound': True,
+        'mode': 'dedicated_localauth',
+        'login_verified': True,
+        'login_check_status': 'passed',
+        'login_check_message': '账号已登录，可以正常使用。',
+    }
+    service._request_whatsapp_approval_group_state = lambda base_url, registration_group: {
+        '120363425215002840@g.us': {
+            'group_name': '🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎',
+            'group_id': '120363425215002840@g.us',
+            'pending_count': 2,
+            'member_count': 419,
+            'requester_ids': ['req-1@lid', 'req-2@lid'],
+            'requesters': [
+                {'requesterId': 'req-1@lid', 'requestedAtUnix': 100},
+                {'requesterId': 'req-2@lid', 'requestedAtUnix': 101},
+            ],
+        },
+        '120363422719530134@g.us': {
+            'group_name': '注册测试1',
+            'group_id': '120363422719530134@g.us',
+            'pending_count': 0,
+            'member_count': 4,
+            'requester_ids': [],
+            'requesters': [],
+        },
+    }[registration_group]
+    service.get_production_ops_daemon_config = lambda: {
+        'config': {'enabled': True},
+        'runtime': {
+            'launch_agent_installed': True,
+            'status': {
+                'monitor_target': {
+                    'registration_group': '120363422719530134@g.us',
+                    'group_name': '注册01',
+                    'binding_link': 'https://chat.whatsapp.com/group-live-b',
+                    'binding_group_name': '注册01',
+                },
+                'decision_group_state': {
+                    'payload': {
+                        'group_name': '注册测试1',
+                        'group_id': '120363422719530134@g.us',
+                        'pending_count': 0,
+                        'member_count': 4,
+                        'requester_ids': [],
+                        'requesters': [],
+                    },
+                },
+                'worker_state': {
+                    'ok': True,
+                    'payload': {
+                        'group_name': '注册测试1',
+                        'group_id': '120363422719530134@g.us',
+                        'pending_count': 0,
+                        'member_count': 4,
+                        'requester_ids': [],
+                        'requesters': [],
+                    },
+                },
+            },
+        },
+    }
+
+    listed = client.get('/api/ops/whatsapp-approval-accounts')
+    assert listed.status_code == 200
+    row = listed.json()['rows'][0]
+    assert row['membership_verifier']['ready'] is True
+    assert row['membership_verifier']['binding_count'] == 2
+    assert row['group_binding_runtimes'][0]['membership_verifier']['status'] == 'mapped_live_probe_ready'
+    assert row['group_binding_runtimes'][0]['membership_verifier']['detail'] == '已接入群状态探针：待审批 2 人。已有管理员权限。'
+    assert row['group_binding_runtimes'][0]['runtime_probe_group_name'] == '🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎'
+    assert row['group_binding_runtimes'][1]['membership_verifier']['status'] == 'mapped_live_probe_ready'
+    assert row['group_binding_runtimes'][1]['membership_verifier']['detail'] == '已接入群状态探针：待审批 0 人。已有管理员权限。'
+    assert row['group_binding_runtimes'][1]['runtime_probe_group_name'] == '注册测试1'
+
+
+
+def test_official_group_whatsapp_approval_account_api_reports_live_membership_verifier_ready():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-live', json={
+        'account_name': 'WA Official Live',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/official-group-live-a',
+                'group_name': '官方群01',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'registration_group': 'official-group-piso',
+                'approval_count_threshold': 10,
+                'approval_timeout_minutes': 10,
+                'auto_recover_worker': True,
+                'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+            },
+        ],
+        'enabled': True,
+        'notes': 'official live verifier account',
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    service._official_group_bridge_summary_payload = lambda: {
+        'configured': True,
+        'health': {'status': 'healthy', 'mode': 'manual_queue'},
+        'summary': {'pending_count': 0, 'resolved_count': 0},
+    }
+    service._build_whatsapp_approval_runtime_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-live',
+        'mode': 'dedicated_runtime',
+        'source': 'dedicated',
+        'configured': True,
+        'active': True,
+        'pid': 12345,
+        'port': 63568,
+        'base_url': 'http://127.0.0.1:63568',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'session_target_match': True,
+        'status_text': '独立 Runtime 运行中',
+        'health_error': None,
+    }
+    service._build_whatsapp_approval_session_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-live',
+        'auth_strategy': 'LocalAuth',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'client_id': 'wa-approval-wa-official-live',
+        'expected_client_id': 'wa-approval-wa-official-live',
+        'expected_approval_client_id': 'wa-approval-wa-official-live-approval',
+        'auth_path': '/tmp/wa-official-live',
+        'expected_auth_path': '/tmp/wa-official-live',
+        'session_target_match': True,
+        'qr_available': False,
+        'qr_text': None,
+        'qr_ascii': None,
+        'last_qr_at': None,
+        'bound': True,
+        'mode': 'dedicated_localauth',
+        'login_verified': True,
+        'login_check_status': 'passed',
+        'login_check_message': '账号已登录，可以正常使用。',
+    }
+    service._request_whatsapp_approval_group_state = lambda base_url, registration_group: {
+        'group_id': '120363424767895162@g.us',
+        'group_name': '官方群测试1',
+        'pending_count': 0,
+        'member_count': 5,
+        'requester_ids': [],
+        'requesters': [],
+    }
+
+    listed = client.get('/api/ops/whatsapp-approval-accounts')
+    assert listed.status_code == 200
+    row = next(item for item in listed.json()['rows'] if item['account_key'] == 'wa-official-live')
+    admin_check = next(item for item in row['verification_checks'] if item['code'] == 'admin_membership_verification')
+    assert admin_check['ok'] is True
+    assert admin_check['detail'] == '已接入群状态探针：待审批 0 人。已有管理员权限。'
+    assert row['membership_verifier']['ready'] is True
+    assert row['membership_verifier']['status'] == 'live_probe_ready'
+    assert row['membership_verifier']['source'] == 'official_group_runtime_group_state'
+    assert row['group_binding_runtimes'][0]['membership_verifier']['ready'] is True
+    assert row['group_binding_runtimes'][0]['membership_verifier']['status'] == 'live_probe_ready'
+    assert row['group_binding_runtimes'][0]['membership_verifier']['probe']['group_name'] == '官方群测试1'
+    assert row['group_binding_runtimes'][0]['membership_verifier']['detail'] == '已接入群状态探针：待审批 0 人。已有管理员权限。'
+
+
+
+def test_official_group_whatsapp_approval_account_uses_binding_specific_live_probe_for_each_enabled_group():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-multi-live', json={
+        'account_name': 'WA Official Multi Live',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/official-group-live-a',
+                'group_name': '官方群A',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'registration_group': 'official-group-a',
+                'approval_count_threshold': 10,
+                'approval_timeout_minutes': 10,
+                'auto_recover_worker': True,
+                'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+            },
+            {
+                'link': 'https://chat.whatsapp.com/official-group-live-b',
+                'group_name': '官方群B',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'registration_group': 'official-group-b',
+                'approval_count_threshold': 10,
+                'approval_timeout_minutes': 10,
+                'auto_recover_worker': True,
+                'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+            },
+        ],
+        'enabled': True,
+        'notes': 'official multi live verifier account',
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    service._official_group_bridge_summary_payload = lambda: {
+        'configured': True,
+        'health': {'status': 'healthy', 'mode': 'manual_queue'},
+        'summary': {'pending_count': 0, 'resolved_count': 0},
+    }
+    service._build_whatsapp_approval_runtime_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-multi-live',
+        'mode': 'dedicated_runtime',
+        'source': 'dedicated',
+        'configured': True,
+        'active': True,
+        'pid': 12345,
+        'port': 63568,
+        'base_url': 'http://127.0.0.1:63568',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'session_target_match': True,
+        'status_text': '独立 Runtime 运行中',
+        'health_error': None,
+    }
+    service._build_whatsapp_approval_session_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-multi-live',
+        'auth_strategy': 'LocalAuth',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'client_id': 'wa-approval-wa-official-multi-live',
+        'expected_client_id': 'wa-approval-wa-official-multi-live',
+        'expected_approval_client_id': 'wa-approval-wa-official-multi-live-approval',
+        'auth_path': '/tmp/wa-official-multi-live',
+        'expected_auth_path': '/tmp/wa-official-multi-live',
+        'session_target_match': True,
+        'qr_available': False,
+        'qr_text': None,
+        'qr_ascii': None,
+        'last_qr_at': None,
+        'bound': True,
+        'mode': 'dedicated_localauth',
+        'login_verified': True,
+        'login_check_status': 'passed',
+        'login_check_message': '账号已登录，可以正常使用。',
+    }
+    service._request_whatsapp_approval_group_state = lambda base_url, registration_group: {
+        'https://chat.whatsapp.com/official-group-live-a': {
+            'group_id': '120363424767895162@g.us',
+            'group_name': '官方群测试A',
+            'pending_count': 1,
+            'member_count': 5,
+            'requester_ids': ['a'],
+            'requesters': [{'requesterId': 'a'}],
+        },
+        'https://chat.whatsapp.com/official-group-live-b': {
+            'group_id': '120363424767895163@g.us',
+            'group_name': '官方群测试B',
+            'pending_count': 0,
+            'member_count': 6,
+            'requester_ids': [],
+            'requesters': [],
+        },
+    }[registration_group]
+
+    listed = client.get('/api/ops/whatsapp-approval-accounts')
+    assert listed.status_code == 200
+    row = next(item for item in listed.json()['rows'] if item['account_key'] == 'wa-official-multi-live')
+    assert row['membership_verifier']['ready'] is True
+    assert row['membership_verifier']['binding_count'] == 2
+    assert row['group_binding_runtimes'][0]['membership_verifier']['status'] == 'live_probe_ready'
+    assert row['group_binding_runtimes'][0]['membership_verifier']['probe']['group_name'] == '官方群测试A'
+    assert row['group_binding_runtimes'][1]['membership_verifier']['status'] == 'live_probe_ready'
+    assert row['group_binding_runtimes'][1]['membership_verifier']['probe']['group_name'] == '官方群测试B'
+
+
+
+def test_whatsapp_approval_account_binding_runtime_reports_next_approval_eta_text():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-eta', json={
+        'account_name': 'WA Official ETA',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/official-group-eta-a',
+                'group_name': '官方群ETA',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'registration_group': 'official-group-permata',
+                'approval_count_threshold': 10,
+                'approval_timeout_minutes': 30,
+                'auto_recover_worker': True,
+                'schedule_windows': [],
+            },
+        ],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    service._official_group_bridge_summary_payload = lambda: {
+        'configured': True,
+        'health': {'status': 'healthy', 'mode': 'manual_queue'},
+        'summary': {'pending_count': 0, 'resolved_count': 0},
+    }
+    service._build_whatsapp_approval_runtime_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-eta',
+        'mode': 'dedicated_runtime',
+        'source': 'dedicated',
+        'configured': True,
+        'active': True,
+        'pid': 12345,
+        'port': 63568,
+        'base_url': 'http://127.0.0.1:63568',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'session_target_match': True,
+        'status_text': '独立 Runtime 运行中',
+        'health_error': None,
+    }
+    service._build_whatsapp_approval_session_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-eta',
+        'auth_strategy': 'LocalAuth',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'client_id': 'wa-approval-wa-official-eta',
+        'expected_client_id': 'wa-approval-wa-official-eta',
+        'expected_approval_client_id': 'wa-approval-wa-official-eta-approval',
+        'auth_path': '/tmp/wa-official-eta',
+        'expected_auth_path': '/tmp/wa-official-eta',
+        'session_target_match': True,
+        'qr_available': False,
+        'qr_text': None,
+        'qr_ascii': None,
+        'last_qr_at': None,
+        'bound': True,
+        'mode': 'dedicated_localauth',
+        'login_verified': True,
+        'login_check_status': 'passed',
+        'login_check_message': '账号已登录，可以正常使用。',
+    }
+    service._request_whatsapp_approval_group_state = lambda base_url, registration_group: {
+        'group_id': '120363424767895162@g.us',
+        'group_name': '官方群ETA',
+        'pending_count': 2,
+        'member_count': 5,
+        'requester_ids': ['a', 'b'],
+        'requesters': [
+            {'requestedAtIso': '2026-05-06T02:00:00+00:00'},
+            {'requestedAtIso': '2026-05-06T02:20:00+00:00'},
+        ],
+    }
+
+    import app.main as app_main
+    original_utc_now = app_main.utc_now
+    app_main.utc_now = lambda: '2026-05-06T02:10:00+00:00'
+    try:
+        listed = client.get('/api/ops/whatsapp-approval-accounts')
+    finally:
+        app_main.utc_now = original_utc_now
+    assert listed.status_code == 200
+    row = next(item for item in listed.json()['rows'] if item['account_key'] == 'wa-official-eta')
+    binding = row['group_binding_runtimes'][0]
+    assert binding['next_approval_eta_text'] == '约20分钟后自动审批；若先满10人则提前审批'
+    assert binding['next_approval_reason_code'] == 'waiting_for_batch'
+    assert binding['next_approval_remaining_minutes'] == 20
+    assert binding['next_approval_remaining_seconds'] == 1200
+
+
+def test_whatsapp_approval_account_binding_runtime_keeps_countdown_when_no_pending_requests():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-eta-empty', json={
+        'account_name': 'WA Official ETA Empty',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/official-group-eta-empty',
+                'group_name': '官方群ETA空队列',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'registration_group': 'official-group-permata',
+                'approval_count_threshold': 10,
+                'approval_timeout_minutes': 30,
+                'auto_recover_worker': True,
+                'schedule_windows': [],
+            },
+        ],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    service._official_group_bridge_summary_payload = lambda: {
+        'configured': True,
+        'health': {'status': 'healthy', 'mode': 'manual_queue'},
+        'summary': {'pending_count': 0, 'resolved_count': 0},
+    }
+    service._build_whatsapp_approval_runtime_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-eta-empty',
+        'mode': 'dedicated_runtime',
+        'source': 'dedicated',
+        'configured': True,
+        'active': True,
+        'pid': 12345,
+        'port': 63568,
+        'base_url': 'http://127.0.0.1:63568',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'session_target_match': True,
+        'status_text': '独立 Runtime 运行中',
+        'health_error': None,
+    }
+    service._build_whatsapp_approval_session_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-eta-empty',
+        'auth_strategy': 'LocalAuth',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'client_id': 'wa-approval-wa-official-eta-empty',
+        'expected_client_id': 'wa-approval-wa-official-eta-empty',
+        'expected_approval_client_id': 'wa-approval-wa-official-eta-empty-approval',
+        'auth_path': '/tmp/wa-official-eta-empty',
+        'expected_auth_path': '/tmp/wa-official-eta-empty',
+        'session_target_match': True,
+        'qr_available': False,
+        'qr_text': None,
+        'qr_ascii': None,
+        'last_qr_at': None,
+        'bound': True,
+        'mode': 'dedicated_localauth',
+        'login_verified': True,
+        'login_check_status': 'passed',
+        'login_check_message': '账号已登录，可以正常使用。',
+    }
+    service._request_whatsapp_approval_group_state = lambda base_url, registration_group: {
+        'group_id': '120363424767895162@g.us',
+        'group_name': '官方群ETA空队列',
+        'pending_count': 0,
+        'member_count': 5,
+        'requester_ids': [],
+        'requesters': [],
+    }
+
+    import app.main as app_main
+    original_utc_now = app_main.utc_now
+    app_main.utc_now = lambda: '2026-05-06T02:10:00+00:00'
+    try:
+        listed = client.get('/api/ops/whatsapp-approval-accounts')
+    finally:
+        app_main.utc_now = original_utc_now
+    assert listed.status_code == 200
+    row = next(item for item in listed.json()['rows'] if item['account_key'] == 'wa-official-eta-empty')
+    binding = row['group_binding_runtimes'][0]
+    assert binding['next_approval_reason_code'] == 'waiting_next_cycle'
+    assert binding['next_approval_remaining_minutes'] == 20
+    assert binding['next_approval_remaining_seconds'] == 1200
+    assert binding['next_approval_eta_text'] == '当前无待审批；约20分钟后进入下一轮审批'
+    assert binding['next_approval_oldest_pending_at'] is None
+
+
+def test_official_group_batch_queue_clears_oldest_pending_at_when_no_live_requesters(monkeypatch):
+    client = make_client()
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-runtime-empty-oldest', json={
+        'account_name': 'WA Official Runtime Empty Oldest',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/official-group-empty-oldest',
+                'group_name': '官方群空队列',
+                'registration_group': 'official-group-permata',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'approval_count_threshold': 10,
+                'approval_timeout_minutes': 10,
+                'auto_recover_worker': True,
+                'schedule_windows': [],
+            },
+        ],
+        'notify_profile_name': 'wa-approval-broadcast',
+        'approval_count_threshold': 10,
+        'approval_timeout_minutes': 10,
+        'auto_recover_worker': True,
+        'schedule_windows': [],
+        'enabled': True,
+        'notes': 'official runtime empty oldest test',
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda account_key, **kwargs: {
+        'account_key': account_key,
+        'active': True,
+        'base_url': 'http://127.0.0.1:53637',
+    })
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state', lambda base_url, registration_group: {
+        'group_id': '120363400000000001@g.us',
+        'group_name': '官方群空队列',
+        'pending_count': 0,
+        'member_count': 33,
+        'requesters': [],
+    })
+
+    response = client.get('/api/ops/approval-batch-queue')
+    assert response.status_code == 200
+    body = response.json()
+    official = next(row for row in body['official_groups'] if row['registration_group'] == '官方群空队列')
+    assert official['pending_count'] == 0
+    assert official['oldest_pending_at'] is None
+
+
+
+def test_official_group_membership_verifier_reuses_live_probe_without_second_probe_failure(monkeypatch):
+    client = make_client({
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-probe-reuse', json={
+        'account_name': 'WA Official Probe Reuse',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/official-group-probe-reuse',
+                'group_name': '官方测试1',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'registration_group': 'official-group-permata',
+                'approval_count_threshold': 10,
+                'approval_timeout_minutes': 10,
+                'auto_recover_worker': True,
+                'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+            },
+        ],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    service._official_group_bridge_summary_payload = lambda: {
+        'configured': True,
+        'health': {'status': 'healthy', 'mode': 'manual_queue'},
+        'summary': {'pending_count': 0, 'resolved_count': 0},
+    }
+    service._build_whatsapp_approval_runtime_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-probe-reuse',
+        'mode': 'dedicated_runtime',
+        'source': 'dedicated',
+        'configured': True,
+        'active': True,
+        'pid': 12345,
+        'port': 63568,
+        'base_url': 'http://127.0.0.1:63568',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'session_target_match': True,
+        'status_text': '独立 Runtime 运行中',
+        'health_error': None,
+    }
+    service._build_whatsapp_approval_session_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-probe-reuse',
+        'auth_strategy': 'LocalAuth',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'client_id': 'wa-approval-wa-official-probe-reuse',
+        'expected_client_id': 'wa-approval-wa-official-probe-reuse',
+        'expected_approval_client_id': 'wa-approval-wa-official-probe-reuse-approval',
+        'auth_path': '/tmp/wa-official-probe-reuse',
+        'expected_auth_path': '/tmp/wa-official-probe-reuse',
+        'session_target_match': True,
+        'qr_available': False,
+        'qr_text': None,
+        'qr_ascii': None,
+        'last_qr_at': None,
+        'bound': True,
+        'mode': 'dedicated_localauth',
+        'login_verified': True,
+        'login_check_status': 'passed',
+        'login_check_message': '账号已登录，可以正常使用。',
+    }
+
+    call_count = {'count': 0}
+    def fake_group_state(base_url, registration_group):
+        call_count['count'] += 1
+        if call_count['count'] == 1:
+            return {
+                'group_id': '120363424767895162@g.us',
+                'group_name': '官方测试1',
+                'pending_count': 2,
+                'member_count': 3,
+                'requester_ids': ['a@lid'],
+                'requesters': [{'requesterId': 'a@lid'}],
+            }
+        raise RuntimeError('transient second probe failure')
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state', fake_group_state)
+
+    listed = client.get('/api/ops/whatsapp-approval-accounts')
+    assert listed.status_code == 200
+    row = next(item for item in listed.json()['rows'] if item['account_key'] == 'wa-official-probe-reuse')
+    assert call_count['count'] == 1
+    assert row['group_binding_runtimes'][0]['membership_verifier']['ready'] is True
+    assert row['group_binding_runtimes'][0]['membership_verifier']['status'] == 'live_probe_ready'
+    assert row['group_binding_runtimes'][0]['membership_verifier']['probe']['group_name'] == '官方测试1'
+
+
+def test_official_group_whatsapp_approval_account_api_prefers_group_id_probe_target_when_available():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-group-id', json={
+        'account_name': 'WA Official Group Id',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/official-group-id-link',
+                'group_id': '120363424767895162@g.us',
+                'group_name': '官方群GroupId',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'registration_group': 'official-group-permata',
+                'approval_count_threshold': 10,
+                'approval_timeout_minutes': 10,
+                'auto_recover_worker': True,
+                'schedule_windows': [],
+            },
+        ],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    service._official_group_bridge_summary_payload = lambda: {
+        'configured': True,
+        'health': {'status': 'healthy', 'mode': 'manual_queue'},
+        'summary': {'pending_count': 0, 'resolved_count': 0},
+    }
+    service._build_whatsapp_approval_runtime_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-group-id',
+        'mode': 'dedicated_runtime',
+        'source': 'dedicated',
+        'configured': True,
+        'active': True,
+        'pid': 12345,
+        'port': 63568,
+        'base_url': 'http://127.0.0.1:63568',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'session_target_match': True,
+        'status_text': '独立 Runtime 运行中',
+        'health_error': None,
+    }
+    service._build_whatsapp_approval_session_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-group-id',
+        'auth_strategy': 'LocalAuth',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'client_id': 'wa-approval-wa-official-group-id',
+        'expected_client_id': 'wa-approval-wa-official-group-id',
+        'expected_approval_client_id': 'wa-approval-wa-official-group-id-approval',
+        'auth_path': '/tmp/wa-official-group-id',
+        'expected_auth_path': '/tmp/wa-official-group-id',
+        'session_target_match': True,
+        'qr_available': False,
+        'qr_text': None,
+        'qr_ascii': None,
+        'last_qr_at': None,
+        'bound': True,
+        'mode': 'dedicated_localauth',
+        'login_verified': True,
+        'login_check_status': 'passed',
+        'login_check_message': '账号已登录，可以正常使用。',
+    }
+    probe_targets = []
+    def capture_group_state(base_url, registration_group):
+        probe_targets.append(registration_group)
+        if registration_group != '120363424767895162@g.us':
+            raise RuntimeError(f'unexpected probe target: {registration_group}')
+        return {
+            'group_id': '120363424767895162@g.us',
+            'group_name': '官方群GroupId',
+            'pending_count': 0,
+            'member_count': 5,
+            'requester_ids': [],
+            'requesters': [],
+        }
+    service._request_whatsapp_approval_group_state = capture_group_state
+
+    listed = client.get('/api/ops/whatsapp-approval-accounts')
+    assert listed.status_code == 200
+    row = next(item for item in listed.json()['rows'] if item['account_key'] == 'wa-official-group-id')
+    assert probe_targets
+    assert all(target == '120363424767895162@g.us' for target in probe_targets)
+    assert row['membership_verifier']['ready'] is True
+    assert row['group_binding_runtimes'][0]['membership_verifier']['ready'] is True
+
+
+def test_official_group_whatsapp_approval_account_api_persists_live_group_id_for_future_probes():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-persist-id', json={
+        'account_name': 'WA Official Persist Id',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/official-group-persist-id',
+                'group_name': '官方群PersistId',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'registration_group': 'official-group-permata',
+                'approval_count_threshold': 10,
+                'approval_timeout_minutes': 10,
+                'auto_recover_worker': True,
+                'schedule_windows': [],
+            },
+        ],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    service._official_group_bridge_summary_payload = lambda: {
+        'configured': True,
+        'health': {'status': 'healthy', 'mode': 'manual_queue'},
+        'summary': {'pending_count': 0, 'resolved_count': 0},
+    }
+    service._build_whatsapp_approval_runtime_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-persist-id',
+        'mode': 'dedicated_runtime',
+        'source': 'dedicated',
+        'configured': True,
+        'active': True,
+        'pid': 12345,
+        'port': 63568,
+        'base_url': 'http://127.0.0.1:63568',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'session_target_match': True,
+        'status_text': '独立 Runtime 运行中',
+        'health_error': None,
+    }
+    service._build_whatsapp_approval_session_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-persist-id',
+        'auth_strategy': 'LocalAuth',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'client_id': 'wa-approval-wa-official-persist-id',
+        'expected_client_id': 'wa-approval-wa-official-persist-id',
+        'expected_approval_client_id': 'wa-approval-wa-official-persist-id-approval',
+        'auth_path': '/tmp/wa-official-persist-id',
+        'expected_auth_path': '/tmp/wa-official-persist-id',
+        'session_target_match': True,
+        'qr_available': False,
+        'qr_text': None,
+        'qr_ascii': None,
+        'last_qr_at': None,
+        'bound': True,
+        'mode': 'dedicated_localauth',
+        'login_verified': True,
+        'login_check_status': 'passed',
+        'login_check_message': '账号已登录，可以正常使用。',
+    }
+    seen_targets = []
+    mode = {'phase': 'link_first'}
+    def staged_group_state(base_url, registration_group):
+        seen_targets.append(registration_group)
+        if mode['phase'] == 'link_first':
+            if registration_group != 'https://chat.whatsapp.com/official-group-persist-id':
+                raise RuntimeError(f'unexpected initial target: {registration_group}')
+            return {
+                'group_id': '120363424767895162@g.us',
+                'group_name': '官方群PersistId',
+                'pending_count': 0,
+                'member_count': 5,
+                'requester_ids': [],
+                'requesters': [],
+            }
+        if registration_group != '120363424767895162@g.us':
+            raise RuntimeError(f'expected persisted group id target, got: {registration_group}')
+        return {
+            'group_id': '120363424767895162@g.us',
+            'group_name': '官方群PersistId',
+            'pending_count': 0,
+            'member_count': 5,
+            'requester_ids': [],
+            'requesters': [],
+        }
+    service._request_whatsapp_approval_group_state = staged_group_state
+
+    first = client.get('/api/ops/whatsapp-approval-accounts')
+    assert first.status_code == 200
+    first_row = next(item for item in first.json()['rows'] if item['account_key'] == 'wa-official-persist-id')
+    assert first_row['membership_verifier']['ready'] is True
+    assert seen_targets[0] == 'https://chat.whatsapp.com/official-group-persist-id'
+
+    mode['phase'] = 'group_id_only'
+    second = client.get('/api/ops/whatsapp-approval-accounts')
+    assert second.status_code == 200
+    second_row = next(item for item in second.json()['rows'] if item['account_key'] == 'wa-official-persist-id')
+    assert second_row['membership_verifier']['ready'] is True
+    assert second_row['group_link_bindings'][0]['group_id'] == '120363424767895162@g.us'
+    assert '120363424767895162@g.us' in seen_targets
+
+
+def test_official_group_whatsapp_approval_account_api_tolerates_transient_probe_500():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-retry', json={
+        'account_name': 'WA Official Retry',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/official-group-retry-a',
+                'group_name': '官方群重试01',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'registration_group': 'official-group-permata',
+                'approval_count_threshold': 10,
+                'approval_timeout_minutes': 10,
+                'auto_recover_worker': True,
+                'schedule_windows': [],
+            },
+        ],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    service._official_group_bridge_summary_payload = lambda: {
+        'configured': True,
+        'health': {'status': 'healthy', 'mode': 'manual_queue'},
+        'summary': {'pending_count': 0, 'resolved_count': 0},
+    }
+    service._build_whatsapp_approval_runtime_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-retry',
+        'mode': 'dedicated_runtime',
+        'source': 'dedicated',
+        'configured': True,
+        'active': True,
+        'pid': 12345,
+        'port': 63568,
+        'base_url': 'http://127.0.0.1:63568',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'session_target_match': True,
+        'status_text': '独立 Runtime 运行中',
+        'health_error': None,
+    }
+    service._build_whatsapp_approval_session_state = lambda *args, **kwargs: {
+        'account_key': 'wa-official-retry',
+        'auth_strategy': 'LocalAuth',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'client_id': 'wa-approval-wa-official-retry',
+        'expected_client_id': 'wa-approval-wa-official-retry',
+        'expected_approval_client_id': 'wa-approval-wa-official-retry-approval',
+        'auth_path': '/tmp/wa-official-retry',
+        'expected_auth_path': '/tmp/wa-official-retry',
+        'session_target_match': True,
+        'qr_available': False,
+        'qr_text': None,
+        'qr_ascii': None,
+        'last_qr_at': None,
+        'bound': True,
+        'mode': 'dedicated_localauth',
+        'login_verified': True,
+        'login_check_status': 'passed',
+        'login_check_message': '账号已登录，可以正常使用。',
+    }
+    attempts = {'count': 0}
+    def flaky_group_state(base_url, registration_group):
+        attempts['count'] += 1
+        if attempts['count'] < 3:
+            raise RuntimeError('HTTP Error 500: Internal Server Error')
+        return {
+            'group_id': '120363424767895162@g.us',
+            'group_name': '官方群重试01',
+            'pending_count': 2,
+            'member_count': 3,
+            'requester_ids': ['a'],
+            'requesters': [],
+        }
+    service._request_whatsapp_approval_group_state = flaky_group_state
+
+    listed = client.get('/api/ops/whatsapp-approval-accounts')
+    assert listed.status_code == 200
+    row = next(item for item in listed.json()['rows'] if item['account_key'] == 'wa-official-retry')
+    assert attempts['count'] >= 3
+    assert row['membership_verifier']['ready'] is True
+    assert row['membership_verifier']['status'] == 'live_probe_ready'
+    assert row['group_binding_runtimes'][0]['membership_verifier']['ready'] is True
+
+    candidates = client.get('/api/ops/whatsapp-approval-candidates')
+    assert candidates.status_code == 200
+    candidate_row = next(item for item in candidates.json()['rows'] if item['account_key'] == 'wa-official-retry')
+    assert candidate_row['verification_scope']['real_membership_check_ready'] is True
+    assert candidate_row['verification_scope']['requires_manual_seed'] is False
 
 
 
@@ -3841,6 +5272,85 @@ def test_process_next_automation_task_executes_due_crm_retry_and_replies_success
 
 
 
+def test_process_next_automation_task_marks_success_when_final_retry_detects_existing_customer_after_500_response():
+    class FinalVerifyCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+            self.find_attempts = 0
+        def get_apps(self):
+            return list(self.apps)
+        def get_depts(self):
+            return list(self.depts)
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            return {"code": 500, "msg": "服务器内部异常", "data": None}
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.find_attempts += 1
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile, "attempt": self.find_attempts}))
+            if self.find_attempts >= 4:
+                return {
+                    "id": "crm_retry_salvaged",
+                    "ywId": yw_id,
+                    "mobile": mobile,
+                    "appName": "Linky",
+                    "deptName": "Piso",
+                    "pendaftaranGroup": "Piso-25",
+                }
+            return None
+
+    reply = StubLarkReplyAdapter()
+    crm = FinalVerifyCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "LARK_APP_ID": "cli_test",
+        "LARK_REPLY_ADAPTER": reply,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "CRM_RETRY_DELAYS_SECONDS": [0, 0, 0],
+        "CRM_RETRY_MAX_ATTEMPTS": 3,
+        "AUTO_BIND_SIMULATION": True,
+        "BIND_SIMULATOR": lambda context: {
+            "status": "success",
+            "result_code": "bind_ok_simulated",
+            "result_reason": "simulated bind success",
+            "raw_result": {"guild_code": context["dept_name"], "deptName": context["dept_name"], "deptId": "dept_1"},
+        },
+    })
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_crm_retry_final_verify'}},
+            'message': {
+                'message_id': 'om_crm_retry_final_verify',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nPiso-25\\n45678901\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+
+    first = client.app.state.service.process_next_automation_task()
+    assert first['next_action'] == 'queue_crm_sync_retry'
+    second = client.app.state.service.process_next_automation_task()
+    assert second['next_action'] == 'queue_group_join'
+    assert second['crm_verified'] is True
+    timeline = client.get(f"/api/leads/{response.json()['lead_id']}/timeline").json()
+    retry_tasks = [task for task in timeline['tasks'] if task['task_type'] == 'crm_sync_retry']
+    assert retry_tasks[-1]['status'] == 'success'
+    assert crm.find_attempts >= 4
+    with client.app.state.service.db.connect() as conn:
+        lead_row = conn.execute("SELECT current_status, crm_verified_at FROM leads WHERE lead_id = ?", (response.json()['lead_id'],)).fetchone()
+    assert lead_row['current_status'] == 'bind_success'
+    assert lead_row['crm_verified_at'] is not None
+
+
+
 def test_process_next_automation_task_replies_retry_exhausted_crm_message_after_all_retries_fail():
     class AlwaysFailRetryableCrmAdapter:
         def __init__(self):
@@ -5360,6 +6870,7 @@ def test_approval_batching_not_ready_before_threshold_or_timeout():
 
 def test_ops_approval_batch_queue_returns_ready_and_waiting_groups():
     client = make_client()
+    client.app.state.service.runtime_health = lambda: {'registration_group_approval': {'configured': False}}
     for idx in range(30):
         client.post(
             "/api/leads/upsert",
@@ -5421,6 +6932,104 @@ def test_ops_approval_batch_queue_returns_ready_and_waiting_groups():
     assert registration['reason_code'] == 'batch_size_reached'
     official = next(row for row in body['official_groups'] if row['registration_group'] == 'Official-A')
     assert official['pending_count'] == 1
+
+
+
+def test_registration_group_batch_queue_uses_current_active_runtime_scope_and_ignores_historical_lead_backlog(monkeypatch):
+    client = make_client()
+    stale = client.post(
+        '/api/leads/upsert',
+        json={
+            'trace_id': 'trace-stale-registration-scope',
+            'source_platform': 'manual_cs',
+            'source_page_id': 'lark',
+            'country': 'Indonesia',
+            'area_code': 62,
+            'mobile': '81230009999',
+            'app_name': 'Linky',
+            'dept_name': 'Piso',
+            'pendaftaran_group': 'Legacy-Piso-99',
+        },
+    ).json()
+    with client.app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE leads SET current_status = ?, updated_at = ? WHERE lead_id = ?",
+            ('bind_failed', '2026-04-15T10:00:00Z', stale['lead_id']),
+        )
+        conn.commit()
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-registration-runtime-1', json={
+        'account_name': 'WA Registration Runtime 1',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/runtime-registration-group-a',
+                'group_name': '注册群A',
+                'registration_group': 'Piso-30',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'approval_count_threshold': 30,
+                'approval_timeout_minutes': 30,
+                'auto_recover_worker': True,
+                'schedule_windows': [],
+            },
+        ],
+        'notify_profile_name': 'wa-approval-broadcast',
+        'approval_count_threshold': 30,
+        'approval_timeout_minutes': 30,
+        'auto_recover_worker': True,
+        'schedule_windows': [],
+        'enabled': True,
+        'notes': 'registration runtime queue test',
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    monkeypatch.setattr(service, 'list_whatsapp_approval_accounts', lambda: {
+        'accounts': [{
+            'account_key': 'wa-registration-runtime-1',
+            'account_name': 'WA Registration Runtime 1',
+            'responsible_type': 'registration_group',
+            'enabled': True,
+            'approval_count_threshold': 30,
+            'approval_timeout_minutes': 30,
+            'runtime_state': {
+                'active': True,
+                'base_url': 'http://127.0.0.1:60057',
+            },
+            'group_binding_runtimes': [{
+                'link': 'https://chat.whatsapp.com/runtime-registration-group-a',
+                'group_name': '注册群A',
+                'registration_group': 'Piso-30',
+                'group_id': '120363422719530134@g.us',
+                'enabled': True,
+                'approval_count_threshold': 30,
+                'approval_timeout_minutes': 30,
+                'schedule_runtime': {'active_now': True},
+            }],
+        }],
+    })
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state_with_retry', lambda base_url, registration_group: {
+        'group_id': '120363422719530134@g.us',
+        'group_name': '注册群A',
+        'pending_count': 2,
+        'member_count': 12,
+        'requesters': [
+            {'requesterId': 'req-1', 'requestedAtIso': '2026-04-15T10:00:00Z'},
+            {'requesterId': 'req-2', 'requestedAtIso': '2026-04-15T10:05:00Z'},
+        ],
+    })
+
+    response = client.get('/api/ops/approval-batch-queue')
+    assert response.status_code == 200
+    body = response.json()
+    registration_groups = body['registration_groups']
+    assert [row['registration_group'] for row in registration_groups] == ['Piso-30']
+    registration = registration_groups[0]
+    assert registration['source'] == 'registration_runtime_group_state'
+    assert registration['group_name'] == '注册群A'
+    assert registration['pending_count'] == 2
+    assert registration['binding_link'] == 'https://chat.whatsapp.com/runtime-registration-group-a'
 
 
 
@@ -5512,6 +7121,86 @@ def test_official_group_batch_queue_uses_real_group_request_list_instead_of_lead
     assert official['source'] == 'official_runtime_group_state'
     assert official['group_name'] == '官方群01'
     assert official['target_group'] == 'https://chat.whatsapp.com/official-group-a'
+    assert official['batch_size'] == 10
+    assert official['timeout_minutes'] == 10
+
+
+
+def test_official_group_batch_queue_does_not_fallback_to_leads_when_runtime_unavailable(monkeypatch):
+    client = make_client()
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-official-runtime-unavailable",
+            "source_platform": "manual_cs",
+            "source_page_id": "lark",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999333333",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Official-A",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead['lead_id'],
+            "submission_type": "account_id",
+            "account_id": "92929292",
+            "account_id_type": "platform_uid",
+            "source_channel": "manual_cs_lark",
+            "submitted_by": "ops_official_runtime_unavailable",
+            "submitted_at": "2026-04-15T11:00:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "bind success",
+            "finished_at": "2026-04-15T11:01:00Z",
+            "raw_result": {"guild_code": "Piso"},
+        },
+    )
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-runtime-unavailable', json={
+        'account_name': 'WA Official Runtime Unavailable',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [
+            {
+                'link': 'https://chat.whatsapp.com/official-group-a',
+                'group_name': '官方群01',
+                'registration_group': 'official-group-permata',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'approval_count_threshold': 10,
+                'approval_timeout_minutes': 10,
+                'auto_recover_worker': True,
+                'schedule_windows': [],
+            },
+        ],
+        'notify_profile_name': 'wa-approval-broadcast',
+        'approval_count_threshold': 10,
+        'approval_timeout_minutes': 10,
+        'auto_recover_worker': True,
+        'schedule_windows': [],
+        'enabled': True,
+        'notes': 'official runtime unavailable fallback suppression test',
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda account_key, **kwargs: {
+        'account_key': account_key,
+        'active': False,
+        'base_url': None,
+    })
+
+    response = client.get('/api/ops/approval-batch-queue')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['official_groups'] == []
 
 
 
@@ -6633,7 +8322,269 @@ def test_official_group_approval_summary_counts_pending_approved_and_skipped_dup
 
 
 
-def test_run_ready_official_group_batches_executes_ready_leads_using_target_map():
+def test_official_group_approval_summary_uses_latest_task_and_live_bridge_pending_state(monkeypatch):
+    from app.main import create_app
+
+    app = create_app({"DB_PATH": ":memory:"})
+    client = TestClient(app)
+    service = app.state.service
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-og-summary-live-state",
+            "source_platform": "meta",
+            "source_page_id": "page-og-summary-live-state",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999984",
+            "app_name": "Linky",
+            "dept_name": "Permata",
+            "pendaftaran_group": "Permata-88",
+        },
+    ).json()
+
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at,
+                status, result_code, result_reason, raw_result, started_at, finished_at
+            ) VALUES (?, ?, 'group_join', 'P0', ?, ?, 'tester', ?, 'failed', 'manual_queue_pending', 'queued', ?, ?, ?)
+            """,
+            (
+                'task_old_manual',
+                lead['lead_id'],
+                json.dumps({'target_group': 'official-group-permata'}),
+                'dedupe:task_old_manual',
+                '2026-04-14T12:18:00Z',
+                json.dumps({'target_group': 'official-group-permata', 'execution_disposition': 'manual_required'}),
+                '2026-04-14T12:18:01Z',
+                '2026-04-14T12:18:10Z',
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at,
+                status, result_code, result_reason, raw_result, started_at, finished_at
+            ) VALUES (?, ?, 'group_join', 'P0', ?, ?, 'tester', ?, 'success', 'approved', 'approved by automation', ?, ?, ?)
+            """,
+            (
+                'task_new_success',
+                lead['lead_id'],
+                json.dumps({'target_group': 'official-group-permata'}),
+                'dedupe:task_new_success',
+                '2026-04-14T12:19:00Z',
+                json.dumps({'target_group': 'official-group-permata', 'group_name': '官方群测试1'}),
+                '2026-04-14T12:19:01Z',
+                '2026-04-14T12:19:10Z',
+            ),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(service, '_official_group_runtime_queue_rows', lambda now_iso: [{
+        'target_group': 'official-group-permata',
+        'pending_count': 0,
+    }])
+    monkeypatch.setattr(service, '_fetch_official_group_bridge_pending_counts', lambda: {
+        'pending_count': 0,
+        'by_target_group': {'official-group-permata': {'pending_count': 0}},
+    })
+
+    response = client.get('/api/ops/official-group-approval-summary')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['pending_count'] == 0
+    assert body['approved_count'] == 1
+    assert body['failed_count'] == 0
+    assert body['manual_required_count'] == 0
+    assert body['by_target_group']['official-group-permata']['approved_count'] == 1
+    assert body['by_target_group']['official-group-permata']['manual_required_count'] == 0
+
+
+
+def test_official_group_approval_summary_prefers_live_bridge_pending_over_stale_manual_required_tasks(monkeypatch):
+    from app.main import create_app
+
+    app = create_app({"DB_PATH": ":memory:"})
+    client = TestClient(app)
+    service = app.state.service
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-og-summary-bridge-zero",
+            "source_platform": "meta",
+            "source_page_id": "page-og-summary-bridge-zero",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999983",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at,
+                status, result_code, result_reason, raw_result, started_at, finished_at
+            ) VALUES (?, ?, 'group_join', 'P0', ?, ?, 'tester', ?, 'failed', 'manual_queue_pending', 'queued', ?, ?, ?)
+            """,
+            (
+                'task_live_manual_stale',
+                lead['lead_id'],
+                json.dumps({'target_group': 'official-group-piso'}),
+                'dedupe:task_live_manual_stale',
+                '2026-04-14T12:18:00Z',
+                json.dumps({'target_group': 'official-group-piso', 'execution_disposition': 'manual_required'}),
+                '2026-04-14T12:18:01Z',
+                '2026-04-14T12:18:10Z',
+            ),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(service, '_official_group_runtime_queue_rows', lambda now_iso: [])
+    monkeypatch.setattr(service, '_fetch_official_group_bridge_pending_counts', lambda: {
+        'pending_count': 0,
+        'by_target_group': {'official-group-piso': {'pending_count': 0}},
+    })
+
+    response = client.get('/api/ops/official-group-approval-summary')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['manual_required_count'] == 0
+    assert body['failed_count'] == 0
+    assert 'official-group-piso' not in body['by_target_group']
+
+
+
+def test_official_group_approval_summary_hides_zero_only_target_groups(monkeypatch):
+    from app.main import create_app
+
+    app = create_app({"DB_PATH": ":memory:"})
+    client = TestClient(app)
+    service = app.state.service
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-og-summary-hide-zero",
+            "source_platform": "meta",
+            "source_page_id": "page-og-summary-hide-zero",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999982",
+            "app_name": "Linky",
+            "dept_name": "Permata",
+            "pendaftaran_group": "Permata-88",
+        },
+    ).json()
+
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at,
+                status, result_code, result_reason, raw_result, started_at, finished_at
+            ) VALUES (?, ?, 'group_join', 'P0', ?, ?, 'tester', ?, 'success', 'approved', 'approved by automation', ?, ?, ?)
+            """,
+            (
+                'task_zero_bucket_success',
+                lead['lead_id'],
+                json.dumps({'target_group': 'official-group-permata'}),
+                'dedupe:task_zero_bucket_success',
+                '2026-04-14T12:19:00Z',
+                json.dumps({'target_group': 'official-group-permata'}),
+                '2026-04-14T12:19:01Z',
+                '2026-04-14T12:19:10Z',
+            ),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(service, '_official_group_runtime_queue_rows', lambda now_iso: [])
+    monkeypatch.setattr(service, '_fetch_official_group_bridge_pending_counts', lambda: {
+        'pending_count': 0,
+        'by_target_group': {
+            'official-group-permata': {'pending_count': 0},
+            'official-group-piso': {'pending_count': 0},
+        },
+    })
+
+    response = client.get('/api/ops/official-group-approval-summary')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['view_scope'] == 'current_active_scope'
+    assert 'official-group-permata' in body['by_target_group']
+    assert 'official-group-piso' not in body['by_target_group']
+
+
+
+def test_official_group_approval_summary_scopes_hard_failures_to_active_targets(monkeypatch):
+    from app.main import create_app
+
+    app = create_app({"DB_PATH": ":memory:"})
+    client = TestClient(app)
+    service = app.state.service
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-og-summary-scope-failed",
+            "source_platform": "meta",
+            "source_page_id": "page-og-summary-scope-failed",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999981",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-21",
+        },
+    ).json()
+
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at,
+                status, result_code, result_reason, raw_result, started_at, finished_at
+            ) VALUES (?, ?, 'group_join', 'P0', ?, ?, 'tester', ?, 'failed', 'bridge_internal_error', 'group not found', ?, ?, ?)
+            """,
+            (
+                'task_stale_failed_scope',
+                lead['lead_id'],
+                json.dumps({'target_group': 'official-group-piso'}),
+                'dedupe:task_stale_failed_scope',
+                '2026-04-14T12:18:00Z',
+                json.dumps({'target_group': 'official-group-piso', 'execution_disposition': 'failed'}),
+                '2026-04-14T12:18:01Z',
+                '2026-04-14T12:18:10Z',
+            ),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(service, '_official_group_runtime_queue_rows', lambda now_iso: [{
+        'target_group': 'official-group-permata',
+        'pending_count': 0,
+    }])
+    monkeypatch.setattr(service, '_fetch_official_group_bridge_pending_counts', lambda: {
+        'pending_count': 0,
+        'by_target_group': {'official-group-permata': {'pending_count': 0}},
+    })
+
+    response = client.get('/api/ops/official-group-approval-summary')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['failed_count'] == 0
+    assert body['skipped_duplicate_count'] == 0
+    assert 'official-group-piso' not in body['by_target_group']
+
+
+
+def test_run_ready_official_group_batches_executes_ready_leads_using_target_map(monkeypatch):
     from app.main import create_app
 
     class StubOfficialGroupApprovalExecutor:
@@ -6704,6 +8655,8 @@ def test_run_ready_official_group_batches_executes_ready_leads_using_target_map(
     })
     client = TestClient(app)
 
+    service = client.app.state.service
+    requesters = []
     for idx in range(10):
         mobile = f'899999991{idx:02d}'
         account_id = f'700010{idx:02d}'
@@ -6747,6 +8700,24 @@ def test_run_ready_official_group_batches_executes_ready_leads_using_target_map(
             'raw_result': {'guild_code': 'Piso', 'deptName': 'Piso', 'deptId': 'dept_1'},
         })
         assert response.status_code == 200
+        requesters.append({
+            'requesterId': f'req-{idx}',
+            'phoneNormalized': mobile,
+            'requestedAtIso': f'2026-04-14T12:{17 + idx:02d}:30Z',
+        })
+
+    monkeypatch.setattr(service, 'approval_batch_queue', lambda: {
+        'registration_groups': [],
+        'official_groups': [{
+            'approval_type': 'official_group',
+            'registration_group': 'Piso-5',
+            'target_group': 'official-group-a',
+            'pending_count': 10,
+            'release_count': 10,
+            'ready': True,
+            'requesters': requesters,
+        }],
+    })
 
     run = client.post('/api/ops/official-group-approval-batches/run-ready', json={
         'decided_at': '2026-04-14T13:00:00Z',
@@ -6762,7 +8733,7 @@ def test_run_ready_official_group_batches_executes_ready_leads_using_target_map(
 
 
 
-def test_run_ready_official_group_batches_executes_ready_runtime_queue_using_target_group(monkeypatch):
+def test_run_ready_official_group_batches_skips_runtime_queue_when_requesters_missing(monkeypatch):
     from app.main import create_app
 
     class StubRuntimeExecutor:
@@ -6930,12 +8901,11 @@ def test_run_ready_official_group_batches_executes_ready_runtime_queue_using_tar
     assert run.status_code == 200
     body = run.json()
     assert body['ready_group_count'] == 1
-    assert body['executed_count'] == 2
+    assert body['executed_count'] == 0
+    assert body['skipped_count'] == 0
     assert body['unresolved_count'] == 0
-    assert len(runtime_executor.calls) == 2
-    assert runtime_executor.calls[0]['registration_group'] == 'https://chat.whatsapp.com/official-group-a'
-    assert runtime_executor.calls[1]['registration_group'] == 'https://chat.whatsapp.com/official-group-a'
-    assert runtime_executor.calls[0]['target_phone_hint']
+    assert runtime_executor.calls == []
+    assert body['results'] == []
 
 
 def test_run_ready_official_group_batches_runtime_queue_matches_requesters_by_phone_and_skips_unmatched(monkeypatch):
@@ -7120,6 +9090,8 @@ def test_run_ready_official_group_batches_runtime_queue_matches_requesters_by_ph
     unmatched_rows = [row for row in body['results'] if row.get('reason_code') == 'official_group_requester_unmatched']
     assert len(unmatched_rows) == 1
     assert unmatched_rows[0]['target_group'] == 'official-group-piso'
+    assert str(unmatched_rows[0]['mobile'] or '').strip()
+    assert '8888' in str(unmatched_rows[0]['mobile'])
 
 
 
@@ -7281,6 +9253,640 @@ def test_run_ready_official_group_batches_runtime_queue_matches_requesters_by_de
         'base_url': 'http://127.0.0.1:53637',
     })
     monkeypatch.setattr(service, '_build_runtime_registration_group_executor', lambda base_url: runtime_executor)
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state_with_retry', lambda base_url, registration_group, **kwargs: {
+        'group_id': '120363400000000099@g.us',
+        'group_name': '官方群测试1',
+        'pending_count': 1,
+        'member_count': 33,
+        'requesters': [
+            {
+                'requesterId': '156973186195687@lid',
+                'phoneRaw': '+852****5475',
+                'phoneNormalized': '+852****5475',
+                'displayName': 'Chauncey',
+                'requestedAtUnix': 1713103200,
+                'requestedAtIso': '2026-04-14T12:00:00Z',
+                'debugLidPhoneRaw': '85267755475',
+            },
+        ],
+    })
+
+    run = client.post('/api/ops/official-group-approval-batches/run-ready', json={
+        'decided_at': '2026-04-14T13:00:00Z',
+        'decided_by': 'batch_runner',
+    })
+    assert run.status_code == 200
+    body = run.json()
+    assert body['ready_group_count'] == 1
+    assert body['executed_count'] == 1
+    assert body['skipped_count'] == 0
+    assert len(runtime_executor.calls) == 1
+    assert runtime_executor.calls[0]['target_phone_hint'] == '85267755475'
+
+
+def test_run_ready_official_group_batches_executes_two_local_variant_requesters_from_runtime_queue(monkeypatch):
+    from app.main import create_app
+
+    class StubRuntimeExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def approve(self, context):
+            self.calls.append(dict(context))
+            return {
+                'status': 'success',
+                'result_code': 'approval_ok',
+                'result_reason': 'approved',
+                'raw_result': {'target_group': context.get('registration_group')},
+            }
+
+    class MultiRecordCrmAdapter(StubCrmAdapter):
+        def __init__(self):
+            super().__init__()
+            self.records = {}
+
+        def seed(self, record):
+            for key in (record.get('ywId'), record.get('mobile')):
+                normalized = str(key or '').strip()
+                if normalized:
+                    self.records[normalized] = dict(record)
+
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            key = str(yw_id or '').strip() or str(mobile or '').strip()
+            if key and key in self.records:
+                return dict(self.records[key])
+            return None
+
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            record = {"id": f"crm_{payload.get('ywId') or payload.get('mobile')}", **payload}
+            self.seed(record)
+            self.record = record
+            return {"code": 0, "msg": "success", "data": None}
+
+        def update_customer(self, payload):
+            self.calls.append(("update_customer", payload))
+            self.seed(payload)
+            self.record = dict(payload)
+            return {"code": 0, "msg": "success", "data": None}
+
+    crm = MultiRecordCrmAdapter()
+    crm.apps = [{'id': 'app_1', 'name': 'Linky'}]
+    crm.depts = [{'deptId': 'dept_1', 'deptName': 'Permata'}]
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'OFFICIAL_GROUP_TARGET_MAP': {'dept_name:permata': 'official-group-permata'},
+    })
+    client = TestClient(app)
+
+    lead_specs = [
+        {
+            'trace_id': 'trace-official-runtime-local-variant-1',
+            'mobile': '85267755475',
+            'area_code': 852,
+            'country': 'Hong Kong',
+            'account_id': '1',
+            'crm_mobile': '67755475',
+        },
+        {
+            'trace_id': 'trace-official-runtime-local-variant-2',
+            'mobile': '13434710947',
+            'area_code': 1,
+            'country': 'United States',
+            'account_id': '2',
+            'crm_mobile': '3434710947',
+        },
+    ]
+
+    for spec in lead_specs:
+        crm.seed({
+            'id': f"crm_{spec['account_id']}",
+            'mobile': spec['crm_mobile'],
+            'ywId': spec['account_id'],
+            'appId': 'app_1',
+            'appName': 'Linky',
+            'deptId': 'dept_1',
+            'deptName': 'Permata',
+            'pendaftaranGroup': '888',
+            'wa': '',
+            'joinGroup': 0,
+        })
+        lead = client.post('/api/leads/upsert', json={
+            'trace_id': spec['trace_id'],
+            'source_platform': 'meta',
+            'source_page_id': spec['trace_id'],
+            'country': spec['country'],
+            'area_code': spec['area_code'],
+            'mobile': spec['mobile'],
+            'app_name': 'Linky',
+            'dept_name': 'Permata',
+            'pendaftaran_group': '888',
+        }).json()
+        submission = client.post('/api/account-submissions', json={
+            'lead_id': lead['lead_id'],
+            'submission_type': 'account_id',
+            'account_id': spec['account_id'],
+            'account_id_type': 'platform_uid',
+            'source_channel': 'whatsapp',
+            'submitted_by': 'customer_service',
+            'submitted_at': '2026-04-14T12:15:00Z',
+        }).json()
+        response = client.post(f"/api/tasks/{submission['task_id']}/bind-check-result", json={
+            'status': 'success',
+            'result_code': 'bind_ok',
+            'result_reason': 'manual backend bind success',
+            'finished_at': '2026-04-14T12:17:00Z',
+            'raw_result': {'guild_code': 'Permata', 'deptName': 'Permata', 'deptId': 'dept_1'},
+        })
+        assert response.status_code == 200
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-runtime-local-variant', json={
+        'account_name': 'WA Official Runtime Local Variant',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/official-group-local-variant',
+            'group_name': '官方测试1',
+            'registration_group': 'official-group-permata',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'approval_count_threshold': 10,
+            'approval_timeout_minutes': 10,
+            'auto_recover_worker': True,
+            'schedule_windows': [],
+        }],
+        'notify_profile_name': 'wa-approval-broadcast',
+        'approval_count_threshold': 10,
+        'approval_timeout_minutes': 10,
+        'auto_recover_worker': True,
+        'schedule_windows': [],
+        'enabled': True,
+        'notes': 'runtime queue local-variant regression',
+    })
+    assert saved.status_code == 200
+
+    service = client.app.state.service
+    runtime_executor = StubRuntimeExecutor()
+    monkeypatch.setattr(service, 'approval_batch_queue', lambda: {
+        'registration_groups': [],
+        'official_groups': [{
+            'approval_type': 'official_group',
+            'registration_group': '官方测试1',
+            'target_group': 'official-group-permata',
+            'pending_count': 2,
+            'release_count': 2,
+            'ready': True,
+            'reason_code': 'timeout_flush',
+            'timeout_minutes': 10,
+            'source': 'official_runtime_group_state',
+            'binding_link': 'https://chat.whatsapp.com/official-group-local-variant',
+            'binding_registration_group': 'official-group-permata',
+            'group_name': '官方测试1',
+            'account_key': 'wa-official-runtime-local-variant',
+            'requesters': [
+                {
+                    'requesterId': '156973186195687@lid',
+                    'phoneRaw': '+852****5475',
+                    'phoneNormalized': '+852****5475',
+                    'displayName': 'Chauncey',
+                    'requestedAtUnix': 1713103200,
+                    'requestedAtIso': '2026-04-14T12:00:00Z',
+                    'debugLidPhoneRaw': '85267755475',
+                },
+                {
+                    'requesterId': '64163187581105@lid',
+                    'phoneRaw': '+134****0947',
+                    'phoneNormalized': '+134****0947',
+                    'displayName': 'G3 personal',
+                    'requestedAtUnix': 1713103260,
+                    'requestedAtIso': '2026-04-14T12:01:00Z',
+                    'debugLidPhoneRaw': '13434710947',
+                },
+            ],
+        }],
+    })
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda account_key, **kwargs: {
+        'account_key': account_key,
+        'active': True,
+        'base_url': 'http://127.0.0.1:53637',
+    })
+    monkeypatch.setattr(service, '_build_runtime_registration_group_executor', lambda base_url: runtime_executor)
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state_with_retry', lambda base_url, registration_group, **kwargs: {
+        'group_id': '120363400000000099@g.us',
+        'group_name': '官方测试1',
+        'pending_count': 2,
+        'member_count': 33,
+        'requesters': [
+            {
+                'requesterId': '156973186195687@lid',
+                'phoneRaw': '+852****5475',
+                'phoneNormalized': '+852****5475',
+                'displayName': 'Chauncey',
+                'requestedAtUnix': 1713103200,
+                'requestedAtIso': '2026-04-14T12:00:00Z',
+                'debugLidPhoneRaw': '85267755475',
+            },
+            {
+                'requesterId': '64163187581105@lid',
+                'phoneRaw': '+134****0947',
+                'phoneNormalized': '+134****0947',
+                'displayName': 'G3 personal',
+                'requestedAtUnix': 1713103260,
+                'requestedAtIso': '2026-04-14T12:01:00Z',
+                'debugLidPhoneRaw': '13434710947',
+            },
+        ],
+    })
+
+    run = client.post('/api/ops/official-group-approval-batches/run-ready', json={
+        'decided_at': '2026-04-14T13:00:00Z',
+        'decided_by': 'batch_runner',
+    })
+    assert run.status_code == 200
+    body = run.json()
+    assert body['ready_group_count'] == 1
+    assert body['executed_count'] == 2
+    assert body['skipped_count'] == 0
+    assert len(runtime_executor.calls) == 2
+    assert [call['target_phone_hint'] for call in runtime_executor.calls] == ['85267755475', '13434710947']
+
+
+def test_run_ready_official_group_batches_prefers_target_map_over_crm_display_name_for_stale_group_join_success(monkeypatch):
+    from app.main import create_app
+
+    class StubRuntimeExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def approve(self, context):
+            self.calls.append(dict(context))
+            return {
+                'status': 'success',
+                'result_code': 'approval_ok',
+                'result_reason': 'approved',
+                'raw_result': {'target_group': context.get('registration_group')},
+            }
+
+    class MultiRecordCrmAdapter(StubCrmAdapter):
+        def __init__(self):
+            super().__init__()
+            self.records = {}
+
+        def seed(self, record):
+            for key in (record.get('ywId'), record.get('mobile')):
+                normalized = str(key or '').strip()
+                if normalized:
+                    self.records[normalized] = dict(record)
+
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            key = str(yw_id or '').strip() or str(mobile or '').strip()
+            if key and key in self.records:
+                return dict(self.records[key])
+            return None
+
+        def update_customer(self, payload):
+            self.calls.append(("update_customer", payload))
+            for key in (payload.get('ywId'), payload.get('mobile')):
+                normalized = str(key or '').strip()
+                if normalized:
+                    self.records[normalized] = dict(payload)
+            return {"code": 0, "msg": "success", "data": None}
+
+    crm = MultiRecordCrmAdapter()
+    crm.apps = [{'id': 'app_1', 'name': 'Linky'}]
+    crm.depts = [{'deptId': 'dept_1', 'deptName': 'Permata'}]
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'OFFICIAL_GROUP_TARGET_MAP': {'dept_name:permata': 'official-group-permata'},
+    })
+    client = TestClient(app)
+
+    crm.seed({
+        'id': 'crm_1',
+        'mobile': '85267755475',
+        'ywId': '1',
+        'appId': 'app_1',
+        'appName': 'Linky',
+        'deptId': 'dept_1',
+        'deptName': 'Permata',
+        'pendaftaranGroup': '888',
+        'wa': '官方测试1',
+        'joinGroup': 1,
+    })
+    lead = client.post('/api/leads/upsert', json={
+        'trace_id': 'trace-runtime-display-name-priority',
+        'source_platform': 'meta',
+        'source_page_id': 'page-runtime-display-name-priority',
+        'country': 'Hong Kong',
+        'area_code': 852,
+        'mobile': '85267755475',
+        'app_name': 'Linky',
+        'dept_name': 'Permata',
+        'pendaftaran_group': '888',
+    }).json()
+    submission = client.post('/api/account-submissions', json={
+        'lead_id': lead['lead_id'],
+        'submission_type': 'account_id',
+        'account_id': '1',
+        'account_id_type': 'platform_uid',
+        'source_channel': 'whatsapp',
+        'submitted_by': 'customer_service',
+        'submitted_at': '2026-04-14T12:15:00Z',
+    }).json()
+    response = client.post(f"/api/tasks/{submission['task_id']}/bind-check-result", json={
+        'status': 'success',
+        'result_code': 'bind_ok',
+        'result_reason': 'manual backend bind success',
+        'finished_at': '2026-04-14T12:17:00Z',
+        'raw_result': {'guild_code': 'Permata', 'deptName': 'Permata', 'deptId': 'dept_1'},
+    })
+    assert response.status_code == 200
+
+    service = client.app.state.service
+    with service.db.connect() as conn:
+        conn.execute("UPDATE leads SET current_status = 'group_join_success', crm_verified_payload = ?, crm_verified_official_group = ?, updated_at = ? WHERE lead_id = ?", (
+            json.dumps({'mobile': '85267755475', 'ywId': '1', 'appName': 'Linky', 'deptName': 'Permata', 'pendaftaranGroup': '888', 'wa': '官方测试1'}, ensure_ascii=False),
+            '官方测试1',
+            '2026-04-14T12:30:00Z',
+            lead['lead_id'],
+        ))
+        conn.execute("UPDATE automation_tasks SET status = 'success', result_code = 'approved', result_reason = 'stale success snapshot', raw_result = ? WHERE lead_id = ? AND task_type = 'group_join'", (
+            json.dumps({'target_group': 'official-group-permata', 'group_name': '官方测试1'}, ensure_ascii=False),
+            lead['lead_id'],
+        ))
+        conn.commit()
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-runtime-display-name-priority', json={
+        'account_name': 'WA Official Runtime Display Name Priority',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/official-group-display-name-priority',
+            'group_name': '官方测试1',
+            'registration_group': 'official-group-permata',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'approval_count_threshold': 10,
+            'approval_timeout_minutes': 10,
+            'auto_recover_worker': True,
+            'schedule_windows': [],
+        }],
+        'notify_profile_name': 'wa-approval-broadcast',
+        'approval_count_threshold': 10,
+        'approval_timeout_minutes': 10,
+        'auto_recover_worker': True,
+        'schedule_windows': [],
+        'enabled': True,
+        'notes': 'runtime display-name-priority reapproval test',
+    })
+    assert saved.status_code == 200
+
+    runtime_executor = StubRuntimeExecutor()
+    monkeypatch.setattr(service, 'approval_batch_queue', lambda: {
+        'registration_groups': [],
+        'official_groups': [{
+            'approval_type': 'official_group',
+            'registration_group': '官方测试1',
+            'target_group': 'official-group-permata',
+            'pending_count': 1,
+            'release_count': 1,
+            'ready': True,
+            'source': 'official_runtime_group_state',
+            'binding_link': 'https://chat.whatsapp.com/official-group-display-name-priority',
+            'binding_registration_group': 'official-group-permata',
+            'group_name': '官方测试1',
+            'account_key': 'wa-official-runtime-display-name-priority',
+            'requesters': [{
+                'requesterId': '156973186195687@lid',
+                'phoneRaw': '+852****5475',
+                'phoneNormalized': '+852****5475',
+                'displayName': 'Chauncey',
+                'requestedAtUnix': 1713103200,
+                'requestedAtIso': '2026-04-14T12:00:00Z',
+                'debugLidPhoneRaw': '85267755475',
+            }],
+        }],
+    })
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda account_key, **kwargs: {
+        'account_key': account_key,
+        'active': True,
+        'base_url': 'http://127.0.0.1:53637',
+    })
+    monkeypatch.setattr(service, '_build_runtime_registration_group_executor', lambda base_url: runtime_executor)
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state_with_retry', lambda base_url, registration_group, **kwargs: {
+        'group_id': '120363400000000100@g.us',
+        'group_name': '官方测试1',
+        'pending_count': 1,
+        'member_count': 33,
+        'requesters': [{
+            'requesterId': '156973186195687@lid',
+            'phoneRaw': '+852****5475',
+            'phoneNormalized': '+852****5475',
+            'displayName': 'Chauncey',
+            'requestedAtUnix': 1713103200,
+            'requestedAtIso': '2026-04-14T12:00:00Z',
+            'debugLidPhoneRaw': '85267755475',
+        }],
+    })
+
+    run = client.post('/api/ops/official-group-approval-batches/run-ready', json={
+        'decided_at': '2026-04-14T13:00:00Z',
+        'decided_by': 'batch_runner',
+    })
+    assert run.status_code == 200
+    body = run.json()
+    assert body['ready_group_count'] == 1
+    assert body['executed_count'] == 1
+    assert body['skipped_count'] == 0
+    assert len(runtime_executor.calls) == 1
+    assert runtime_executor.calls[0]['registration_group'] == 'https://chat.whatsapp.com/official-group-display-name-priority'
+    assert runtime_executor.calls[0]['target_phone_hint'] == '85267755475'
+
+
+
+def test_run_ready_official_group_batches_allows_reapproval_for_stale_group_join_success_when_requester_still_pending(monkeypatch):
+    from app.main import create_app
+
+    class StubRuntimeExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def approve(self, context):
+            self.calls.append(dict(context))
+            return {
+                'status': 'success',
+                'result_code': 'approval_ok',
+                'result_reason': 'approved',
+                'raw_result': {'target_group': context.get('registration_group')},
+            }
+
+    class MultiRecordCrmAdapter(StubCrmAdapter):
+        def __init__(self):
+            super().__init__()
+            self.records = {}
+
+        def seed(self, record):
+            for key in (record.get('ywId'), record.get('mobile')):
+                normalized = str(key or '').strip()
+                if normalized:
+                    self.records[normalized] = dict(record)
+
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            key = str(yw_id or '').strip() or str(mobile or '').strip()
+            if key and key in self.records:
+                return dict(self.records[key])
+            return None
+
+        def update_customer(self, payload):
+            self.calls.append(("update_customer", payload))
+            for key in (payload.get('ywId'), payload.get('mobile')):
+                normalized = str(key or '').strip()
+                if normalized:
+                    self.records[normalized] = dict(payload)
+            return {"code": 0, "msg": "success", "data": None}
+
+    crm = MultiRecordCrmAdapter()
+    crm.apps = [{'id': 'app_1', 'name': 'Linky'}]
+    crm.depts = [{'deptId': 'dept_1', 'deptName': 'Piso'}]
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'OFFICIAL_GROUP_TARGET_MAP': {'registration_group_prefix:piso': 'official-group-piso'},
+    })
+    client = TestClient(app)
+
+    crm.seed({
+        'id': 'crm_77110010',
+        'mobile': '85267755475',
+        'ywId': '77110010',
+        'appId': 'app_1',
+        'appName': 'Linky',
+        'deptId': 'dept_1',
+        'deptName': 'Piso',
+        'pendaftaranGroup': 'Piso-5',
+        'wa': '官方群测试1',
+        'joinGroup': 1,
+    })
+    lead = client.post('/api/leads/upsert', json={
+        'trace_id': 'trace-runtime-reapprove-stale-success',
+        'source_platform': 'meta',
+        'source_page_id': 'page-runtime-reapprove-stale-success',
+        'country': 'Hong Kong',
+        'area_code': 852,
+        'mobile': '85267755475',
+        'app_name': 'Linky',
+        'dept_name': 'Piso',
+        'pendaftaran_group': 'Piso-5',
+    }).json()
+    submission = client.post('/api/account-submissions', json={
+        'lead_id': lead['lead_id'],
+        'submission_type': 'account_id',
+        'account_id': '77110010',
+        'account_id_type': 'platform_uid',
+        'source_channel': 'whatsapp',
+        'submitted_by': 'customer_service',
+        'submitted_at': '2026-04-14T12:15:00Z',
+    }).json()
+    response = client.post(f"/api/tasks/{submission['task_id']}/bind-check-result", json={
+        'status': 'success',
+        'result_code': 'bind_ok',
+        'result_reason': 'manual backend bind success',
+        'finished_at': '2026-04-14T12:17:00Z',
+        'raw_result': {'guild_code': 'Piso', 'deptName': 'Piso', 'deptId': 'dept_1'},
+    })
+    assert response.status_code == 200
+
+    service = client.app.state.service
+    with service.db.connect() as conn:
+        conn.execute("UPDATE leads SET current_status = 'group_join_success', crm_verified_payload = ?, updated_at = ? WHERE lead_id = ?", (
+            json.dumps({'mobile': '67755475', 'ywId': '77110010', 'appName': 'Linky', 'deptName': 'Piso', 'pendaftaranGroup': 'Piso-5', 'wa': '官方群测试1'}, ensure_ascii=False),
+            '2026-04-14T12:30:00Z',
+            lead['lead_id'],
+        ))
+        conn.execute("UPDATE automation_tasks SET status = 'success', result_code = 'approved', result_reason = 'stale success snapshot', raw_result = ? WHERE lead_id = ? AND task_type = 'group_join'", (
+            json.dumps({'target_group': 'official-group-piso', 'group_name': '官方群测试1'}, ensure_ascii=False),
+            lead['lead_id'],
+        ))
+        conn.commit()
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-official-runtime-stale-success', json={
+        'account_name': 'WA Official Runtime Stale Success',
+        'responsible_type': 'official_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/official-group-stale-success',
+            'group_name': '官方群测试1',
+            'registration_group': 'official-group-piso',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'approval_count_threshold': 10,
+            'approval_timeout_minutes': 10,
+            'auto_recover_worker': True,
+            'schedule_windows': [],
+        }],
+        'notify_profile_name': 'wa-approval-broadcast',
+        'approval_count_threshold': 10,
+        'approval_timeout_minutes': 10,
+        'auto_recover_worker': True,
+        'schedule_windows': [],
+        'enabled': True,
+        'notes': 'runtime stale-success reapproval test',
+    })
+    assert saved.status_code == 200
+
+    runtime_executor = StubRuntimeExecutor()
+    monkeypatch.setattr(service, 'approval_batch_queue', lambda: {
+        'registration_groups': [],
+        'official_groups': [{
+            'approval_type': 'official_group',
+            'registration_group': '官方群测试1',
+            'target_group': 'official-group-piso',
+            'pending_count': 1,
+            'release_count': 1,
+            'ready': True,
+            'source': 'official_runtime_group_state',
+            'binding_link': 'https://chat.whatsapp.com/official-group-stale-success',
+            'binding_registration_group': 'official-group-piso',
+            'group_name': '官方群测试1',
+            'account_key': 'wa-official-runtime-stale-success',
+            'requesters': [
+                {
+                    'requesterId': '156973186195687@lid',
+                    'phoneRaw': '+852****5475',
+                    'phoneNormalized': '+852****5475',
+                    'displayName': 'Chauncey',
+                    'requestedAtUnix': 1713103200,
+                    'requestedAtIso': '2026-04-14T12:00:00Z',
+                    'debugLidPhoneRaw': '85267755475',
+                },
+            ],
+        }],
+    })
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda account_key, **kwargs: {
+        'account_key': account_key,
+        'active': True,
+        'base_url': 'http://127.0.0.1:53637',
+    })
+    monkeypatch.setattr(service, '_build_runtime_registration_group_executor', lambda base_url: runtime_executor)
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state_with_retry', lambda base_url, registration_group, **kwargs: {
+        'group_id': '120363400000000100@g.us',
+        'group_name': '官方群测试1',
+        'pending_count': 1,
+        'member_count': 33,
+        'requesters': [
+            {
+                'requesterId': '156973186195687@lid',
+                'phoneRaw': '+852****5475',
+                'phoneNormalized': '+852****5475',
+                'displayName': 'Chauncey',
+                'requestedAtUnix': 1713103200,
+                'requestedAtIso': '2026-04-14T12:00:00Z',
+                'debugLidPhoneRaw': '85267755475',
+            },
+        ],
+    })
 
     run = client.post('/api/ops/official-group-approval-batches/run-ready', json={
         'decided_at': '2026-04-14T13:00:00Z',
@@ -7412,7 +10018,205 @@ def test_run_ready_official_group_batches_executes_crm_only_test_match_when_enab
 
 
 
-def test_run_ready_official_group_batches_records_unresolved_target_group_when_mapping_missing():
+def test_run_ready_official_group_batches_sends_merged_success_notification_and_records_audit(monkeypatch):
+    from app.main import LiveLarkReplyAdapter, Service, create_app
+
+    class StubOfficialGroupApprovalExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def approve(self, *, target_group, lead, crm_snapshot, task):
+            self.calls.append({'target_group': target_group, 'lead_id': lead.get('lead_id')})
+            suffix = str(lead.get('lead_id') or '').split('_')[-1]
+            return {
+                'status': 'success',
+                'result_code': 'approval_ok',
+                'result_reason': 'approved',
+                'raw_result': {
+                    'target_group': target_group,
+                    'group_name': '官方测试1',
+                    'approval_run_id': f'official_group_approval_{suffix}',
+                    'pending_after': 0,
+                    'member_count_after': 5,
+                },
+            }
+
+    class MultiRecordCrmAdapter(StubCrmAdapter):
+        def __init__(self):
+            super().__init__()
+            self.records = {}
+            self._seed_record = None
+
+        def seed(self, record):
+            self._seed_record = dict(record)
+            self.record = dict(record)
+            for key in (record.get('ywId'), record.get('mobile')):
+                normalized = str(key or '').strip()
+                if normalized:
+                    self.records[normalized] = dict(record)
+
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            key = str(yw_id or '').strip() or str(mobile or '').strip()
+            if key and key in self.records:
+                return dict(self.records[key])
+            if self._seed_record is None:
+                return None
+            return dict(self._seed_record)
+
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            record = {"id": f"crm_{payload.get('ywId') or payload.get('mobile')}", **payload}
+            for key in (payload.get('ywId'), payload.get('mobile')):
+                normalized = str(key or '').strip()
+                if normalized:
+                    self.records[normalized] = dict(record)
+            self.record = record
+            return {"code": 0, "msg": "success", "data": None}
+
+        def update_customer(self, payload):
+            self.calls.append(("update_customer", payload))
+            record = dict(payload)
+            for key in (payload.get('ywId'), payload.get('mobile')):
+                normalized = str(key or '').strip()
+                if normalized:
+                    self.records[normalized] = dict(record)
+            self.record = record
+            return {"code": 0, "msg": "success", "data": None}
+
+    captured = {'texts': []}
+
+    class DummyNotifier(LiveLarkReplyAdapter):
+        def __init__(self, *, app_id, app_secret, domain='lark'):
+            captured['init'] = {
+                'app_id': app_id,
+                'app_secret': app_secret,
+                'domain': domain,
+            }
+
+        def send_text(self, *, chat_id: str, text: str) -> dict:
+            captured['chat_id'] = chat_id
+            captured['texts'].append(text)
+            return {'code': 0, 'data': {'message_id': 'om_test_1'}}
+
+    crm = MultiRecordCrmAdapter()
+    crm.apps = [{'id': 'app_1', 'name': 'Linky'}]
+    crm.depts = [{'deptId': 'dept_1', 'deptName': 'Piso'}]
+    executor = StubOfficialGroupApprovalExecutor()
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'CRM_ADAPTER': crm,
+        'OFFICIAL_GROUP_APPROVAL_EXECUTOR': executor,
+        'OFFICIAL_GROUP_TARGET_MAP': {'registration_group_prefix:piso': 'official-group-permata'},
+    })
+    client = TestClient(app)
+
+    monkeypatch.setattr(Service, '_load_profile_env_map', lambda self, profile_name: {
+        'FEISHU_APP_ID': 'cli_bot01',
+        'FEISHU_APP_SECRET': 'bot01-secret',
+        'FEISHU_HOME_CHANNEL': 'oc_bot01',
+        'FEISHU_DOMAIN': 'lark',
+    })
+    monkeypatch.setattr('app.main.LiveLarkReplyAdapter', DummyNotifier)
+
+    created_leads = []
+    requesters = []
+    for idx in range(2):
+        mobile = f'8526775547{idx}'
+        account_id = f'7701000{idx}'
+        crm.seed({
+            'id': f'crm_{account_id}',
+            'mobile': mobile,
+            'ywId': account_id,
+            'appId': 'app_1',
+            'appName': 'Linky',
+            'deptId': 'dept_1',
+            'deptName': 'Piso',
+            'pendaftaranGroup': 'Piso-5',
+            'wa': '',
+            'joinGroup': 0,
+        })
+        lead = client.post('/api/leads/upsert', json={
+            'trace_id': f'trace-notify-{idx}',
+            'source_platform': 'meta',
+            'source_page_id': f'page-notify-{idx}',
+            'country': 'Indonesia',
+            'area_code': 62,
+            'mobile': mobile,
+            'app_name': 'Linky',
+            'dept_name': 'Piso',
+            'pendaftaran_group': 'Piso-5',
+        }).json()
+        created_leads.append(lead)
+        requesters.append({
+            'requesterId': f'requester-{idx}',
+            'phoneNormalized': mobile,
+            'phoneRaw': mobile,
+            'debugLidPhoneRaw': mobile,
+        })
+        submission = client.post('/api/account-submissions', json={
+            'lead_id': lead['lead_id'],
+            'submission_type': 'account_id',
+            'account_id': account_id,
+            'account_id_type': 'platform_uid',
+            'source_channel': 'whatsapp',
+            'submitted_by': 'customer_service',
+            'submitted_at': '2026-04-14T12:15:00Z',
+        }).json()
+        response = client.post(f"/api/tasks/{submission['task_id']}/bind-check-result", json={
+            'status': 'success',
+            'result_code': 'bind_ok',
+            'result_reason': 'manual backend bind success',
+            'finished_at': f'2026-04-14T12:{17 + idx:02d}:00Z',
+            'raw_result': {'guild_code': 'Piso', 'deptName': 'Piso', 'deptId': 'dept_1'},
+        })
+        assert response.status_code == 200
+
+    monkeypatch.setattr(Service, 'approval_batch_queue', lambda self: {
+        'registration_groups': [],
+        'official_groups': [{
+            'registration_group': 'Piso-5',
+            'target_group': 'official-group-permata',
+            'group_name': '官方测试1',
+            'account_key': 'official-4456-8277',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'notify_robot_name': '审批bot01',
+            'pending_count': 2,
+            'release_count': 2,
+            'ready': True,
+            'requesters': requesters,
+        }],
+    })
+
+    run = client.post('/api/ops/official-group-approval-batches/run-ready', json={
+        'decided_at': '2026-04-14T13:00:00Z',
+        'decided_by': 'batch_runner',
+    })
+    assert run.status_code == 200
+    body = run.json()
+    assert body['executed_count'] == 2
+    assert len(body['notification_results']) == 1
+    assert body['notification_results'][0]['status'] == 'sent'
+    assert body['notification_results'][0]['approval_run_ids'] == [
+        f"official_group_approval_{created_leads[0]['lead_id'].split('_')[-1]}",
+        f"official_group_approval_{created_leads[1]['lead_id'].split('_')[-1]}",
+    ]
+    assert len(captured['texts']) == 1
+    assert '官方群: 官方测试1' in captured['texts'][0]
+    assert '通过人数: 2' in captured['texts'][0]
+    assert captured['chat_id'] == 'oc_bot01'
+
+    with app.state.service.db.connect() as conn:
+        rows = conn.execute(
+            "SELECT event_type, payload FROM operator_audit_log WHERE event_type = 'official_group_success_notification_sent' ORDER BY created_at ASC"
+        ).fetchall()
+    assert len(rows) == 2
+    assert all(row['event_type'] == 'official_group_success_notification_sent' for row in rows)
+    assert all('official_group_approval_' in row['payload'] for row in rows)
+
+
+
+def test_run_ready_official_group_batches_records_unresolved_target_group_when_mapping_missing(monkeypatch):
 
     class StubOfficialGroupApprovalExecutor:
         def __init__(self):
@@ -7437,6 +10241,8 @@ def test_run_ready_official_group_batches_records_unresolved_target_group_when_m
         'OFFICIAL_GROUP_APPROVAL_EXECUTOR': executor,
     })
     client = TestClient(app)
+    service = client.app.state.service
+    requesters = []
 
     for idx in range(10):
         mobile = f'899999992{idx:02d}'
@@ -7481,6 +10287,23 @@ def test_run_ready_official_group_batches_records_unresolved_target_group_when_m
             'raw_result': {'guild_code': 'Piso', 'deptName': 'Piso', 'deptId': 'dept_1'},
         })
         assert response.status_code == 200
+        requesters.append({
+            'requesterId': f'unresolved-req-{idx}',
+            'phoneNormalized': mobile,
+            'requestedAtIso': f'2026-04-14T12:{17 + idx:02d}:30Z',
+        })
+
+    monkeypatch.setattr(service, 'approval_batch_queue', lambda: {
+        'registration_groups': [],
+        'official_groups': [{
+            'approval_type': 'official_group',
+            'registration_group': 'Piso-5',
+            'pending_count': 10,
+            'release_count': 10,
+            'ready': True,
+            'requesters': requesters,
+        }],
+    })
 
     run = client.post('/api/ops/official-group-approval-batches/run-ready', json={
         'decided_at': '2026-04-14T13:00:00Z',
@@ -8425,6 +11248,90 @@ def test_official_group_approval_check_restores_verified_state_from_legacy_succe
 
 
 
+def test_official_group_approval_check_accepts_live_crm_row_when_mobile_matches_local_variant():
+    from app.main import create_app
+
+    class LocalVariantCrmAdapter(StubCrmAdapter):
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            if str(yw_id or '') == '66778893' or str(mobile or '') in {'85267755475', '67755475'}:
+                return {
+                    "id": "crm_local_variant_1",
+                    "mobile": "67755475",
+                    "ywId": "66778893",
+                    "appId": "app_1",
+                    "appName": "Linky",
+                    "deptId": "dept_1",
+                    "deptName": "Permata",
+                    "pendaftaranGroup": "888",
+                    "wa": "",
+                    "joinGroup": 0,
+                }
+            return None
+
+    crm = LocalVariantCrmAdapter()
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Permata"}]
+    app = create_app({
+        "DB_PATH": ":memory:",
+        "CRM_ADAPTER": crm,
+        "OFFICIAL_GROUP_TARGET_MAP": {"dept_name:permata": "official-group-permata"},
+    })
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-official-local-variant",
+            "source_platform": "meta",
+            "source_page_id": "page-official-local-variant",
+            "country": "Hong Kong",
+            "area_code": 852,
+            "mobile": "85267755475",
+            "app_name": "Linky",
+            "dept_name": "Permata",
+            "pendaftaran_group": "888",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "66778893",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:15:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:17:00Z",
+            "raw_result": {"guild_code": "Permata", "deptName": "Permata", "deptId": "dept_1"},
+        },
+    )
+
+    response = client.post(
+        "/api/official-groups/approval-checks",
+        json={
+            "lead_id": lead["lead_id"],
+            "target_group": "official-group-permata",
+            "checked_at": "2026-04-14T12:18:00Z",
+            "checked_by": "operator_1",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["eligible"] is True
+    assert body["crm_customer_found"] is True
+    assert body["crm_snapshot"]["mobile"] == "67755475"
+
+
 def test_official_group_approval_check_uses_local_verified_cache_when_live_crm_lookup_misses():
     from app.main import create_app
 
@@ -8516,10 +11423,11 @@ def test_official_group_approval_check_uses_local_verified_cache_when_live_crm_l
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["eligible"] is False
+    assert body["eligible"] is True
     assert body["crm_verified"] is True
     assert body["crm_customer_found"] is False
-    assert body["reason_code"] == "crm_customer_not_found"
+    assert body["reason_code"] == "eligible"
+    assert body["next_action"] == "approve_official_group"
     assert body["crm_snapshot"]["source"] == "local_verified_cache"
     assert body["crm_snapshot"]["ywId"] == "66778894"
     assert body["crm_snapshot"]["pendaftaranGroup"] == "Piso-5"
@@ -8601,6 +11509,191 @@ def test_official_group_approval_check_rejects_when_crm_already_points_to_target
     assert body["next_action"] == "skip_duplicate_group_approval"
     assert body["crm_customer_found"] is True
     assert body["crm_snapshot"]["wa"] == "official-group-a"
+    with app.state.service.db.connect() as conn:
+        row = conn.execute(
+            "SELECT crm_verified_official_group FROM leads WHERE lead_id = ?",
+            (lead["lead_id"],),
+        ).fetchone()
+    assert row[0] == "official-group-a"
+
+
+
+def test_official_group_approval_check_allows_rejoin_when_live_crm_points_to_target_and_requester_still_pending(monkeypatch):
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    crm.record = {
+        "id": "crm_join_rejoin_1",
+        "mobile": "89999999995",
+        "ywId": "66778895",
+        "appId": "app_1",
+        "appName": "Linky",
+        "deptId": "dept_1",
+        "deptName": "Piso",
+        "pendaftaranGroup": "Piso-5",
+        "wa": "official-group-a",
+        "joinGroup": 1,
+    }
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    app = create_app({"DB_PATH": ":memory:", "CRM_ADAPTER": crm})
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-official-rejoin-allowed",
+            "source_platform": "meta",
+            "source_page_id": "page-official-rejoin-allowed",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999995",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "66778895",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:15:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:17:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    )
+    with app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE leads SET current_status = 'group_join_success', crm_verified_official_group = ?, updated_at = ? WHERE lead_id = ?",
+            ("official-group-a", "2026-04-14T12:18:00Z", lead["lead_id"]),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(app.state.service, '_official_group_requester_pending_in_runtime', lambda **kwargs: True)
+
+    response = client.post(
+        "/api/official-groups/approval-checks",
+        json={
+            "lead_id": lead["lead_id"],
+            "target_group": "official-group-a",
+            "checked_at": "2026-04-14T12:19:00Z",
+            "checked_by": "operator_1",
+            "target_phone_hint": "89999999995",
+            "target_requester_id": "rejoin-user@lid",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["eligible"] is True
+    assert body["reason_code"] == "eligible"
+    assert body["next_action"] == "approve_official_group"
+    assert body["crm_customer_found"] is True
+    assert body["target_requester_still_pending"] is True
+    assert body["crm_snapshot"]["id"] == "crm_1"
+
+
+
+def test_official_group_approval_check_blocks_rejoin_when_abnormal_even_if_live_crm_points_to_target_and_requester_still_pending(monkeypatch):
+    from app.main import create_app
+
+    crm = StubCrmAdapter()
+    crm.record = {
+        "id": "crm_join_rejoin_blocked_1",
+        "mobile": "89999999994",
+        "ywId": "66778894",
+        "appId": "app_1",
+        "appName": "Linky",
+        "deptId": "dept_1",
+        "deptName": "Piso",
+        "pendaftaranGroup": "Piso-5",
+        "wa": "official-group-a",
+        "joinGroup": 1,
+    }
+    crm.apps = [{"id": "app_1", "name": "Linky"}]
+    crm.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+    app = create_app({"DB_PATH": ":memory:", "CRM_ADAPTER": crm})
+    client = TestClient(app)
+
+    lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-official-rejoin-abnormal",
+            "source_platform": "meta",
+            "source_page_id": "page-official-rejoin-abnormal",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "89999999994",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-5",
+        },
+    ).json()
+    submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "66778894",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T12:15:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T12:17:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "dept_1"},
+        },
+    )
+    with app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE leads SET current_status = 'manual_review_pending', review_status = 'pending', routing_decision = 'manual_review', crm_verified_official_group = ?, updated_at = ? WHERE lead_id = ?",
+            ("official-group-a", "2026-04-14T12:18:00Z", lead["lead_id"]),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(app.state.service, '_official_group_requester_pending_in_runtime', lambda **kwargs: True)
+
+    response = client.post(
+        "/api/official-groups/approval-checks",
+        json={
+            "lead_id": lead["lead_id"],
+            "target_group": "official-group-a",
+            "checked_at": "2026-04-14T12:19:00Z",
+            "checked_by": "operator_1",
+            "target_phone_hint": "89999999994",
+            "target_requester_id": "rejoin-user@lid",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["eligible"] is False
+    assert body["reason_code"] == "abnormal_flagged"
+    assert body["next_action"] == "manual_review_official_group_approval"
+    assert body["abnormal_flagged"] is True
+    assert sorted(body["abnormal_reasons"]) == [
+        "manual_review_pending",
+        "review_status:pending",
+        "routing_decision:manual_review",
+    ]
 
 
 
@@ -10691,6 +13784,50 @@ def test_webjs_bridge_registration_group_executor_fetches_group_state():
     assert session.calls[0][4]['Authorization'] == 'Bearer secret-token'
 
 
+def test_webjs_bridge_registration_group_executor_scales_approve_timeout_for_large_batches():
+    class StubResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+    class StubSession:
+        def __init__(self):
+            self.calls = []
+
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.calls.append(('post', url, timeout, json, headers))
+            return StubResponse({
+                'status': 'success',
+                'verified': True,
+                'result_code': 'approved',
+                'approved_count': 38,
+                'raw_result': {'pending_before': 38, 'pending_after': 0},
+            })
+
+    from app.registration_group_webjs_executor import WebjsBridgeRegistrationGroupApprovalExecutor
+
+    session = StubSession()
+    executor = WebjsBridgeRegistrationGroupApprovalExecutor(
+        base_url='http://127.0.0.1:8787',
+        token='secret-token',
+        session=session,
+        timeout_seconds=35,
+    )
+
+    result = executor.approve({
+        'registration_group': '120363425215002840@g.us',
+        'approval_run_id': 'registration_group_approval_large_batch_timeout',
+        'approved_count': 38,
+    })
+
+    assert result['verified'] is True
+    assert session.calls[0][1] == 'http://127.0.0.1:8787/approve'
+    assert session.calls[0][2] == 129.0
+
+
 def test_create_app_supports_webjs_bridge_registration_group_executor_kind(monkeypatch):
     import types
     import sys
@@ -10891,6 +14028,120 @@ def test_ops_group_queue_returns_bind_success_leads():
     assert row['lead_id'] == lead['lead_id']
     assert row['current_status'] == 'bind_success'
     assert row['task_id'] == bind['group_join_task_id']
+
+
+
+def test_ops_queues_and_dashboard_exclude_failed_residue_from_pending_counts():
+    client = make_client()
+    failed_bind_lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-failed-bind-hidden",
+            "source_platform": "meta",
+            "source_page_id": "page-failed-bind-hidden",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "86660001111",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-6",
+        },
+    ).json()
+    failed_bind_submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": failed_bind_lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "16660001",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:11:00Z",
+        },
+    ).json()
+    client.post(
+        f"/api/tasks/{failed_bind_submission['task_id']}/bind-check-result",
+        json={
+            "status": "failed",
+            "result_code": "bind_failed",
+            "result_reason": "bind failed",
+            "finished_at": "2026-04-14T13:12:00Z",
+            "raw_result": {},
+        },
+    )
+
+    failed_group_lead = client.post(
+        "/api/leads/upsert",
+        json={
+            "trace_id": "trace-failed-group-hidden",
+            "source_platform": "meta",
+            "source_page_id": "page-failed-group-hidden",
+            "country": "Indonesia",
+            "area_code": 62,
+            "mobile": "86660002222",
+            "app_name": "Linky",
+            "dept_name": "Piso",
+            "pendaftaran_group": "Piso-6",
+        },
+    ).json()
+    failed_group_submission = client.post(
+        "/api/account-submissions",
+        json={
+            "lead_id": failed_group_lead["lead_id"],
+            "submission_type": "account_id",
+            "account_id": "16660002",
+            "account_id_type": "platform_uid",
+            "source_channel": "whatsapp",
+            "submitted_by": "customer_service",
+            "submitted_at": "2026-04-14T13:13:00Z",
+        },
+    ).json()
+    failed_group_bind = client.post(
+        f"/api/tasks/{failed_group_submission['task_id']}/bind-check-result",
+        json={
+            "status": "success",
+            "result_code": "bind_ok",
+            "result_reason": "manual backend bind success",
+            "finished_at": "2026-04-14T13:14:00Z",
+            "raw_result": {"guild_code": "Piso", "deptName": "Piso", "deptId": "2010885372469563394"},
+        },
+    ).json()
+    client.post(
+        f"/api/official-group-approval/{failed_group_lead['lead_id']}/decision",
+        json={
+            "target_group": "official-group-piso",
+            "decision": "approve",
+            "decided_at": "2026-04-14T13:15:00Z",
+            "decided_by": "tester",
+            "source_platform": "ops",
+            "remark": "force fail",
+        },
+    )
+    with client.app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE leads SET current_status = 'group_join_failed' WHERE lead_id = ?",
+            (failed_group_lead['lead_id'],),
+        )
+        conn.execute(
+            "UPDATE automation_tasks SET status = 'failed', result_code = 'group_join_failed', result_reason = 'group join failed' WHERE task_id = ?",
+            (failed_group_bind['group_join_task_id'],),
+        )
+        conn.commit()
+
+    bind_queue = client.get('/api/ops/bind-queue')
+    group_queue = client.get('/api/ops/group-queue')
+    summary = client.get('/api/ops/dashboard/summary')
+    assert bind_queue.status_code == 200
+    assert group_queue.status_code == 200
+    assert summary.status_code == 200
+
+    bind_ids = {row['lead_id'] for row in bind_queue.json()['rows']}
+    group_ids = {row['lead_id'] for row in group_queue.json()['rows']}
+    assert failed_bind_lead['lead_id'] not in bind_ids
+    assert failed_group_lead['lead_id'] not in group_ids
+    assert summary.json()['bind_queue_count'] == 0
+    assert summary.json()['group_queue_count'] == 0
+
 
 
 def test_ops_dashboard_summary_counts_core_states():
@@ -11744,6 +14995,7 @@ def test_manual_review_resolution_creates_bind_task_and_correction_history():
 
 def test_ops_approval_batch_queue_aggregates_real_pending_data():
     client = make_client()
+    client.app.state.service.runtime_health = lambda: {'registration_group_approval': {'configured': False}}
     for idx in range(30):
         client.post(
             "/api/leads/upsert",
@@ -13355,6 +16607,277 @@ def test_runtime_health_reports_bind_latency_metrics(tmp_path):
     assert recent_crm['verified_after_write'] is True
     assert recent_crm['crm_response_code'] == 0
 
+
+def test_reconcile_task_residue_auto_closes_stale_bind_processing_residue():
+    app = create_app({'DB_PATH': ':memory:'})
+    client = TestClient(app)
+    lead = client.post(
+        '/api/leads/upsert',
+        json={
+            'trace_id': 'trace-auto-bind-reconcile',
+            'source_platform': 'meta',
+            'source_page_id': 'page-auto-bind-reconcile',
+            'country': 'Indonesia',
+            'area_code': 62,
+            'mobile': '81230000001',
+            'app_name': 'Linky',
+            'dept_name': 'Permata',
+            'pendaftaran_group': 'Permata-1',
+        },
+    ).json()
+    with app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE leads SET current_status = ?, updated_at = ? WHERE lead_id = ?",
+            ('bind_failed', '2026-04-22T05:47:07.915336+00:00', lead['lead_id']),
+        )
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at, status, started_at, raw_result
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'task_bind_residue_1',
+                lead['lead_id'],
+                'bind_check',
+                'P0',
+                json.dumps({'lead_id': lead['lead_id'], 'account_id': 'acc-1'}, ensure_ascii=False),
+                'bind_residue_test',
+                'system',
+                '2026-04-22T05:47:00.860320+00:00',
+                'processing',
+                '2026-04-27T04:59:35.462072+00:00',
+                '{}',
+            ),
+        )
+        conn.commit()
+    result = app.state.service.reconcile_task_residue(force=True)
+    assert result['bind_reconciled_count'] == 1
+    with app.state.service.db.connect() as conn:
+        row = conn.execute(
+            "SELECT status, result_code, result_reason FROM automation_tasks WHERE task_id = ?",
+            ('task_bind_residue_1',),
+        ).fetchone()
+    assert row['status'] == 'failed'
+    assert row['result_code'] == 'bind_auto_reconciled_failed'
+    assert 'auto-closed' in row['result_reason']
+
+
+def test_reconcile_task_residue_auto_closes_duplicate_and_stale_group_join_residue():
+    app = create_app({'DB_PATH': ':memory:'})
+    client = TestClient(app)
+    lead = client.post(
+        '/api/leads/upsert',
+        json={
+            'trace_id': 'trace-auto-group-reconcile',
+            'source_platform': 'meta',
+            'source_page_id': 'page-auto-group-reconcile',
+            'country': 'Indonesia',
+            'area_code': 62,
+            'mobile': '81230000002',
+            'app_name': 'Linky',
+            'dept_name': 'Permata',
+            'pendaftaran_group': 'Permata-1',
+        },
+    ).json()
+    with app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE leads SET current_status = ?, updated_at = ? WHERE lead_id = ?",
+            ('bind_success', '2026-04-16T06:27:43.711556+00:00', lead['lead_id']),
+        )
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at, status, raw_result
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'task_group_residue_old',
+                lead['lead_id'],
+                'group_join',
+                'P0',
+                json.dumps({'lead_id': lead['lead_id'], 'account_id': 'acc-2', 'target_group': 'official-group-permata'}, ensure_ascii=False),
+                'group_residue_test_old',
+                'system',
+                '2026-04-16T06:12:03Z',
+                'pending',
+                '{}',
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at, status, raw_result
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'task_group_residue_new',
+                lead['lead_id'],
+                'group_join',
+                'P0',
+                json.dumps({'lead_id': lead['lead_id'], 'account_id': 'acc-2', 'target_group': 'official-group-permata'}, ensure_ascii=False),
+                'group_residue_test_new',
+                'system',
+                '2026-04-16T14:10:00Z',
+                'pending',
+                '{}',
+            ),
+        )
+        conn.commit()
+    app.state.service._official_group_requester_pending_in_runtime = lambda **kwargs: False
+    result = app.state.service.reconcile_task_residue(force=True)
+    assert result['group_join_reconciled_count'] == 2
+    with app.state.service.db.connect() as conn:
+        rows = conn.execute(
+            "SELECT task_id, status, result_code FROM automation_tasks WHERE lead_id = ? AND task_type = 'group_join' ORDER BY task_id ASC",
+            (lead['lead_id'],),
+        ).fetchall()
+        refreshed_lead = conn.execute(
+            "SELECT current_status FROM leads WHERE lead_id = ?",
+            (lead['lead_id'],),
+        ).fetchone()
+    by_task = {row['task_id']: dict(row) for row in rows}
+    assert by_task['task_group_residue_old']['status'] == 'cancelled'
+    assert by_task['task_group_residue_old']['result_code'] == 'group_join_auto_superseded_duplicate'
+    assert by_task['task_group_residue_new']['status'] == 'failed'
+    assert by_task['task_group_residue_new']['result_code'] == 'group_join_auto_closed_missing_runtime_requester'
+    assert refreshed_lead['current_status'] == 'group_join_failed'
+
+
+
+def test_reconcile_task_residue_promotes_stale_group_join_to_success_when_verified_official_group_exists():
+    app = create_app({'DB_PATH': ':memory:'})
+    client = TestClient(app)
+    lead = client.post(
+        '/api/leads/upsert',
+        json={
+            'trace_id': 'trace-auto-group-verified-success',
+            'source_platform': 'meta',
+            'source_page_id': 'page-auto-group-verified-success',
+            'country': 'Indonesia',
+            'area_code': 62,
+            'mobile': '81230000012',
+            'app_name': 'Linky',
+            'dept_name': 'Permata',
+            'pendaftaran_group': 'Permata-12',
+        },
+    ).json()
+    with app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE leads SET current_status = ?, crm_verified_at = ?, crm_verified_official_group = ?, updated_at = ? WHERE lead_id = ?",
+            ('bind_success', '2026-04-16T14:20:00Z', 'official-group-permata', '2026-04-16T14:20:00Z', lead['lead_id']),
+        )
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at, status, raw_result
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'task_group_verified_success',
+                lead['lead_id'],
+                'group_join',
+                'P0',
+                json.dumps({'lead_id': lead['lead_id'], 'account_id': 'acc-12', 'target_group': 'official-group-permata'}, ensure_ascii=False),
+                'group_verified_success',
+                'system',
+                '2026-04-16T14:10:00Z',
+                'pending',
+                '{}',
+            ),
+        )
+        conn.commit()
+    app.state.service._official_group_requester_pending_in_runtime = lambda **kwargs: False
+    result = app.state.service.reconcile_task_residue(force=True)
+    assert result['group_join_reconciled_count'] == 1
+    with app.state.service.db.connect() as conn:
+        task = conn.execute(
+            "SELECT status, result_code, result_reason FROM automation_tasks WHERE task_id = ?",
+            ('task_group_verified_success',),
+        ).fetchone()
+        refreshed_lead = conn.execute(
+            "SELECT current_status FROM leads WHERE lead_id = ?",
+            (lead['lead_id'],),
+        ).fetchone()
+        history = conn.execute(
+            "SELECT from_status, to_status, trigger_type, remark FROM lead_status_history WHERE lead_id = ? ORDER BY created_at DESC LIMIT 1",
+            (lead['lead_id'],),
+        ).fetchone()
+    assert task['status'] == 'success'
+    assert task['result_code'] == 'group_join_auto_reconciled_success_from_verified_official_group'
+    assert refreshed_lead['current_status'] == 'group_join_success'
+    assert history['from_status'] == 'bind_success'
+    assert history['to_status'] == 'group_join_success'
+    assert history['trigger_type'] == 'group_join_auto_reconciled'
+    assert history['remark'] == 'group_join_auto_reconciled_success_from_verified_official_group'
+
+
+
+def test_reconcile_task_residue_auto_closes_stale_crm_tasks_from_terminal_evidence():
+    app = create_app({'DB_PATH': ':memory:'})
+    client = TestClient(app)
+    lead = client.post(
+        '/api/leads/upsert',
+        json={
+            'trace_id': 'trace-auto-crm-reconcile',
+            'source_platform': 'meta',
+            'source_page_id': 'page-auto-crm-reconcile',
+            'country': 'Indonesia',
+            'area_code': 62,
+            'mobile': '81230000003',
+            'app_name': 'Linky',
+            'dept_name': 'Piso',
+            'pendaftaran_group': 'Piso-5',
+        },
+    ).json()
+    with app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE leads SET current_status = ?, crm_verified_at = ?, updated_at = ? WHERE lead_id = ?",
+            ('synced', '2026-04-16T10:02:00Z', '2026-04-16T10:02:00Z', lead['lead_id']),
+        )
+        conn.execute(
+            "INSERT INTO automation_tasks (task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at, status, raw_result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ('task_crm_residue_1', lead['lead_id'], 'crm_sync', 'P0', json.dumps({'source': 'test'}, ensure_ascii=False), 'crm_residue_sync', 'system', '2026-04-16T09:00:00Z', 'pending', '{}'),
+        )
+        conn.execute(
+            "INSERT INTO sync_logs (sync_log_id, lead_id, task_id, sync_type, target_system, status, request_snapshot, response_snapshot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                'sync_crm_residue_1',
+                lead['lead_id'],
+                'task_crm_residue_1',
+                'customer_upsert',
+                'crm',
+                'success',
+                json.dumps({'appName': 'Linky', 'deptName': 'Piso', 'pendaftaranGroup': 'Piso-5'}, ensure_ascii=False),
+                json.dumps({'action': 'create', 'crm_response': {'code': 0}, 'verified_after_write': True}, ensure_ascii=False),
+                '2026-04-16T10:01:00Z',
+            ),
+        )
+        conn.commit()
+    result = app.state.service.reconcile_task_residue(force=True)
+    assert result['crm_reconciled_count'] == 1
+    with app.state.service.db.connect() as conn:
+        row = conn.execute("SELECT status, result_code FROM automation_tasks WHERE task_id = ?", ('task_crm_residue_1',)).fetchone()
+    assert row['status'] == 'success'
+    assert row['result_code'] == 'crm_auto_reconciled_success'
+
+
+
+def test_task_residue_reconcile_hooks_are_wired_to_worker_and_queue():
+    app = create_app({'DB_PATH': ':memory:'})
+    service = app.state.service
+    calls = []
+
+    def _spy(*, force=False):
+        calls.append(force)
+        return {'attempted': True, 'bind_reconciled_count': 0, 'group_reconciled_count': 0, 'crm_reconciled_count': 0}
+
+    service.reconcile_task_residue = _spy
+    result = service.process_next_worker_tick()
+    assert result is None
+    queue = service.approval_batch_queue()
+    assert isinstance(queue, dict)
+    assert calls == [False, False]
 
 
 def test_async_lark_ingress_rate_limits_by_sender(tmp_path):

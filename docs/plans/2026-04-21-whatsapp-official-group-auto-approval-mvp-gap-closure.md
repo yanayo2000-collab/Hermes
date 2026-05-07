@@ -42,8 +42,10 @@ MVP 不是只做 `group_join_result` 回写，而是要形成这条业务闭环�
    - `appName`
    - `deptName`
    - `pendaftaranGroup`
-11. 若 CRM 已显示目标官方群已存在（如 `wa == target_group`），则应判定为重复审批，不再重复放行
-12. eligibility check 的结果必须可审计
+11. 若 CRM 已显示目标官方群已存在（如 `wa == target_group`），则默认判定为重复审批，不再重复放行
+12. 但若该申请人当前仍真实存在于官方群待审批列表中（典型场景：误退群后重新申请），且 live CRM 仍命中、并且本地无异常标记，则允许重新自动审批通过
+13. 若命中异常标记（如 `manual_review_pending` / `review_status in {pending,retry_requested,rejected}` / `routing_decision=manual_review`），即使 live CRM 命中且申请人仍在待审批列表，也必须拦截并转人工复核
+14. eligibility check 的结果必须可审计
 
 ### C. 官方群自动审批执行
 13. 系统需要一个官方群审批执行器（API / 浏览器自动化 / 其他稳定执行器）
@@ -139,6 +141,7 @@ MVP 不是只做 `group_join_result` 回写，而是要形成这条业务闭环�
 - 校验当前 lead 是否已有 CRM verify 信号
 - 回查 CRM 是否存在匹配客户
 - 检查 CRM 当前 `wa` 是否已指向目标官方群
+- 对“误退群后重新申请”的场景做例外放行：若申请人当前仍在官方群真实待审批列表、live CRM 命中且无异常标记，则允许重新自动审批
 - 返回 `eligible / reason_code / next_action / crm_snapshot`
 
 ### 第二批：审批决策接口 + 执行器抽象

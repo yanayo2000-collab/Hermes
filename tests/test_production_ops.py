@@ -153,6 +153,65 @@ def test_build_incidents_skips_false_positive_when_final_status_already_succeede
     assert incidents == []
 
 
+def test_build_incidents_marks_startup_initial_batch_failed_when_approval_passed_but_crm_failed():
+    cycle = {
+        'checked_at': '2026-05-06T06:58:14+00:00',
+        'registration_group': 'RG',
+        'backend_health': {'ok': True},
+        'worker_state': {'ok': True},
+        'release_evaluation': {'ok': True},
+        'startup_initial_batch': {
+            'triggered': True,
+            'ok': True,
+            'session_id': 'session-58',
+            'pending_count': 2,
+            'attempt_results': [
+                {
+                    'returncode': 0,
+                    'result': {
+                        'formal_run': {
+                            'approval_run_id': 'startup-run-58',
+                            'final_status': {
+                                'result': {
+                                    'verified': True,
+                                    'crm_recorded': False,
+                                    'result_code': 'approved',
+                                }
+                            },
+                        }
+                    },
+                }
+            ],
+        },
+    }
+
+    incidents = build_incidents(cycle)
+
+    assert [item['code'] for item in incidents] == ['startup_initial_batch_failed']
+    assert incidents[0]['details']['session_id'] == 'session-58'
+    assert incidents[0]['details']['last_verified'] is True
+    assert incidents[0]['details']['last_crm_recorded'] is False
+
+
+def test_build_incidents_skips_worker_state_failed_after_retry_recovery():
+    cycle = {
+        'backend_health': {'ok': True},
+        'worker_state': {
+            'ok': True,
+            'payload': {'group_name': 'RG', 'pending_count': 0},
+            'recovered_after_retry': True,
+            'retry_attempts': [
+                {'attempt': 1, 'error': '<urlopen error [Errno 61] Connection refused>'},
+            ],
+        },
+    }
+
+    incidents = build_incidents(cycle)
+
+    assert incidents == []
+
+
+
 def test_build_success_notifications_emits_registration_group_approval_success_once_per_run():
     cycle = {
         'checked_at': '2026-04-29T05:57:32+00:00',
@@ -194,10 +253,176 @@ def test_build_success_notifications_emits_registration_group_approval_success_o
 
 
 
+def test_build_success_notifications_emits_official_group_approval_success_with_notify_profile():
+    cycle = {
+        'checked_at': '2026-05-06T07:21:10+00:00',
+        'registration_group': 'RG',
+        'official_group_dispatch': {
+            'triggered': True,
+            'ok': True,
+            'ready_groups': [
+                {
+                    'target_group': 'official-group-permata',
+                    'group_name': '官方测试1',
+                    'account_key': 'official-4456-8277',
+                    'notify_profile_name': 'wa-approval-broadcast',
+                    'notify_robot_name': '审批bot01',
+                }
+            ],
+            'result': {
+                'results': [
+                    {
+                        'lead_id': 'lead_eb073994165d',
+                        'target_group': 'official-group-permata',
+                        'executed': True,
+                        'executor_result': {
+                            'status': 'success',
+                            'verified': True,
+                            'approved_count': 1,
+                            'raw_result': {
+                                'approval_run_id': 'official_group_approval_583b5427467e',
+                                'group_name': '官方测试1',
+                                'pending_after': 1,
+                                'member_count_after': 4,
+                            },
+                        },
+                    },
+                    {
+                        'lead_id': 'lead_9f16e7c94d66',
+                        'target_group': 'official-group-permata',
+                        'executed': True,
+                        'executor_result': {
+                            'status': 'success',
+                            'verified': True,
+                            'approved_count': 1,
+                            'raw_result': {
+                                'approval_run_id': 'official_group_approval_f69307e4acf6',
+                                'group_name': '官方测试1',
+                                'pending_after': 0,
+                                'member_count_after': 5,
+                            },
+                        },
+                    }
+                ]
+            },
+        },
+    }
+
+    notifications = build_success_notifications(cycle)
+
+    assert len(notifications) == 1
+    assert notifications[0]['code'] == 'official_group_approval_succeeded'
+    assert notifications[0]['summary'] == '官方群审批成功'
+    assert notifications[0]['notify_profile_name'] == 'wa-approval-broadcast'
+    assert notifications[0]['notify_robot_name'] == '审批bot01'
+    assert notifications[0]['details']['group_name'] == '官方测试1'
+    assert notifications[0]['details']['approved_count'] == 2
+    assert notifications[0]['details']['pending_after'] == 0
+    assert notifications[0]['details']['member_count_after'] == 5
+    assert notifications[0]['details']['approval_run_ids'] == [
+        'official_group_approval_583b5427467e',
+        'official_group_approval_f69307e4acf6',
+    ]
+    assert notifications[0]['dedupe_key'] == 'official_group_approval_succeeded:official_group_approval_583b5427467e|official_group_approval_f69307e4acf6'
+
+
+def test_build_success_notifications_emits_official_group_manual_review_for_crm_gap():
+    cycle = {
+        'checked_at': '2026-05-06T07:21:10+00:00',
+        'registration_group': 'RG',
+        'official_group_dispatch': {
+            'triggered': True,
+            'ok': True,
+            'ready_groups': [
+                {
+                    'target_group': 'official-group-permata',
+                    'group_name': '官方测试1',
+                    'account_key': 'official-4456-8277',
+                    'notify_profile_name': 'wa-approval-broadcast',
+                    'notify_robot_name': '审批bot01',
+                }
+            ],
+            'result': {
+                'results': [
+                    {
+                        'lead_id': 'lead_missing_crm',
+                        'target_group': 'official-group-permata',
+                        'executed': False,
+                        'reason_code': 'crm_customer_not_found',
+                        'reason_detail': 'No matching CRM customer was found for approval gating.',
+                        'next_action': 'manual_review_official_group_approval',
+                        'mobile': '+62812345678',
+                    }
+                ]
+            },
+        },
+    }
+
+    notifications = build_success_notifications(cycle)
+
+    assert len(notifications) == 1
+    assert notifications[0]['code'] == 'official_group_manual_review_required'
+    assert notifications[0]['severity'] == 'warning'
+    assert notifications[0]['summary'] == '官方群审批需人工复核'
+    assert notifications[0]['notify_profile_name'] == 'wa-approval-broadcast'
+    assert notifications[0]['notify_robot_name'] == '审批bot01'
+    assert notifications[0]['details']['group_name'] == '官方测试1'
+    assert notifications[0]['details']['lead_id'] == 'lead_missing_crm'
+    assert notifications[0]['details']['mobile'] == '+62812345678'
+    assert notifications[0]['details']['reason_code'] == 'crm_customer_not_found'
+    assert notifications[0]['reason_text'] == 'CRM无记录，请人工复核'
+    assert notifications[0]['dedupe_key'] == 'official_group_manual_review_required:official-group-permata:lead_missing_crm:crm_customer_not_found'
+
+
+
+def test_build_success_notifications_falls_back_to_requester_phone_for_official_group_manual_review():
+    cycle = {
+        'checked_at': '2026-05-06T09:29:04+00:00',
+        'registration_group': 'RG',
+        'official_group_dispatch': {
+            'triggered': True,
+            'ok': True,
+            'ready_groups': [
+                {
+                    'target_group': 'official-group-permata',
+                    'group_name': '官方测试1',
+                    'account_key': 'official-4456-8277',
+                    'notify_profile_name': 'wa-approval-broadcast',
+                    'notify_robot_name': '审批bot01',
+                }
+            ],
+            'result': {
+                'results': [
+                    {
+                        'target_group': 'official-group-permata',
+                        'executed': False,
+                        'reason_code': 'official_group_requester_unmatched',
+                        'next_action': 'manual_review_official_group_approval',
+                        'requester': {
+                            'phoneNormalized': '+852****5475',
+                            'phoneRaw': '+852****5475',
+                        },
+                    }
+                ]
+            },
+        },
+    }
+
+    notifications = build_success_notifications(cycle)
+
+    assert len(notifications) == 1
+    assert notifications[0]['code'] == 'official_group_manual_review_required'
+    assert notifications[0]['details']['mobile'] == '+852****5475'
+    text = format_lark_alert('production-ops-daemon', notifications[0], cycle)
+    assert '账号: +852****5475' in text
+
+
+
 def test_format_lark_alert_contains_summary_and_reason():
     cycle = {
         'checked_at': '2026-04-28T10:00:00+00:00',
-        'registration_group': 'RG',
+        'registration_group': '120363422719530134@g.us',
+        'monitor_target': {'group_name': '注册测试1'},
         'formal_approval': {
             'triggered': True,
             'fingerprint': 'abc',
@@ -214,18 +439,50 @@ def test_format_lark_alert_contains_summary_and_reason():
 
     text = format_lark_alert('production-ops-daemon', incident, cycle)
 
-    assert '[production-ops-daemon] CRITICAL formal_approval_failed' in text
+    assert '🚨 生产守护告警｜正式审批失败' in text
     assert '时间: 2026-04-28 18:00:00 UTC+8' in text
-    assert '注册群: RG' in text
+    assert '注册群: 注册测试1' in text
     assert '批次人数: 8' in text
     assert '原因: 审批脚本执行失败' in text
+
+
+def test_format_lark_alert_contains_official_group_manual_review_context():
+    cycle = {
+        'checked_at': '2026-05-06T07:21:10+00:00',
+        'registration_group': '120363422719530134@g.us',
+        'monitor_target': {'group_name': '注册测试1'},
+    }
+    notification = {
+        'severity': 'warning',
+        'code': 'official_group_manual_review_required',
+        'summary': '官方群审批需人工复核',
+        'details': {
+            'group_name': '官方测试1',
+            'lead_id': 'lead_missing_crm',
+            'mobile': '+62812345678',
+            'reason_code': 'crm_customer_not_found',
+            'reason_detail': 'No matching CRM customer was found for approval gating.',
+        },
+        'reason_text': 'CRM无记录，请人工复核',
+    }
+
+    text = format_lark_alert('production-ops-daemon', notification, cycle)
+
+    assert '⚠️🙋🏻‍♀️⚠️官方群审批需人工复核' in text
+    assert '时间: 2026-05-06 15:21:10 UTC+8' in text
+    assert '官方群: 官方测试1' in text
+    assert '账号: +62812345678' in text
+    assert '原因: CRM无记录，请人工复核' in text
+    assert 'SID:' not in text
+    assert '注册群:' not in text
 
 
 
 def test_format_lark_alert_contains_compact_success_summary():
     cycle = {
         'checked_at': '2026-04-29T05:57:32+00:00',
-        'registration_group': 'RG',
+        'registration_group': '120363422719530134@g.us',
+        'monitor_target': {'group_name': '注册测试1'},
         'formal_approval': {
             'triggered': True,
             'ok': True,
@@ -256,11 +513,67 @@ def test_format_lark_alert_contains_compact_success_summary():
 
     text = format_lark_alert('production-ops-daemon', notification, cycle)
 
-    assert '[production-ops-daemon] INFO formal_approval_succeeded' in text
+    assert '✅ 生产守护通知｜注册群审批成功' in text
     assert '时间: 2026-04-29 13:57:32 UTC+8' in text
-    assert '注册群: RG' in text
+    assert '注册群: 注册测试1' in text
     assert '通过人数: 2' in text
-    assert '原因: 已审批通过 2 人，当前待审批 0 人，群成员 6 人' in text
+    assert '原因: 已审批通过 2 人' in text
+
+
+
+def test_format_lark_alert_contains_official_group_success_context():
+    cycle = {
+        'checked_at': '2026-05-06T07:21:10+00:00',
+        'registration_group': '120363422719530134@g.us',
+        'monitor_target': {'group_name': '注册测试1'},
+    }
+    notification = {
+        'severity': 'info',
+        'code': 'official_group_approval_succeeded',
+        'summary': '官方群审批成功',
+        'details': {
+            'group_name': '官方测试1',
+            'approved_count': 2,
+        },
+    }
+
+    text = format_lark_alert('production-ops-daemon', notification, cycle)
+
+    assert '✅ 生产守护通知｜官方群审批成功' in text
+    assert '时间: 2026-05-06 15:21:10 UTC+8' in text
+    assert '官方群: 官方测试1' in text
+    assert '注册群:' not in text
+    assert '通过人数: 2' in text
+    assert '原因: 已审批通过 2 人' in text
+
+
+
+def test_format_lark_alert_supports_hot_loaded_templates(tmp_path, monkeypatch):
+    template_path = tmp_path / 'production_ops_alert_templates.json'
+    template_path.write_text(
+        '{"headers":{"info":{"icon":"🟢","label":"极简通知"}},"reasons":{"startup_initial_batch_succeeded":"首批已过 {approved_count} 人"}}',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr('app.production_ops.DEFAULT_ALERT_TEMPLATES_PATH', template_path)
+    cycle = {
+        'checked_at': '2026-05-06T07:21:10+00:00',
+        'registration_group': '120363422719530134@g.us',
+        'monitor_target': {'group_name': '注册测试1'},
+    }
+    incident = {
+        'severity': 'info',
+        'code': 'startup_initial_batch_succeeded',
+        'summary': '启动首批审批成功',
+        'details': {'approved_count': 3},
+    }
+
+    text = format_lark_alert('production-ops-daemon', incident, cycle)
+
+    assert '🟢 极简通知｜启动首批审批成功' in text
+    assert '注册群: 注册测试1' in text
+    assert '原因: 首批已过 3 人' in text
+
+
 
 
 def test_format_lark_alert_uses_compact_startup_reason_without_raw_details():

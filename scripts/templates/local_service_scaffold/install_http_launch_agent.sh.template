@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT_DIR/scripts/lib/launchd_service.sh"
+source "$ROOT_DIR/scripts/lib/port_utils.sh"
+PLIST_SOURCE="$ROOT_DIR/scripts/launchd/{{LABEL}}.plist"
+PLIST_TARGET="$HOME/Library/LaunchAgents/{{LABEL}}.plist"
+LABEL="{{LABEL}}"
+
+mkdir -p "$HOME/Library/LaunchAgents" "$ROOT_DIR/logs"
+cp "$PLIST_SOURCE" "$PLIST_TARGET"
+chmod 644 "$PLIST_TARGET"
+chmod +x "$ROOT_DIR/scripts/run_{{SERVICE_SLUG}}.sh" "$ROOT_DIR/scripts/start_{{SERVICE_SLUG}}.sh"
+
+terminate_listener {{PORT}}
+launchd_bootstrap_service "$LABEL" "$PLIST_TARGET"
+if wait_for_launchd_http_service "$LABEL" '{{HEALTH_URL}}' 30 2; then
+  echo '{"status":"ok","service":"{{LABEL}}"}'
+  exit 0
+fi
+
+echo "{{SERVICE_NAME}} launch agent installed but verification timed out" >&2
+exit 1
