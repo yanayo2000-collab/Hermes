@@ -6,6 +6,7 @@ __pycache__/
 .env
 .DS_Store
 logs/
+webjs-approval-worker/logs/
 webjs-approval-worker/.wwebjs_auth/
 webjs-approval-worker/.wwebjs_auth_accounts/
 webjs-approval-worker/.wwebjs_auth_dedicated/
