@@ -5,3 +5,9 @@ __pycache__/
 .pytest_cache/
 .env
 .DS_Store
+logs/
+webjs-approval-worker/.wwebjs_auth/
+webjs-approval-worker/.wwebjs_auth_accounts/
+webjs-approval-worker/.wwebjs_auth_dedicated/
+webjs-approval-worker/.wwebjs_cache/
+data/automation.db
