@@ -12,7 +12,6 @@ from typing import Any, Dict, Optional
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_PATH = ROOT / 'registration_group_production_release_latest.json'
 API_ROOT = 'http://127.0.0.1:8011'
-WORKER_ROOT = 'http://127.0.0.1:8787'
 REGISTRATION_GROUP = '🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎'
 POLL_INTERVAL_SECONDS = 15
 STATUS_POLL_INTERVAL_SECONDS = 2
@@ -46,9 +45,7 @@ def write_output(payload: Dict[str, Any]) -> None:
 
 def worker_group_state() -> Dict[str, Any]:
     return fetch_json(
-        f'{WORKER_ROOT}/group-state',
-        method='POST',
-        payload={'registration_group': REGISTRATION_GROUP},
+        f'{API_ROOT}/api/ops/registration-group-approval-executor-group-state?registration_group={urllib.parse.quote(REGISTRATION_GROUP, safe="")}',
         timeout=90.0,
     )
 

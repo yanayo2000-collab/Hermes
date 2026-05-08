@@ -668,15 +668,46 @@ def test_official_group_bridge_dashboard_page_loads():
     assert '官方群审批桥接台' in text
     assert 'page-shell' in text
     assert 'shell-nav' in text
+    assert '注册群审批留存页' in text
     assert '桥接概况' in text
     assert '请求队列' in text
     assert '处理面板' in text
-    assert '/ops/official-group-bridge/requests' in text
-    assert '/ops/official-group-bridge/summary' in text
-    assert '待处理请求' in text
-    assert '待处理超时请求' in text
-    assert 'approved_by_operator' in text
-    assert 'rejected_by_operator' in text
+    assert '查看请求队列并处理人工桥接结果。' in text
+    assert 'Bridge Queue' not in text
+    assert 'manual_queue 请求池' not in text
+    assert '请求ID' in text
+    assert '状态' in text
+    assert '目标群' in text
+    assert '线索ID' in text
+    assert '模式' in text
+    assert '更新时间' in text
+    assert '待处理' in text
+    assert '已处理' in text
+    assert '桥接模式' in text
+    assert '处理结果' in text
+    assert '处理结果码' not in text
+    assert '处理原因' not in text
+    assert '处理说明' in text
+    assert '请求摘要' in text
+    assert '响应摘要' in text
+    assert '处理结果摘要' in text
+    assert '查看原始请求' in text
+    assert '查看原始响应' in text
+    assert '查看原始处理结果' in text
+    assert 'panel-head' in text
+    assert '.layout > .card { margin-top:0; }' in text
+    assert 'summarizeRequestPayload' in text
+    assert 'summarizeResponsePayload' in text
+    assert 'summarizeResolutionPayload' in text
+    assert '人工通过' in text
+    assert '人工拒绝' in text
+    assert '转人工跟进' in text
+    assert '可重试失败' in text
+    assert '例如 值班审批1 / 邮箱 / 工号' in text
+    assert '例如 雨琦 / 值班同学' in text
+    assert '例如 已核对后通过' in text
+    assert '已人工核对并通过。' in text
+    assert '例如 值班审批1 / 邮箱 / 工号' in text
     assert 'manual_follow_up_required' in text
     assert 'applyResolutionTemplate' in text
     assert 'http://127.0.0.1:8011/ops' in text

@@ -1006,12 +1006,32 @@ async function groupState(context) {
   return buildGroupStateFromGroup(context, group);
 }
 
+async function probeGroupState(context) {
+  if (!state.ready) {
+    throw new Error(state.last_qr ? 'probe client awaiting qr scan' : 'probe client is not ready');
+  }
+  const group = await resolveGroup(context.registration_group);
+  return buildGroupStateFromGroup(context, group);
+}
+
 async function groupStateWithRecovery(context) {
   try {
     return await groupState(context);
   } catch (error) {
     if (isRecoverableApprovalClientError(error)) {
       const group = await reloadApprovalGroupFromFreshSession(context, error && error.stack ? error.stack : error);
+      return await buildGroupStateFromGroup(context, group);
+    }
+    throw error;
+  }
+}
+
+async function probeGroupStateWithRecovery(context) {
+  try {
+    return await probeGroupState(context);
+  } catch (error) {
+    if (isRecoverableClientError(error)) {
+      const group = await reloadGroupFromFreshSession(context, error && error.stack ? error.stack : error);
       return await buildGroupStateFromGroup(context, group);
     }
     throw error;
@@ -1441,6 +1461,31 @@ const server = http.createServer(async (req, res) => {
       logEvent('group_state', {
         registration_group: payload.registration_group || null,
         auth_strategy: approvalState.auth_strategy,
+        group_id: result.group_id || null,
+        group_name: result.group_name || payload.registration_group || null,
+        pending_count: result.pending_count,
+        member_count: result.member_count,
+        requester_ids: result.requester_ids || [],
+      });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/probe-group-state') {
+      const payload = await collectJson(req);
+      state.last_action_at = new Date().toISOString();
+      const result = await withActionLock(async () => {
+        await ensureClientStarted();
+        await waitForReady(QR_TIMEOUT_MS).catch(() => {
+          if (!state.ready) {
+            throw new Error(state.last_qr ? 'probe client awaiting qr scan' : 'probe client not ready');
+          }
+        });
+        return await probeGroupStateWithRecovery(payload);
+      });
+      logEvent('probe_group_state', {
+        registration_group: payload.registration_group || null,
+        auth_strategy: state.auth_strategy,
         group_id: result.group_id || null,
         group_name: result.group_name || payload.registration_group || null,
         pending_count: result.pending_count,

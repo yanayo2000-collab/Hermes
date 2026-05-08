@@ -37,13 +37,31 @@ def test_webjs_worker_group_state_uses_same_approval_client_as_real_approval_pat
     assert "return await groupStateWithRecovery(payload);" in server_text
 
 
-def test_fresh_group_state_script_supports_invite_links_and_group_ids():
+def test_webjs_worker_exposes_probe_group_state_route_for_runtime_probe_client():
+    server_text = Path('webjs-approval-worker/src/server.js').read_text()
+
+    assert "async function probeGroupState(context) {" in server_text
+    assert "async function probeGroupStateWithRecovery(context) {" in server_text
+    assert "if (req.method === 'POST' && req.url === '/probe-group-state') {" in server_text
+    assert "await ensureClientStarted();" in server_text
+    assert "await waitForReady(QR_TIMEOUT_MS).catch(() => {" in server_text
+    assert "return await probeGroupStateWithRecovery(payload);" in server_text
+    assert "auth_strategy: state.auth_strategy," in server_text
+    assert "if (isRecoverableClientError(error)) {" in server_text
+
+
+def test_fresh_group_state_script_uses_runtime_probe_endpoint_instead_of_temp_browser_copy():
     script_text = Path('scripts/fresh_webjs_group_state.js').read_text()
 
-    assert 'async function resolveGroup(activeClient, targetValue) {' in script_text
-    assert 'const inviteInfo = await activeClient.getInviteInfo(inviteCode);' in script_text
-    assert 'const groupId = inviteInfoGroupId(inviteInfo);' in script_text
-    assert 'const group = await resolveGroup(client, registrationGroup);' in script_text
+    assert "usage: fresh_webjs_group_state.js <registration_group> [worker_base_url]" in script_text
+    assert "async function resolveWorkerBaseUrl(targetValue) {" in script_text
+    assert '/api/ops/production-ops-daemon' in script_text
+    assert '/api/ops/whatsapp-approval-accounts' in script_text
+    assert '/probe-group-state' in script_text
+    assert "JSON.stringify({ registration_group: registrationGroup })" in script_text
+    assert "cp', ['-R'" not in script_text
+    assert "new NoAuth()" not in script_text
+    assert "new Client({" not in script_text
 
 
 def test_webjs_worker_restart_script_supports_dedicated_localauth_mode():
@@ -67,6 +85,7 @@ def test_webjs_worker_localauth_switch_helper_exports_dedicated_mode_and_reuses_
 def test_webjs_worker_status_helper_reads_health_endpoint():
     script_text = Path('scripts/registration_group_webjs_worker_status.sh').read_text()
 
-    assert 'http://127.0.0.1:8787/health' in script_text
+    assert 'REGISTRATION_GROUP_APPROVAL_WEBJS_BASE_URL' in script_text
+    assert 'REGISTRATION_GROUP_APPROVAL_WEBJS_HEALTH_URL' in script_text
     assert 'approval_auth_strategy' in script_text
     assert 'approval_auth_path' in script_text

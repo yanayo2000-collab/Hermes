@@ -6,7 +6,8 @@ AUTH_DATA_PATH_DEFAULT="$ROOT_DIR/webjs-approval-worker/.wwebjs_auth_dedicated"
 AUTH_DATA_PATH="${REGISTRATION_GROUP_APPROVAL_WEBJS_AUTH_DATA_PATH:-$AUTH_DATA_PATH_DEFAULT}"
 CLIENT_ID="${REGISTRATION_GROUP_APPROVAL_WEBJS_CLIENT_ID:-registration-group-approval}"
 LOG_FILE="$ROOT_DIR/logs/registration_group_webjs_worker.log"
-HEALTH_URL="${REGISTRATION_GROUP_APPROVAL_WEBJS_HEALTH_URL:-http://127.0.0.1:8787/health}"
+BASE_URL="${REGISTRATION_GROUP_APPROVAL_WEBJS_BASE_URL:-http://127.0.0.1:8787}"
+HEALTH_URL="${REGISTRATION_GROUP_APPROVAL_WEBJS_HEALTH_URL:-${BASE_URL%/}/health}"
 
 mkdir -p "$(dirname "$LOG_FILE")"
 mkdir -p "$AUTH_DATA_PATH"
@@ -23,7 +24,7 @@ import os
 import sys
 import urllib.request
 
-health_url = os.environ.get('REGISTRATION_GROUP_APPROVAL_WEBJS_HEALTH_URL', 'http://127.0.0.1:8787/health')
+health_url = os.environ.get('REGISTRATION_GROUP_APPROVAL_WEBJS_HEALTH_URL') or os.environ.get('HEALTH_URL') or 'http://127.0.0.1:8787/health'
 log_file = os.environ.get('REGISTRATION_GROUP_APPROVAL_WEBJS_LOG_FILE')
 with urllib.request.urlopen(health_url, timeout=15) as resp:
     body = json.loads(resp.read().decode('utf-8'))

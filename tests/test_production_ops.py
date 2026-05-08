@@ -5,12 +5,44 @@ from datetime import datetime, timedelta, timezone
 from app.production_ops import (
     build_incidents,
     build_success_notifications,
+    expand_notify_profile_targets,
     format_lark_alert,
     record_trigger,
     register_notification,
     requester_fingerprint,
     should_trigger_action,
 )
+
+
+def test_expand_notify_profile_targets_fanouts_broadcast_pair():
+    assert expand_notify_profile_targets('wa-approval-broadcast', '审批bot01') == [
+        {
+            'profile_name': 'wa-approval-broadcast',
+            'robot_name': '审批bot01',
+        },
+        {
+            'profile_name': 'wa-approval-broadcast-02',
+            'robot_name': '审批Bot02',
+        },
+    ]
+
+
+def test_expand_notify_profile_targets_keeps_bot02_single_target():
+    assert expand_notify_profile_targets('wa-approval-broadcast-02', '审批Bot02') == [
+        {
+            'profile_name': 'wa-approval-broadcast-02',
+            'robot_name': '审批Bot02',
+        }
+    ]
+
+
+def test_expand_notify_profile_targets_keeps_other_profiles_single_target():
+    assert expand_notify_profile_targets('custom-profile', '自定义机器人') == [
+        {
+            'profile_name': 'custom-profile',
+            'robot_name': '自定义机器人',
+        }
+    ]
 
 
 def test_requester_fingerprint_prefers_requester_id_and_timestamp():
@@ -250,6 +282,292 @@ def test_build_success_notifications_emits_registration_group_approval_success_o
     assert notifications[0]['dedupe_key'] == 'formal_approval_succeeded:registration_group_approval_4654cdd3a95b'
     assert notifications[0]['details']['approved_count'] == 2
     assert notifications[0]['details']['pending_after'] == 0
+
+
+
+def test_build_success_notifications_aggregates_drained_registration_group_runs_into_one_notice():
+    cycle = {
+        'checked_at': '2026-05-07T08:31:03+00:00',
+        'registration_group': 'RG',
+        'formal_approval': {
+            'triggered': True,
+            'ok': True,
+            'fingerprint': 'fp-1',
+            'release_count': 4,
+            'aggregate_approved_count': 8,
+            'final_pending_count': 0,
+            'drain_rounds': 2,
+            'approval_run_ids': [
+                'registration_group_approval_a787e528a6d8',
+                'registration_group_approval_af809ce6f284',
+            ],
+            'reason_code': 'timeout_flush',
+            'result': {
+                'formal_run': {
+                    'approval_run_id': 'registration_group_approval_af809ce6f284',
+                    'final_status': {
+                        'result': {
+                            'verified': True,
+                            'crm_recorded': True,
+                            'result_code': 'approved',
+                            'approved_count': 4,
+                            'pending_after': 0,
+                            'member_count_after': 444,
+                        }
+                    },
+                }
+            },
+        },
+    }
+
+    notifications = build_success_notifications(cycle)
+
+    assert len(notifications) == 1
+    assert notifications[0]['code'] == 'formal_approval_succeeded'
+    assert notifications[0]['details']['approval_run_ids'] == [
+        'registration_group_approval_a787e528a6d8',
+        'registration_group_approval_af809ce6f284',
+    ]
+    assert notifications[0]['details']['approved_count'] == 8
+    assert notifications[0]['details']['pending_after'] == 0
+    assert notifications[0]['details']['drain_rounds'] == 2
+    assert notifications[0]['dedupe_key'] == 'formal_approval_succeeded:registration_group_approval_a787e528a6d8|registration_group_approval_af809ce6f284'
+
+
+
+def test_build_success_notifications_skips_registration_cycle_noop_when_zero_pending_is_unverified():
+    cycle = {
+        'registration_group_cycles': [
+            {
+                'registration_group': 'RG',
+                'monitor_target': {'group_name': '注册测试1'},
+                'release_evaluation': {
+                    'ok': True,
+                    'payload': {
+                        'reason_code': 'waiting_next_cycle',
+                        'pending_count': 0,
+                        'cycle_started_at': '2026-05-08T01:30:00+00:00',
+                        'cycle_ends_at': '2026-05-08T02:00:00+00:00',
+                    },
+                },
+                'decision_group_state': {
+                    'source': 'worker_state',
+                    'zero_pending_unverified': True,
+                },
+                'fresh_probe': {
+                    'ok': False,
+                    'zero_pending_recheck': True,
+                    'fallback_used': True,
+                },
+            }
+        ]
+    }
+
+    notifications = build_success_notifications(cycle)
+
+    assert notifications == []
+
+
+def test_build_success_notifications_emits_registration_cycle_noop_notice_once_per_cycle():
+    cycle = {
+        'checked_at': '2026-05-07T03:30:10+00:00',
+        'registration_group_cycles': [
+            {
+                'registration_group': 'RG',
+                'monitor_target': {
+                    'group_name': '注册测试1',
+                    'registration_group': 'RG',
+                    'notify_profile_name': 'wa-approval-broadcast',
+                    'notify_robot_name': '审批bot01',
+                },
+                'release_evaluation': {
+                    'ok': True,
+                    'payload': {
+                        'pending_count': 0,
+                        'reason_code': 'waiting_next_cycle',
+                        'cycle_started_at': '2026-05-07T03:30:00+00:00',
+                        'cycle_ends_at': '2026-05-07T04:00:00+00:00',
+                    },
+                },
+            },
+        ],
+    }
+
+    notifications = build_success_notifications(cycle)
+
+    assert len(notifications) == 1
+    assert notifications[0]['code'] == 'registration_cycle_noop'
+    assert notifications[0]['summary'] == '注册群本轮无审批'
+    assert notifications[0]['details']['cycle_started_at'] == '2026-05-07T03:30:00+00:00'
+    assert notifications[0]['notify_profile_name'] == 'wa-approval-broadcast'
+    assert notifications[0]['notify_robot_name'] == '审批bot01'
+    assert notifications[0]['dedupe_key'] == 'registration_cycle_noop:注册测试1|2026-05-07T03:30:00+00:00'
+
+
+
+def test_build_success_notifications_emits_registration_group_success_from_non_primary_cycle():
+    cycle = {
+        'checked_at': '2026-05-08T03:30:10+00:00',
+        'monitor_target': {
+            'group_name': '主群A',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'notify_robot_name': '审批bot01',
+        },
+        'registration_group_cycles': [
+            {
+                'registration_group': 'group-a',
+                'monitor_target': {
+                    'group_name': '主群A',
+                    'notify_profile_name': 'wa-approval-broadcast',
+                    'notify_robot_name': '审批bot01',
+                },
+                'formal_approval': {
+                    'triggered': False,
+                },
+            },
+            {
+                'registration_group': 'group-b',
+                'monitor_target': {
+                    'group_name': '副群B',
+                    'notify_profile_name': 'wa-approval-broadcast-02',
+                    'notify_robot_name': '审批Bot02',
+                },
+                'formal_approval': {
+                    'triggered': True,
+                    'ok': True,
+                    'fingerprint': 'u1@100',
+                    'reason_code': 'timeout_flush',
+                    'aggregate_approved_count': 2,
+                    'final_pending_count': 0,
+                    'approval_run_ids': ['registration_group_approval_groupb'],
+                    'result': {
+                        'formal_run': {
+                            'approval_run_id': 'registration_group_approval_groupb',
+                            'result': {
+                                'verified': True,
+                                'crm_recorded': True,
+                                'approved_count': 2,
+                                'pending_after': 0,
+                                'member_count_after': 15,
+                                'result_code': 'approved',
+                            },
+                        }
+                    },
+                },
+            },
+        ],
+    }
+
+    notifications = build_success_notifications(cycle)
+
+    target = next(item for item in notifications if item['code'] == 'formal_approval_succeeded')
+    assert target['notify_profile_name'] == 'wa-approval-broadcast-02'
+    assert target['notify_robot_name'] == '审批Bot02'
+    assert target['details']['group_name'] == '副群B'
+    assert target['dedupe_key'] == 'formal_approval_succeeded:registration_group_approval_groupb'
+
+
+
+def test_build_success_notifications_emits_startup_success_from_non_primary_cycle():
+    cycle = {
+        'checked_at': '2026-05-08T03:40:10+00:00',
+        'monitor_target': {
+            'group_name': '主群A',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'notify_robot_name': '审批bot01',
+        },
+        'registration_group_cycles': [
+            {
+                'registration_group': 'group-a',
+                'monitor_target': {
+                    'group_name': '主群A',
+                    'notify_profile_name': 'wa-approval-broadcast',
+                    'notify_robot_name': '审批bot01',
+                },
+                'startup_initial_batch': {
+                    'triggered': False,
+                },
+            },
+            {
+                'registration_group': 'group-b',
+                'monitor_target': {
+                    'group_name': '副群B',
+                    'notify_profile_name': 'wa-approval-broadcast-02',
+                    'notify_robot_name': '审批Bot02',
+                },
+                'startup_initial_batch': {
+                    'triggered': True,
+                    'ok': True,
+                    'session_id': 'session-group-b',
+                    'attempt_results': [
+                        {
+                            'result': {
+                                'formal_run': {
+                                    'approval_run_id': 'startup_groupb',
+                                    'final_status': {
+                                        'result': {
+                                            'verified': True,
+                                            'crm_recorded': True,
+                                            'approved_count': 1,
+                                            'pending_after': 0,
+                                            'member_count_after': 9,
+                                            'result_code': 'approved',
+                                        }
+                                    },
+                                }
+                            }
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+
+    notifications = build_success_notifications(cycle)
+
+    target = next(item for item in notifications if item['code'] == 'startup_initial_batch_succeeded')
+    assert target['notify_profile_name'] == 'wa-approval-broadcast-02'
+    assert target['notify_robot_name'] == '审批Bot02'
+    assert target['details']['group_name'] == '副群B'
+    assert target['dedupe_key'] == 'startup_initial_batch_succeeded:startup_groupb'
+
+
+
+def test_build_success_notifications_skips_registration_cycle_noop_immediately_after_anchor_reset():
+    cycle = {
+        'checked_at': '2026-05-08T01:53:43+00:00',
+        'registration_group_cycles': [
+            {
+                'registration_group': 'RG',
+                'monitor_target': {
+                    'group_name': '注册测试1',
+                    'registration_group': 'RG',
+                },
+                'release_evaluation': {
+                    'ok': True,
+                    'payload': {
+                        'pending_count': 0,
+                        'reason_code': 'waiting_next_cycle',
+                        'cycle_anchor_at': '2026-05-08T01:53:02+00:00',
+                        'completed_cycles_since_anchor': 0,
+                        'cycle_started_at': '2026-05-08T01:53:02+00:00',
+                        'cycle_ends_at': '2026-05-08T02:23:02+00:00',
+                    },
+                },
+                'decision_group_state': {
+                    'source': 'worker_state',
+                    'mismatch': False,
+                },
+                'fresh_probe': {
+                    'ok': True,
+                },
+            },
+        ],
+    }
+
+    notifications = build_success_notifications(cycle)
+
+    assert notifications == []
 
 
 
@@ -516,8 +834,130 @@ def test_format_lark_alert_contains_compact_success_summary():
     assert '✅ 生产守护通知｜注册群审批成功' in text
     assert '时间: 2026-04-29 13:57:32 UTC+8' in text
     assert '注册群: 注册测试1' in text
-    assert '通过人数: 2' in text
+    assert '审批类型: 常规轮次' in text
+    assert '本次通过人数: 2' in text
+    assert '剩余待审批人数: 0' in text
     assert '原因: 已审批通过 2 人' in text
+
+
+
+def test_format_lark_alert_contains_precise_registration_manual_success_context():
+    cycle = {
+        'checked_at': '2026-05-07T05:05:30+00:00',
+        'registration_group': '120363425215002840@g.us',
+        'monitor_target': {'group_name': '注册测试1'},
+    }
+    notification = {
+        'severity': 'info',
+        'code': 'manual_approval_succeeded',
+        'summary': '注册群审批成功',
+        'details': {'approved_count': 2, 'pending_after': 0, 'member_count_after': 12},
+    }
+
+    text = format_lark_alert('production-ops-daemon', notification, cycle)
+
+    assert '✅ 生产守护通知｜注册群审批成功' in text
+    assert '注册群: 注册测试1' in text
+    assert '审批类型: 人工审批' in text
+    assert '本次通过人数: 2' in text
+    assert '剩余待审批人数: 0' in text
+
+
+
+def test_format_lark_alert_contains_empty_cycle_notice():
+    cycle = {
+        'checked_at': '2026-05-07T03:30:10+00:00',
+        'monitor_target': {'group_name': '注册测试1'},
+    }
+    notification = {
+        'severity': 'info',
+        'code': 'registration_cycle_noop',
+        'summary': '注册群本轮无审批',
+        'details': {
+            'cycle_started_at': '2026-05-07T03:30:00+00:00',
+            'cycle_ends_at': '2026-05-07T04:00:00+00:00',
+            'pending_count': 0,
+        },
+    }
+
+    text = format_lark_alert('production-ops-daemon', notification, cycle)
+
+    assert '✅ 生产守护通知｜注册群本轮无审批' in text
+    assert '注册群: 注册测试1' in text
+    assert '审批类型: 常规轮次' in text
+    assert '原因: 审批时间已到，未发生实际审批' in text
+def test_format_lark_alert_contains_registration_cycle_noop_context():
+    cycle = {
+        'checked_at': '2026-05-08T01:00:40+00:00',
+        'registration_group': 'RG-primary',
+        'monitor_target': {'group_name': '主群A'},
+    }
+    notification = {
+        'severity': 'info',
+        'code': 'registration_cycle_noop',
+        'summary': '注册群本轮无审批',
+        'details': {
+            'group_name': '副群B',
+            'cycle_started_at': '2026-05-08T01:00:00+00:00',
+            'cycle_ends_at': '2026-05-08T01:30:00+00:00',
+            'reason_code': 'waiting_next_cycle',
+        },
+    }
+
+    text = format_lark_alert('production-ops-daemon', notification, cycle)
+
+    assert '✅ 生产守护通知｜注册群本轮无审批' in text
+    assert '注册群: 副群B' in text
+    assert '注册群: 主群A' not in text
+    assert '审批类型: 常规轮次' in text
+    assert '原因: 审批时间已到，未发生实际审批' in text
+
+
+
+def test_format_lark_alert_contains_startup_success_context():
+    cycle = {
+        'checked_at': '2026-04-30T02:48:58+00:00',
+        'registration_group': '120363422719530134@g.us',
+        'monitor_target': {'group_name': '🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎'},
+        'startup_initial_batch': {
+            'triggered': True,
+            'ok': True,
+            'pending_count': 6,
+            'attempt_results': [
+                {
+                    'result': {
+                        'formal_run': {
+                            'approval_run_id': 'startup-success-1',
+                            'final_status': {
+                                'result': {
+                                    'verified': True,
+                                    'crm_recorded': True,
+                                    'approved_count': 6,
+                                    'pending_after': 3,
+                                    'member_count_after': 425,
+                                }
+                            }
+                        }
+                    }
+                }
+            ],
+        },
+    }
+    notification = {
+        'severity': 'info',
+        'code': 'startup_initial_batch_succeeded',
+        'summary': '启动首批审批成功',
+        'details': {'approved_count': 6, 'pending_after': 3, 'member_count_after': 425},
+    }
+
+    text = format_lark_alert('production-ops-daemon', notification, cycle)
+
+    assert '✅ 生产守护通知｜启动首批审批成功' in text
+    assert '注册群: 🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎' in text
+    assert '审批类型: 启动首批' in text
+    assert '本次通过人数: 6' in text
+    assert '剩余待审批人数: 3' in text
+    assert '原因: 启动首批审批已通过 6 人' in text
 
 
 
@@ -545,6 +985,7 @@ def test_format_lark_alert_contains_official_group_success_context():
     assert '注册群:' not in text
     assert '通过人数: 2' in text
     assert '原因: 已审批通过 2 人' in text
+    assert '启动首批审批已通过' not in text
 
 
 

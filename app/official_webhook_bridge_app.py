@@ -43,9 +43,9 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
     h1 { margin: 0 0 8px 0; }
     .muted { color: #6b7280; font-size: 13px; }
     .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 16px; margin-top: 16px; }
-    .toolbar { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 12px; }
-    input, select, textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; }
-    button { padding: 8px 12px; border: none; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; }
+    .toolbar { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 12px; align-items:end; }
+    input, select, textarea { width: 100%; box-sizing: border-box; min-height:40px; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; }
+    button { min-height:40px; padding: 8px 12px; border: none; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; }
     button.secondary { background: #374151; }
     button.success { background: #047857; }
     button.warn { background: #b45309; }
@@ -54,6 +54,8 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
     .summary-item .label { color: #6b7280; font-size: 12px; }
     .summary-item .value { font-size: 20px; font-weight: 700; margin-top: 6px; }
     .layout { display: grid; grid-template-columns: minmax(420px, 1.2fr) minmax(360px, 1fr); gap: 16px; align-items: start; }
+    .layout > .card { margin-top:0; }
+    .panel-head { min-height:84px; display:flex; flex-direction:column; justify-content:flex-start; }
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; min-width: 760px; }
     th, td { text-align: left; padding: 10px; border-bottom: 1px solid #e5e7eb; font-size: 13px; vertical-align: top; }
@@ -78,13 +80,12 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
       <a href="__OPS_BASE_URL__/ops">运营工作台</a>
       <a href="__OPS_BASE_URL__/ops/intake-bot-presets">收口配置中心</a>
       <a href="__OPS_BASE_URL__/ops/production-ops">群审批控制台</a>
+      <a href="__OPS_BASE_URL__/ops/registration-group-approval-batch-members">注册群审批留存页</a>
       <a href="__OPS_BASE_URL__/ops/official-group-bridge">官方群审批桥接台</a>
     </div>
     <div class="hero">
-      <div class="eyebrow">Bridge Queue</div>
       <h1>官方群审批桥接台</h1>
-      <div class="subtitle">用于长期运营 manual_queue 请求池，支持待处理筛选、详情查看和人工 resolve。接口基于 /ops/official-group-bridge/requests。</div>
-      <div class=\"muted\" style=\"margin-top:8px;\"><a href=\"__OPS_BASE_URL__/ops\">返回运营工作台</a></div>
+      <div class="subtitle">查看请求队列并处理人工桥接结果。</div>
     </div>
 
   <div class=\"card\">
@@ -95,17 +96,17 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
       <div class=\"summary-item\"><div class=\"label\">总请求数</div><div class=\"value\" id=\"totalCount\">-</div></div>
       <div class=\"summary-item\"><div class=\"label\">待处理超时请求</div><div class=\"value\" id=\"timeoutCount\">-</div></div>
       <div class=\"summary-item\"><div class=\"label\">今日新增</div><div class=\"value\" id=\"todayCreatedCount\">-</div></div>
-      <div class=\"summary-item\"><div class=\"label\">Bridge 模式</div><div class=\"value\" id=\"bridgeMode\">-</div></div>
+      <div class=\"summary-item\"><div class=\"label\">桥接模式</div><div class=\"value\" id=\"bridgeMode\">-</div></div>
     </div>
   </div>
 
   <div class=\"card\">
     <h2 style=\"margin-top:0;\">请求队列</h2>
     <div class=\"toolbar\">
-      <div><label class=\"muted\">状态</label><select id=\"filterStatus\"><option value=\"\">全部</option><option value=\"pending\">pending</option><option value=\"resolved\">resolved</option></select></div>
-      <div><label class=\"muted\">target_group</label><input id=\"filterTargetGroup\" placeholder=\"official-group-a\" /></div>
-      <div><label class=\"muted\">lead_id</label><input id=\"filterLeadId\" placeholder=\"lead_xxx\" /></div>
-      <div><label class=\"muted\">request_id</label><input id=\"filterRequestId\" placeholder=\"bridge_xxx\" /></div>
+      <div><label class=\"muted\">状态</label><select id=\"filterStatus\"><option value=\"\">全部</option><option value=\"pending\">待处理</option><option value=\"resolved\">已处理</option></select></div>
+      <div><label class=\"muted\">目标群</label><input id=\"filterTargetGroup\" placeholder=\"official-group-a\" /></div>
+      <div><label class=\"muted\">线索ID</label><input id=\"filterLeadId\" placeholder=\"lead_xxx\" /></div>
+      <div><label class=\"muted\">请求ID</label><input id=\"filterRequestId\" placeholder=\"bridge_xxx\" /></div>
     </div>
     <div class=\"actions\" style=\"margin-top:12px;\">
       <button onclick=\"loadRequests()\">刷新列表</button>
@@ -115,17 +116,20 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
 
   <div class=\"layout\">
     <div class=\"card\">
-      <h3 style=\"margin-top:0;\">待处理请求</h3>
+      <div class="panel-head">
+        <h3 style=\"margin-top:0;\">待处理请求</h3>
+        <div class="muted">按当前筛选查看待处理与已处理请求。</div>
+      </div>
       <div class=\"table-wrap\">
         <table>
           <thead>
             <tr>
-              <th>request_id</th>
-              <th>status</th>
-              <th>target_group</th>
-              <th>lead_id</th>
-              <th>mode</th>
-              <th>updated_at</th>
+              <th>请求ID</th>
+              <th>状态</th>
+              <th>目标群</th>
+              <th>线索ID</th>
+              <th>模式</th>
+              <th>更新时间</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -135,54 +139,122 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
     </div>
 
     <div class=\"card\">
-      <h3 style=\"margin-top:0;\">处理面板</h3>
-      <div class=\"muted\" style=\"margin-bottom:8px;\">详情 / 处理</div>
-      <div id=\"detailMeta\" class=\"muted\">选择一条请求查看详情。</div>
+      <div class="panel-head">
+        <h3 style=\"margin-top:0;\">处理面板</h3>
+        <div class=\"muted\">详情与处理</div>
+        <div id=\"detailMeta\" class=\"muted\">选择一条请求查看详情。</div>
+      </div>
       <div style=\"margin-top:12px;\" class=\"actions\">
         <button class=\"success\" onclick=\"resolveCurrent('success')\">通过</button>
         <button class=\"secondary\" onclick=\"resolveCurrent('failed')\">拒绝</button>
         <button class=\"warn\" onclick=\"resolveCurrent('manual_required')\">挂起</button>
       </div>
       <div class=\"toolbar\" style=\"margin-top:12px;\">
-        <div><label class=\"muted\">result_code</label><input id=\"resolveCode\" value=\"approved_by_operator\" /></div>
-        <div><label class=\"muted\">resolved_by</label><input id=\"resolvedBy\" placeholder=\"ou_xxx / email / operator id\" /></div>
-        <div><label class=\"muted\">resolved_by_name</label><input id=\"resolvedByName\" placeholder=\"处理人名称\" /></div>
-        <div><label class=\"muted\">note</label><input id=\"resolveNote\" placeholder=\"处理说明\" /></div>
+        <div><label class=\"muted\">处理结果</label><input id=\"resolveCode\" value=\"人工通过\" /></div>
+        <div><label class=\"muted\">处理人标识</label><input id=\"resolvedBy\" placeholder=\"例如 值班审批1 / 邮箱 / 工号\" /></div>
+        <div><label class=\"muted\">处理人名称</label><input id=\"resolvedByName\" placeholder=\"例如 雨琦 / 值班同学\" /></div>
+        <div><label class=\"muted\">备注</label><input id=\"resolveNote\" placeholder=\"例如 已核对后通过\" /></div>
       </div>
-      <div style=\"margin-top:12px;\"><label class=\"muted\">result_reason</label><textarea id=\"resolveReason\" rows=\"3\">approved by operator</textarea></div>
-      <div style=\"margin-top:12px;\"><div class=\"muted\">请求</div><pre id=\"requestJson\">{}</pre></div>
-      <div style=\"margin-top:12px;\"><div class=\"muted\">响应</div><pre id=\"responseJson\">{}</pre></div>
-      <div style=\"margin-top:12px;\"><div class=\"muted\">resolution</div><pre id=\"resolutionJson\">null</pre></div>
+      <div style=\"margin-top:12px;\"><label class=\"muted\">处理说明</label><textarea id=\"resolveReason\" rows=\"3\">已人工核对并通过。</textarea></div>
+      <div style=\"margin-top:12px;\">
+        <div class=\"muted\">请求摘要</div>
+        <div id=\"requestSummary\" class=\"muted\">暂无</div>
+        <details style=\"margin-top:6px;\">
+          <summary class=\"muted\">查看原始请求</summary>
+          <pre id=\"requestJson\">{}</pre>
+        </details>
+      </div>
+      <div style=\"margin-top:12px;\">
+        <div class=\"muted\">响应摘要</div>
+        <div id=\"responseSummary\" class=\"muted\">暂无</div>
+        <details style=\"margin-top:6px;\">
+          <summary class=\"muted\">查看原始响应</summary>
+          <pre id=\"responseJson\">{}</pre>
+        </details>
+      </div>
+      <div style=\"margin-top:12px;\">
+        <div class=\"muted\">处理结果摘要</div>
+        <div id=\"resolutionSummary\" class=\"muted\">暂无</div>
+        <details style=\"margin-top:6px;\">
+          <summary class=\"muted\">查看原始处理结果</summary>
+          <pre id=\"resolutionJson\">null</pre>
+        </details>
+      </div>
     </div>
   </div>
 
 <script>
 let currentRequestId = null;
 const RESOLUTION_TEMPLATE_DEFAULTS = {
-  success: { result_code: 'approved_by_operator', result_reason: 'approved by operator' },
-  failed: { result_code: 'rejected_by_operator', result_reason: 'rejected by operator' },
-  manual_required: { result_code: 'manual_follow_up_required', result_reason: 'manual follow-up required' },
-  retryable_failed: { result_code: 'retryable_bridge_failure', result_reason: 'retryable bridge failure' },
+  success: {
+    result_code: 'approved_by_operator',
+    result_reason: 'approved by operator',
+    display_code: '人工通过',
+    display_reason: '已人工核对并通过。'
+  },
+  failed: {
+    result_code: 'rejected_by_operator',
+    result_reason: 'rejected by operator',
+    display_code: '人工拒绝',
+    display_reason: '已人工核对并拒绝。'
+  },
+  manual_required: {
+    result_code: 'manual_follow_up_required',
+    result_reason: 'manual follow-up required',
+    display_code: '转人工跟进',
+    display_reason: '需人工继续跟进处理。'
+  },
+  retryable_failed: {
+    result_code: 'retryable_bridge_failure',
+    result_reason: 'retryable bridge failure',
+    display_code: '可重试失败',
+    display_reason: '桥接执行失败，可稍后重试。'
+  },
 };
 
 function knownResolutionTemplateValues(field) {
-  return Object.values(RESOLUTION_TEMPLATE_DEFAULTS).map(item => item[field]);
+  return Object.values(RESOLUTION_TEMPLATE_DEFAULTS).map(item => item[field]).filter(Boolean);
+}
+
+function normalizeResolutionField(field, value) {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return '';
+  for (const item of Object.values(RESOLUTION_TEMPLATE_DEFAULTS)) {
+    if (field === 'result_code') {
+      if (trimmed === item.display_code || trimmed === item.result_code) return item.result_code;
+    }
+    if (field === 'result_reason') {
+      if (trimmed === item.display_reason || trimmed === item.result_reason) return item.result_reason;
+    }
+  }
+  return trimmed;
 }
 
 function applyResolutionTemplate(status, force=false) {
-  const template = RESOLUTION_TEMPLATE_DEFAULTS[status] || { result_code: 'manual_resolution', result_reason: 'manual resolution' };
+  const template = RESOLUTION_TEMPLATE_DEFAULTS[status] || {
+    result_code: 'manual_resolution',
+    result_reason: 'manual resolution',
+    display_code: '人工处理',
+    display_reason: '已人工处理。'
+  };
   const codeField = document.getElementById('resolveCode');
   const reasonField = document.getElementById('resolveReason');
   if (!codeField || !reasonField) return template;
-  const knownCodes = knownResolutionTemplateValues('result_code');
-  const knownReasons = knownResolutionTemplateValues('result_reason');
+  const knownCodes = [
+    ...knownResolutionTemplateValues('result_code'),
+    ...knownResolutionTemplateValues('display_code')
+  ];
+  const knownReasons = [
+    ...knownResolutionTemplateValues('result_reason'),
+    ...knownResolutionTemplateValues('display_reason')
+  ];
   const currentCode = codeField.value.trim();
   const currentReason = reasonField.value.trim();
   if (force || !currentCode || knownCodes.includes(currentCode)) {
-    codeField.value = template.result_code;
+    codeField.value = template.display_code;
   }
   if (force || !currentReason || knownReasons.includes(currentReason)) {
-    reasonField.value = template.result_reason;
+    reasonField.value = template.display_reason;
   }
   return template;
 }
@@ -193,8 +265,65 @@ function fmtTs(ts) {
   return isNaN(d.getTime()) ? String(ts) : d.toLocaleString();
 }
 
+function bridgeStatusText(status) {
+  if (status === 'pending') return '待处理';
+  if (status === 'resolved') return '已处理';
+  return status || '-';
+}
+
+function bridgeModeText(mode) {
+  if (mode === 'manual_queue') return '人工队列';
+  if (mode === 'passthrough_webhook') return 'Webhook直通';
+  return mode || '-';
+}
+
 function setJson(id, value) {
   document.getElementById(id).textContent = JSON.stringify(value, null, 2);
+}
+
+function summarizeRequestPayload(request) {
+  if (!request || Object.keys(request).length === 0) return '暂无';
+  const parts = [];
+  const targetGroup = request.target_group || request.group_name || request.group_id;
+  const leadId = request.lead?.lead_id || request.lead_id;
+  const crmId = request.crm_snapshot?.id || request.crm_id;
+  const taskId = request.task?.task_id || request.task_id;
+  if (targetGroup) parts.push(`目标群：${targetGroup}`);
+  if (leadId) parts.push(`线索ID：${leadId}`);
+  if (crmId) parts.push(`CRM：${crmId}`);
+  if (taskId) parts.push(`任务：${taskId}`);
+  return parts.join('｜') || '已收到请求';
+}
+
+function summarizeResponsePayload(response) {
+  if (!response || Object.keys(response).length === 0) return '暂无';
+  const parts = [];
+  const ok = response.ok;
+  const status = response.status || response.code || response.result_code;
+  const bridgeRequestId = response.bridge_request_id || response.request_id;
+  const detail = response.detail || response.message || response.reason;
+  if (ok === true) parts.push('结果：成功');
+  else if (ok === false) parts.push('结果：失败');
+  if (status) parts.push(`状态：${status}`);
+  if (bridgeRequestId) parts.push(`请求ID：${bridgeRequestId}`);
+  if (detail) parts.push(`说明：${detail}`);
+  return parts.join('｜') || '已返回响应';
+}
+
+function summarizeResolutionPayload(resolution) {
+  if (!resolution) return '尚未处理';
+  const parts = [];
+  const status = bridgeStatusText(resolution.status) || resolution.status;
+  const resultCode = normalizeResolutionField('result_code', resolution.result_code || '') || resolution.result_code;
+  const resultReason = normalizeResolutionField('result_reason', resolution.result_reason || '') || resolution.result_reason;
+  const operatorName = resolution.resolved_by_name || resolution.resolved_by;
+  const note = resolution.note;
+  if (status) parts.push(`状态：${status}`);
+  if (resultCode) parts.push(`结果：${resultCode}`);
+  if (resultReason) parts.push(`说明：${resultReason}`);
+  if (operatorName) parts.push(`处理人：${operatorName}`);
+  if (note) parts.push(`备注：${note}`);
+  return parts.join('｜') || '已处理';
 }
 
 async function fetchJson(url, options) {
@@ -208,7 +337,7 @@ async function fetchJson(url, options) {
 
 async function loadSummary() {
   const summary = await fetchJson('/ops/official-group-bridge/summary');
-  document.getElementById('bridgeMode').textContent = summary.mode || '-';
+  document.getElementById('bridgeMode').textContent = bridgeModeText(summary.mode);
   document.getElementById('pendingCount').textContent = summary.pending_count || 0;
   document.getElementById('resolvedCount').textContent = summary.resolved_count || 0;
   document.getElementById('totalCount').textContent = summary.total_count || 0;
@@ -238,10 +367,10 @@ async function loadRequests() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td class=\"mono\">${row.request_id}</td>
-      <td><span class=\"pill ${row.status}\">${row.status}</span></td>
+      <td><span class=\"pill ${row.status}\">${bridgeStatusText(row.status)}</span></td>
       <td>${row.request?.target_group || '-'}</td>
       <td class=\"mono\">${row.request?.lead?.lead_id || '-'}</td>
-      <td>${row.mode || '-'}</td>
+      <td>${bridgeModeText(row.mode)}</td>
       <td>${fmtTs(row.updated_at)}</td>
       <td><button onclick=\"showRequest('${row.request_id}')\">查看</button></td>
     `;
@@ -255,7 +384,10 @@ async function loadRequests() {
 async function showRequest(requestId) {
   currentRequestId = requestId;
   const row = await fetchJson('/ops/official-group-bridge/requests/' + encodeURIComponent(requestId));
-  document.getElementById('detailMeta').textContent = `request_id=${row.request_id} | status=${row.status} | target_group=${row.request?.target_group || '-'} | lead_id=${row.request?.lead?.lead_id || '-'}`;
+  document.getElementById('detailMeta').textContent = `请求ID=${row.request_id} | 状态=${bridgeStatusText(row.status)} | 目标群=${row.request?.target_group || '-'} | 线索ID=${row.request?.lead?.lead_id || '-'}`;
+  document.getElementById('requestSummary').textContent = summarizeRequestPayload(row.request || {});
+  document.getElementById('responseSummary').textContent = summarizeResponsePayload(row.response || {});
+  document.getElementById('resolutionSummary').textContent = summarizeResolutionPayload(row.resolution);
   setJson('requestJson', row.request || {});
   setJson('responseJson', row.response || {});
   setJson('resolutionJson', row.resolution);
@@ -276,8 +408,8 @@ async function resolveCurrent(status) {
   const template = applyResolutionTemplate(status);
   const payload = {
     status,
-    result_code: document.getElementById('resolveCode').value.trim() || template.result_code || 'manual_resolution',
-    result_reason: document.getElementById('resolveReason').value.trim() || template.result_reason || 'manual resolution',
+    result_code: normalizeResolutionField('result_code', document.getElementById('resolveCode').value) || template.result_code || 'manual_resolution',
+    result_reason: normalizeResolutionField('result_reason', document.getElementById('resolveReason').value) || template.result_reason || 'manual resolution',
     resolved_by: document.getElementById('resolvedBy').value.trim(),
     resolved_by_name: document.getElementById('resolvedByName').value.trim(),
     note: document.getElementById('resolveNote').value.trim(),

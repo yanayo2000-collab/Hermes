@@ -153,7 +153,7 @@ def _resolve_expected_auth_strategy(cli_value: Optional[str]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description='Preflight check for registration-group webjs bridge and optional stale-session recovery.')
     parser.add_argument('--api-base-url', default='http://127.0.0.1:8011')
-    parser.add_argument('--worker-base-url', default='http://127.0.0.1:8787')
+    parser.add_argument('--worker-base-url', default='')
     parser.add_argument('--registration-group', required=True)
     parser.add_argument('--fresh-probe-cmd', required=True, help='Shell command that prints JSON fresh-session group state.')
     parser.add_argument('--restart-cmd', help='Shell command to restart the 8787 worker with the correct Chrome-profile-copy env.')

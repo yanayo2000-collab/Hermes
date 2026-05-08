@@ -26,8 +26,11 @@ def _default_alert_templates() -> Dict[str, Any]:
         },
         'reasons': {
             'formal_approval_succeeded': '已审批通过 {approved_count} 人',
+            'manual_approval_succeeded': '已人工审批通过 {approved_count} 人',
             'startup_initial_batch_succeeded': '启动首批审批已通过 {approved_count} 人',
             'official_group_approval_succeeded': '已审批通过 {approved_count} 人',
+            'registration_cycle_noop': '审批时间已到，未发生实际审批',
+            'official_group_cycle_noop': '审批时间已到，未发生实际审批',
         },
     }
 
@@ -69,6 +72,33 @@ def render_alert_reason_template(code: str, *, approved_count: Any = None, fallb
     if approved_value is not None and approved_value > 0:
         return template.format(approved_count=approved_value)
     return fallback or template.replace(' {approved_count} 人', '').strip()
+
+
+def expand_notify_profile_targets(profile_name: Optional[str], notify_robot_name: Optional[str] = None) -> List[Dict[str, Optional[str]]]:
+    normalized = str(profile_name or '').strip()
+    normalized_robot_name = str(notify_robot_name or '').strip()
+    if not normalized:
+        return []
+    if normalized == 'wa-approval-broadcast':
+        return [
+            {
+                'profile_name': 'wa-approval-broadcast',
+                'robot_name': normalized_robot_name or '审批bot01',
+            },
+            {
+                'profile_name': 'wa-approval-broadcast-02',
+                'robot_name': '审批Bot02',
+            },
+        ]
+    if normalized == 'wa-approval-broadcast-02':
+        return [{
+            'profile_name': 'wa-approval-broadcast-02',
+            'robot_name': normalized_robot_name or '审批Bot02',
+        }]
+    return [{
+        'profile_name': normalized,
+        'robot_name': normalized_robot_name or normalized,
+    }]
 
 
 def utc_now() -> datetime:
@@ -374,24 +404,84 @@ def build_success_notifications(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
         formal_run = formal_run_payload(action.get('result') or {})
         formal_result = formal_run_result(formal_run)
         if formal_run and formal_result.get('verified') is True and formal_result.get('crm_recorded') is True:
+            approval_run_ids = [
+                str(item).strip()
+                for item in (action.get('approval_run_ids') or [])
+                if str(item).strip()
+            ]
             approval_run_id = str(formal_run.get('approval_run_id') or '').strip()
+            if approval_run_id and approval_run_id not in approval_run_ids:
+                approval_run_ids.append(approval_run_id)
             fingerprint = str(action.get('fingerprint') or '').strip()
-            dedupe_suffix = approval_run_id or fingerprint or 'unknown'
+            dedupe_suffix = '|'.join(approval_run_ids) or approval_run_id or fingerprint or 'unknown'
             notifications.append({
                 'severity': 'info',
                 'code': 'formal_approval_succeeded',
                 'summary': '注册群审批成功',
                 'details': {
                     'approval_run_id': approval_run_id or None,
+                    'approval_run_ids': approval_run_ids,
                     'fingerprint': fingerprint or None,
-                    'approved_count': formal_result.get('approved_count', action.get('release_count')),
-                    'pending_after': formal_result.get('pending_after'),
+                    'approved_count': action.get('aggregate_approved_count', formal_result.get('approved_count', action.get('release_count'))),
+                    'pending_after': action.get('final_pending_count', formal_result.get('pending_after')),
                     'member_count_after': formal_result.get('member_count_after'),
                     'result_code': formal_result.get('result_code'),
                     'reason_code': action.get('reason_code'),
+                    'drain_rounds': action.get('drain_rounds'),
                 },
                 'dedupe_key': f'formal_approval_succeeded:{dedupe_suffix}',
             })
+
+    registration_cycles = list(cycle.get('registration_group_cycles') or []) if isinstance(cycle.get('registration_group_cycles'), list) else []
+    for cycle_row in registration_cycles:
+        if not isinstance(cycle_row, dict):
+            continue
+        release = cycle_row.get('release_evaluation') or {}
+        payload = release.get('payload') if isinstance(release.get('payload'), dict) else {}
+        if not release.get('ok') or payload.get('reason_code') != 'waiting_next_cycle':
+            continue
+        try:
+            pending_count = int(payload.get('pending_count') or 0)
+        except (TypeError, ValueError):
+            pending_count = 0
+        if pending_count != 0:
+            continue
+        decision_group = cycle_row.get('decision_group_state') if isinstance(cycle_row.get('decision_group_state'), dict) else {}
+        fresh_probe = cycle_row.get('fresh_probe') if isinstance(cycle_row.get('fresh_probe'), dict) else {}
+        if decision_group.get('zero_pending_unverified'):
+            continue
+        if fresh_probe.get('zero_pending_recheck') and not fresh_probe.get('ok'):
+            continue
+        cycle_started_at = str(payload.get('cycle_started_at') or '').strip()
+        cycle_ends_at = str(payload.get('cycle_ends_at') or '').strip()
+        cycle_anchor_at = str(payload.get('cycle_anchor_at') or '').strip()
+        try:
+            completed_cycles_since_anchor = max(int(payload.get('completed_cycles_since_anchor') or 0), 0)
+        except (TypeError, ValueError):
+            completed_cycles_since_anchor = 0
+        if cycle_anchor_at and cycle_started_at and cycle_started_at == cycle_anchor_at and completed_cycles_since_anchor <= 0:
+            continue
+        group_label = str(
+            ((cycle_row.get('monitor_target') or {}).get('group_name'))
+            or ((cycle_row.get('monitor_target') or {}).get('binding_group_name'))
+            or ((cycle_row.get('monitor_target') or {}).get('registration_group'))
+            or cycle_row.get('registration_group')
+            or ''
+        ).strip()
+        dedupe_suffix = '|'.join(part for part in [group_label, cycle_started_at or cycle_ends_at] if part) or 'unknown'
+        notifications.append({
+            'severity': 'info',
+            'code': 'registration_cycle_noop',
+            'summary': '注册群本轮无审批',
+            'details': {
+                'group_name': group_label or None,
+                'pending_count': 0,
+                'cycle_started_at': cycle_started_at or None,
+                'cycle_ends_at': cycle_ends_at or None,
+                'reason_code': payload.get('reason_code'),
+            },
+            'dedupe_key': f'registration_cycle_noop:{dedupe_suffix}',
+        })
 
     startup = cycle.get('startup_initial_batch') or {}
     if startup.get('triggered') and startup.get('ok'):
@@ -618,6 +708,18 @@ def _compact_reason_text(incident: Dict[str, Any], cycle: Dict[str, Any]) -> str
             fallback = f'已审批通过 {approved_value} 人'
         return render_alert_reason_template(code, approved_count=approved_count, fallback=fallback)
 
+    if code == 'manual_approval_succeeded':
+        approved_count = details.get('approved_count')
+
+        fallback = '已人工审批通过'
+        try:
+            approved_value = int(approved_count)
+        except (TypeError, ValueError):
+            approved_value = None
+        if approved_value is not None and approved_value > 0:
+            fallback = f'已人工审批通过 {approved_value} 人'
+        return render_alert_reason_template(code, approved_count=approved_count, fallback=fallback)
+
     if code == 'startup_initial_batch_succeeded':
         approved_count = details.get('approved_count')
 
@@ -633,14 +735,18 @@ def _compact_reason_text(incident: Dict[str, Any], cycle: Dict[str, Any]) -> str
     if code == 'official_group_approval_succeeded':
         approved_count = details.get('approved_count')
 
-        fallback = '启动首批审批已通过'
+        fallback = '已审批通过'
         try:
             approved_value = int(approved_count)
         except (TypeError, ValueError):
             approved_value = None
         if approved_value is not None and approved_value > 0:
-            fallback = f'启动首批审批已通过 {approved_value} 人'
+            fallback = f'已审批通过 {approved_value} 人'
         return render_alert_reason_template(code, approved_count=approved_count, fallback=fallback)
+
+    if code in {'registration_cycle_noop', 'official_group_cycle_noop'}:
+        fallback = '审批时间已到，未发生实际审批'
+        return render_alert_reason_template(code, fallback=fallback)
 
     if code == 'official_group_manual_review_required':
         reason_code = str(details.get('reason_code') or '').strip()
@@ -684,6 +790,9 @@ def _compact_count_line(incident: Dict[str, Any], cycle: Dict[str, Any]) -> Opti
     elif code == 'formal_approval_succeeded':
         formal_result = formal_run_result(action.get('result') or {})
         candidates = [formal_result.get('approved_count'), details.get('approved_count'), action.get('release_count')]
+        label = '通过人数'
+    elif code == 'manual_approval_succeeded':
+        candidates = [details.get('approved_count')]
         label = '通过人数'
     elif code == 'startup_initial_batch_succeeded':
         candidates = [details.get('approved_count'), startup.get('pending_count')]
@@ -752,9 +861,28 @@ def format_lark_alert(service_name: str, incident: Dict[str, Any], cycle: Dict[s
         mobile = str((incident.get('details') or {}).get('mobile') or '').strip()
         if mobile:
             lines.append(f'账号: {mobile}')
-    count_line = _compact_count_line(incident, cycle)
-    if count_line:
-        lines.append(count_line)
+    details = incident.get('details') if isinstance(incident.get('details'), dict) else {}
+    if code in {'formal_approval_succeeded', 'manual_approval_succeeded', 'startup_initial_batch_succeeded', 'registration_cycle_noop', 'official_group_cycle_noop'}:
+        approval_type = '常规轮次' if code in {'formal_approval_succeeded', 'registration_cycle_noop', 'official_group_cycle_noop'} else ('人工审批' if code == 'manual_approval_succeeded' else '启动首批')
+        lines.append(f'审批类型: {approval_type}')
+        approved_count = details.get('approved_count')
+        try:
+            approved_value = int(approved_count)
+        except (TypeError, ValueError):
+            approved_value = None
+        if approved_value is not None and approved_value >= 0:
+            lines.append(f'本次通过人数: {approved_value}')
+        pending_after = details.get('pending_after')
+        try:
+            pending_after_value = int(pending_after)
+        except (TypeError, ValueError):
+            pending_after_value = None
+        if pending_after_value is not None and pending_after_value >= 0:
+            lines.append(f'剩余待审批人数: {pending_after_value}')
+    else:
+        count_line = _compact_count_line(incident, cycle)
+        if count_line:
+            lines.append(count_line)
     reason = str(incident.get('reason_text') or '').strip() or _compact_reason_text(incident, cycle)
     if reason:
         lines.append(f'原因: {reason}')

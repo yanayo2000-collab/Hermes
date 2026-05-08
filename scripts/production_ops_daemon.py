@@ -24,6 +24,7 @@ from app.production_ops import (
     build_success_notifications,
     check_backend_health,
     env_default,
+    expand_notify_profile_targets,
     fetch_json,
     formal_run_result,
     format_lark_alert,
@@ -60,17 +61,63 @@ def _cycle_next_boundary(now: datetime, timeout_minutes: int) -> datetime:
     return next_boundary_local.astimezone(now.tzinfo or timezone.utc)
 
 
-def _evaluate_release(api_base_url: str, registration_group: str, group_state: Dict[str, Any], *, batch_size: Optional[int] = None, timeout_minutes: Optional[int] = None) -> Dict[str, Any]:
+def _cycle_window(now: datetime, timeout_minutes: int, *, cycle_anchor_at: Optional[str] = None) -> Dict[str, datetime]:
+    interval_seconds = max(int(timeout_minutes or 0), 1) * 60
+    anchor = now
+    if cycle_anchor_at:
+        try:
+            parsed_anchor = datetime.fromisoformat(str(cycle_anchor_at).replace('Z', '+00:00'))
+            if parsed_anchor.tzinfo is None:
+                parsed_anchor = parsed_anchor.replace(tzinfo=timezone.utc)
+            anchor = parsed_anchor
+        except Exception:
+            anchor = now
+    if anchor > now:
+        anchor = now
+    elapsed_seconds = max(int((now - anchor).total_seconds()), 0)
+    completed_cycles = elapsed_seconds // interval_seconds
+    cycle_start = anchor + timedelta(seconds=completed_cycles * interval_seconds)
+    cycle_end = cycle_start + timedelta(seconds=interval_seconds)
+    return {
+        'anchor_at': anchor,
+        'completed_cycles_since_anchor': completed_cycles,
+        'cycle_started_at': cycle_start,
+        'cycle_ends_at': cycle_end,
+    }
+
+
+def _store_cycle_anchor(state: Dict[str, Any], *, bucket_name: str, at: datetime, keys: List[Optional[str]]) -> None:
+    bucket = state.setdefault(bucket_name, {})
+    if not isinstance(bucket, dict):
+        bucket = {}
+        state[bucket_name] = bucket
+    anchor_text = at.isoformat()
+    for raw_key in keys:
+        normalized_key = str(raw_key or '').strip()
+        if normalized_key:
+            bucket[normalized_key] = anchor_text
+
+
+def _evaluate_release(api_base_url: str, registration_group: str, group_state: Dict[str, Any], *, batch_size: Optional[int] = None, timeout_minutes: Optional[int] = None, cycle_anchor_at: Optional[str] = None) -> Dict[str, Any]:
     pending_count = max(int(group_state.get('pending_count') or 0), 0)
     oldest_pending_at = oldest_pending_at_iso(group_state)
     resolved_batch_size = max(1, int(batch_size or 30))
     resolved_timeout_minutes = max(1, int(timeout_minutes or 30))
     now = datetime.fromisoformat(utc_now_iso().replace('Z', '+00:00'))
     if pending_count <= 0:
-        cycle_end = _cycle_next_boundary(now, resolved_timeout_minutes)
+        cycle_anchor_text = None
+        completed_cycles_since_anchor = 0
+        if cycle_anchor_at:
+            cycle_window = _cycle_window(now, resolved_timeout_minutes, cycle_anchor_at=cycle_anchor_at)
+            cycle_anchor_text = cycle_window['anchor_at'].isoformat()
+            completed_cycles_since_anchor = max(int(cycle_window.get('completed_cycles_since_anchor') or 0), 0)
+            cycle_end = cycle_window['cycle_ends_at']
+            cycle_start = cycle_window['cycle_started_at']
+        else:
+            cycle_end = _cycle_next_boundary(now, resolved_timeout_minutes)
+            cycle_start = cycle_end - timedelta(minutes=resolved_timeout_minutes)
         remaining_seconds = max(int((cycle_end - now).total_seconds()), 0)
         remaining_minutes = max((remaining_seconds + 59) // 60, 0)
-        cycle_start = cycle_end - timedelta(minutes=resolved_timeout_minutes)
         return {
             'approval_type': 'registration_group',
             'registration_group': registration_group,
@@ -84,6 +131,8 @@ def _evaluate_release(api_base_url: str, registration_group: str, group_state: D
             'elapsed_minutes': max(0, int((now - cycle_start).total_seconds() // 60)),
             'remaining_minutes': remaining_minutes,
             'remaining_seconds': remaining_seconds,
+            'cycle_anchor_at': cycle_anchor_text,
+            'completed_cycles_since_anchor': completed_cycles_since_anchor,
             'cycle_started_at': cycle_start.isoformat(),
             'cycle_ends_at': cycle_end.isoformat(),
         }
@@ -113,9 +162,113 @@ def _evaluate_release(api_base_url: str, registration_group: str, group_state: D
             'now': utc_now_iso(),
             'batch_size': resolved_batch_size,
             'timeout_minutes': resolved_timeout_minutes,
+            'cycle_anchor_at': cycle_anchor_at,
         },
         timeout=30.0,
     )
+
+
+def _parse_schedule_hhmm(value: str) -> Optional[tuple[int, int]]:
+    text = str(value or '').strip()
+    if not text or ':' not in text:
+        return None
+    hour_text, minute_text = text.split(':', 1)
+    try:
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except ValueError:
+        return None
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour, minute
+
+
+
+def _active_schedule_window_token(target: Dict[str, Any], now: Optional[datetime]) -> Optional[str]:
+    if now is None:
+        return None
+    schedule_runtime = target.get('schedule_runtime') if isinstance(target.get('schedule_runtime'), dict) else {}
+    if not bool(schedule_runtime.get('configured')) or not bool(schedule_runtime.get('active_now')):
+        return None
+    schedule_windows = target.get('schedule_windows') or []
+    if not isinstance(schedule_windows, list) or not schedule_windows:
+        return None
+    local_tz = timezone(timedelta(hours=8))
+    localized_now = now.astimezone(local_tz)
+    for item in schedule_windows:
+        if not isinstance(item, dict):
+            continue
+        start_parts = _parse_schedule_hhmm(str(item.get('start') or ''))
+        end_parts = _parse_schedule_hhmm(str(item.get('end') or ''))
+        if not start_parts or not end_parts:
+            continue
+        start_hour, start_minute = start_parts
+        end_hour, end_minute = end_parts
+        for day_offset in (0, -1):
+            base_day = (localized_now + timedelta(days=day_offset)).date()
+            start_at = datetime(base_day.year, base_day.month, base_day.day, start_hour, start_minute, tzinfo=local_tz)
+            end_at = datetime(base_day.year, base_day.month, base_day.day, end_hour, end_minute, tzinfo=local_tz)
+            if (end_hour, end_minute) <= (start_hour, start_minute):
+                end_at += timedelta(days=1)
+            if start_at <= localized_now < end_at:
+                return start_at.isoformat()
+    return None
+
+
+
+def _schedule_end_flush_due(target: Dict[str, Any], now: datetime, *, poll_interval_seconds: float) -> bool:
+    schedule_runtime = target.get('schedule_runtime') if isinstance(target.get('schedule_runtime'), dict) else {}
+    if not bool(schedule_runtime.get('configured')) or bool(schedule_runtime.get('active_now')):
+        return False
+    schedule_windows = target.get('schedule_windows') or []
+    if not isinstance(schedule_windows, list) or not schedule_windows:
+        return False
+    local_tz = timezone(timedelta(hours=8))
+    localized_now = now.astimezone(local_tz)
+    grace_seconds = max(int(float(poll_interval_seconds or 0)), 1) + 60
+    for item in schedule_windows:
+        if not isinstance(item, dict):
+            continue
+        start_parts = _parse_schedule_hhmm(str(item.get('start') or ''))
+        end_parts = _parse_schedule_hhmm(str(item.get('end') or ''))
+        if not start_parts or not end_parts:
+            continue
+        start_hour, start_minute = start_parts
+        end_hour, end_minute = end_parts
+        for day_offset in (0, -1):
+            base_day = (localized_now + timedelta(days=day_offset)).date()
+            start_at = datetime(base_day.year, base_day.month, base_day.day, start_hour, start_minute, tzinfo=local_tz)
+            end_at = datetime(base_day.year, base_day.month, base_day.day, end_hour, end_minute, tzinfo=local_tz)
+            if (end_hour, end_minute) < (start_hour, start_minute):
+                end_at += timedelta(days=1)
+            if localized_now < end_at:
+                continue
+            delta_seconds = (localized_now - end_at).total_seconds()
+            if 0 <= delta_seconds <= grace_seconds:
+                return True
+    return False
+
+
+
+def _schedule_end_flush_release(target: Dict[str, Any], registration_group: str, group_state: Dict[str, Any]) -> Dict[str, Any]:
+    pending_count = max(int(group_state.get('pending_count') or 0), 0)
+    oldest_pending_at = oldest_pending_at_iso(group_state)
+    resolved_batch_size = max(1, int(target.get('approval_count_threshold') or 30))
+    resolved_timeout_minutes = max(1, int(target.get('approval_timeout_minutes') or 30))
+    return {
+        'approval_type': 'registration_group',
+        'registration_group': registration_group,
+        'pending_count': pending_count,
+        'oldest_pending_at': oldest_pending_at,
+        'ready': pending_count > 0,
+        'release_count': pending_count,
+        'reason_code': 'schedule_window_end_flush',
+        'batch_size': resolved_batch_size,
+        'timeout_minutes': resolved_timeout_minutes,
+        'elapsed_minutes': resolved_timeout_minutes,
+        'remaining_minutes': 0,
+        'remaining_seconds': 0,
+    }
 
 
 def _build_formal_approval_command(
@@ -189,6 +342,42 @@ def _run_fresh_probe(fresh_probe_cmd: str, *, timeout: float = 120.0) -> Dict[st
     return payload
 
 
+def _recheck_authoritative_group_state(
+    *,
+    worker_base_url: str,
+    registration_group: str,
+    fresh_probe_cmd: str,
+    use_worker_state_directly: bool,
+    worker_timeout_seconds: float,
+    command_timeout_seconds: float,
+) -> Dict[str, Any]:
+    worker_payload = fetch_json(
+        f"{worker_base_url.rstrip('/')}/group-state",
+        method='POST',
+        payload={'registration_group': registration_group},
+        timeout=worker_timeout_seconds,
+    )
+    if use_worker_state_directly:
+        return {
+            'worker_payload': worker_payload,
+            'fresh_payload': worker_payload,
+            'decision_group': {
+                'payload': worker_payload,
+                'source': 'worker_state',
+                'worker_signature': _group_state_signature(worker_payload),
+                'fresh_signature': _group_state_signature(worker_payload),
+                'mismatch': False,
+                'mismatch_reasons': [],
+            },
+        }
+    fresh_payload = _run_fresh_probe(fresh_probe_cmd, timeout=command_timeout_seconds)
+    return {
+        'worker_payload': worker_payload,
+        'fresh_payload': fresh_payload,
+        'decision_group': _resolve_decision_group_state(worker_payload, fresh_payload),
+    }
+
+
 def _group_state_signature(group_state: Dict[str, Any]) -> Dict[str, Any]:
     return {
         'group_id': str(group_state.get('group_id') or '').strip(),
@@ -206,9 +395,43 @@ def _resolve_decision_group_state(worker_payload: Dict[str, Any], fresh_payload:
     for key in ('group_id', 'pending_count', 'member_count', 'fingerprint'):
         if worker_sig.get(key) != fresh_sig.get(key):
             mismatch_reasons.append(key)
+
+    decision_payload = fresh_payload
+    decision_source = 'fresh_probe'
+    same_group = bool(worker_sig.get('group_id')) and worker_sig.get('group_id') == fresh_sig.get('group_id')
+    if same_group and worker_sig.get('pending_count', 0) > fresh_sig.get('pending_count', 0):
+        merged_payload = dict(worker_payload or {})
+        merged_requesters = list(worker_payload.get('requesters') or []) if isinstance(worker_payload.get('requesters'), list) else []
+        fresh_requesters = list(fresh_payload.get('requesters') or []) if isinstance(fresh_payload.get('requesters'), list) else []
+        seen_requester_ids = {
+            str(item.get('requesterId') or '').strip()
+            for item in merged_requesters
+            if isinstance(item, dict) and str(item.get('requesterId') or '').strip()
+        }
+        for item in fresh_requesters:
+            if not isinstance(item, dict):
+                continue
+            requester_id = str(item.get('requesterId') or '').strip()
+            if requester_id and requester_id in seen_requester_ids:
+                continue
+            if requester_id:
+                seen_requester_ids.add(requester_id)
+            merged_requesters.append(item)
+        if merged_requesters:
+            merged_payload['requesters'] = merged_requesters
+        worker_requester_ids = list(worker_payload.get('requester_ids') or []) if isinstance(worker_payload.get('requester_ids'), list) else []
+        fresh_requester_ids = list(fresh_payload.get('requester_ids') or []) if isinstance(fresh_payload.get('requester_ids'), list) else []
+        merged_requester_ids = list(dict.fromkeys([*worker_requester_ids, *fresh_requester_ids]))
+        if merged_requester_ids:
+            merged_payload['requester_ids'] = merged_requester_ids
+        merged_payload['pending_count'] = max(int(worker_sig.get('pending_count') or 0), int(fresh_sig.get('pending_count') or 0))
+        merged_payload['member_count'] = max(int(worker_sig.get('member_count') or 0), int(fresh_sig.get('member_count') or 0))
+        decision_payload = merged_payload
+        decision_source = 'reconciled_max_pending'
+
     return {
-        'payload': fresh_payload,
-        'source': 'fresh_probe',
+        'payload': decision_payload,
+        'source': decision_source,
         'worker_signature': worker_sig,
         'fresh_signature': fresh_sig,
         'mismatch': bool(mismatch_reasons),
@@ -304,8 +527,11 @@ def _target_session_config_fingerprint(target: Dict[str, Any]) -> str:
     return json.dumps(_target_session_config_payload(target), ensure_ascii=False, sort_keys=True)
 
 
-def _target_session_key(session_id: str, target: Dict[str, Any]) -> str:
+def _target_session_key(session_id: str, target: Dict[str, Any], now: Optional[datetime] = None) -> str:
     registration_group = str(target.get('registration_group') or '').strip()
+    schedule_window_token = _active_schedule_window_token(target, now)
+    if schedule_window_token:
+        return f"{session_id or 'default'}::{registration_group}::{schedule_window_token}::{_target_session_config_fingerprint(target)}"
     return f"{session_id or 'default'}::{registration_group}::{_target_session_config_fingerprint(target)}"
 
 
@@ -317,7 +543,14 @@ def _session_state(
     checked_at: str,
     target: Dict[str, Any],
 ) -> Dict[str, Any]:
-    session_key = _target_session_key(session_id, target)
+    checked_at_dt: Optional[datetime] = None
+    try:
+        checked_at_dt = datetime.fromisoformat(str(checked_at).replace('Z', '+00:00'))
+        if checked_at_dt.tzinfo is None:
+            checked_at_dt = checked_at_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        checked_at_dt = None
+    session_key = _target_session_key(session_id, target, checked_at_dt)
     monitoring_sessions = state.setdefault('monitoring_sessions', {})
     monitoring = monitoring_sessions.get(session_key)
     if not isinstance(monitoring, dict):
@@ -326,6 +559,7 @@ def _session_state(
             'session_id': session_id,
             'registration_group': registration_group,
             'started_at': checked_at,
+            'schedule_window_token': _active_schedule_window_token(target, checked_at_dt),
             'target_config_fingerprint': _target_session_config_fingerprint(target),
             'startup_initial_batch_done': False,
             'startup_initial_batch_attempts': 0,
@@ -338,10 +572,13 @@ def _session_state(
     return monitoring
 
 
-def _ordered_cycle_targets(monitor_target: Dict[str, Any], fallback_target: Dict[str, Any]) -> List[Dict[str, Any]]:
-    if str(monitor_target.get('selection_reason') or '').strip() == 'configured_binding_outside_schedule':
-        return []
+def _ordered_cycle_targets(monitor_target: Dict[str, Any], fallback_target: Dict[str, Any], *, now: Optional[datetime] = None, poll_interval_seconds: float = 0.0) -> List[Dict[str, Any]]:
     selected_target = monitor_target.get('selected')
+    if str(monitor_target.get('selection_reason') or '').strip() == 'configured_binding_outside_schedule':
+        normalized_selected = _normalize_monitor_target(selected_target, str((selected_target or {}).get('worker_base_url') or '')) if isinstance(selected_target, dict) else None
+        if normalized_selected and now and _schedule_end_flush_due(normalized_selected, now, poll_interval_seconds=poll_interval_seconds):
+            return [normalized_selected]
+        return []
     candidates = list(monitor_target.get('candidates') or [])
     ordered: List[Dict[str, Any]] = []
     seen: set[str] = set()
@@ -351,7 +588,7 @@ def _ordered_cycle_targets(monitor_target: Dict[str, Any], fallback_target: Dict
         normalized = _normalize_monitor_target(candidate, str(candidate.get('worker_base_url') or ''))
         if not normalized:
             continue
-        key = _target_session_key('', normalized)
+        key = _target_session_key('', normalized, now)
         if key in seen:
             continue
         seen.add(key)
@@ -544,6 +781,7 @@ def _dispatch_ready_official_group_batches(args: argparse.Namespace, state: Dict
     ready_groups = [row for row in list(queue.get('official_groups') or []) if bool(row.get('ready')) and int(row.get('release_count') or 0) > 0]
     dispatch_state['ready_group_count'] = len(ready_groups)
     dispatch_state['ready_groups'] = ready_groups
+    dispatch_state['all_groups'] = list(queue.get('official_groups') or []) if isinstance(queue.get('official_groups'), list) else []
     if not ready_groups:
         dispatch_state['ok'] = True
         return
@@ -585,6 +823,20 @@ def _dispatch_ready_official_group_batches(args: argparse.Namespace, state: Dict
         dispatch_state['error'] = str(exc)
         return
     record_trigger(state, fingerprint=fingerprint, now=now)
+    for row in ready_groups:
+        _store_cycle_anchor(
+            state,
+            bucket_name='official_cycle_anchors',
+            at=now,
+            keys=[
+                str(row.get('target_group') or '').strip(),
+                str(row.get('binding_registration_group') or '').strip(),
+                str(row.get('group_id') or '').strip(),
+                str(row.get('binding_link') or '').strip(),
+                str(row.get('group_name') or '').strip(),
+                str(row.get('registration_group') or '').strip(),
+            ],
+        )
     dispatch_state['triggered'] = True
     dispatch_state['ok'] = True
     dispatch_state['result'] = result
@@ -649,6 +901,20 @@ def _run_registration_group_cycle(
         target_worker_base_url = str(args.worker_base_url or '').strip()
     target_fresh_probe_cmd = _fresh_probe_cmd_for_target(args, target_registration_group)
     target_area = str(target.get('area') or args.area or '').strip() or 'Indonesia'
+    registration_cycle_anchors = state.setdefault('registration_cycle_anchors', {})
+    if not isinstance(registration_cycle_anchors, dict):
+        registration_cycle_anchors = {}
+        state['registration_cycle_anchors'] = registration_cycle_anchors
+    target_cycle_anchor_at = next((
+        str(registration_cycle_anchors.get(candidate) or '').strip()
+        for candidate in (
+            target_registration_group,
+            str(target.get('binding_link') or '').strip(),
+            str(target.get('binding_group_name') or '').strip(),
+            target_group_name,
+        )
+        if str(candidate or '').strip() and str(registration_cycle_anchors.get(candidate) or '').strip()
+    ), None)
     cycle: Dict[str, Any] = {
         'registration_group': target_registration_group,
         'monitor_target': {
@@ -750,8 +1016,13 @@ def _run_registration_group_cycle(
         cycle.get('monitor_target', {}).get('source') == 'account_binding'
         and target_worker_base_url != str(args.worker_base_url or '').strip()
     )
+    try:
+        worker_pending_count = max(int(worker_payload.get('pending_count') or 0), 0)
+    except (TypeError, ValueError):
+        worker_pending_count = 0
+    zero_pending_recheck = use_worker_state_directly and worker_pending_count <= 0
 
-    if use_worker_state_directly:
+    if use_worker_state_directly and not zero_pending_recheck:
         cycle['fresh_probe'] = {
             'ok': True,
             'skipped': True,
@@ -772,18 +1043,43 @@ def _run_registration_group_cycle(
             fresh_payload = _run_fresh_probe(target_fresh_probe_cmd, timeout=args.command_timeout_seconds)
             decision_group = _resolve_decision_group_state(worker_payload, fresh_payload)
             cycle['fresh_probe'] = {'ok': True, 'payload': fresh_payload}
+            if zero_pending_recheck:
+                cycle['fresh_probe']['zero_pending_recheck'] = True
             cycle['decision_group_state'] = decision_group
         except Exception as exc:
-            cycle['fresh_probe'] = {'ok': False, 'error': str(exc)}
-            cycle['decision_group_state'] = {
-                'source': 'fail_closed',
-                'mismatch': False,
-                'mismatch_reasons': [],
-            }
-            return cycle
+            if zero_pending_recheck:
+                cycle['fresh_probe'] = {
+                    'ok': False,
+                    'error': str(exc),
+                    'zero_pending_recheck': True,
+                    'fallback_used': True,
+                }
+                decision_group = {
+                    'payload': worker_payload,
+                    'source': 'worker_state',
+                    'worker_signature': _group_state_signature(worker_payload),
+                    'fresh_signature': None,
+                    'mismatch': False,
+                    'mismatch_reasons': [],
+                    'zero_pending_unverified': True,
+                }
+                cycle['decision_group_state'] = decision_group
+            else:
+                cycle['fresh_probe'] = {'ok': False, 'error': str(exc)}
+                cycle['decision_group_state'] = {
+                    'source': 'fail_closed',
+                    'mismatch': False,
+                    'mismatch_reasons': [],
+                }
+                return cycle
 
     authoritative_payload = decision_group['payload']
     session_id = str(getattr(args, 'monitoring_session_id', '') or '').strip()
+    schedule_end_flush_due = _schedule_end_flush_due(
+        cycle['monitor_target'],
+        now,
+        poll_interval_seconds=float(getattr(args, 'approval_poll_interval_seconds', 0.0) or 0.0),
+    )
     monitoring_session = _session_state(
         state,
         session_id=session_id,
@@ -792,20 +1088,54 @@ def _run_registration_group_cycle(
         target=cycle['monitor_target'],
     )
     pending_count = max(int(authoritative_payload.get('pending_count') or 0), 0)
+    cycle['schedule_end_flush'] = {
+        'due': schedule_end_flush_due,
+        'pending_count': pending_count,
+    }
     cycle['startup_initial_batch'] = {
         'session_id': session_id,
         'startup_initial_batch_done': bool(monitoring_session.get('startup_initial_batch_done')),
         'pending_count': pending_count,
         'attempts': int(monitoring_session.get('startup_initial_batch_attempts') or 0),
         'max_retries': int(monitoring_session.get('startup_initial_batch_max_retries') or 2),
+        'last_initial_pending_count': monitoring_session.get('startup_initial_batch_last_initial_pending_count'),
+        'last_final_pending_count': monitoring_session.get('startup_initial_batch_last_final_pending_count'),
+        'last_initial_requester_fingerprint': monitoring_session.get('startup_initial_batch_last_initial_requester_fingerprint'),
+        'last_final_requester_fingerprint': monitoring_session.get('startup_initial_batch_last_final_requester_fingerprint'),
+        'startup_probe_rechecks': monitoring_session.get('startup_initial_batch_last_probe_rechecks') or [],
     }
-    if session_id and not bool(monitoring_session.get('startup_initial_batch_done')):
+    if session_id and not schedule_end_flush_due and not bool(monitoring_session.get('startup_initial_batch_done')):
         attempts = int(monitoring_session.get('startup_initial_batch_attempts') or 0)
         max_retries = int(monitoring_session.get('startup_initial_batch_max_retries') or 2)
         max_attempts = max(1, max_retries + 1)
         attempt_results: List[Dict[str, Any]] = []
         current_payload = authoritative_payload
         current_pending_count = pending_count
+        initial_pending_count = current_pending_count
+        initial_requester_fingerprint = requester_fingerprint(current_payload)
+        startup_probe_rechecks: List[Dict[str, Any]] = []
+        if current_pending_count > 0 and use_worker_state_directly:
+            for probe_attempt in range(1, 5):
+                try:
+                    probe_payload = fetch_json(
+                        f"{target_worker_base_url.rstrip('/')}/group-state",
+                        method='POST',
+                        payload={'registration_group': target_registration_group},
+                        timeout=args.worker_timeout_seconds,
+                    )
+                    probe_pending_count = max(int(probe_payload.get('pending_count') or 0), 0)
+                    startup_probe_rechecks.append({
+                        'attempt': probe_attempt,
+                        'pending_count': probe_pending_count,
+                        'requester_fingerprint': requester_fingerprint(probe_payload),
+                    })
+                    if probe_pending_count > current_pending_count:
+                        current_payload = probe_payload
+                        current_pending_count = probe_pending_count
+                except Exception as exc:
+                    startup_probe_rechecks.append({'attempt': probe_attempt, 'error': str(exc)})
+                if probe_attempt < 4:
+                    time.sleep(1.0)
         while current_pending_count > 0 and attempts < max_attempts:
             attempts += 1
             command = _build_formal_approval_command(
@@ -833,16 +1163,40 @@ def _run_registration_group_cycle(
             monitoring_session['startup_initial_batch_attempts'] = attempts
             monitoring_session['startup_initial_batch_pending_count'] = current_pending_count
             monitoring_session['startup_initial_batch_at'] = now.isoformat()
+            monitoring_session['startup_initial_batch_last_initial_pending_count'] = initial_pending_count
+            monitoring_session['startup_initial_batch_last_final_pending_count'] = current_pending_count
+            monitoring_session['startup_initial_batch_last_initial_requester_fingerprint'] = initial_requester_fingerprint
+            monitoring_session['startup_initial_batch_last_final_requester_fingerprint'] = requester_fingerprint(current_payload)
+            monitoring_session['startup_initial_batch_last_probe_rechecks'] = startup_probe_rechecks
             if ok:
                 monitoring_session['startup_initial_batch_done'] = True
                 record_trigger(state, fingerprint=requester_fingerprint(current_payload), now=now)
+                _store_cycle_anchor(
+                    state,
+                    bucket_name='registration_cycle_anchors',
+                    at=now,
+                    keys=[
+                        target_registration_group,
+                        str(target.get('binding_link') or '').strip(),
+                        str(target.get('binding_group_name') or '').strip(),
+                        target_group_name,
+                        str(current_payload.get('group_id') or '').strip(),
+                        str(current_payload.get('group_name') or '').strip(),
+                    ],
+                )
+                target_cycle_anchor_at = now.isoformat()
                 cycle['startup_initial_batch'] = {
                     'triggered': True,
                     'ok': True,
                     'session_id': session_id,
+                    'initial_pending_count': initial_pending_count,
+                    'initial_requester_fingerprint': initial_requester_fingerprint,
+                    'final_pending_count': current_pending_count,
+                    'final_requester_fingerprint': requester_fingerprint(current_payload),
                     'pending_count': current_pending_count,
                     'attempts': attempts,
                     'max_retries': max_retries,
+                    'startup_probe_rechecks': startup_probe_rechecks,
                     'attempt_results': attempt_results,
                 }
                 return cycle
@@ -864,13 +1218,32 @@ def _run_registration_group_cycle(
                 attempt_entry['recheck_requester_fingerprint'] = requester_fingerprint(recheck_payload)
                 if current_pending_count <= 0:
                     monitoring_session['startup_initial_batch_done'] = True
+                    _store_cycle_anchor(
+                        state,
+                        bucket_name='registration_cycle_anchors',
+                        at=now,
+                        keys=[
+                            target_registration_group,
+                            str(target.get('binding_link') or '').strip(),
+                            str(target.get('binding_group_name') or '').strip(),
+                            target_group_name,
+                            str(recheck_payload.get('group_id') or '').strip(),
+                            str(recheck_payload.get('group_name') or '').strip(),
+                        ],
+                    )
+                    target_cycle_anchor_at = now.isoformat()
                     cycle['startup_initial_batch'] = {
                         'triggered': True,
                         'ok': True,
                         'session_id': session_id,
+                        'initial_pending_count': initial_pending_count,
+                        'initial_requester_fingerprint': initial_requester_fingerprint,
+                        'final_pending_count': 0,
+                        'final_requester_fingerprint': requester_fingerprint(recheck_payload),
                         'pending_count': 0,
                         'attempts': attempts,
                         'max_retries': max_retries,
+                        'startup_probe_rechecks': startup_probe_rechecks,
                         'attempt_results': attempt_results,
                         'cleared_after_recheck': True,
                     }
@@ -884,22 +1257,31 @@ def _run_registration_group_cycle(
             'triggered': bool(attempt_results),
             'ok': False if attempt_results else True,
             'session_id': session_id,
+            'initial_pending_count': initial_pending_count,
+            'initial_requester_fingerprint': initial_requester_fingerprint,
+            'final_pending_count': current_pending_count,
+            'final_requester_fingerprint': requester_fingerprint(current_payload),
             'pending_count': current_pending_count,
             'attempts': attempts,
             'max_retries': max_retries,
+            'startup_probe_rechecks': startup_probe_rechecks,
             'attempt_results': attempt_results,
             'retries_exhausted': bool(attempt_results and current_pending_count > 0),
         }
         return cycle
 
     try:
-        release = _evaluate_release(
-            args.api_base_url,
-            target_registration_group,
-            authoritative_payload,
-            batch_size=int(target.get('approval_count_threshold') or 0),
-            timeout_minutes=int(target.get('approval_timeout_minutes') or 0),
-        )
+        if schedule_end_flush_due and pending_count > 0:
+            release = _schedule_end_flush_release(target, target_registration_group, authoritative_payload)
+        else:
+            release = _evaluate_release(
+                args.api_base_url,
+                target_registration_group,
+                authoritative_payload,
+                batch_size=int(target.get('approval_count_threshold') or 0),
+                timeout_minutes=int(target.get('approval_timeout_minutes') or 0),
+                cycle_anchor_at=target_cycle_anchor_at,
+            )
         cycle['release_evaluation'] = {'ok': True, 'payload': release}
     except Exception as exc:
         cycle['release_evaluation'] = {'ok': False, 'error': str(exc)}
@@ -931,33 +1313,165 @@ def _run_registration_group_cycle(
     if not ready:
         return cycle
 
-    release_count = max(1, int(release.get('release_count') or 0))
-    cycle['formal_approval']['release_count'] = release_count
-    command = _build_formal_approval_command(
-        args,
-        approved_count=release_count,
-        registration_group=target_registration_group,
-        worker_base_url=target_worker_base_url,
-        fresh_probe_cmd=target_fresh_probe_cmd,
-        area=target_area,
-        remark=f"production auto approval daemon · {target_group_name}",
-    )
-    result = run_formal_approval_command(command, timeout=args.command_timeout_seconds)
-    ok = result.get('returncode') == 0 and _formal_run_verified(result)
+    attempts: List[Dict[str, Any]] = []
+    approval_run_ids: List[str] = []
+    seen_fingerprints = {fingerprint} if fingerprint else set()
+    current_payload = authoritative_payload
+    current_release = release
+    current_fingerprint = fingerprint
+    current_pending_count = pending_count
+    drain_rechecks: List[Dict[str, Any]] = []
+    max_drain_rounds = 3
+    release_count = max(1, int(current_release.get('release_count') or 0))
+    total_approved_count = 0
+    ok = True
+
+    for drain_round in range(1, max_drain_rounds + 1):
+        command = _build_formal_approval_command(
+            args,
+            approved_count=release_count,
+            registration_group=target_registration_group,
+            worker_base_url=target_worker_base_url,
+            fresh_probe_cmd=target_fresh_probe_cmd,
+            area=target_area,
+            remark=f"production auto approval daemon · {target_group_name}",
+        )
+        result = run_formal_approval_command(command, timeout=args.command_timeout_seconds)
+        ok = result.get('returncode') == 0 and _formal_run_verified(result)
+        formal_result = formal_run_result(result.get('result') or {})
+        approved_count = max(int(formal_result.get('approved_count', release_count) or release_count), 0)
+        approval_run_id = str((result.get('result') or {}).get('formal_run', {}).get('approval_run_id') or '').strip()
+        if approval_run_id:
+            approval_run_ids.append(approval_run_id)
+        total_approved_count += approved_count
+        attempts.append({
+            'drain_round': drain_round,
+            'fingerprint': current_fingerprint,
+            'pending_count': current_pending_count,
+            'release_count': release_count,
+            'reason_code': str(current_release.get('reason_code') or ''),
+            'command': command,
+            'result': result.get('result'),
+            'returncode': result.get('returncode'),
+            'stderr': result.get('stderr'),
+            'stdout': result.get('stdout'),
+            'ok': ok,
+            'approved_count': approved_count,
+        })
+        record_trigger(state, fingerprint=current_fingerprint, now=now)
+        _store_cycle_anchor(
+            state,
+            bucket_name='registration_cycle_anchors',
+            at=now,
+            keys=[
+                target_registration_group,
+                str(target.get('binding_link') or '').strip(),
+                str(target.get('binding_group_name') or '').strip(),
+                target_group_name,
+                str(current_payload.get('group_id') or '').strip(),
+                str(current_payload.get('group_name') or '').strip(),
+            ],
+        )
+        target_cycle_anchor_at = now.isoformat()
+        if not ok:
+            break
+        if drain_round >= max_drain_rounds:
+            break
+
+        next_payload = current_payload
+        next_release = current_release
+        settled = False
+        for recheck_attempt in range(1, 4):
+            try:
+                recheck = _recheck_authoritative_group_state(
+                    worker_base_url=target_worker_base_url,
+                    registration_group=target_registration_group,
+                    fresh_probe_cmd=target_fresh_probe_cmd,
+                    use_worker_state_directly=use_worker_state_directly,
+                    worker_timeout_seconds=args.worker_timeout_seconds,
+                    command_timeout_seconds=args.command_timeout_seconds,
+                )
+                next_payload = recheck['decision_group']['payload']
+                next_release = _evaluate_release(
+                    args.api_base_url,
+                    target_registration_group,
+                    next_payload,
+                    batch_size=int(target.get('approval_count_threshold') or 0),
+                    timeout_minutes=int(target.get('approval_timeout_minutes') or 0),
+                    cycle_anchor_at=target_cycle_anchor_at,
+                )
+                next_fingerprint = requester_fingerprint(next_payload)
+                next_pending_count = max(int(next_payload.get('pending_count') or 0), 0)
+                next_ready = bool(next_release.get('ready')) and int(next_release.get('release_count') or 0) > 0
+                recheck_entry: Dict[str, Any] = {
+                    'drain_round': drain_round,
+                    'recheck_attempt': recheck_attempt,
+                    'pending_count': next_pending_count,
+                    'fingerprint': next_fingerprint,
+                    'ready': next_ready,
+                    'release_count': int(next_release.get('release_count') or 0),
+                    'reason_code': str(next_release.get('reason_code') or ''),
+                }
+                if next_pending_count <= 0 or not next_ready or (next_fingerprint and next_fingerprint in seen_fingerprints):
+                    recheck_entry['stop'] = True
+                    drain_rechecks.append(recheck_entry)
+                    settled = True
+                    current_payload = next_payload
+                    current_release = next_release
+                    current_pending_count = next_pending_count
+                    current_fingerprint = next_fingerprint
+                    break
+                drain_rechecks.append(recheck_entry)
+                current_payload = next_payload
+                current_release = next_release
+                current_pending_count = next_pending_count
+                current_fingerprint = next_fingerprint
+                seen_fingerprints.add(next_fingerprint)
+                release_count = max(1, int(current_release.get('release_count') or 0))
+                settled = True
+                break
+            except Exception as exc:
+                drain_rechecks.append({
+                    'drain_round': drain_round,
+                    'recheck_attempt': recheck_attempt,
+                    'error': str(exc),
+                })
+            if recheck_attempt < 3:
+                time.sleep(1.0)
+        if not settled:
+            break
+        if current_pending_count <= 0:
+            break
+        if not (bool(current_release.get('ready')) and int(current_release.get('release_count') or 0) > 0):
+            break
+        if current_fingerprint and current_fingerprint in {entry.get('fingerprint') for entry in attempts}:
+            break
+
+    last_attempt = attempts[-1] if attempts else {}
     cycle['formal_approval'] = {
         'triggered': True,
         'ok': ok,
         'fingerprint': fingerprint,
-        'release_count': release_count,
-        'command': command,
-        'result': result.get('result'),
-        'returncode': result.get('returncode'),
-        'stderr': result.get('stderr'),
-        'stdout': result.get('stdout'),
+        'release_count': max(1, int(release.get('release_count') or 0)),
+        'command': last_attempt.get('command'),
+        'result': last_attempt.get('result'),
+        'returncode': last_attempt.get('returncode'),
+        'stderr': last_attempt.get('stderr'),
+        'stdout': last_attempt.get('stdout'),
         'reason_code': str(release.get('reason_code') or ''),
         'trigger_cooldown_seconds': trigger_cooldown_seconds,
+        'attempt_results': attempts,
+        'approval_run_ids': approval_run_ids,
+        'aggregate_approved_count': total_approved_count,
+        'drain_rounds': len(attempts),
+        'drain_rechecks': drain_rechecks,
+        'final_pending_count': current_pending_count,
+        'final_fingerprint': current_fingerprint,
+        'result': {
+            'formal_run': last_attempt.get('result', {}).get('formal_run') if isinstance(last_attempt.get('result'), dict) else None,
+            'formal_runs': [attempt.get('result', {}).get('formal_run') for attempt in attempts if isinstance(attempt.get('result'), dict) and isinstance(attempt.get('result', {}).get('formal_run'), dict)],
+        },
     }
-    record_trigger(state, fingerprint=fingerprint, now=now)
     return cycle
 
 
@@ -977,7 +1491,12 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
         'source': 'fallback_config',
     }
     monitor_target = _resolve_monitor_target(args)
-    ordered_targets = _ordered_cycle_targets(monitor_target, fallback_target)
+    ordered_targets = _ordered_cycle_targets(
+        monitor_target,
+        fallback_target,
+        now=now,
+        poll_interval_seconds=float(getattr(args, 'approval_poll_interval_seconds', 0.0) or 0.0),
+    )
     primary_target = ordered_targets[0] if ordered_targets else (monitor_target.get('selected') or fallback_target)
     cycle: Dict[str, Any] = {
         'service': SERVICE_NAME,
@@ -1078,6 +1597,17 @@ def _load_notify_profile_env(profile_name: str) -> Dict[str, str]:
 
 
 
+def _expand_notify_profile_targets(profile_name: str, notify_robot_name: str = '') -> List[Dict[str, str]]:
+    return [
+        {
+            'profile_name': str(item.get('profile_name') or '').strip(),
+            'robot_name': str(item.get('robot_name') or '').strip(),
+        }
+        for item in expand_notify_profile_targets(profile_name, notify_robot_name)
+    ]
+
+
+
 def _build_notifier_from_args(args: argparse.Namespace, cycle: Optional[Dict[str, Any]] = None) -> Optional[FeishuNotifier]:
     if not args.notify_enabled:
         return None
@@ -1096,6 +1626,15 @@ def _build_notifier_from_args(args: argparse.Namespace, cycle: Optional[Dict[str
         chat_id=chat_id,
         domain=domain,
     )
+
+
+SUCCESS_NOTIFICATION_CODES = {
+    'formal_approval_succeeded',
+    'registration_cycle_noop',
+    'startup_initial_batch_succeeded',
+    'official_group_approval_succeeded',
+    'official_group_manual_review_required',
+}
 
 
 def _incident_alert_threshold(incident: Dict[str, Any]) -> int:
@@ -1126,8 +1665,14 @@ def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Di
         }
         if streak_count < threshold:
             continue
-        if not register_notification(state, dedupe_key=dedupe_key, now=now, cooldown_seconds=args.notify_cooldown_seconds):
+        notification_code = str(incident.get('code') or '').strip()
+        success_notification = notification_code in SUCCESS_NOTIFICATION_CODES
+        notification_record = (state.get('notifications') or {}).get(dedupe_key) or {}
+        if success_notification and notification_record.get('last_sent_at') and str(notification_record.get('last_status') or '').strip() in {'sent', 'partial_sent'}:
             continue
+        if not success_notification:
+            if not register_notification(state, dedupe_key=dedupe_key, now=now, cooldown_seconds=args.notify_cooldown_seconds):
+                continue
         notify_profile_name = str(incident.get('notify_profile_name') or '').strip()
         notify_robot_name = str(incident.get('notify_robot_name') or '').strip()
         effective_cycle = cycle
@@ -1138,7 +1683,8 @@ def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Di
             if notify_robot_name:
                 monitor_target['notify_robot_name'] = notify_robot_name
             effective_cycle = {**cycle, 'monitor_target': monitor_target}
-        notifier = _build_notifier_from_args(args, effective_cycle)
+        resolved_notify_profile_name = str(notify_profile_name or (effective_cycle.get('monitor_target') or {}).get('notify_profile_name') or '').strip()
+        resolved_notify_robot_name = str(notify_robot_name or (effective_cycle.get('monitor_target') or {}).get('notify_robot_name') or '').strip()
         payload = {
             'dedupe_key': dedupe_key,
             'sent_at': now.isoformat(),
@@ -1147,23 +1693,92 @@ def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Di
             'streak_count': streak_count,
             'threshold': threshold,
         }
-        if notify_profile_name:
-            payload['notify_profile_name'] = notify_profile_name
-        if notify_robot_name:
-            payload['notify_robot_name'] = notify_robot_name
-        if notifier is None:
-            payload['status'] = 'skipped_no_notifier'
-            sent.append(payload)
-            continue
-        try:
-            response = notifier.send_text(format_lark_alert(SERVICE_NAME, incident, effective_cycle))
+        if resolved_notify_profile_name:
+            payload['notify_profile_name'] = resolved_notify_profile_name
+        if resolved_notify_robot_name:
+            payload['notify_robot_name'] = resolved_notify_robot_name
+        deliveries: List[Dict[str, Any]] = []
+        targets = _expand_notify_profile_targets(resolved_notify_profile_name, resolved_notify_robot_name)
+        if not targets:
+            targets = [{'profile_name': resolved_notify_profile_name or None, 'robot_name': resolved_notify_robot_name or None}]
+        for target in targets:
+            target_profile_name = str(target.get('profile_name') or '').strip()
+            target_robot_name = str(target.get('robot_name') or '').strip()
+            monitor_target = dict(effective_cycle.get('monitor_target') or {}) if isinstance(effective_cycle.get('monitor_target'), dict) else {}
+            if target_profile_name:
+                monitor_target['notify_profile_name'] = target_profile_name
+            if target_robot_name:
+                monitor_target['notify_robot_name'] = target_robot_name
+            target_cycle = {**effective_cycle, 'monitor_target': monitor_target}
+            delivery = {
+                'notify_profile_name': target_profile_name or None,
+                'notify_robot_name': target_robot_name or None,
+            }
+            notifier = _build_notifier_from_args(args, target_cycle)
+            if notifier is None:
+                delivery['status'] = 'skipped_no_notifier'
+                deliveries.append(delivery)
+                continue
+            try:
+                response = notifier.send_text(format_lark_alert(SERVICE_NAME, incident, target_cycle))
+                delivery['status'] = 'sent'
+                delivery['response'] = response
+            except Exception as exc:
+                delivery['status'] = 'failed'
+                delivery['error'] = str(exc)
+            deliveries.append(delivery)
+        payload['deliveries'] = deliveries
+        statuses = {str(item.get('status') or '') for item in deliveries}
+        if statuses == {'sent'}:
             payload['status'] = 'sent'
-            payload['response'] = response
-        except Exception as exc:
+        elif 'sent' in statuses and ('failed' in statuses or 'skipped_no_notifier' in statuses):
+            payload['status'] = 'partial_sent'
+        elif 'failed' in statuses:
             payload['status'] = 'failed'
-            payload['error'] = str(exc)
+        else:
+            payload['status'] = 'skipped_no_notifier'
+        if success_notification:
+            notification_bucket = state.setdefault('notifications', {})
+            existing_record = notification_bucket.get(dedupe_key) or {}
+            if payload['status'] in {'sent', 'partial_sent'}:
+                register_notification(state, dedupe_key=dedupe_key, now=now, cooldown_seconds=args.notify_cooldown_seconds)
+                existing_record = (state.get('notifications') or {}).get(dedupe_key) or existing_record
+            updated_record = dict(existing_record)
+            updated_record['last_status'] = payload['status']
+            notification_bucket[dedupe_key] = updated_record
+        else:
+            notification_bucket = state.setdefault('notifications', {})
+            existing_record = notification_bucket.get(dedupe_key) or {}
+            updated_record = dict(existing_record)
+            updated_record['last_status'] = payload['status']
+            notification_bucket[dedupe_key] = updated_record
         sent.append(payload)
     return sent
+
+
+def _notification_delivery_summary(notifications: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    summary: List[Dict[str, Any]] = []
+    for item in notifications:
+        deliveries = item.get('deliveries') or []
+        delivery_summary: List[Dict[str, Any]] = []
+        if isinstance(deliveries, list):
+            for delivery in deliveries:
+                if not isinstance(delivery, dict):
+                    continue
+                delivery_summary.append({
+                    'notify_profile_name': delivery.get('notify_profile_name'),
+                    'notify_robot_name': delivery.get('notify_robot_name'),
+                    'status': delivery.get('status'),
+                    'error': delivery.get('error'),
+                })
+        summary.append({
+            'code': item.get('code'),
+            'status': item.get('status'),
+            'notify_profile_name': item.get('notify_profile_name'),
+            'notify_robot_name': item.get('notify_robot_name'),
+            'deliveries': delivery_summary,
+        })
+    return summary
 
 
 def main() -> int:
@@ -1230,6 +1845,7 @@ def main() -> int:
         cycle['incidents'] = incidents
         cycle['success_notifications'] = success_notifications
         cycle['notifications'] = notifications
+        cycle['notification_delivery_summary'] = _notification_delivery_summary(notifications)
         save_json_state(status_path, cycle)
         save_json_state(state_path, state)
         print(json.dumps({
@@ -1237,6 +1853,7 @@ def main() -> int:
             'pending_incidents': [item.get('code') for item in incidents],
             'success_notifications': [item.get('code') for item in success_notifications],
             'notified': [item.get('code') for item in [*incidents, *success_notifications] if any(n.get('code') == item.get('code') and n.get('status') == 'sent' for n in notifications)],
+            'notification_delivery_summary': cycle.get('notification_delivery_summary') or [],
             'formal_triggered': bool((cycle.get('formal_approval') or {}).get('triggered')),
             'formal_ok': (cycle.get('formal_approval') or {}).get('ok'),
         }, ensure_ascii=False), flush=True)

@@ -126,7 +126,7 @@ def _ensure_backend_healthy(
 def main() -> int:
     parser = argparse.ArgumentParser(description='Run registration-group formal approval only after passing preflight, with optional stale-session recovery.')
     parser.add_argument('--api-base-url', default='http://127.0.0.1:8011')
-    parser.add_argument('--worker-base-url', default='http://127.0.0.1:8787')
+    parser.add_argument('--worker-base-url', default='')
     parser.add_argument('--registration-group', required=True)
     parser.add_argument('--fresh-probe-cmd', required=True)
     parser.add_argument('--restart-cmd')

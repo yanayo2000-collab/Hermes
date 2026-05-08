@@ -13,7 +13,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from app.production_ops import FeishuNotifier, build_success_notifications, format_lark_alert
-from scripts.production_ops_daemon import _load_notify_profile_env
+from scripts.production_ops_daemon import _expand_notify_profile_targets, _load_notify_profile_env
 
 DB_PATH = ROOT_DIR / 'data' / 'automation.db'
 
@@ -91,11 +91,18 @@ def match_binding(bindings: List[Dict[str, Any]], target_group: str, group_name:
     return None
 
 
-def already_sent(conn: sqlite3.Connection, approval_run_id: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM operator_audit_log WHERE event_type = 'official_group_success_notification_sent' AND payload LIKE ? LIMIT 1",
-        (f'%"approval_run_id": "{approval_run_id}"%',),
-    ).fetchone()
+def already_sent(conn: sqlite3.Connection, approval_run_id: str, notify_profile_name: Optional[str] = None) -> bool:
+    normalized_profile_name = str(notify_profile_name or '').strip()
+    if normalized_profile_name:
+        row = conn.execute(
+            "SELECT 1 FROM operator_audit_log WHERE event_type = 'official_group_success_notification_sent' AND payload LIKE ? AND payload LIKE ? LIMIT 1",
+            (f'%"approval_run_id": "{approval_run_id}"%', f'%"notify_profile_name": "{normalized_profile_name}"%'),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT 1 FROM operator_audit_log WHERE event_type = 'official_group_success_notification_sent' AND payload LIKE ? LIMIT 1",
+            (f'%"approval_run_id": "{approval_run_id}"%',),
+        ).fetchone()
     return row is not None
 
 
@@ -162,9 +169,6 @@ def main() -> int:
         approval_run_id = str(raw_result.get('approval_run_id') or '').strip()
         if not approval_run_id:
             skipped_rows.append({'lead_id': row['lead_id'], 'reason': 'missing_approval_run_id'})
-            continue
-        if already_sent(conn, approval_run_id):
-            skipped_rows.append({'lead_id': row['lead_id'], 'reason': 'already_sent', 'approval_run_id': approval_run_id})
             continue
         target_group = str(payload.get('target_group') or raw_result.get('target_group') or '').strip()
         group_name = str(raw_result.get('group_name') or '').strip()
@@ -237,29 +241,49 @@ def main() -> int:
                 },
             }
             message_text = format_lark_alert('production-ops-daemon', incident, cycle_context)
+            targets = _expand_notify_profile_targets(notify_profile_name, notify_robot_name or '')
             if args.dry_run:
                 sent_rows.append({
                     'approval_run_ids': approval_run_ids,
                     'notify_profile_name': notify_profile_name,
+                    'deliver_to': [str(item.get('profile_name') or '').strip() for item in targets],
                     'message_text': message_text,
                     'dry_run': True,
                 })
                 continue
-            notifier = build_notifier(notify_profile_name)
-            notifier.send_text(message_text)
-            for approval_run_id in approval_run_ids:
-                record_sent(
-                    conn,
-                    lead_id=approval_run_lead_map.get(approval_run_id, ''),
-                    approval_run_id=approval_run_id,
-                    notify_profile_name=notify_profile_name,
-                    message_text=message_text,
-                )
+            deliveries = []
+            for target in targets:
+                target_profile_name = str(target.get('profile_name') or '').strip()
+                target_robot_name = str(target.get('robot_name') or '').strip() or None
+                if approval_run_ids and all(already_sent(conn, approval_run_id, target_profile_name) for approval_run_id in approval_run_ids):
+                    deliveries.append({'notify_profile_name': target_profile_name, 'notify_robot_name': target_robot_name, 'status': 'skipped_duplicate'})
+                    continue
+                notifier = build_notifier(target_profile_name)
+                target_cycle_context = {
+                    **cycle_context,
+                    'monitor_target': {
+                        **dict(cycle_context.get('monitor_target') or {}),
+                        'notify_profile_name': target_profile_name,
+                        'notify_robot_name': target_robot_name,
+                    },
+                }
+                target_message_text = format_lark_alert('production-ops-daemon', incident, target_cycle_context)
+                notifier.send_text(target_message_text)
+                for approval_run_id in approval_run_ids:
+                    record_sent(
+                        conn,
+                        lead_id=approval_run_lead_map.get(approval_run_id, ''),
+                        approval_run_id=approval_run_id,
+                        notify_profile_name=target_profile_name,
+                        message_text=target_message_text,
+                    )
+                deliveries.append({'notify_profile_name': target_profile_name, 'notify_robot_name': target_robot_name, 'status': 'sent'})
             conn.commit()
             sent_rows.append({
                 'approval_run_ids': approval_run_ids,
                 'notify_profile_name': notify_profile_name,
                 'notify_robot_name': notify_robot_name,
+                'deliveries': deliveries,
             })
 
     print(json.dumps({'sent': sent_rows, 'skipped': skipped_rows}, ensure_ascii=False, indent=2))

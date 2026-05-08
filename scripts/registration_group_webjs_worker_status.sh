@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HEALTH_URL="${REGISTRATION_GROUP_APPROVAL_WEBJS_HEALTH_URL:-http://127.0.0.1:8787/health}"
+BASE_URL="${REGISTRATION_GROUP_APPROVAL_WEBJS_BASE_URL:-}"
+HEALTH_URL="${REGISTRATION_GROUP_APPROVAL_WEBJS_HEALTH_URL:-${BASE_URL:+${BASE_URL%/}/health}}"
 LOG_FILE_DEFAULT="$(cd "$(dirname "$0")/.." && pwd)/logs/registration_group_webjs_worker.log"
 LOG_FILE="${REGISTRATION_GROUP_APPROVAL_WEBJS_LOG_FILE:-$LOG_FILE_DEFAULT}"
+
+if [[ -z "$HEALTH_URL" ]]; then
+  echo '{"configured":false,"error":"REGISTRATION_GROUP_APPROVAL_WEBJS_HEALTH_URL or REGISTRATION_GROUP_APPROVAL_WEBJS_BASE_URL is required"}'
+  exit 2
+fi
 
 python3 - <<'PY'
 import json
 import os
 import urllib.request
 
-health_url = os.environ.get('REGISTRATION_GROUP_APPROVAL_WEBJS_HEALTH_URL', 'http://127.0.0.1:8787/health')
+health_url = os.environ.get('REGISTRATION_GROUP_APPROVAL_WEBJS_HEALTH_URL') or os.environ.get('HEALTH_URL')
 log_file = os.environ.get('REGISTRATION_GROUP_APPROVAL_WEBJS_LOG_FILE')
 with urllib.request.urlopen(health_url, timeout=15) as resp:
     body = json.loads(resp.read().decode('utf-8'))
