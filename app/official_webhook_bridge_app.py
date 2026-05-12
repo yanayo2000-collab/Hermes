@@ -88,7 +88,6 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
     </div>
     <div class="hero">
       <h1>官方群审批桥接台</h1>
-      <div class="subtitle">查看请求队列并处理人工桥接结果。</div>
     </div>
 
   <div class=\"card\">
@@ -121,7 +120,6 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
     <div class=\"card\">
       <div class="panel-head">
         <h3 style=\"margin-top:0;\">待处理请求</h3>
-        <div class="muted">按当前筛选查看待处理与已处理请求。</div>
       </div>
       <div class=\"table-wrap\">
         <table>
@@ -144,8 +142,7 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
     <div class=\"card\">
       <div class="panel-head">
         <h3 style=\"margin-top:0;\">处理面板</h3>
-        <div class=\"muted\">详情与处理</div>
-        <div id=\"detailMeta\" class=\"muted\">选择一条请求查看详情。</div>
+        <div id=\"detailMeta\" class=\"muted\">未选择请求</div>
       </div>
       <div style=\"margin-top:12px;\" class=\"actions\">
         <button class=\"success\" onclick=\"resolveCurrent('success')\">通过</button>
@@ -154,11 +151,11 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
       </div>
       <div class=\"toolbar\" style=\"margin-top:12px;\">
         <div><label class=\"muted\">处理结果</label><input id=\"resolveCode\" value=\"人工通过\" /></div>
-        <div><label class=\"muted\">处理人标识</label><input id=\"resolvedBy\" placeholder=\"例如 值班审批1 / 邮箱 / 工号\" /></div>
-        <div><label class=\"muted\">处理人名称</label><input id=\"resolvedByName\" placeholder=\"例如 雨琦 / 值班同学\" /></div>
-        <div><label class=\"muted\">备注</label><input id=\"resolveNote\" placeholder=\"例如 已核对后通过\" /></div>
+        <div><label class=\"muted\">处理人标识</label><input id=\"resolvedBy\" /></div>
+        <div><label class=\"muted\">处理人名称</label><input id=\"resolvedByName\" /></div>
+        <div><label class=\"muted\">备注</label><input id=\"resolveNote\" /></div>
       </div>
-      <div style=\"margin-top:12px;\"><label class=\"muted\">处理说明</label><textarea id=\"resolveReason\" rows=\"3\">已人工核对并通过。</textarea></div>
+      <div style=\"margin-top:12px;\"><label class=\"muted\">处理说明</label><textarea id=\"resolveReason\" rows=\"3\"></textarea></div>
       <div style=\"margin-top:12px;\">
         <div class=\"muted\">请求摘要</div>
         <div id=\"requestSummary\" class=\"muted\">暂无</div>
