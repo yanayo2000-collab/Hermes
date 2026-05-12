@@ -49,6 +49,25 @@ CORE_PATHS=(
   render.webhook.yaml
 )
 
+check_no_github_blocking_blobs() {
+  local branch="$1"
+  local base="origin/${branch}"
+  if ! git rev-parse --verify "$base" >/dev/null 2>&1; then
+    return 0
+  fi
+  local blockers
+  blockers="$(git rev-list --objects "${base}..HEAD" \
+    | git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' \
+    | awk '$1=="blob" && $3 >= 100000000 {print $3 " " $4}' \
+    | head -20)"
+  if [ -n "$blockers" ]; then
+    echo "[backup] push blocked: local history contains GitHub-blocking blobs >=100MB" >&2
+    echo "$blockers" >&2
+    echo "[backup] rewrite history in a sidecar clone before pushing; do not retry normal push." >&2
+    exit 10
+  fi
+}
+
 # Stage only the curated source set. Missing optional paths are ignored.
 for path in "${CORE_PATHS[@]}"; do
   if [ -e "$path" ] || git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
@@ -85,6 +104,7 @@ if git diff --cached --quiet; then
   fi
   if [ "${AHEAD_COUNT}" -gt 0 ]; then
     echo "[backup] no new core source changes; pushing ${AHEAD_COUNT} existing local commit(s)"
+    check_no_github_blocking_blobs "${BRANCH}"
     git push origin "${BRANCH}"
     echo "[backup] pushed successfully"
     exit 0
@@ -102,5 +122,6 @@ else
   echo "[backup] nothing to commit"
 fi
 
-git push origin "$(git branch --show-current)"
+check_no_github_blocking_blobs "${BRANCH}"
+git push origin "${BRANCH}"
 echo "[backup] pushed successfully"
