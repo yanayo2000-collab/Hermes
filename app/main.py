@@ -687,51 +687,51 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
     <h2 style=\"margin-top:0;\">新增 / 更新公会执行器</h2>
     <div class=\"executor-form-grid\">
       <div class=\"field-stack\">
-        <label class=\"field-hint\">公会名（guild_name）</label>
+        <label class=\"field-hint\">公会名</label>
         <input id=\"new_executor_guild_name\" placeholder=\"例如 Permata\" />
       </div>
       <div class=\"field-stack\">
-        <label class=\"field-hint\">后台地址（backend_url）</label>
+        <label class=\"field-hint\">后台地址</label>
         <input id=\"new_executor_backend_url\" placeholder=\"https://guild.linke.ai/guild/addAnchor\" />
       </div>
       <div class=\"field-stack\">
-        <label class=\"field-hint\">登录账号（login_username）</label>
+        <label class=\"field-hint\">登录账号</label>
         <input id=\"new_executor_login_username\" placeholder=\"后台登录账号\" />
       </div>
       <div class=\"field-stack\">
-        <label class=\"field-hint\">密码引用（password_secret_ref）</label>
+        <label class=\"field-hint\">密码引用</label>
         <input id=\"new_executor_password_secret_ref\" placeholder=\"只填密码引用，不回显明文\" />
       </div>
       <div class=\"field-stack\">
-        <label class=\"field-hint\">代理地址（proxy_url）</label>
+        <label class=\"field-hint\">代理地址</label>
         <input id=\"new_executor_proxy_url\" placeholder=\"http://user:pass@host:port\" />
       </div>
       <div class=\"field-stack\">
-        <label class=\"field-hint\">代理地区（proxy_region）</label>
+        <label class=\"field-hint\">代理地区</label>
         <select id=\"new_executor_proxy_region\"></select>
       </div>
       <div class=\"field-stack\">
-        <label class=\"field-hint\">代理类型（proxy_type）</label>
+        <label class=\"field-hint\">代理类型</label>
         <input id=\"new_executor_proxy_type\" placeholder=\"http / socks5\" value=\"http\" />
       </div>
       <div class=\"field-stack\">
-        <label class=\"field-hint\">浏览器配置键（browser_profile_key）</label>
+        <label class=\"field-hint\">浏览器配置键</label>
         <input id=\"new_executor_browser_profile_key\" placeholder=\"例如 permata-profile\" />
       </div>
       <div class=\"field-stack\">
-        <label class=\"field-hint\">并发数（bind_concurrency）</label>
+        <label class=\"field-hint\">并发数</label>
         <input id=\"new_executor_bind_concurrency\" type=\"number\" min=\"1\" value=\"1\" />
       </div>
       <div class=\"field-stack\">
-        <label class=\"field-hint\">超时秒数（request_timeout_seconds）</label>
+        <label class=\"field-hint\">超时秒数</label>
         <input id=\"new_executor_request_timeout_seconds\" type=\"number\" min=\"5\" value=\"30\" />
       </div>
       <div class=\"field-stack\">
-        <label class=\"field-hint\">是否启用（enabled）</label>
+        <label class=\"field-hint\">状态</label>
         <select id=\"new_executor_enabled\"><option value=\"true\" selected>启用</option><option value=\"false\">停用</option></select>
       </div>
       <div class=\"field-stack\">
-        <label class=\"field-hint\">备注（notes）</label>
+        <label class=\"field-hint\">备注</label>
         <input id=\"new_executor_notes\" placeholder=\"可填城市、用途、风险备注\" />
       </div>
     </div>
@@ -1075,7 +1075,7 @@ GROUP_ATMOSPHERE_PAGE_HTML = """<!doctype html>
 <html lang=\"zh-CN\"><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/><title>群活跃助手</title>
 <style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:24px;background:#f3f6fb;color:#142033}.page-shell{max-width:1320px;margin:0 auto}.shell-nav{position:sticky;top:0;z-index:20;display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px;padding:12px 0 14px;background:rgba(243,246,251,.94);backdrop-filter:blur(10px)}.shell-nav a{color:#2563eb;text-decoration:none;font-size:13px;padding:8px 12px;border-radius:999px;background:#eef4ff;border:1px solid #d8e5ff}.card,.hero{background:#fff;border:1px solid #dbe4f0;border-radius:20px;padding:20px;box-shadow:0 10px 30px rgba(15,23,42,.06);margin-top:16px}.hero{margin-top:0}.muted{color:#5d6b82;font-size:13px;line-height:1.7}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}input,textarea{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #c7d4e3;border-radius:10px;margin:6px 0}textarea{min-height:88px}button{padding:9px 14px;border-radius:10px;border:0;background:#2563eb;color:#fff}table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-bottom:1px solid #dbe4f0;padding:8px;text-align:left}@media(max-width:900px){.grid{grid-template-columns:1fr}}</style></head>
 <body><div class=\"page-shell\"><div class=\"shell-nav\"><a href=\"/ops\">运营工作台</a><a href=\"/ops/intake-bot-presets\">收口配置中心</a><a href=\"/ops/production-ops\">群审批控制台</a><a href=\"/ops/group-atmosphere\">群活跃助手</a><a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a><a href=\"/ops/official-group-bridge\">官方群审批桥接台</a><a href=\"/ops/accounts\" data-admin-only-nav=\"true\">账号管理</a></div>
-<div class=\"hero\"><h1>群活跃助手</h1><div class=\"muted\">群审批控制台的一部分：按话术池和频率在 WhatsApp 群内做低风险氛围运营；仅用户明确 @ 时触发 FAQ 轻回复。</div></div>
+<div class=\"hero\"><h1>群活跃助手</h1></div>
 <div class=\"grid\"><div class=\"card\"><h2>新增 / 更新配置</h2><input id=\"ga_config_name\" placeholder=\"配置名\"/><input id=\"ga_account_key\" placeholder=\"WhatsApp 账号 key\"/><input id=\"ga_target_group\" placeholder=\"目标群 ID / 群名\"/><input id=\"ga_worker_base_url\" placeholder=\"worker base url，可留空 dry-run\"/><textarea id=\"ga_templates\" placeholder=\"话术池：每行一条\"></textarea><textarea id=\"ga_faq\" placeholder=\"FAQ：keyword => reply\"></textarea><button onclick=\"saveConfig()\">保存配置</button> <button onclick=\"dispatchOnce()\">手动发送一次</button></div><div class=\"card\"><h2>配置列表</h2><div id=\"group-atmosphere-configs\"></div></div></div><div class=\"card\"><h2>发送 / @ 回复日志</h2><div id=\"group-atmosphere-logs\"></div></div></div>
 <script>async function loadJson(url,options={}){const res=await fetch(url,options);const text=await res.text();const data=text?JSON.parse(text):{};if(!res.ok)throw new Error(data.detail||text||`HTTP ${res.status}`);return data}function templates(){return document.getElementById('ga_templates').value.split(/\n+/).map((text,i)=>text.trim()).filter(Boolean).map((text,i)=>({template_id:`t${i+1}`,text}))}function faq(){return document.getElementById('ga_faq').value.split(/\n+/).map(x=>x.trim()).filter(Boolean).map(line=>{const p=line.split('=>');return {keyword:(p[0]||'').trim(),reply:(p.slice(1).join('=>')||'').trim()}}).filter(x=>x.keyword&&x.reply)}async function saveConfig(){await loadJson('/api/ops/group-atmosphere/configs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:ga_config_name.value.trim(),enabled:true,account_key:ga_account_key.value.trim(),target_group:ga_target_group.value.trim(),worker_base_url:ga_worker_base_url.value.trim(),template_pool:templates(),faq_rules:faq(),mention_reply_enabled:true})});await reloadAll()}async function dispatchOnce(){await loadJson('/api/ops/group-atmosphere/dispatch-once',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:ga_config_name.value.trim(),trigger_type:'manual_ops_page'})});await reloadAll()}function renderConfigs(rows){document.getElementById('group-atmosphere-configs').innerHTML=`<table><tbody>${rows.map(r=>`<tr><td>${r.config_name}</td><td>${r.account_key}</td><td>${r.target_group}</td><td>${r.status}</td></tr>`).join('')}</tbody></table>`}function renderLogs(rows){document.getElementById('group-atmosphere-logs').innerHTML=`<table><tbody>${rows.map(r=>`<tr><td>${r.created_at}</td><td>${r.config_name||''}</td><td>${r.direction}</td><td>${r.status}</td><td>${r.message_text}</td></tr>`).join('')}</tbody></table>`}async function reloadAll(){const c=await loadJson('/api/ops/group-atmosphere/configs');const l=await loadJson('/api/ops/group-atmosphere/logs');renderConfigs(c.rows||[]);renderLogs(l.rows||[])}reloadAll();</script></body></html>"""
 
@@ -1607,7 +1607,7 @@ function renderApprovalQrModal() {
   const contentEl = document.getElementById('approvalQrModalContent');
   const titleEl = document.getElementById('approvalQrModalTitle');
   const subtitleEl = document.getElementById('approvalQrModalSubtitle');
-  if (!modal || !statusEl || !contentEl || !titleEl || !subtitleEl) return;
+  if (!modal || !statusEl || !contentEl || !titleEl) return;
   const state = window.__approvalQrModalState || {};
   if (!state.open || !state.accountKey) {
     clearTimeout(window.__approvalQrModalRefreshTimer);
@@ -1620,7 +1620,7 @@ function renderApprovalQrModal() {
   const loading = Boolean(state.loading);
   const error = String(state.error || '').trim();
   titleEl.textContent = `${accountName} · 激活二维码`;
-  subtitleEl.textContent = '';
+  if (subtitleEl) subtitleEl.textContent = '';
   if (loading) {
     statusEl.innerHTML = '<div class="qr-loading">生成中</div>';
   } else if (error) {
@@ -1629,7 +1629,7 @@ function renderApprovalQrModal() {
     statusEl.innerHTML = '<span style="color:#166534;">已登录</span>';
     if (!state.successAnnounced) {
       window.__approvalQrModalState = {...state, successAnnounced: true};
-      showToast('账号已登录，可以正常使用', 'success');
+      showToast('账号已登录', 'success');
     }
   } else if (sessionState.qr_available) {
     const suffix = sessionState.last_qr_at ? ` · 最近出码：${sessionState.last_qr_at}` : '';
@@ -1639,11 +1639,11 @@ function renderApprovalQrModal() {
   }
   if (sessionState.qr_ascii) {
     const safeQr = String(sessionState.qr_ascii || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    contentEl.innerHTML = `<div class="field-hint">绑定二维码</div><div class="qr-shell"><pre>${safeQr}</pre></div><div class="muted" style="margin-top:10px;">扫码后系统会自动做一次登录检测，通过后会提示“账号已登录，可以正常使用”。</div>`;
+    contentEl.innerHTML = `<div class="field-hint">绑定二维码</div><div class="qr-shell"><pre>${safeQr}</pre></div>`;
   } else if (loading) {
     contentEl.innerHTML = '<div class="mini-note">正在生成二维码，通常几秒内返回；若首次拉起 runtime 稍慢，也会继续在这个弹窗内刷新结果。</div>';
   } else if (sessionState.login_verified) {
-    contentEl.innerHTML = `<div class="mini-note">${sessionState.login_check_message || '账号已登录，可以正常使用。'}</div>`;
+    contentEl.innerHTML = `<div class="mini-note">${sessionState.login_check_message || '账号已登录。'}</div>`;
   } else {
     contentEl.innerHTML = '<div class="mini-note">暂未拿到二维码。你可以点下方“刷新状态”继续等待，或“重新生成二维码”重新拉起。</div>';
   }
@@ -2078,7 +2078,7 @@ function accountCardHtml(row) {
     : (pendingAction === 'disabling' ? '正在关闭' : (row.enabled ? '监控中' : '已关闭'));
   const isSessionLoading = Boolean(window.__approvalSessionLoadingByAccount && window.__approvalSessionLoadingByAccount[row.account_key]);
   const loginStatusText = sessionState.login_verified
-    ? '账号已登录，可以正常使用'
+    ? '已登录'
     : (sessionState.login_check_message || (sessionState.qr_available ? '已出二维码，待扫码登录' : '未登录'));
   const loginStatusCode = String(sessionState.login_check_status || '').trim();
   const alertConfig = loginStatusCode === 'account_restricted'
@@ -2096,7 +2096,7 @@ function accountCardHtml(row) {
     ? `<div class="account-alert ${alertConfig.level}"><strong>${alertConfig.title}</strong><div>${alertConfig.detail}</div></div>`
     : '';
   const qrBlock = sessionState.qr_ascii
-    ? `<div style="margin-top:10px;"><div class="field-hint" style="margin-bottom:6px;">绑定二维码</div><pre style="margin:0; padding:12px; overflow:auto; background:#0f172a; color:#e2e8f0; border-radius:12px; font-size:10px; line-height:1.05;">${String(sessionState.qr_ascii || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre><div class="muted" style="margin-top:6px;">请用这个账号的 WhatsApp - 关联设备 扫描上面的二维码。</div></div>`
+    ? `<div style="margin-top:10px;"><div class="field-hint" style="margin-bottom:6px;">绑定二维码</div><pre style="margin:0; padding:12px; overflow:auto; background:#0f172a; color:#e2e8f0; border-radius:12px; font-size:10px; line-height:1.05;">${String(sessionState.qr_ascii || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></div>`
     : '';
   const noteValue = String(row.notes || '').trim();
   const accountToggleButtonHtml = isAdminUser
@@ -19114,8 +19114,8 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
 :root { --bg:#f4f7fb; --card:#fff; --line:#dbe4f0; --text:#142033; --muted:#64748b; --blue:#2563eb; --green:#166534; --red:#b91c1c; --amber:#92400e; }
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; margin:0; padding:24px; background:var(--bg); color:var(--text); }
 .page { max-width:1280px; margin:0 auto; }
-.nav { position:sticky; top:0; z-index:10; display:flex; gap:10px; flex-wrap:wrap; margin:0 0 16px 0; padding:10px 0 12px; background:rgba(244,247,251,.96); backdrop-filter:blur(8px); }
-.nav a { color:var(--blue); text-decoration:none; font-size:13px; padding:6px 10px; border-radius:999px; background:#eef2ff; }
+.nav { position:sticky; top:0; z-index:20; display:flex; gap:10px; flex-wrap:wrap; margin:0 0 18px 0; padding:12px 0 14px; background:rgba(244,247,251,.96); backdrop-filter:blur(10px); }
+.nav a { color:var(--blue); text-decoration:none; font-size:13px; padding:8px 12px; border-radius:999px; background:#eef4ff; border:1px solid #d8e5ff; }
 .card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow:0 10px 28px rgba(15,23,42,.06); margin-bottom:16px; }
 .hero { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }
 h1 { margin:0 0 8px 0; font-size:30px; letter-spacing:-.02em; }
@@ -19171,7 +19171,7 @@ tr:hover td { background:#fbfdff; }
 <body><div class="page">
   <div class="nav"><a href="/ops">运营工作台</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/group-atmosphere">群活跃助手</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/official-group-bridge">官方群审批桥接台</a><a href="/ops/accounts">账号管理</a></div>
   <div class="card hero">
-    <div><h1>后台账号管理</h1><div class="muted">管理后台登录账号、角色权限、启停状态与密码。管理员重置他人密码；当前登录账号可在本页修改自己的密码。</div></div>
+    <div><h1>后台账号管理</h1></div>
     <button class="secondary" type="button" onclick="openChangeOwnPassword()">修改我的密码</button>
   </div>
   <div class="summary" id="summaryCards">
@@ -19183,9 +19183,9 @@ tr:hover td { background:#fbfdff; }
   <div class="card">
     <h2>新增账号</h2>
     <div class="grid">
-      <label><div class="label">账号</div><input id="username" autocomplete="off" placeholder="例如 ops01" /><div class="hint">3-32 位，小写字母/数字/._-</div></label>
+      <label><div class="label">账号</div><input id="username" autocomplete="off" placeholder="例如 ops01" /></label>
       <label><div class="label">显示名</div><input id="displayName" autocomplete="off" placeholder="例如 印尼运营A" /></label>
-      <label><div class="label">角色</div><select id="role"><option value="operator">普通运营</option><option value="admin">管理员</option></select><div class="hint">管理员可管理账号和配置页</div></label>
+      <label><div class="label">角色</div><select id="role"><option value="operator">普通运营</option><option value="admin">管理员</option></select></label>
       <label><div class="label">初始密码</div><input id="password" type="password" autocomplete="new-password" placeholder="至少 8 位" /></label>
       <div><button id="createBtn" type="button" onclick="createAccount()">创建账号</button></div>
     </div>
@@ -19193,7 +19193,7 @@ tr:hover td { background:#fbfdff; }
   </div>
   <div class="card">
     <div class="toolbar">
-      <div><h2>账号列表</h2><div class="muted">修改显示名、角色、启停后会立即保存，并显示结果。</div></div>
+      <div><h2>账号列表</h2></div>
       <div class="toolbar-left"><input id="accountSearch" class="search" placeholder="搜索账号/显示名" oninput="renderAccounts()" /><button class="ghost" type="button" onclick="loadAccounts()">刷新</button></div>
     </div>
     <div id="tableMessage" class="status-line">加载中...</div>
@@ -19362,8 +19362,8 @@ loadAccounts();
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 24px; background: #f4f7fb; color: #142033; }
     .page-shell { max-width: 1280px; margin: 0 auto; }
-    .shell-nav { position: sticky; top: 0; z-index: 20; display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 16px 0; padding: 10px 0 12px; background: rgba(244,247,251,.96); backdrop-filter: blur(8px); }
-    .shell-nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:6px 10px; border-radius:999px; background:#eef2ff; }
+    .shell-nav { position: sticky; top: 0; z-index: 20; display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 18px 0; padding: 12px 0 14px; background: rgba(244,247,251,.96); backdrop-filter: blur(10px); }
+    .shell-nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:8px 12px; border-radius:999px; background:#eef4ff; border:1px solid #d8e5ff; }
     .page { max-width: 1280px; margin: 0 auto; }
     .card { background: #fff; border: 1px solid #dbe4f0; border-radius: 18px; padding: 18px; box-shadow: 0 10px 28px rgba(15,23,42,.06); margin-bottom: 16px; }
     h1 { margin: 0 0 8px 0; font-size: 30px; }
@@ -19415,7 +19415,6 @@ loadAccounts();
   <div class=\"page\">
     <div class=\"card\">
       <h1>注册群审批留存页</h1>
-      <div class=\"muted\">审批批次成员查询。接口：/api/ops/registration-group-approval-batch-members</div>
       <div class=\"summary\" id=\"summary\"></div>
     </div>
     <div class=\"card\">
@@ -19949,14 +19948,87 @@ h1 { letter-spacing: -0.02em; }
         _require_ops_user(request)
         return _with_ops_shell_style(_registration_group_approval_batch_members_page_html())
 
-    @app.get('/ops/official-group-bridge')
-    def official_group_bridge_page_redirect(request: Request) -> RedirectResponse:
-        _require_ops_user(request)
+    def _official_group_bridge_base_url() -> str:
         bridge_url = str(official_group_approval_webhook_url or '').strip()
         if not bridge_url:
             raise HTTPException(status_code=404, detail='official_group_bridge_not_configured')
-        bridge_page_url = bridge_url.replace('/official-group/approve', '/ops/official-group-bridge')
-        return RedirectResponse(url=bridge_page_url, status_code=307)
+        return bridge_url.replace('/official-group/approve', '').rstrip('/')
+
+    def _official_group_bridge_public_ops_base(request: Request) -> str:
+        forwarded_proto = str(request.headers.get('x-forwarded-proto') or '').split(',')[0].strip()
+        scheme = forwarded_proto or request.url.scheme
+        forwarded_host = str(request.headers.get('x-forwarded-host') or '').split(',')[0].strip()
+        host = forwarded_host or str(request.headers.get('host') or request.url.netloc)
+        return f'{scheme}://{host}'
+
+    def _bridge_get_json(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        url = f'{_official_group_bridge_base_url()}{path}'
+        response = requests.get(url, params=params or {}, timeout=15.0)
+        response.raise_for_status()
+        return response.json()
+
+    def _bridge_post_json(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        url = f'{_official_group_bridge_base_url()}{path}'
+        response = requests.post(url, json=payload or {}, timeout=20.0)
+        response.raise_for_status()
+        return response.json()
+
+    @app.get('/ops/official-group-bridge', response_class=HTMLResponse)
+    def official_group_bridge_page(request: Request) -> str:
+        _require_ops_user(request)
+        response = requests.get(f'{_official_group_bridge_base_url()}/ops/official-group-bridge', timeout=15.0)
+        response.raise_for_status()
+        html = response.text
+        public_base = _official_group_bridge_public_ops_base(request).rstrip('/')
+        # The bridge service is internal-only on 127.0.0.1:55801. Render it through the main ops origin
+        # so browser refresh/navigation stays on the public 7819 backend and uses the same shell sizing.
+        html = html.replace('http://127.0.0.1:8011', public_base)
+        html = html.replace('http://127.0.0.1:55801', public_base)
+        return html
+
+    @app.get('/ops/official-group-bridge/health')
+    def official_group_bridge_health_proxy(request: Request) -> Dict[str, Any]:
+        _require_ops_user(request)
+        return _bridge_get_json('/ops/official-group-bridge/health')
+
+    @app.get('/ops/official-group-bridge/summary')
+    def official_group_bridge_summary_proxy(request: Request) -> Dict[str, Any]:
+        _require_ops_user(request)
+        return _bridge_get_json('/ops/official-group-bridge/summary')
+
+    @app.get('/ops/official-group-bridge/requests')
+    def official_group_bridge_requests_proxy(
+        request: Request,
+        status: Optional[str] = None,
+        target_group: Optional[str] = None,
+        lead_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+        sort_by: str = 'updated_at',
+        sort_order: str = 'desc',
+    ) -> Dict[str, Any]:
+        _require_ops_user(request)
+        return _bridge_get_json('/ops/official-group-bridge/requests', {
+            'status': status,
+            'target_group': target_group,
+            'lead_id': lead_id,
+            'request_id': request_id,
+            'limit': limit,
+            'offset': offset,
+            'sort_by': sort_by,
+            'sort_order': sort_order,
+        })
+
+    @app.get('/ops/official-group-bridge/requests/{request_id}')
+    def official_group_bridge_request_detail_proxy(request: Request, request_id: str) -> Dict[str, Any]:
+        _require_ops_user(request)
+        return _bridge_get_json(f'/ops/official-group-bridge/requests/{quote(str(request_id), safe="")}')
+
+    @app.post('/ops/official-group-bridge/requests/{request_id}/resolve')
+    def official_group_bridge_request_resolve_proxy(request: Request, request_id: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+        _require_ops_user(request)
+        return _bridge_post_json(f'/ops/official-group-bridge/requests/{quote(str(request_id), safe="")}/resolve', payload)
 
     @app.get('/api/ops/runtime-health')
     def ops_runtime_health() -> Dict[str, Any]:
