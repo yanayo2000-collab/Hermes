@@ -713,7 +713,11 @@ def test_official_group_bridge_dashboard_page_loads():
     assert 'http://127.0.0.1:8011/ops' in text
     assert 'http://127.0.0.1:8011/ops/intake-bot-presets' in text
     assert 'http://127.0.0.1:8011/ops/production-ops' in text
+    assert 'http://127.0.0.1:8011/ops/group-atmosphere' in text
     assert 'http://127.0.0.1:8011/ops/official-group-bridge' in text
+    assert 'width: min(1280px, calc(100vw - 48px))' in text
+    assert 'min-height:54px' in text
+    assert 'padding:6px 10px' in text
 
 
 def test_official_group_bridge_summary_hides_resolved_only_historical_targets():

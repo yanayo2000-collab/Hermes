@@ -39,7 +39,8 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
   <title>官方群审批桥接操作台</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 24px; background: #f6f8fb; color: #111827; }
+    html { scrollbar-gutter: stable; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 0; background: #f4f7fb; color: #142033; }
     h1 { margin: 0 0 8px 0; }
     .muted { color: #6b7280; font-size: 13px; }
     .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 16px; margin-top: 16px; }
@@ -66,10 +67,10 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
     .pill.resolved { background: #d1fae5; color: #065f46; }
     pre { white-space: pre-wrap; word-break: break-word; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 10px; font-size: 12px; max-height: 240px; overflow: auto; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-    .page-shell { max-width: 1360px; margin: 0 auto; }
-    .shell-nav { position: sticky; top: 0; z-index: 20; display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 18px 0; padding: 12px 0 14px; background: rgba(243,246,251,.92); backdrop-filter: blur(10px); }
-    .shell-nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:8px 12px; border-radius:999px; background:#eef4ff; border:1px solid #d8e5ff; }
-    .hero { background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:20px; box-shadow:0 1px 3px rgba(0,0,0,.06); margin-bottom:16px; }
+    .page-shell { width: min(1280px, calc(100vw - 48px)); max-width: 1280px; margin: 0 auto; box-sizing: border-box; }
+    .shell-nav { position: sticky; top: 0; z-index: 30; display:flex; align-items:center; gap:10px; flex-wrap:wrap; min-height:54px; margin: 0 0 16px 0; padding: 12px 0; background: rgba(244,247,251,.96); backdrop-filter: blur(8px); box-sizing:border-box; }
+    .shell-nav a { display:inline-flex; align-items:center; justify-content:center; min-height:32px; box-sizing:border-box; color:#2563eb; text-decoration:none; font-size:13px; line-height:18px; font-weight:600; padding:6px 10px; border-radius:999px; background:#eef2ff; border:1px solid #dbeafe; white-space:nowrap; }
+    .hero { background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:20px; box-shadow:0 1px 3px rgba(0,0,0,.06); margin-bottom:16px; box-sizing:border-box; }
     .hero .eyebrow { color:#6366f1; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
     .hero .subtitle { color:#4b5563; font-size:14px; margin-top:8px; }
   </style>
@@ -80,6 +81,7 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
       <a href="__OPS_BASE_URL__/ops">运营工作台</a>
       <a href="__OPS_BASE_URL__/ops/intake-bot-presets">收口配置中心</a>
       <a href="__OPS_BASE_URL__/ops/production-ops">群审批控制台</a>
+      <a href="__OPS_BASE_URL__/ops/group-atmosphere">群活跃助手</a>
       <a href="__OPS_BASE_URL__/ops/registration-group-approval-batch-members">注册群审批留存页</a>
       <a href="__OPS_BASE_URL__/ops/official-group-bridge">官方群审批桥接台</a>
       <a href="__OPS_BASE_URL__/ops/accounts" data-admin-only-nav="true">账号管理</a>
