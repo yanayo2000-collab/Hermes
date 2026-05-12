@@ -28,3 +28,7 @@ next_registration_group_approval_probe.json
 next_registration_group_approval_precise_probe.json
 registration_group_production_release_latest.json
 data/automation.db
+
+# Local runtime scripts with machine credentials; keep out of GitHub backup
+scripts/run_registration_group_backend.sh
+scripts/run_official_group_bridge.sh
