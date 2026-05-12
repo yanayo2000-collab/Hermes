@@ -48,8 +48,4 @@ exec python3 "$ROOT_DIR/scripts/production_ops_daemon.py" \
   --temp-cleanup-interval-seconds "${PRODUCTION_OPS_TEMP_CLEANUP_INTERVAL_SECONDS:-600}" \
   --temp-cleanup-min-age-hours "${PRODUCTION_OPS_TEMP_CLEANUP_MIN_AGE_HOURS:-1}" \
   --monitoring-session-id "${PRODUCTION_OPS_MONITORING_SESSION_ID:-}" \
-  --notify-chat-id "${PRODUCTION_OPS_NOTIFY_CHAT_ID:-${FEISHU_HOME_CHANNEL:-}}" \
-  --feishu-app-id "${PRODUCTION_OPS_FEISHU_APP_ID:-${FEISHU_APP_ID:-}}" \
-  --feishu-app-secret "${PRODUCTION_OPS_FEISHU_APP_SECRET:-${FEISHU_APP_SECRET:-}}" \
-  --feishu-domain "${PRODUCTION_OPS_FEISHU_DOMAIN:-${FEISHU_DOMAIN:-lark}}" \
   >> "$LOG_DIR/production_ops_daemon.log" 2>> "$LOG_DIR/production_ops_daemon.error.log"
