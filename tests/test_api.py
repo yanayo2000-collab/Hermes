@@ -1194,6 +1194,7 @@ def test_production_ops_page_loads():
     assert 'inferred_live_probe_ready' in body
     assert 'monitor_disabled' in body
     assert 'other_binding_live_probe_active' in body
+    assert '待本群探针' in body
     assert 'mapping_mismatch' in body
     assert 'probe_unavailable' in body
     assert '已就绪' in body
