@@ -9335,6 +9335,15 @@ class Service:
         lead_row = conn.execute("SELECT * FROM leads WHERE lead_id = ?", (lead_id,)).fetchone()
         if self.crm_adapter is not None and lead_row:
             lead_dict = dict(lead_row)
+            submission_row = None
+            if submission_id:
+                submission_row = conn.execute(
+                    "SELECT submission_id, source_channel FROM account_submissions WHERE submission_id = ?",
+                    (submission_id,),
+                ).fetchone()
+            submission_dict = dict(submission_row) if submission_row else {}
+            phone_raw = f"+{lead_dict.get('area_code')} {lead_dict.get('mobile')}" if lead_dict.get('area_code') and lead_dict.get('mobile') else str(lead_dict.get('mobile') or '')
+            phone_e164 = f"+{lead_dict.get('area_code')}{lead_dict.get('mobile')}" if lead_dict.get('area_code') and lead_dict.get('mobile') else ''
             resolved_app = self._resolve_crm_app_mapping(lead_dict.get('app_name'))
             resolved_dept = self._resolve_crm_dept_mapping(
                 (bind_raw_result or {}).get('deptName') or lead_dict.get('dept_name'),
@@ -9342,6 +9351,8 @@ class Service:
             )
             crm_payload = {
                 'mobile': str(lead_dict.get('mobile') or ''),
+                'phoneRaw': phone_raw,
+                'phoneE164': phone_e164,
                 'ywId': str(account_id or ''),
                 'name': '',
                 'remark': bind_result_reason or '',
@@ -9358,6 +9369,10 @@ class Service:
                 'fileUrl': '',
                 'deptName': resolved_dept['deptName'],
                 'deptId': resolved_dept['deptId'],
+                'submissionId': str(submission_dict.get('submission_id') or submission_id or ''),
+                'sourceChannel': str(submission_dict.get('source_channel') or ''),
+                'bindStatus': 'bind_success',
+                'officialGroupStatus': 'pending',
             }
             mapping_failure = self._precheck_crm_mapping_failure(
                 resolved_app=resolved_app,
@@ -14594,8 +14609,7 @@ class Service:
             existing_meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
             if existing_meta and not reset:
                 existing_runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, allow_shared_fallback=False)
-                existing_session_state = self._build_whatsapp_approval_session_state(normalized_key, include_qr_ascii=False)
-                if bool(existing_runtime_state.get('active')) and bool(existing_runtime_state.get('session_target_match')) and bool(existing_session_state.get('login_verified')):
+                if bool(existing_runtime_state.get('active')) and bool(existing_runtime_state.get('session_target_match')):
                     worker_health: Dict[str, Any] = {}
                     base_url = str(existing_runtime_state.get('base_url') or '').strip()
                     if base_url:

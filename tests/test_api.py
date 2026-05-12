@@ -3391,7 +3391,7 @@ def test_whatsapp_approval_account_runtime_start_reuses_existing_dedicated_worke
 
 
 
-def test_whatsapp_approval_account_runtime_restarts_when_existing_session_not_login_verified():
+def test_whatsapp_approval_account_runtime_reuses_active_matching_runtime_even_before_login_verified():
     client = make_client({
         'LARK_APP_ID': 'cli_test_app',
         'LARK_DEFAULT_APP_NAME': 'Linky',
@@ -3415,6 +3415,9 @@ def test_whatsapp_approval_account_runtime_restarts_when_existing_session_not_lo
     assert saved.status_code == 200
 
     service = client.app.state.service
+    runtime_state_path = service._whatsapp_approval_runtime_state_path('wa-admin-restart-mismatch')
+    if runtime_state_path.exists():
+        runtime_state_path.unlink()
     auth_path = str(service._whatsapp_approval_session_auth_path('wa-admin-restart-mismatch'))
 
     class FakeResponse:
@@ -3468,9 +3471,10 @@ def test_whatsapp_approval_account_runtime_restarts_when_existing_session_not_lo
         assert second.status_code == 200
 
     second_body = second.json()
-    assert second_body.get('reused_existing_runtime') is not True
-    assert len(popen_calls) == 2
-    assert any(sig == 15 for _, sig in kill_calls)
+    assert second_body.get('reused_existing_runtime') is True
+    assert second_body['runtime']['base_url'] == 'http://127.0.0.1:18889'
+    assert len(popen_calls) == 1
+    assert all(sig not in (15, 9) for _, sig in kill_calls)
 
 
 
@@ -7028,6 +7032,13 @@ def test_manual_cs_submission_dedupes_cross_channel_duplicate_and_reuses_first_s
 
     create_calls = [payload for name, payload in crm.calls if name == 'create_customer']
     assert len(create_calls) == 1
+    crm_payload = create_calls[0]
+    assert crm_payload['phoneRaw'] == '+62 81234567890'
+    assert crm_payload['phoneE164'] == '+6281234567890'
+    assert crm_payload['submissionId'] == first.json()['submission_id']
+    assert crm_payload['sourceChannel'] == 'manual_cs_lark'
+    assert crm_payload['bindStatus'] == 'bind_success'
+    assert crm_payload['officialGroupStatus'] == 'pending'
 
 
 
