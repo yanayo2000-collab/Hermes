@@ -76,7 +76,19 @@ if [ -n "$TRACKED_IGNORED" ]; then
   echo "$TRACKED_IGNORED" | xargs git rm --cached --ignore-unmatch -r -- >/dev/null
 fi
 
+BRANCH="$(git branch --show-current)"
 if git diff --cached --quiet; then
+  if git rev-parse --verify "origin/${BRANCH}" >/dev/null 2>&1; then
+    AHEAD_COUNT="$(git rev-list --count "origin/${BRANCH}..HEAD")"
+  else
+    AHEAD_COUNT=1
+  fi
+  if [ "${AHEAD_COUNT}" -gt 0 ]; then
+    echo "[backup] no new core source changes; pushing ${AHEAD_COUNT} existing local commit(s)"
+    git push origin "${BRANCH}"
+    echo "[backup] pushed successfully"
+    exit 0
+  fi
   echo "[backup] no core source changes to back up"
   exit 0
 fi
