@@ -25,15 +25,64 @@ if ! git config user.email >/dev/null 2>&1; then
   exit 4
 fi
 
-if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
-  echo "[backup] no changes to back up"
+# Back up source/config only. Do not stage runtime state, browser profiles,
+# logs, local databases, temp probes, node_modules, or generated caches.
+CORE_PATHS=(
+  app
+  scripts
+  tests
+  docs
+  deploy
+  sql
+  webjs-approval-worker/src
+  webjs-approval-worker/test
+  webjs-approval-worker/package.json
+  webjs-approval-worker/package-lock.json
+  webjs-approval-worker/README.md
+  requirements.txt
+  pytest.ini
+  README.md
+  .gitignore
+  .env.example
+  .github
+  ci.yml
+  render.webhook.yaml
+)
+
+# Stage only the curated source set. Missing optional paths are ignored.
+for path in "${CORE_PATHS[@]}"; do
+  if [ -e "$path" ] || git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
+    git add -A -- "$path"
+  fi
+done
+
+# Defensive unstage: these paths must never be added by the backup job.
+git restore --staged -- \
+  data logs tmp .wwebjs_cache .venv .venv-live-truth node_modules \
+  webjs-approval-worker/node_modules \
+  webjs-approval-worker/logs \
+  webjs-approval-worker/tmp \
+  webjs-approval-worker/.wwebjs_auth \
+  webjs-approval-worker/.wwebjs_auth_accounts \
+  webjs-approval-worker/.wwebjs_auth_dedicated \
+  webjs-approval-worker/.wwebjs_cache \
+  '*.log' \
+  2>/dev/null || true
+
+# If old runtime artifacts were already tracked before .gitignore was fixed,
+# stage their removal from Git index without deleting the local live files.
+TRACKED_IGNORED="$(git ls-files -ci --exclude-standard)"
+if [ -n "$TRACKED_IGNORED" ]; then
+  echo "$TRACKED_IGNORED" | xargs git rm --cached --ignore-unmatch -r -- >/dev/null
+fi
+
+if git diff --cached --quiet; then
+  echo "[backup] no core source changes to back up"
   exit 0
 fi
 
-git add -A
-
 STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
-MSG="backup: auto snapshot ${STAMP}"
+MSG="backup: core source snapshot ${STAMP}"
 
 if git commit -m "$MSG" >/dev/null 2>&1; then
   echo "[backup] committed: $MSG"
