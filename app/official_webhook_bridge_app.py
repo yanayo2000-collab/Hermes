@@ -82,6 +82,7 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
       <a href="__OPS_BASE_URL__/ops/production-ops">群审批控制台</a>
       <a href="__OPS_BASE_URL__/ops/registration-group-approval-batch-members">注册群审批留存页</a>
       <a href="__OPS_BASE_URL__/ops/official-group-bridge">官方群审批桥接台</a>
+      <a href="__OPS_BASE_URL__/ops/accounts" data-admin-only-nav="true">账号管理</a>
     </div>
     <div class="hero">
       <h1>官方群审批桥接台</h1>

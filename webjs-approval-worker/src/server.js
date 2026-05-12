@@ -872,6 +872,42 @@ async function resolveGroup(target) {
   return resolveGroupWithClient(client, target);
 }
 
+async function sendGroupMessageWithClient(activeClient, payload) {
+  const targetGroup = String(payload && payload.target_group ? payload.target_group : '').trim();
+  const messageText = String(payload && payload.message_text ? payload.message_text : '').trim();
+  if (!targetGroup) {
+    throw new Error('target_group is required');
+  }
+  if (!messageText) {
+    throw new Error('message_text is required');
+  }
+  const group = await resolveGroupWithClient(activeClient, targetGroup);
+  if (!group || !group.isGroup) {
+    throw new Error(`target group not found or not a group: ${targetGroup}`);
+  }
+  if (typeof group.sendMessage !== 'function') {
+    throw new Error('resolved group does not support sendMessage');
+  }
+  const sent = await group.sendMessage(messageText);
+  return {
+    status: 'success',
+    result_code: 'sent',
+    result_reason: 'message sent to whatsapp group',
+    group_id: safeString(group.id) || targetGroup,
+    group_name: group.name || targetGroup,
+    message_id: safeString(sent && sent.id),
+    sent_at: new Date().toISOString(),
+    raw_result: {
+      timestamp: sent && sent.timestamp ? sent.timestamp : null,
+      metadata: payload && payload.metadata ? payload.metadata : {},
+    },
+  };
+}
+
+async function sendGroupMessage(payload) {
+  return sendGroupMessageWithClient(client, payload);
+}
+
 async function resolveApprovalGroup(target) {
   return resolveGroupWithClient(approvalClient, target);
 }
@@ -1896,6 +1932,30 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'POST' && req.url === '/send-group-message') {
+      const payload = await collectJson(req);
+      state.last_action_at = new Date().toISOString();
+      const result = await withActionLock(async () => {
+        await ensureClientStarted();
+        await waitForReady(QR_TIMEOUT_MS).catch(() => {
+          if (!state.ready) {
+            throw new Error(state.last_qr ? 'client awaiting qr scan' : 'client not ready');
+          }
+        });
+        return sendGroupMessage(payload);
+      });
+      logEvent('send_group_message', {
+        target_group: payload.target_group || null,
+        group_id: result.group_id || null,
+        group_name: result.group_name || null,
+        result_code: result.result_code || null,
+        message_id: result.message_id || null,
+        metadata: payload.metadata || {},
+      });
+      sendJson(res, 200, result);
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/approve') {
       const payload = await collectJson(req);
       state.last_action_at = new Date().toISOString();
@@ -1995,6 +2055,8 @@ module.exports = {
   parseChromeProcessesUsingUserDataDir,
   recoverLocalAuthBrowserConflict,
   runBrowserConflictRecoveryFlow,
+  sendGroupMessageWithClient,
+  sendGroupMessage,
 };
 
 process.on('exit', () => {
