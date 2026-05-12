@@ -10,7 +10,7 @@ from collections import Counter, defaultdict, deque
 from typing import Any, Deque, Dict, Iterable, List, Optional, Set
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 try:
     import requests
@@ -83,7 +83,6 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
       <a href="__OPS_BASE_URL__/ops/production-ops">群审批控制台</a>
       <a href="__OPS_BASE_URL__/ops/group-atmosphere">群活跃助手</a>
       <a href="__OPS_BASE_URL__/ops/registration-group-approval-batch-members">注册群审批留存页</a>
-      <a href="__OPS_BASE_URL__/ops/official-group-bridge">官方群审批桥接台</a>
       <a href="__OPS_BASE_URL__/ops/accounts" data-admin-only-nav="true">账号管理</a>
     </div>
     <div class="hero">
@@ -1274,9 +1273,9 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             raise HTTPException(status_code=400, detail='payload must be a JSON object')
         return bridge_state.approve(payload, authorization=authorization)
 
-    @app.get('/ops/official-group-bridge', response_class=HTMLResponse)
-    def official_group_bridge_page() -> str:
-        return OFFICIAL_GROUP_BRIDGE_PAGE_HTML.replace('__OPS_BASE_URL__', ops_base_url)
+    @app.get('/ops/official-group-bridge')
+    def official_group_bridge_page() -> RedirectResponse:
+        return RedirectResponse(url=f'{ops_base_url}/ops/production-ops', status_code=307)
 
     @app.get('/ops/official-group-bridge/health')
     def official_group_bridge_health() -> Dict[str, Any]:
