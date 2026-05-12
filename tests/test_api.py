@@ -3933,7 +3933,7 @@ def test_whatsapp_approval_candidates_zero_pending_probe_is_marked_unverified(mo
     row = listed.json()['rows'][0]
     admin_check = next(item for item in row['verification_checks'] if item['code'] == 'admin_membership_verification')
     assert admin_check['ok'] is True
-    assert admin_check['detail'] == '已接探针：待审批 0 人。已有管理员权限。；当前群：🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎；零待审批置信度：待验证'
+    assert admin_check['detail'] == '已接探针：待审批 0 人。已有管理员权限。；当前群：🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎'
     assert row['membership_verifier']['truth_state']['status'] == 'confirmed_empty'
     assert row['membership_verifier']['truth_state']['source'] == 'group_state'
     assert row['membership_verifier']['truth_state']['pending_zero_confidence'] == 'unverified'
@@ -4097,7 +4097,7 @@ def test_whatsapp_approval_candidates_use_binding_specific_live_probe_for_each_e
     assert row['group_binding_runtimes'][0]['membership_verifier']['truth_state']['status'] == 'confirmed_pending'
     assert row['group_binding_runtimes'][0]['runtime_probe_group_name'] == '🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎'
     assert row['group_binding_runtimes'][1]['membership_verifier']['status'] == 'mapped_live_probe_ready'
-    assert row['group_binding_runtimes'][1]['membership_verifier']['detail'] == '已接探针：待审批 0 人。已有管理员权限。；当前群：注册测试1；零待审批置信度：待验证'
+    assert row['group_binding_runtimes'][1]['membership_verifier']['detail'] == '已接探针：待审批 0 人。已有管理员权限。；当前群：注册测试1'
     assert row['group_binding_runtimes'][1]['membership_verifier']['truth_state']['status'] == 'confirmed_empty'
     assert row['group_binding_runtimes'][1]['runtime_probe_group_name'] == '注册测试1'
 

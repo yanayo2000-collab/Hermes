@@ -15752,29 +15752,15 @@ class Service:
             if gated_verifier:
                 return gated_verifier
         has_live_probe = bool(probe.get('group_name') or probe.get('group_id') or probe.get('member_count') is not None)
-        try:
-            probe_pending_count = max(int(probe.get('pending_count') or 0), 0)
-        except (TypeError, ValueError):
-            probe_pending_count = 0
         ready = bool(has_live_probe and ('strict_queue_and_member_verify' in supports or 'approve' in supports))
         if ready:
             group_label = str(probe.get('group_name') or probe.get('group_id') or '-').strip() or '-'
-            suffix_parts = []
-            if probe_pending_count <= 0:
-                zero_confidence = str(probe.get('pending_zero_confidence') or truth_state.get('pending_zero_confidence') or 'unverified').strip() or 'unverified'
-                confidence_label = {
-                    'unverified': '待验证',
-                    'high': '高置信',
-                    'verified': '已核验',
-                }.get(zero_confidence, zero_confidence)
-                suffix_parts.append(f'零待审批置信度：{confidence_label}')
             detail = self._format_group_probe_ready_detail(
                 scope_text='注册群',
                 probe_label=group_label,
                 pending_count=probe.get('pending_count'),
                 member_count=probe.get('member_count'),
                 executor_text='共享执行器',
-                suffix='；'.join(suffix_parts),
             )
             status = 'live_probe_ready'
             requires_manual_seed = False
@@ -15920,10 +15906,6 @@ class Service:
         monitor_group_id = str(((status.get('decision_group_state') or {}).get('payload') or {}).get('group_id') or '').strip() if isinstance(status.get('decision_group_state'), dict) else ''
         monitor_binding_link = str(monitor_target.get('binding_link') or '').strip()
         monitor_group_name = str(monitor_target.get('group_name') or monitor_target.get('binding_group_name') or '').strip()
-        try:
-            binding_pending_count = max(int(probe.get('pending_count') or 0), 0)
-        except (TypeError, ValueError):
-            binding_pending_count = 0
         binding_group = str(binding.get('registration_group') or '').strip()
         binding_group_id = str(binding.get('group_id') or '').strip()
         binding_link = str(binding.get('link') or '').strip()
@@ -15940,14 +15922,6 @@ class Service:
                     suffix_parts.append(f'当前群：{current_group_name}')
                 elif not current_group_name and (binding_group_id or probe_group_id):
                     suffix_parts.append(f'当前群ID：{binding_group_id or probe_group_id}')
-                if binding_pending_count <= 0:
-                    zero_confidence = str(probe.get('pending_zero_confidence') or binding_truth_state.get('pending_zero_confidence') or 'unverified').strip() or 'unverified'
-                    confidence_label = {
-                        'unverified': '待验证',
-                        'high': '高置信',
-                        'verified': '已核验',
-                    }.get(zero_confidence, zero_confidence)
-                    suffix_parts.append(f'零待审批置信度：{confidence_label}')
                 return {
                     'ready': True,
                     'requires_manual_seed': False,
