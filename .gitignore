@@ -8,6 +8,12 @@ __pycache__/
 logs/
 .wwebjs_cache/
 tmp/
+node_modules/
+*.log
+tmp_ocr_crops/
+tmp_ocr_crops_v2/
+tmp_ocr_debug/
+webjs-approval-worker/node_modules/
 webjs-approval-worker/logs/
 webjs-approval-worker/.wwebjs_auth/
 webjs-approval-worker/.wwebjs_auth_accounts/
