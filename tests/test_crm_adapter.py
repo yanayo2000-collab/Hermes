@@ -212,6 +212,92 @@ def test_create_customer_posts_payload():
     assert last["headers"]["token"] == "tok123"
 
 
+def test_create_customer_posts_to_automation_upsert_when_token_is_configured():
+    session = FakeSession()
+    session.add("POST", "http://example.com/enterprise-admin/customer/ywcustomer/automation/upsert", {
+        "code": 0,
+        "msg": "success",
+        "data": {"success": True, "code": "SUCCESS", "customerId": 204, "ywId": 77123456},
+    })
+    adapter = LiveCrmAdapter(
+        base_url="http://example.com/enterprise-admin",
+        username="u",
+        password="p",
+        session=session,
+        automation_token="auto-token",
+    )
+
+    payload = {"mobile": "933112345", "ywId": "77123456", "appName": "Linky", "deptName": "Piso", "pendaftaranGroup": "Piso-16"}
+    body = adapter.create_customer(payload)
+
+    assert body["code"] == 0
+    assert body["automation"] is True
+    last = session.calls[-1]
+    assert last["url"].endswith("/customer/ywcustomer/automation/upsert")
+    assert last["json"] == payload
+    assert last["headers"]["X-Automation-Token"] == "auto-token"
+
+
+def test_create_customer_maps_automation_duplicate_to_legacy_duplicate_code():
+    session = FakeSession()
+    session.add("POST", "http://example.com/enterprise-admin/customer/ywcustomer/automation/upsert", {
+        "code": 0,
+        "msg": "success",
+        "data": {"success": False, "code": "DUPLICATE_SID", "message": "sid already exists", "customerId": 204},
+    })
+    adapter = LiveCrmAdapter(
+        base_url="http://example.com/enterprise-admin",
+        username="u",
+        password="p",
+        session=session,
+        automation_token="auto-token",
+    )
+
+    body = adapter.create_customer({"mobile": "933112345", "ywId": "77123456", "appName": "Linky", "deptName": "Piso"})
+
+    assert body["code"] == 10002
+    assert body["msg"] == "Data duplication."
+    assert body["data"]["code"] == "DUPLICATE_SID"
+
+
+def test_verify_customer_uses_automation_verify_and_filters_empty_fields():
+    session = FakeSession()
+    session.add("POST", "http://example.com/enterprise-admin/customer/ywcustomer/automation/verify", {
+        "code": 0,
+        "msg": "success",
+        "data": {"verified": True, "code": "SUCCESS", "customerId": 204, "ywId": 77123456},
+    })
+    adapter = LiveCrmAdapter(
+        base_url="http://example.com/enterprise-admin",
+        username="u",
+        password="p",
+        session=session,
+        automation_token="auto-token",
+    )
+
+    body = adapter.verify_customer({
+        "ywId": "77123456",
+        "mobile": "933112345",
+        "appName": "Linky",
+        "deptName": "Piso",
+        "pendaftaranGroup": "Piso-16",
+        "wa": "",
+        "remark": "ignored",
+    })
+
+    assert body["code"] == 0
+    last = session.calls[-1]
+    assert last["url"].endswith("/customer/ywcustomer/automation/verify")
+    assert last["headers"]["X-Automation-Token"] == "auto-token"
+    assert last["json"] == {
+        "ywId": "77123456",
+        "mobile": "933112345",
+        "appName": "Linky",
+        "deptName": "Piso",
+        "pendaftaranGroup": "Piso-16",
+    }
+
+
 def test_update_customer_puts_payload():
     session = FakeSession()
     session.add("PUT", "http://example.com/enterprise-admin/customer/ywcustomer", {"code": 0, "msg": "success", "data": None})

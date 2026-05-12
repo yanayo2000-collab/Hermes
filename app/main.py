@@ -1945,7 +1945,7 @@ const VERIFIER_BINDING_STATUS_TEXT = {
   inferred_live_probe_ready: '已接探针',
   zero_pending_unverified: '待验证',
   monitor_disabled: '不监控',
-  other_binding_live_probe_active: '待切换',
+  other_binding_live_probe_active: '待本群探针',
   mapping_mismatch: '映射异常',
   runtime_unavailable: '未就绪',
   login_unready: '待登录',
@@ -15954,7 +15954,7 @@ class Service:
                             'ready': False,
                             'requires_manual_seed': True,
                             'status': 'other_binding_live_probe_active',
-                            'detail': '待切换',
+                            'detail': '待本群探针刷新',
                             'truth_state': binding_truth_state,
                         }
             mismatch = []
@@ -18062,6 +18062,33 @@ class Service:
     def _find_existing_customer_with_fallback(self, *, yw_id: Optional[str], mobile: Optional[str], crm_response: Optional[Dict[str, Any]] = None, app_name: Optional[str] = None, dept_name: Optional[str] = None, registration_group: Optional[str] = None, official_group: Optional[str] = None) -> Optional[Dict[str, Any]]:
         if self.crm_adapter is None:
             return None
+        if hasattr(self.crm_adapter, 'verify_customer'):
+            verify_payload = {
+                'ywId': yw_id,
+                'mobile': mobile,
+                'appName': app_name,
+                'deptName': dept_name,
+                'pendaftaranGroup': registration_group,
+                'wa': official_group,
+            }
+            verify_payload = {k: v for k, v in verify_payload.items() if v not in (None, '')}
+            try:
+                verify_response = self.crm_adapter.verify_customer(verify_payload)
+            except Exception:
+                verify_response = None
+            if verify_response and verify_response.get('code') == 0:
+                data = verify_response.get('data') or {}
+                return {
+                    'id': data.get('customerId'),
+                    'ywId': data.get('ywId') or yw_id,
+                    'mobile': mobile,
+                    'appName': app_name,
+                    'deptName': dept_name,
+                    'pendaftaranGroup': registration_group,
+                    'wa': official_group,
+                    '_source': 'automation_verify',
+                    '_verify_response': data,
+                }
         attempts: list[Dict[str, Optional[str]]] = []
         seen: set[tuple[str, str]] = set()
         for candidate in [
@@ -18274,6 +18301,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     crm_base_url = cfg.get('CRM_BASE_URL') or os.getenv('CRM_BASE_URL')
     crm_username = cfg.get('CRM_USERNAME') or os.getenv('CRM_USERNAME')
     crm_password = cfg.get('CRM_PASSWORD') or os.getenv('CRM_PASSWORD')
+    crm_automation_token = cfg.get('CRM_AUTOMATION_TOKEN') or os.getenv('CRM_AUTOMATION_TOKEN')
     auto_bind_simulation = bool(cfg.get('AUTO_BIND_SIMULATION') or str(os.getenv('AUTO_BIND_SIMULATION') or '').strip().lower() in {'1', 'true', 'yes', 'on'})
     allow_live_bind_simulation = bool(cfg.get('ALLOW_LIVE_BIND_SIMULATION') or str(os.getenv('ALLOW_LIVE_BIND_SIMULATION') or '').strip().lower() in {'1', 'true', 'yes', 'on'})
     if auto_bind_simulation and cfg["DB_PATH"] != ':memory:' and not allow_live_bind_simulation:
@@ -18333,6 +18361,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             base_url=crm_base_url,
             username=crm_username,
             password=crm_password,
+            automation_token=crm_automation_token,
         )
         crm_adapter = candidate_crm_adapter
         try:

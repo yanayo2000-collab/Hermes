@@ -18,10 +18,12 @@ class LiveCrmAdapter:
         username: str,
         password: str,
         session: Any = None,
+        automation_token: Optional[str] = None,
     ) -> None:
         self.base_url = base_url.rstrip('/')
         self.username = username
         self.password = password
+        self.automation_token = str(automation_token or '').strip() or None
         if session is not None:
             self.session = session
         else:
@@ -79,6 +81,7 @@ class LiveCrmAdapter:
             'last_login_attempt_at': self.last_login_attempt_at,
             'last_login_ok_at': self.last_login_ok_at,
             'login_retry_cooldown_seconds': self.login_retry_cooldown_seconds,
+            'automation_api_enabled': bool(self.automation_token),
         }
 
     def _looks_like_auth_error(self, body: Dict[str, Any]) -> bool:
@@ -174,7 +177,39 @@ class LiveCrmAdapter:
         rows = ((body.get('data') or {}).get('list') or [])
         return rows[0] if rows else None
 
+    def _automation_headers(self) -> Dict[str, str]:
+        if not self.automation_token:
+            raise RuntimeError('CRM automation token is not configured')
+        return {'X-Automation-Token': self.automation_token}
+
+    def _normalize_automation_result(self, body: Dict[str, Any], *, action: str) -> Dict[str, Any]:
+        if body.get('code') != 0:
+            return body
+        data = body.get('data') or {}
+        if not isinstance(data, dict):
+            return {'code': 500, 'msg': f'CRM automation {action} returned invalid data', 'data': data}
+        business_ok = bool(data.get('success') if action == 'upsert' else data.get('verified'))
+        business_code = str(data.get('code') or '').strip()
+        if business_ok:
+            return {'code': 0, 'msg': 'success', 'data': data, 'automation': True}
+        if business_code in {'DUPLICATE_SID', 'DUPLICATE_PHONE'}:
+            return {'code': 10002, 'msg': 'Data duplication.', 'data': data, 'automation': True}
+        if business_code == 'VERIFY_MISMATCH':
+            return {'code': 500, 'msg': 'CRM write could not be verified.', 'data': data, 'automation': True}
+        return {'code': 500, 'msg': data.get('message') or business_code or f'CRM automation {action} failed', 'data': data, 'automation': True}
+
     def create_customer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if self.automation_token:
+            body = self._parse_json_body(
+                self.session.post(
+                    f'{self.base_url}/customer/ywcustomer/automation/upsert',
+                    headers=self._automation_headers(),
+                    json=payload,
+                    timeout=20,
+                ),
+                action='automation_upsert',
+            )
+            return self._normalize_automation_result(body, action='upsert')
         return self._request_with_login_retry(
             action='create_customer',
             request_fn=lambda headers: self.session.post(
@@ -184,6 +219,25 @@ class LiveCrmAdapter:
                 timeout=20,
             ),
         )
+
+    def verify_customer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.automation_token:
+            raise RuntimeError('CRM automation token is not configured')
+        verify_payload = {
+            key: payload.get(key)
+            for key in ['ywId', 'mobile', 'appId', 'appName', 'deptId', 'deptName', 'pendaftaranGroup', 'wa']
+            if payload.get(key) not in (None, '')
+        }
+        body = self._parse_json_body(
+            self.session.post(
+                f'{self.base_url}/customer/ywcustomer/automation/verify',
+                headers=self._automation_headers(),
+                json=verify_payload,
+                timeout=15,
+            ),
+            action='automation_verify',
+        )
+        return self._normalize_automation_result(body, action='verify')
 
     def update_customer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._request_with_login_retry(
