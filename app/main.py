@@ -615,6 +615,7 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
       <a href="/ops">运营工作台</a>
       <a href="/ops/intake-bot-presets">收口配置中心</a>
       <a href="/ops/production-ops">群审批控制台</a>
+      <a href="/ops/group-atmosphere">群活跃助手</a>
       <a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a>
       <a href="/ops/official-group-bridge">官方群审批桥接台</a>
       <a href="/ops/accounts" data-admin-only-nav="true">账号管理</a>
@@ -1107,6 +1108,15 @@ setInterval(() => {
 """
 
 
+GROUP_ATMOSPHERE_PAGE_HTML = """<!doctype html>
+<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/><title>群活跃助手</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:24px;background:#f3f6fb;color:#142033}.page-shell{max-width:1320px;margin:0 auto}.shell-nav{position:sticky;top:0;z-index:20;display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px;padding:12px 0 14px;background:rgba(243,246,251,.94);backdrop-filter:blur(10px)}.shell-nav a{color:#2563eb;text-decoration:none;font-size:13px;padding:8px 12px;border-radius:999px;background:#eef4ff;border:1px solid #d8e5ff}.card,.hero{background:#fff;border:1px solid #dbe4f0;border-radius:20px;padding:20px;box-shadow:0 10px 30px rgba(15,23,42,.06);margin-top:16px}.hero{margin-top:0}.muted{color:#5d6b82;font-size:13px;line-height:1.7}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}input,textarea{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #c7d4e3;border-radius:10px;margin:6px 0}textarea{min-height:88px}button{padding:9px 14px;border-radius:10px;border:0;background:#2563eb;color:#fff}table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-bottom:1px solid #dbe4f0;padding:8px;text-align:left}@media(max-width:900px){.grid{grid-template-columns:1fr}}</style></head>
+<body><div class=\"page-shell\"><div class=\"shell-nav\"><a href=\"/ops\">运营工作台</a><a href=\"/ops/intake-bot-presets\">收口配置中心</a><a href=\"/ops/production-ops\">群审批控制台</a><a href=\"/ops/group-atmosphere\">群活跃助手</a><a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a><a href=\"/ops/official-group-bridge\">官方群审批桥接台</a><a href=\"/ops/accounts\" data-admin-only-nav=\"true\">账号管理</a></div>
+<div class=\"hero\"><h1>群活跃助手</h1><div class=\"muted\">群审批控制台的一部分：按话术池和频率在 WhatsApp 群内做低风险氛围运营；仅用户明确 @ 时触发 FAQ 轻回复。</div></div>
+<div class=\"grid\"><div class=\"card\"><h2>新增 / 更新配置</h2><input id=\"ga_config_name\" placeholder=\"配置名\"/><input id=\"ga_account_key\" placeholder=\"WhatsApp 账号 key\"/><input id=\"ga_target_group\" placeholder=\"目标群 ID / 群名\"/><input id=\"ga_worker_base_url\" placeholder=\"worker base url，可留空 dry-run\"/><textarea id=\"ga_templates\" placeholder=\"话术池：每行一条\"></textarea><textarea id=\"ga_faq\" placeholder=\"FAQ：keyword => reply\"></textarea><button onclick=\"saveConfig()\">保存配置</button> <button onclick=\"dispatchOnce()\">手动发送一次</button></div><div class=\"card\"><h2>配置列表</h2><div id=\"group-atmosphere-configs\"></div></div></div><div class=\"card\"><h2>发送 / @ 回复日志</h2><div id=\"group-atmosphere-logs\"></div></div></div>
+<script>async function loadJson(url,options={}){const res=await fetch(url,options);const text=await res.text();const data=text?JSON.parse(text):{};if(!res.ok)throw new Error(data.detail||text||`HTTP ${res.status}`);return data}function templates(){return document.getElementById('ga_templates').value.split(/\n+/).map((text,i)=>text.trim()).filter(Boolean).map((text,i)=>({template_id:`t${i+1}`,text}))}function faq(){return document.getElementById('ga_faq').value.split(/\n+/).map(x=>x.trim()).filter(Boolean).map(line=>{const p=line.split('=>');return {keyword:(p[0]||'').trim(),reply:(p.slice(1).join('=>')||'').trim()}}).filter(x=>x.keyword&&x.reply)}async function saveConfig(){await loadJson('/api/ops/group-atmosphere/configs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:ga_config_name.value.trim(),enabled:true,account_key:ga_account_key.value.trim(),target_group:ga_target_group.value.trim(),worker_base_url:ga_worker_base_url.value.trim(),template_pool:templates(),faq_rules:faq(),mention_reply_enabled:true})});await reloadAll()}async function dispatchOnce(){await loadJson('/api/ops/group-atmosphere/dispatch-once',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:ga_config_name.value.trim(),trigger_type:'manual_ops_page'})});await reloadAll()}function renderConfigs(rows){document.getElementById('group-atmosphere-configs').innerHTML=`<table><tbody>${rows.map(r=>`<tr><td>${r.config_name}</td><td>${r.account_key}</td><td>${r.target_group}</td><td>${r.status}</td></tr>`).join('')}</tbody></table>`}function renderLogs(rows){document.getElementById('group-atmosphere-logs').innerHTML=`<table><tbody>${rows.map(r=>`<tr><td>${r.created_at}</td><td>${r.config_name||''}</td><td>${r.direction}</td><td>${r.status}</td><td>${r.message_text}</td></tr>`).join('')}</tbody></table>`}async function reloadAll(){const c=await loadJson('/api/ops/group-atmosphere/configs');const l=await loadJson('/api/ops/group-atmosphere/logs');renderConfigs(c.rows||[]);renderLogs(l.rows||[])}reloadAll();</script></body></html>"""
+
+
 PRODUCTION_OPS_PAGE_HTML = """
 <!doctype html>
 <html lang=\"zh-CN\">
@@ -1245,6 +1255,7 @@ PRODUCTION_OPS_PAGE_HTML = """
       <a href=\"/ops\">运营工作台</a>
       <a href=\"/ops/intake-bot-presets\">收口配置中心</a>
       <a href=\"/ops/production-ops\">群审批控制台</a>
+      <a href=\"/ops/group-atmosphere\">群活跃助手</a>
       <a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a>
       <a href=\"/ops/official-group-bridge\">官方群审批桥接台</a>
       <a href=\"/ops/accounts\" data-admin-only-nav=\"true\">账号管理</a>
@@ -1271,6 +1282,12 @@ PRODUCTION_OPS_PAGE_HTML = """
           <div class=\"status-meta\" id=\"officialBridgeSummaryMeta\"></div>
         </div>
       </div>
+    </div>
+
+    <div class=\"card\" id=\"groupAtmosphereEntryCard\">
+      <h2 style=\"margin-top:0;\">群活跃助手</h2>
+      <div class=\"muted\">基于已绑定 WhatsApp 账号，在目标群内按话术池和频率做群氛围运营；仅用户明确 @ 时触发 FAQ 级回复。</div>
+      <div class=\"link-actions\"><a href=\"/ops/group-atmosphere\">进入群活跃助手</a></div>
     </div>
 
     <div class=\"card\">
@@ -2703,6 +2720,7 @@ OPS_PAGE_HTML = """
       <a href="/ops">运营工作台</a>
       <a href="/ops/intake-bot-presets" data-admin-only-nav="true">收口配置中心</a>
       <a href="/ops/production-ops" data-admin-only-nav="true">群审批控制台</a>
+      <a href="/ops/group-atmosphere" data-admin-only-nav="true">群活跃助手</a>
       <a href="/ops/registration-group-approval-batch-members" data-admin-only-nav="true">注册群审批留存页</a>
       <a href="/ops/official-group-bridge" data-admin-only-nav="true">官方群审批桥接台</a>
       <a href="/ops/accounts" data-admin-only-nav="true">账号管理</a>
@@ -18850,6 +18868,17 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             raise HTTPException(status_code=403, detail='ops_admin_required')
         return user
 
+    @app.exception_handler(HTTPException)
+    async def ops_html_auth_exception_handler(request: Request, exc: HTTPException) -> Response:
+        detail = getattr(exc, 'detail', None)
+        path = str(request.url.path or '')
+        if path.startswith('/ops') and not path.startswith('/api/'):
+            if exc.status_code == 401 and detail == 'ops_auth_required':
+                return RedirectResponse(url=f"/login?next={quote(path)}", status_code=303)
+            if exc.status_code == 403 and detail == 'ops_admin_required':
+                return RedirectResponse(url='/ops', status_code=303)
+        return JSONResponse(status_code=exc.status_code, content={'detail': detail})
+
     def _ops_api_required_role(path: str, method: str) -> Optional[str]:
         normalized_method = str(method or 'GET').upper()
         if path.startswith('/api/ops/auth/'):
@@ -19054,6 +19083,22 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
   </div>
   <script>
     const nextUrl = new URLSearchParams(window.location.search).get('next') || '/ops';
+    const adminOnlyNextTargets = [
+      '/ops/accounts',
+      '/ops/intake-bot-presets',
+      '/ops/production-ops',
+      '/ops/group-atmosphere',
+      '/ops/registration-group-approval-batch-members',
+      '/ops/official-group-bridge',
+    ];
+    function safeNextUrlForRole(role) {
+      const normalizedRole = String(role || '').trim().toLowerCase();
+      const target = String(nextUrl || '/ops');
+      if (normalizedRole !== 'admin' && adminOnlyNextTargets.some((path) => target === path || target.startsWith(`${path}?`))) {
+        return '/ops';
+      }
+      return target || '/ops';
+    }
     let bootstrapOpen = false;
     function switchAuthMode(mode) {
       const loginMode = mode !== 'bootstrap';
@@ -19070,7 +19115,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
       bootstrapOpen = !!data.bootstrap_open;
       document.getElementById('bootstrapTab').disabled = !bootstrapOpen;
       if (data.authenticated) {
-        window.location.replace(nextUrl);
+        window.location.replace(safeNextUrlForRole(data.user && data.user.role));
         return;
       }
       if (bootstrapOpen) {
@@ -19096,7 +19141,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         document.getElementById('authError').textContent = data.detail || '登录失败';
         return;
       }
-      window.location.replace(nextUrl);
+      window.location.replace(safeNextUrlForRole(data.user && data.user.role));
     }
     async function submitBootstrap(event) {
       event.preventDefault();
@@ -19115,7 +19160,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         document.getElementById('authError').textContent = data.detail || '初始化失败';
         return;
       }
-      window.location.replace(nextUrl);
+      window.location.replace(safeNextUrlForRole(data.user && data.user.role));
     }
     fetchStatus();
   </script>
@@ -19184,7 +19229,7 @@ tr:hover td { background:#fbfdff; }
 @media (max-width: 900px) { .summary { grid-template-columns:repeat(2,minmax(0,1fr)); } .grid { grid-template-columns:1fr; } .hero { flex-direction:column; } .search { width:100%; } }
 </style></head>
 <body><div class="page">
-  <div class="nav"><a href="/ops">运营工作台</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/accounts">账号管理</a></div>
+  <div class="nav"><a href="/ops">运营工作台</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/group-atmosphere">群活跃助手</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/official-group-bridge">官方群审批桥接台</a><a href="/ops/accounts">账号管理</a></div>
   <div class="card hero">
     <div><h1>后台账号管理</h1><div class="muted">管理后台登录账号、角色权限、启停状态与密码。管理员重置他人密码；当前登录账号可在本页修改自己的密码。</div></div>
     <button class="secondary" type="button" onclick="openChangeOwnPassword()">修改我的密码</button>
@@ -19422,6 +19467,7 @@ loadAccounts();
       <a href=\"/ops\">运营工作台</a>
       <a href=\"/ops/intake-bot-presets\">收口配置中心</a>
       <a href=\"/ops/production-ops\">群审批控制台</a>
+      <a href=\"/ops/group-atmosphere\">群活跃助手</a>
       <a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a>
       <a href=\"/ops/official-group-bridge\">官方群审批桥接台</a>
       <a href=\"/ops/accounts\" data-admin-only-nav=\"true\">账号管理</a>
@@ -19859,6 +19905,26 @@ loadAccounts();
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         return {'ok': True, 'user': updated_user}
 
+    def _with_ops_shell_style(html: str) -> str:
+        """Apply one shared backend shell layout across independently authored ops pages."""
+        if 'data-ops-shell-normalized="true"' in html:
+            return html
+        shell_style = '''
+<style data-ops-shell-normalized="true">
+html { scrollbar-gutter: stable; }
+body { margin: 0 !important; padding: 0 !important; background: #f4f7fb !important; color: #142033 !important; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important; }
+.page-shell, .page { width: min(1280px, calc(100vw - 48px)) !important; max-width: 1280px !important; margin: 0 auto !important; box-sizing: border-box !important; }
+.shell-nav, .nav { position: sticky !important; top: 0 !important; z-index: 30 !important; display: flex !important; align-items: center !important; gap: 10px !important; flex-wrap: wrap !important; min-height: 54px !important; margin: 0 0 16px 0 !important; padding: 12px 0 !important; background: rgba(244,247,251,.96) !important; backdrop-filter: blur(8px) !important; box-sizing: border-box !important; }
+.shell-nav a, .nav a { display: inline-flex !important; align-items: center !important; justify-content: center !important; min-height: 32px !important; box-sizing: border-box !important; padding: 6px 10px !important; border-radius: 999px !important; background: #eef2ff !important; border: 1px solid #dbeafe !important; color: #2563eb !important; text-decoration: none !important; font-size: 13px !important; line-height: 18px !important; font-weight: 600 !important; white-space: nowrap !important; }
+.card, .hero { box-sizing: border-box !important; }
+h1 { letter-spacing: -0.02em; }
+@media (max-width: 900px) { .page-shell, .page { width: min(100vw - 32px, 1280px) !important; } .shell-nav, .nav { min-height: 52px !important; } }
+</style>
+'''
+        if '</head>' in html:
+            return html.replace('</head>', shell_style + '</head>', 1)
+        return shell_style + html
+
     def _ops_page_html(role: str) -> str:
         html = OPS_PAGE_HTML
         if str(role or '').strip() == OPS_AUTH_ROLE_ADMIN:
@@ -19889,15 +19955,22 @@ loadAccounts();
         )
         return html
 
+    def _render_ops_home_page(request: Request) -> str:
+        user = _require_ops_user(request)
+        return _with_ops_shell_style(_ops_page_html(str(user.get('role') or '').strip()))
+
     @app.get('/ops', response_class=HTMLResponse)
     def ops_page(request: Request) -> str:
-        user = _require_ops_user(request)
-        return _ops_page_html(str(user.get('role') or '').strip())
+        return _render_ops_home_page(request)
+
+    @app.get('/ops/', response_class=HTMLResponse)
+    def ops_page_slash(request: Request) -> str:
+        return _render_ops_home_page(request)
 
     @app.get('/ops/accounts', response_class=HTMLResponse)
     def ops_accounts_page(request: Request) -> str:
         _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
-        return _ops_accounts_page_html()
+        return _with_ops_shell_style(_ops_accounts_page_html())
 
     @app.get('/api/ops/accounts')
     def ops_accounts_list(request: Request) -> Dict[str, Any]:
@@ -19938,17 +20011,22 @@ loadAccounts();
     @app.get('/ops/intake-bot-presets', response_class=HTMLResponse)
     def intake_bot_presets_page(request: Request) -> str:
         _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
-        return INTAKE_BOT_PRESETS_PAGE_HTML
+        return _with_ops_shell_style(INTAKE_BOT_PRESETS_PAGE_HTML)
 
     @app.get('/ops/production-ops', response_class=HTMLResponse)
     def production_ops_page(request: Request) -> str:
         _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
-        return PRODUCTION_OPS_PAGE_HTML
+        return _with_ops_shell_style(PRODUCTION_OPS_PAGE_HTML)
+
+    @app.get('/ops/group-atmosphere', response_class=HTMLResponse)
+    def group_atmosphere_page(request: Request) -> str:
+        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        return _with_ops_shell_style(GROUP_ATMOSPHERE_PAGE_HTML)
 
     @app.get('/ops/registration-group-approval-batch-members', response_class=HTMLResponse)
     def registration_group_approval_batch_members_page(request: Request) -> str:
         _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
-        return _registration_group_approval_batch_members_page_html()
+        return _with_ops_shell_style(_registration_group_approval_batch_members_page_html())
 
     @app.get('/ops/official-group-bridge')
     def official_group_bridge_page_redirect(request: Request) -> RedirectResponse:

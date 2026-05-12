@@ -113,6 +113,21 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
     assert '/api/ops/auth/password' in accounts_page.text
     assert 'showToast' in accounts_page.text
 
+    for path in [
+        '/ops',
+        '/ops/',
+        '/ops/intake-bot-presets',
+        '/ops/production-ops',
+        '/ops/group-atmosphere',
+        '/ops/registration-group-approval-batch-members',
+        '/ops/accounts',
+    ]:
+        page = client.get(path)
+        assert page.status_code == 200
+        assert 'data-ops-shell-normalized="true"' in page.text
+        assert 'width: min(1280px, calc(100vw - 48px))' in page.text
+        assert 'min-height: 54px' in page.text
+
     create_operator = client.post('/api/ops/accounts', json={
         'username': 'ops01',
         'password': 'operator123',
