@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from app.production_ops import (
+    NOTIFICATION_POLICY_BY_CODE,
     build_incidents,
     build_success_notifications,
     expand_notify_profile_targets,
@@ -45,6 +46,113 @@ def test_expand_notify_profile_targets_keeps_other_profiles_single_target():
     ]
 
 
+def test_notification_policy_matrix_exact_match_guardrail():
+    assert NOTIFICATION_POLICY_BY_CODE == {
+        'backend_unhealthy': {
+            'family': 'incident',
+            'dedupe': 'cooldown',
+            'retry': 'after_cooldown',
+            'partial_sent': 'n/a',
+        },
+        'worker_state_failed': {
+            'family': 'incident',
+            'dedupe': 'cooldown',
+            'retry': 'after_cooldown',
+            'partial_sent': 'n/a',
+        },
+        'release_evaluation_failed': {
+            'family': 'incident',
+            'dedupe': 'cooldown',
+            'retry': 'after_cooldown',
+            'partial_sent': 'n/a',
+        },
+        'formal_approval_failed': {
+            'family': 'incident',
+            'dedupe': 'cooldown',
+            'retry': 'after_cooldown',
+            'partial_sent': 'n/a',
+        },
+        'startup_initial_batch_failed': {
+            'family': 'incident',
+            'dedupe': 'cooldown',
+            'retry': 'after_cooldown',
+            'partial_sent': 'n/a',
+        },
+        'daemon_cycle_error': {
+            'family': 'incident',
+            'dedupe': 'cooldown',
+            'retry': 'after_cooldown',
+            'partial_sent': 'n/a',
+        },
+        'registration_zero_pending_unverified': {
+            'family': 'incident',
+            'dedupe': 'cooldown',
+            'retry': 'after_cooldown',
+            'partial_sent': 'n/a',
+        },
+        'formal_approval_succeeded': {
+            'family': 'success',
+            'dedupe': 'one_shot_per_dedupe_key',
+            'retry': 'until_all_targets_sent',
+            'partial_sent': 'retry_unsent_targets_only',
+        },
+        'registration_cycle_noop': {
+            'family': 'success',
+            'dedupe': 'one_shot_per_dedupe_key',
+            'retry': 'until_all_targets_sent',
+            'partial_sent': 'retry_unsent_targets_only',
+        },
+        'official_group_cycle_noop': {
+            'family': 'success',
+            'dedupe': 'one_shot_per_dedupe_key',
+            'retry': 'until_all_targets_sent',
+            'partial_sent': 'retry_unsent_targets_only',
+        },
+        'startup_initial_batch_succeeded': {
+            'family': 'success',
+            'dedupe': 'one_shot_per_dedupe_key',
+            'retry': 'until_all_targets_sent',
+            'partial_sent': 'retry_unsent_targets_only',
+        },
+        'official_group_approval_succeeded': {
+            'family': 'success',
+            'dedupe': 'one_shot_per_dedupe_key',
+            'retry': 'until_all_targets_sent',
+            'partial_sent': 'retry_unsent_targets_only',
+        },
+        'official_group_manual_review_required': {
+            'family': 'success',
+            'dedupe': 'one_shot_per_dedupe_key',
+            'retry': 'until_all_targets_sent',
+            'partial_sent': 'retry_unsent_targets_only',
+        },
+        'manual_approval_succeeded': {
+            'family': 'app_direct_success',
+            'dedupe': 'app_layer',
+            'retry': 'app_layer',
+            'partial_sent': 'app_layer',
+        },
+    }
+
+
+def test_notification_policy_matrix_covers_all_production_ops_notification_builders():
+    built_codes = {
+        'backend_unhealthy',
+        'worker_state_failed',
+        'release_evaluation_failed',
+        'formal_approval_failed',
+        'startup_initial_batch_failed',
+        'daemon_cycle_error',
+        'registration_zero_pending_unverified',
+        'formal_approval_succeeded',
+        'registration_cycle_noop',
+        'startup_initial_batch_succeeded',
+        'official_group_approval_succeeded',
+        'official_group_manual_review_required',
+    }
+    assert built_codes.issubset(set(NOTIFICATION_POLICY_BY_CODE))
+
+
 def test_requester_fingerprint_prefers_requester_id_and_timestamp():
     group_state = {
         'requesters': [
@@ -54,6 +162,17 @@ def test_requester_fingerprint_prefers_requester_id_and_timestamp():
     }
 
     assert requester_fingerprint(group_state) == 'u1@100|u2@200'
+
+
+def test_requester_fingerprint_falls_back_to_display_name_when_requester_id_missing():
+    group_state = {
+        'requesters': [
+            {'displayName': 'Beta User'},
+            {'displayName': 'Alpha User'},
+        ]
+    }
+
+    assert requester_fingerprint(group_state) == 'name:alpha user@|name:beta user@'
 
 
 def test_should_trigger_action_respects_recent_same_fingerprint_cooldown():
@@ -244,6 +363,59 @@ def test_build_incidents_skips_worker_state_failed_after_retry_recovery():
 
 
 
+def test_build_incidents_emits_registration_zero_pending_unverified_for_ambiguous_empty_queue():
+    cycle = {
+        'backend_health': {'ok': True},
+        'worker_state': {'ok': True},
+        'registration_group_cycles': [
+            {
+                'registration_group': 'RG',
+                'monitor_target': {
+                    'group_name': 'RG',
+                },
+                'release_evaluation': {
+                    'ok': True,
+                    'payload': {
+                        'reason_code': 'waiting_next_cycle',
+                        'pending_count': 0,
+                        'cycle_started_at': '2026-05-08T03:21:00+00:00',
+                        'cycle_ends_at': '2026-05-08T03:21:20+00:00',
+                    },
+                },
+                'decision_group_state': {
+                    'source': 'fresh_probe',
+                    'payload': {
+                        'group_id': 'g',
+                        'group_name': 'RG',
+                        'pending_count': 0,
+                        'member_count': 9,
+                    },
+                    'zero_pending_unverified': True,
+                    'zero_pending_unverified_reason': 'same_runtime_family_zero_pending',
+                },
+                'fresh_probe': {
+                    'ok': True,
+                    'zero_pending_recheck': True,
+                    'payload': {
+                        'group_id': 'g',
+                        'group_name': 'RG',
+                        'pending_count': 0,
+                        'member_count': 9,
+                    },
+                },
+            }
+        ]
+    }
+
+    incidents = build_incidents(cycle)
+
+    assert [item['code'] for item in incidents] == ['registration_zero_pending_unverified']
+    assert incidents[0]['notify_disabled'] is True
+    assert incidents[0]['details']['group_name'] == 'RG'
+    assert incidents[0]['details']['reason'] == 'same_runtime_family_zero_pending'
+
+
+
 def test_build_success_notifications_emits_registration_group_approval_success_once_per_run():
     cycle = {
         'checked_at': '2026-04-29T05:57:32+00:00',
@@ -279,13 +451,15 @@ def test_build_success_notifications_emits_registration_group_approval_success_o
     assert notifications[0]['code'] == 'formal_approval_succeeded'
     assert notifications[0]['severity'] == 'info'
     assert notifications[0]['summary'] == '注册群审批成功'
+    assert notifications[0]['approval_scope'] == 'registration_group'
+    assert notifications[0]['target_group_label'] == 'https://chat.whatsapp.com/Bp1WKsmpcbC2RkAyIACeRv'
     assert notifications[0]['dedupe_key'] == 'formal_approval_succeeded:registration_group_approval_4654cdd3a95b'
     assert notifications[0]['details']['approved_count'] == 2
     assert notifications[0]['details']['pending_after'] == 0
 
 
 
-def test_build_success_notifications_aggregates_drained_registration_group_runs_into_one_notice():
+def test_build_success_notifications_emits_drained_registration_group_success_once_per_run():
     cycle = {
         'checked_at': '2026-05-07T08:31:03+00:00',
         'registration_group': 'RG',
@@ -302,6 +476,42 @@ def test_build_success_notifications_aggregates_drained_registration_group_runs_
                 'registration_group_approval_af809ce6f284',
             ],
             'reason_code': 'timeout_flush',
+            'attempt_results': [
+                {
+                    'result': {
+                        'formal_run': {
+                            'approval_run_id': 'registration_group_approval_a787e528a6d8',
+                            'final_status': {
+                                'result': {
+                                    'verified': True,
+                                    'crm_recorded': True,
+                                    'result_code': 'approved',
+                                    'approved_count': 4,
+                                    'pending_after': 4,
+                                    'member_count_after': 440,
+                                }
+                            },
+                        }
+                    }
+                },
+                {
+                    'result': {
+                        'formal_run': {
+                            'approval_run_id': 'registration_group_approval_af809ce6f284',
+                            'final_status': {
+                                'result': {
+                                    'verified': True,
+                                    'crm_recorded': True,
+                                    'result_code': 'approved',
+                                    'approved_count': 4,
+                                    'pending_after': 0,
+                                    'member_count_after': 444,
+                                }
+                            },
+                        }
+                    }
+                },
+            ],
             'result': {
                 'formal_run': {
                     'approval_run_id': 'registration_group_approval_af809ce6f284',
@@ -322,16 +532,19 @@ def test_build_success_notifications_aggregates_drained_registration_group_runs_
 
     notifications = build_success_notifications(cycle)
 
-    assert len(notifications) == 1
-    assert notifications[0]['code'] == 'formal_approval_succeeded'
-    assert notifications[0]['details']['approval_run_ids'] == [
-        'registration_group_approval_a787e528a6d8',
-        'registration_group_approval_af809ce6f284',
+    assert len(notifications) == 2
+    assert [item['code'] for item in notifications] == ['formal_approval_succeeded', 'formal_approval_succeeded']
+    assert [item['dedupe_key'] for item in notifications] == [
+        'formal_approval_succeeded:registration_group_approval_a787e528a6d8',
+        'formal_approval_succeeded:registration_group_approval_af809ce6f284',
     ]
-    assert notifications[0]['details']['approved_count'] == 8
-    assert notifications[0]['details']['pending_after'] == 0
-    assert notifications[0]['details']['drain_rounds'] == 2
-    assert notifications[0]['dedupe_key'] == 'formal_approval_succeeded:registration_group_approval_a787e528a6d8|registration_group_approval_af809ce6f284'
+    assert [item['details']['approval_run_ids'] for item in notifications] == [
+        ['registration_group_approval_a787e528a6d8'],
+        ['registration_group_approval_af809ce6f284'],
+    ]
+    assert [item['details']['approved_count'] for item in notifications] == [4, 4]
+    assert [item['details']['pending_after'] for item in notifications] == [4, 0]
+    assert [item['details']['drain_rounds'] for item in notifications] == [2, 2]
 
 
 
@@ -529,7 +742,122 @@ def test_build_success_notifications_emits_startup_success_from_non_primary_cycl
     assert target['notify_profile_name'] == 'wa-approval-broadcast-02'
     assert target['notify_robot_name'] == '审批Bot02'
     assert target['details']['group_name'] == '副群B'
+    assert target['details']['approved_count'] == 1
+    assert target['details']['approval_run_ids'] == ['startup_groupb']
     assert target['dedupe_key'] == 'startup_initial_batch_succeeded:startup_groupb'
+
+
+
+def test_build_success_notifications_aggregates_startup_initial_batch_attempt_counts():
+    cycle = {
+        'checked_at': '2026-05-08T04:07:11+00:00',
+        'monitor_target': {
+            'group_name': '🇮🇩3️⃣7️⃣Grup Registrasi Resmi Linky 💎',
+            'registration_group': '120363425215002840@g.us',
+        },
+        'startup_initial_batch': {
+            'triggered': True,
+            'ok': True,
+            'session_id': 'startup-session-37',
+            'final_pending_count': 0,
+            'attempt_results': [
+                {
+                    'result': {
+                        'formal_run': {
+                            'approval_run_id': 'registration_group_approval_7b5fd407cb81',
+                            'final_status': {
+                                'result': {
+                                    'verified': True,
+                                    'crm_recorded': True,
+                                    'approved_count': 16,
+                                    'pending_after': 1,
+                                    'member_count_after': 449,
+                                    'result_code': 'approved',
+                                }
+                            },
+                        }
+                    }
+                },
+                {
+                    'result': {
+                        'formal_run': {
+                            'approval_run_id': 'registration_group_approval_31a44bd8a796',
+                            'final_status': {
+                                'result': {
+                                    'verified': True,
+                                    'crm_recorded': True,
+                                    'approved_count': 1,
+                                    'pending_after': 0,
+                                    'member_count_after': 450,
+                                    'result_code': 'approved',
+                                }
+                            },
+                        }
+                    }
+                },
+            ],
+        },
+    }
+
+    notifications = build_success_notifications(cycle)
+
+    assert [item['code'] for item in notifications] == [
+        'startup_initial_batch_succeeded',
+        'formal_approval_succeeded',
+    ]
+    assert notifications[0]['details']['approval_run_id'] == 'registration_group_approval_7b5fd407cb81'
+    assert notifications[0]['details']['approved_count'] == 16
+    assert notifications[0]['details']['pending_after'] == 1
+    assert notifications[0]['dedupe_key'] == 'startup_initial_batch_succeeded:registration_group_approval_7b5fd407cb81'
+    assert notifications[1]['details']['approval_run_id'] == 'registration_group_approval_31a44bd8a796'
+    assert notifications[1]['details']['approved_count'] == 1
+    assert notifications[1]['details']['pending_after'] == 0
+    assert notifications[1]['dedupe_key'] == 'formal_approval_succeeded:registration_group_approval_31a44bd8a796'
+
+
+
+def test_build_success_notifications_prefers_verified_attempt_pending_after_over_stale_startup_final_pending_count():
+    cycle = {
+        'checked_at': '2026-05-08T07:17:41+00:00',
+        'monitor_target': {
+            'group_name': '注册测试1',
+            'registration_group': '120363422719530134@g.us',
+        },
+        'startup_initial_batch': {
+            'triggered': True,
+            'ok': True,
+            'session_id': '2026-05-08T07:17:02Z',
+            'final_pending_count': 2,
+            'pending_count': 2,
+            'attempt_results': [
+                {
+                    'result': {
+                        'formal_run': {
+                            'approval_run_id': 'registration_group_approval_2e93ffe1d588',
+                            'final_status': {
+                                'result': {
+                                    'verified': True,
+                                    'crm_recorded': True,
+                                    'approved_count': 2,
+                                    'pending_after': 0,
+                                    'member_count_after': 5,
+                                    'result_code': 'approved',
+                                }
+                            },
+                        }
+                    }
+                }
+            ],
+        },
+    }
+
+    notifications = build_success_notifications(cycle)
+
+    assert len(notifications) == 1
+    assert notifications[0]['code'] == 'startup_initial_batch_succeeded'
+    assert notifications[0]['details']['approval_run_id'] == 'registration_group_approval_2e93ffe1d588'
+    assert notifications[0]['details']['approved_count'] == 2
+    assert notifications[0]['details']['pending_after'] == 0
 
 
 
@@ -631,6 +959,8 @@ def test_build_success_notifications_emits_official_group_approval_success_with_
     assert len(notifications) == 1
     assert notifications[0]['code'] == 'official_group_approval_succeeded'
     assert notifications[0]['summary'] == '官方群审批成功'
+    assert notifications[0]['approval_scope'] == 'official_group'
+    assert notifications[0]['target_group_label'] == '官方测试1'
     assert notifications[0]['notify_profile_name'] == 'wa-approval-broadcast'
     assert notifications[0]['notify_robot_name'] == '审批bot01'
     assert notifications[0]['details']['group_name'] == '官方测试1'
@@ -689,7 +1019,7 @@ def test_build_success_notifications_emits_official_group_manual_review_for_crm_
     assert notifications[0]['details']['mobile'] == '+62812345678'
     assert notifications[0]['details']['reason_code'] == 'crm_customer_not_found'
     assert notifications[0]['reason_text'] == 'CRM无记录，请人工复核'
-    assert notifications[0]['dedupe_key'] == 'official_group_manual_review_required:official-group-permata:lead_missing_crm:crm_customer_not_found'
+    assert notifications[0]['dedupe_key'] == 'official_group_manual_review_required:official-group-permata:lead_missing_crm:crm_customer_not_found:na'
 
 
 
@@ -707,6 +1037,11 @@ def test_build_success_notifications_falls_back_to_requester_phone_for_official_
                     'account_key': 'official-4456-8277',
                     'notify_profile_name': 'wa-approval-broadcast',
                     'notify_robot_name': '审批bot01',
+                    'pending_count': 2,
+                    'requesters': [
+                        {'requesterId': 'rq-1', 'phoneNormalized': '+852****5475'},
+                        {'requesterId': 'rq-2', 'phoneNormalized': '+852****3942'},
+                    ],
                 }
             ],
             'result': {
@@ -717,6 +1052,7 @@ def test_build_success_notifications_falls_back_to_requester_phone_for_official_
                         'reason_code': 'official_group_requester_unmatched',
                         'next_action': 'manual_review_official_group_approval',
                         'requester': {
+                            'requesterId': 'rq-1',
                             'phoneNormalized': '+852****5475',
                             'phoneRaw': '+852****5475',
                         },
@@ -731,8 +1067,73 @@ def test_build_success_notifications_falls_back_to_requester_phone_for_official_
     assert len(notifications) == 1
     assert notifications[0]['code'] == 'official_group_manual_review_required'
     assert notifications[0]['details']['mobile'] == '+852****5475'
+    assert notifications[0]['details']['remaining_pending_count'] == 2
+    assert notifications[0]['reason_text'] == '申请账号未匹配到当前有效收口记录，请人工复核'
+    assert notifications[0]['dedupe_key'] == 'official_group_manual_review_required:official-group-permata:rq-1:official_group_requester_unmatched:2'
     text = format_lark_alert('production-ops-daemon', notifications[0], cycle)
     assert '账号: +852****5475' in text
+    assert '待放行人数: 2' in text
+    assert '原因: 申请账号未匹配到当前有效收口记录，请人工复核' in text
+
+
+def test_build_success_notifications_official_group_manual_review_uses_pending_after_for_remaining_count():
+    cycle = {
+        'checked_at': '2026-05-09T05:52:36+00:00',
+        'registration_group': 'RG',
+        'official_group_dispatch': {
+            'triggered': True,
+            'ok': True,
+            'ready_groups': [
+                {
+                    'target_group': 'official-group-permata',
+                    'group_name': '官方测试1',
+                    'account_key': 'official-4456-8277',
+                    'notify_profile_name': 'wa-approval-broadcast',
+                    'notify_robot_name': '审批bot01',
+                    'pending_count': 2,
+                }
+            ],
+            'result': {
+                'results': [
+                    {
+                        'target_group': 'official-group-permata',
+                        'executed': True,
+                        'executor_result': {
+                            'status': 'success',
+                            'verified': True,
+                            'approved_count': 1,
+                            'raw_result': {
+                                'approval_run_id': 'official_group_approval_77e822e7d95e',
+                                'target_group': 'official-group-permata',
+                                'group_name': '官方测试1',
+                                'pending_after': 1,
+                                'member_count_after': 5,
+                            },
+                        },
+                    },
+                    {
+                        'target_group': 'official-group-permata',
+                        'executed': False,
+                        'reason_code': 'official_group_requester_unmatched',
+                        'next_action': 'manual_review_official_group_approval',
+                        'requester': {
+                            'requesterId': '150749711495258@lid',
+                            'phoneNormalized': '+852****3942',
+                            'displayName': 'only one',
+                        },
+                    },
+                ]
+            },
+        },
+    }
+
+    notifications = build_success_notifications(cycle)
+    manual_review = next(item for item in notifications if item['code'] == 'official_group_manual_review_required')
+
+    assert manual_review['details']['remaining_pending_count'] == 1
+    assert manual_review['dedupe_key'] == 'official_group_manual_review_required:official-group-permata:150749711495258@lid:official_group_requester_unmatched:1'
+    text = format_lark_alert('production-ops-daemon', manual_review, cycle)
+    assert '待放行人数: 1' in text
 
 
 
@@ -974,6 +1375,7 @@ def test_format_lark_alert_contains_official_group_success_context():
         'details': {
             'group_name': '官方测试1',
             'approved_count': 2,
+            'pending_after': 0,
         },
     }
 
@@ -983,7 +1385,8 @@ def test_format_lark_alert_contains_official_group_success_context():
     assert '时间: 2026-05-06 15:21:10 UTC+8' in text
     assert '官方群: 官方测试1' in text
     assert '注册群:' not in text
-    assert '通过人数: 2' in text
+    assert '本次通过人数: 2' in text
+    assert '剩余待审批人数: 0' in text
     assert '原因: 已审批通过 2 人' in text
     assert '启动首批审批已通过' not in text
 

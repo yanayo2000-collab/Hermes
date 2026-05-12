@@ -4,8 +4,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -20,12 +22,14 @@ from app.production_ops import (
     DEFAULT_NOTIFICATION_COOLDOWN_SECONDS,
     DEFAULT_TRIGGER_COOLDOWN_SECONDS,
     FeishuNotifier,
+    NOTIFICATION_POLICY_BY_CODE,
     build_incidents,
     build_success_notifications,
     check_backend_health,
     env_default,
     expand_notify_profile_targets,
     fetch_json,
+    formal_run_payload,
     formal_run_result,
     format_lark_alert,
     load_json_state,
@@ -40,6 +44,8 @@ from app.production_ops import (
     utc_now,
     utc_now_iso,
 )
+from scripts.webjs_temp_cleanup import build_stat_map, collect_cleanup_targets, execute_cleanup, get_protected_pid_set, get_ps_rows
+from app.registration_group_truth import build_truth_state
 
 
 SERVICE_NAME = 'production-ops-daemon'
@@ -48,6 +54,117 @@ SERVICE_NAME = 'production-ops-daemon'
 def _build_default_fresh_probe_cmd(registration_group: str) -> str:
     script = ROOT_DIR / 'scripts' / 'fresh_webjs_group_state.js'
     return f'node {script} {json.dumps(registration_group, ensure_ascii=False)}'
+
+
+def _build_default_independent_truth_probe_cmd(group_name: str) -> str:
+    normalized_group_name = str(group_name or '').strip()
+    if not normalized_group_name:
+        return ''
+    script = ROOT_DIR / 'scripts' / 'live_truth_group_state.py'
+    preferred_candidates = [
+        ROOT_DIR / '.venv' / 'bin' / 'python',
+        ROOT_DIR / '.venv-live-truth' / 'bin' / 'python',
+    ]
+    preferred_python = next((candidate for candidate in preferred_candidates if candidate.exists()), None)
+    python_executable = str(preferred_python) if preferred_python is not None else (sys.executable or 'python3')
+    python_bin = shlex.quote(python_executable)
+    script_path = shlex.quote(str(script))
+    return f"{python_bin} {script_path} --group-name {shlex.quote(normalized_group_name)}"
+
+
+
+def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+
+def _maybe_auto_cleanup_temp_profiles(args: argparse.Namespace, state: Dict[str, Any], *, now: datetime) -> Dict[str, Any]:
+    enabled = bool(getattr(args, 'temp_cleanup_enabled', True))
+    interval_seconds = max(float(getattr(args, 'temp_cleanup_interval_seconds', 600.0) or 600.0), 0.0)
+    min_age_hours = max(float(getattr(args, 'temp_cleanup_min_age_hours', 1.0) or 1.0), 0.0)
+    temp_cleanup_state = state.setdefault('temp_cleanup', {})
+    if not isinstance(temp_cleanup_state, dict):
+        temp_cleanup_state = {}
+        state['temp_cleanup'] = temp_cleanup_state
+
+    payload: Dict[str, Any] = {
+        'enabled': enabled,
+        'interval_seconds': interval_seconds,
+        'min_age_hours': min_age_hours,
+    }
+    if not enabled:
+        payload['skipped'] = True
+        payload['reason'] = 'disabled'
+        return payload
+
+    last_checked_at = _parse_iso_datetime(temp_cleanup_state.get('last_checked_at'))
+    if interval_seconds > 0 and last_checked_at is not None:
+        elapsed_seconds = max((now - last_checked_at).total_seconds(), 0.0)
+        if elapsed_seconds < interval_seconds:
+            payload['skipped'] = True
+            payload['reason'] = 'interval_not_due'
+            payload['last_checked_at'] = last_checked_at.isoformat()
+            payload['next_check_after_seconds'] = max(int(interval_seconds - elapsed_seconds), 0)
+            return payload
+
+    ps_rows = get_ps_rows()
+    protected_pids = get_protected_pid_set(
+        protected_ports=[8011, 55801],
+        protected_cmd_substrings=['production_ops_daemon.py', 'src/server.js'],
+        ps_rows=ps_rows,
+    )
+    temp_root = Path(tempfile.gettempdir()).expanduser()
+    stat_map = build_stat_map(temp_root)
+    targets = collect_cleanup_targets(
+        temp_root=temp_root,
+        ps_rows=ps_rows,
+        protected_pids=protected_pids,
+        min_age_hours=min_age_hours,
+        now=now.timestamp(),
+        stat_map=stat_map,
+    )
+    summary = {
+        'target_count': len(targets),
+        'target_size_kb': sum(int(item.get('size_kb') or 0) for item in targets),
+    }
+    payload.update({
+        'checked_at': now.isoformat(),
+        'protected_pid_count': len(protected_pids),
+        'summary': summary,
+        'targets': targets,
+    })
+    temp_cleanup_state['last_checked_at'] = now.isoformat()
+    temp_cleanup_state['last_summary'] = summary
+    temp_cleanup_state['last_target_dirs'] = [str(item.get('user_data_dir') or '').strip() for item in targets if str(item.get('user_data_dir') or '').strip()]
+
+    if not targets:
+        payload['applied'] = False
+        payload['reason'] = 'no_stale_targets'
+        return payload
+
+    cleanup = execute_cleanup(
+        targets=targets,
+        temp_root=temp_root,
+        min_age_hours=min_age_hours,
+        now=now.timestamp(),
+        stat_map=stat_map,
+        ps_rows_provider=get_ps_rows,
+    )
+    payload['applied'] = True
+    payload['cleanup'] = cleanup
+    temp_cleanup_state['last_applied_at'] = now.isoformat()
+    temp_cleanup_state['last_cleanup'] = cleanup
+    return payload
+
 
 
 def _cycle_next_boundary(now: datetime, timeout_minutes: int) -> datetime:
@@ -96,6 +213,20 @@ def _store_cycle_anchor(state: Dict[str, Any], *, bucket_name: str, at: datetime
         normalized_key = str(raw_key or '').strip()
         if normalized_key:
             bucket[normalized_key] = anchor_text
+
+
+def _store_cycle_anchor_text(state: Dict[str, Any], *, bucket_name: str, anchor_text: str, keys: List[Optional[str]]) -> None:
+    bucket = state.setdefault(bucket_name, {})
+    if not isinstance(bucket, dict):
+        bucket = {}
+        state[bucket_name] = bucket
+    normalized_anchor = str(anchor_text or '').strip()
+    if not normalized_anchor:
+        return
+    for raw_key in keys:
+        normalized_key = str(raw_key or '').strip()
+        if normalized_key:
+            bucket[normalized_key] = normalized_anchor
 
 
 def _evaluate_release(api_base_url: str, registration_group: str, group_state: Dict[str, Any], *, batch_size: Optional[int] = None, timeout_minutes: Optional[int] = None, cycle_anchor_at: Optional[str] = None) -> Dict[str, Any]:
@@ -342,6 +473,24 @@ def _run_fresh_probe(fresh_probe_cmd: str, *, timeout: float = 120.0) -> Dict[st
     return payload
 
 
+def _run_independent_truth_probe(independent_truth_probe_cmd: str, *, timeout: float = 120.0) -> Dict[str, Any]:
+    if not str(independent_truth_probe_cmd or '').strip():
+        raise RuntimeError('independent_truth_probe_cmd_missing')
+    completed = subprocess.run(
+        independent_truth_probe_cmd,
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout or '').strip() or f'independent_truth_probe_exit_{completed.returncode}')
+    payload = json.loads((completed.stdout or '').strip())
+    if not isinstance(payload, dict):
+        raise RuntimeError('independent_truth_probe_non_dict_response')
+    return payload
+
+
 def _recheck_authoritative_group_state(
     *,
     worker_base_url: str,
@@ -439,17 +588,49 @@ def _resolve_decision_group_state(worker_payload: Dict[str, Any], fresh_payload:
     }
 
 
+def _review_surface_positive_suspected_residue(review_surface_payload: Optional[Dict[str, Any]]) -> bool:
+    payload = dict(review_surface_payload or {})
+    try:
+        pending_count = max(int(payload.get('pending_count') or 0), 0)
+    except (TypeError, ValueError):
+        pending_count = 0
+    if pending_count <= 0:
+        return False
+    if bool(payload.get('has_pending_section')):
+        return False
+    requester_ids = [str(item or '').strip() for item in (payload.get('requester_ids') or []) if str(item or '').strip()]
+    if requester_ids:
+        return False
+    suspicious = payload.get('suspected_review_surface_residue')
+    if suspicious is not None:
+        return bool(suspicious)
+    requesters = payload.get('requesters') or []
+    requester_names: List[str] = []
+    for item in requesters:
+        if isinstance(item, dict):
+            candidate = str(item.get('displayName') or item.get('requesterId') or '').strip()
+        else:
+            candidate = str(item or '').strip()
+        if candidate:
+            requester_names.append(candidate)
+    if not requester_names:
+        return True
+    return all(bool(str(name).strip()) and str(name).strip().startswith('~') for name in requester_names)
+
+
 def _recover_worker_for_target(
     args: argparse.Namespace,
     target: Dict[str, Any],
     *,
     failed_worker_base_url: str,
     error: Exception,
+    trigger_reason: str = '',
 ) -> Dict[str, Any]:
     recovery: Dict[str, Any] = {
         'attempted': False,
         'status': 'skipped',
         'reason': 'auto_recover_disabled' if not getattr(args, 'auto_recover_worker', False) else 'unhandled_target',
+        'trigger_reason': str(trigger_reason or '').strip() or None,
         'failed_worker_base_url': failed_worker_base_url,
         'error': str(error),
     }
@@ -462,13 +643,64 @@ def _recover_worker_for_target(
         recovery['reason'] = 'non_binding_target_recovery_disabled'
         return recovery
 
+    normalized_trigger_reason = str(trigger_reason or '').strip()
     if source == 'account_binding' and account_key:
+        if normalized_trigger_reason in {'session_mismatch', 'runtime_unhealthy'}:
+            recovery['attempted'] = True
+            recovery['mode'] = 'account_runtime_rebuild'
+            recovery['account_key'] = account_key
+            try:
+                stop_payload = fetch_json(
+                    f"{args.api_base_url.rstrip('/')}/api/ops/whatsapp-approval-accounts/{urllib.parse.quote(account_key, safe='')}/runtime/internal/stop",
+                    method='POST',
+                    payload={},
+                    timeout=args.command_timeout_seconds,
+                )
+                recovery['stop_payload'] = stop_payload
+            except Exception as exc:
+                recovery['stop_error'] = str(exc)
+            try:
+                start_payload = fetch_json(
+                    f"{args.api_base_url.rstrip('/')}/api/ops/whatsapp-approval-accounts/{urllib.parse.quote(account_key, safe='')}/runtime/internal/start",
+                    method='POST',
+                    payload={},
+                    timeout=args.command_timeout_seconds,
+                )
+                recovery['start_payload'] = start_payload
+                runtime = start_payload.get('runtime') if isinstance(start_payload.get('runtime'), dict) else {}
+                recovered_worker_base_url = str(runtime.get('base_url') or '').strip()
+                if not recovered_worker_base_url:
+                    recovery['status'] = 'failed'
+                    recovery['reason'] = 'runtime_start_returned_empty_base_url'
+                    return recovery
+                session_payload = fetch_json(
+                    f"{args.api_base_url.rstrip('/')}/api/ops/whatsapp-approval-accounts/{urllib.parse.quote(account_key, safe='')}/session/internal/start",
+                    method='POST',
+                    payload={},
+                    timeout=args.command_timeout_seconds,
+                )
+                recovery['session_payload'] = session_payload
+                session_runtime = session_payload.get('runtime') if isinstance(session_payload.get('runtime'), dict) else {}
+                session_state = session_payload.get('session') if isinstance(session_payload.get('session'), dict) else {}
+                recovered_worker_base_url = str(session_runtime.get('base_url') or recovered_worker_base_url).strip()
+                recovery['recovered_worker_base_url'] = recovered_worker_base_url
+                recovery['recovered_session_state'] = session_state
+                if recovered_worker_base_url and bool(session_state.get('login_verified')) and bool(session_state.get('session_target_match')):
+                    recovery['status'] = 'ok'
+                    time.sleep(max(1.0, float(args.restart_wait_seconds)))
+                else:
+                    recovery['status'] = 'failed'
+                    recovery['reason'] = 'session_start_did_not_restore_verified_target_matched_session'
+            except Exception as exc:
+                recovery['status'] = 'failed'
+                recovery['reason'] = str(exc)
+            return recovery
         recovery['attempted'] = True
         recovery['mode'] = 'account_runtime_start'
         recovery['account_key'] = account_key
         try:
             payload = fetch_json(
-                f"{args.api_base_url.rstrip('/')}/api/ops/whatsapp-approval-accounts/{urllib.parse.quote(account_key, safe='')}/runtime/start",
+                f"{args.api_base_url.rstrip('/')}/api/ops/whatsapp-approval-accounts/{urllib.parse.quote(account_key, safe='')}/runtime/internal/start",
                 method='POST',
                 payload={},
                 timeout=args.command_timeout_seconds,
@@ -620,8 +852,120 @@ def _normalize_monitor_target(target: Dict[str, Any], fallback_worker_base_url: 
         'auto_recover_worker': bool(target.get('auto_recover_worker')),
         'schedule_runtime': target.get('schedule_runtime') or {},
         'schedule_windows': target.get('schedule_windows') or [],
+        'runtime_state': target.get('runtime_state') if isinstance(target.get('runtime_state'), dict) else {},
+        'session_state': target.get('session_state') if isinstance(target.get('session_state'), dict) else {},
         'source': str(target.get('source') or '').strip() or 'fallback_config',
     }
+
+
+def _runtime_in_startup_grace(runtime_state: Dict[str, Any], now: datetime, *, grace_seconds: float = 45.0) -> bool:
+    if not isinstance(runtime_state, dict) or not runtime_state:
+        return False
+    started_at = _parse_iso_datetime(runtime_state.get('started_at'))
+    if started_at is None:
+        return False
+    elapsed = (now - started_at).total_seconds()
+    if elapsed < 0 or elapsed >= grace_seconds:
+        return False
+    stopped_at = _parse_iso_datetime(runtime_state.get('stopped_at'))
+    if stopped_at is not None and stopped_at >= started_at:
+        return False
+    status_text = str(runtime_state.get('status') or '').strip().lower()
+    if status_text == 'not_started':
+        return False
+    has_runtime_identity = bool(str(runtime_state.get('base_url') or '').strip()) or bool(runtime_state.get('pid')) or bool(runtime_state.get('port'))
+    return has_runtime_identity
+
+
+
+def _clear_binding_rebuild_gate(monitoring_session: Optional[Dict[str, Any]]) -> None:
+    if isinstance(monitoring_session, dict):
+        monitoring_session.pop('binding_rebuild_gate', None)
+
+
+
+def _binding_rebuild_gate_decision(
+    args: argparse.Namespace,
+    monitoring_session: Optional[Dict[str, Any]],
+    *,
+    trigger_reason: str,
+    now: datetime,
+) -> Dict[str, Any]:
+    threshold = max(int(getattr(args, 'worker_recovery_rebuild_threshold', 2) or 2), 1)
+    cooldown_seconds = max(float(getattr(args, 'worker_recovery_rebuild_cooldown_seconds', 120.0) or 120.0), 0.0)
+    normalized_reason = str(trigger_reason or '').strip() or 'runtime_unavailable'
+    if not isinstance(monitoring_session, dict):
+        return {
+            'allowed': True,
+            'reason': 'no_monitoring_session',
+            'trigger_reason': normalized_reason,
+            'streak_count': threshold,
+            'threshold': threshold,
+            'cooldown_seconds': cooldown_seconds,
+        }
+    gate = monitoring_session.get('binding_rebuild_gate')
+    if not isinstance(gate, dict):
+        gate = {}
+        monitoring_session['binding_rebuild_gate'] = gate
+
+    previous_reason = str(gate.get('trigger_reason') or '').strip()
+    previous_count = int(gate.get('streak_count') or 0) if previous_reason == normalized_reason else 0
+    streak_count = previous_count + 1
+    first_seen_at = str(gate.get('first_seen_at') or '').strip() if previous_reason == normalized_reason else ''
+    if not first_seen_at:
+        first_seen_at = now.isoformat()
+    last_attempted_at = _parse_iso_datetime(gate.get('last_attempted_at')) if previous_reason == normalized_reason else None
+
+    gate.update({
+        'trigger_reason': normalized_reason,
+        'streak_count': streak_count,
+        'threshold': threshold,
+        'cooldown_seconds': cooldown_seconds,
+        'first_seen_at': first_seen_at,
+        'last_seen_at': now.isoformat(),
+    })
+
+    if streak_count < threshold:
+        return {
+            'allowed': False,
+            'reason': 'awaiting_consecutive_rebuild_signal',
+            'trigger_reason': normalized_reason,
+            'streak_count': streak_count,
+            'threshold': threshold,
+            'cooldown_seconds': cooldown_seconds,
+            'first_seen_at': first_seen_at,
+            'last_seen_at': gate.get('last_seen_at'),
+        }
+
+    if last_attempted_at is not None and cooldown_seconds > 0:
+        elapsed = max((now - last_attempted_at).total_seconds(), 0.0)
+        if elapsed < cooldown_seconds:
+            return {
+                'allowed': False,
+                'reason': 'rebuild_cooldown_active',
+                'trigger_reason': normalized_reason,
+                'streak_count': streak_count,
+                'threshold': threshold,
+                'cooldown_seconds': cooldown_seconds,
+                'remaining_cooldown_seconds': max(int(cooldown_seconds - elapsed), 0),
+                'first_seen_at': first_seen_at,
+                'last_seen_at': gate.get('last_seen_at'),
+                'last_attempted_at': last_attempted_at.isoformat(),
+            }
+
+    gate['last_attempted_at'] = now.isoformat()
+    return {
+        'allowed': True,
+        'reason': 'threshold_met',
+        'trigger_reason': normalized_reason,
+        'streak_count': streak_count,
+        'threshold': threshold,
+        'cooldown_seconds': cooldown_seconds,
+        'first_seen_at': first_seen_at,
+        'last_seen_at': gate.get('last_seen_at'),
+        'last_attempted_at': gate.get('last_attempted_at'),
+    }
+
 
 
 def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
@@ -633,7 +977,7 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
         'source': 'fallback_config',
     }, args.worker_base_url)
     try:
-        payload = fetch_json(f"{args.api_base_url.rstrip('/')}/api/ops/whatsapp-approval-accounts", timeout=30.0)
+        payload = fetch_json(f"{args.api_base_url.rstrip('/')}/api/ops/whatsapp-approval-accounts/registration-runtime-directory", timeout=30.0)
     except Exception as exc:
         return {
             'selected': fallback,
@@ -667,8 +1011,30 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
         if not bool(row.get('enabled')):
             continue
         runtime_state = row.get('runtime_state') if isinstance(row.get('runtime_state'), dict) else {}
+        session_state = row.get('session_state') if isinstance(row.get('session_state'), dict) else {}
         worker_base_url = str(runtime_state.get('base_url') or '').strip()
         runtime_active = bool(runtime_state.get('active')) and bool(worker_base_url)
+        runtime_ready = bool(runtime_state.get('ready')) if 'ready' in runtime_state else True
+        runtime_authenticated = bool(runtime_state.get('authenticated')) if 'authenticated' in runtime_state else True
+        session_target_match = (
+            bool(session_state.get('session_target_match'))
+            if 'session_target_match' in session_state
+            else (
+                bool(runtime_state.get('session_target_match'))
+                if 'session_target_match' in runtime_state
+                else True
+            )
+        )
+        login_verified = (
+            bool(session_state.get('login_verified'))
+            if 'login_verified' in session_state
+            else (
+                bool(runtime_state.get('login_verified'))
+                if 'login_verified' in runtime_state
+                else True
+            )
+        )
+        runtime_candidate_ready = runtime_active and runtime_ready and runtime_authenticated and session_target_match and login_verified
         account_key = str(row.get('account_key') or '').strip()
         account_name = str(row.get('account_name') or '').strip()
         row_area = str(row.get('area') or '').strip() or 'Indonesia'
@@ -687,7 +1053,7 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
             normalized = _normalize_monitor_target({
                 'registration_group': registration_group,
                 'group_name': str(binding.get('group_name') or '').strip() or registration_group,
-                'worker_base_url': worker_base_url,
+                'worker_base_url': worker_base_url if runtime_candidate_ready else '',
                 'account_key': account_key,
                 'account_name': account_name,
                 'binding_link': str(binding.get('link') or '').strip(),
@@ -700,6 +1066,8 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
                 'auto_recover_worker': binding.get('auto_recover_worker'),
                 'schedule_runtime': schedule_runtime,
                 'schedule_windows': binding.get('schedule_windows') or [],
+                'runtime_state': runtime_state,
+                'session_state': session_state,
                 'source': 'account_binding',
             })
             if not normalized:
@@ -708,7 +1076,7 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
                 inactive_bindings.append(normalized)
                 continue
             configured_bindings.append(normalized)
-            if runtime_active and normalized.get('worker_base_url'):
+            if runtime_candidate_ready and normalized.get('worker_base_url'):
                 candidates.append(normalized)
 
     if not candidates:
@@ -809,6 +1177,8 @@ def _dispatch_ready_official_group_batches(args: argparse.Namespace, state: Dict
         'decided_at': cycle.get('checked_at') or utc_now_iso(),
         'decided_by': args.decided_by,
         'decided_by_name': args.decided_by_name,
+        'allow_crm_only_test_match': True,
+        'suppress_success_notifications': True,
     }
     try:
         result = fetch_json(
@@ -886,6 +1256,104 @@ def _fetch_worker_group_state_with_passive_retry(
     }
 
 
+def _fetch_worker_review_surface_state(
+    worker_base_url: str,
+    registration_group: str,
+    *,
+    timeout_seconds: float,
+) -> Dict[str, Any]:
+    return fetch_json(
+        f"{worker_base_url.rstrip('/')}/review-surface-state",
+        method='POST',
+        payload={'registration_group': registration_group},
+        timeout=timeout_seconds,
+    )
+
+
+
+def _evaluate_release_with_backend_recovery(
+    args: argparse.Namespace,
+    registration_group: str,
+    group_state: Dict[str, Any],
+    *,
+    batch_size: Optional[int] = None,
+    timeout_minutes: Optional[int] = None,
+    cycle_anchor_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    try:
+        payload = _evaluate_release(
+            args.api_base_url,
+            registration_group,
+            group_state,
+            batch_size=batch_size,
+            timeout_minutes=timeout_minutes,
+            cycle_anchor_at=cycle_anchor_at,
+        )
+        return {'ok': True, 'payload': payload}
+    except Exception as exc:
+        initial_error = exc
+
+    passive_retry_wait_seconds = max(1.0, min(float(args.restart_wait_seconds or 1.0), 3.0))
+    health_after_error = check_backend_health(args.api_base_url, timeout=args.health_timeout_seconds)
+    if health_after_error.get('ok'):
+        time.sleep(passive_retry_wait_seconds)
+        try:
+            payload = _evaluate_release(
+                args.api_base_url,
+                registration_group,
+                group_state,
+                batch_size=batch_size,
+                timeout_minutes=timeout_minutes,
+                cycle_anchor_at=cycle_anchor_at,
+            )
+            return {
+                'ok': True,
+                'payload': payload,
+                'recovered_after_retry': True,
+                'health_after_error': health_after_error,
+            }
+        except Exception as retry_exc:
+            initial_error = retry_exc
+
+    restart_result = None
+    after_restart = None
+    if not health_after_error.get('ok') and args.backend_restart_cmd:
+        restart_result = maybe_restart(args.backend_restart_cmd, timeout=args.restart_command_timeout_seconds)
+        time.sleep(max(1.0, float(args.restart_wait_seconds)))
+        after_restart = check_backend_health(args.api_base_url, timeout=args.health_timeout_seconds)
+        if after_restart.get('ok'):
+            try:
+                payload = _evaluate_release(
+                    args.api_base_url,
+                    registration_group,
+                    group_state,
+                    batch_size=batch_size,
+                    timeout_minutes=timeout_minutes,
+                    cycle_anchor_at=cycle_anchor_at,
+                )
+                return {
+                    'ok': True,
+                    'payload': payload,
+                    'recovered_after_restart': True,
+                    'health_after_error': health_after_error,
+                    'restart': restart_result,
+                    'after_restart': after_restart,
+                }
+            except Exception as restart_exc:
+                initial_error = restart_exc
+
+    result: Dict[str, Any] = {
+        'ok': False,
+        'error': str(initial_error),
+        'health_after_error': health_after_error,
+    }
+    if restart_result is not None:
+        result['restart'] = restart_result
+    if after_restart is not None:
+        result['after_restart'] = after_restart
+    return result
+
+
 
 def _run_registration_group_cycle(
     args: argparse.Namespace,
@@ -900,6 +1368,7 @@ def _run_registration_group_cycle(
     if not target_worker_base_url and str(target.get('source') or '').strip() == 'fallback_config':
         target_worker_base_url = str(args.worker_base_url or '').strip()
     target_fresh_probe_cmd = _fresh_probe_cmd_for_target(args, target_registration_group)
+    target_independent_truth_probe_cmd = str(getattr(args, 'independent_truth_probe_cmd', '') or '').strip()
     target_area = str(target.get('area') or args.area or '').strip() or 'Indonesia'
     registration_cycle_anchors = state.setdefault('registration_cycle_anchors', {})
     if not isinstance(registration_cycle_anchors, dict):
@@ -922,9 +1391,25 @@ def _run_registration_group_cycle(
             'group_name': target_group_name,
             'worker_base_url': target_worker_base_url,
             'fresh_probe_cmd_source': 'target_specific_default' if target_registration_group != str(args.registration_group or '').strip() else 'configured_or_default',
+            'independent_truth_probe_cmd': target_independent_truth_probe_cmd,
         },
     }
 
+    checked_at = now.isoformat()
+    monitoring_session = _session_state(
+        state,
+        session_id=str(getattr(args, 'monitoring_session_id', '') or ''),
+        registration_group=target_registration_group,
+        checked_at=checked_at,
+        target=target,
+    )
+    cycle['monitoring_session'] = {
+        'session_key': monitoring_session.get('session_key'),
+        'started_at': monitoring_session.get('started_at'),
+        'schedule_window_token': monitoring_session.get('schedule_window_token'),
+    }
+
+    worker_payload: Dict[str, Any] | None = None
     if not target_worker_base_url:
         cycle['worker_state'] = {
             'ok': False,
@@ -935,143 +1420,281 @@ def _run_registration_group_cycle(
             'mismatch': False,
             'mismatch_reasons': ['worker_base_url_missing'],
         }
-        return cycle
-
-    passive_retry_wait_seconds = max(1.0, min(float(args.restart_wait_seconds or 1.0), 3.0))
-    passive_retry_count = 3 if str(target.get('source') or '').strip() == 'account_binding' else 2
-    worker_fetch = _fetch_worker_group_state_with_passive_retry(
-        target_worker_base_url,
-        target_registration_group,
-        timeout_seconds=args.worker_timeout_seconds,
-        passive_retry_wait_seconds=passive_retry_wait_seconds,
-        passive_retry_count=passive_retry_count,
-    )
-    if worker_fetch.get('ok'):
-        worker_payload = worker_fetch['payload']
-        cycle['worker_state'] = {'ok': True, 'payload': worker_payload}
-        if worker_fetch.get('recovered_after_retry'):
-            cycle['worker_state']['recovered_after_retry'] = True
-            cycle['worker_state']['retry_attempts'] = worker_fetch.get('attempts') or []
-    else:
-        exc = RuntimeError(str(worker_fetch.get('error') or 'worker_group_state_failed'))
-        recovery = _recover_worker_for_target(
-            args,
-            target,
-            failed_worker_base_url=target_worker_base_url,
-            error=exc,
-        )
-        recovered_worker_base_url = str(recovery.get('recovered_worker_base_url') or '').strip() or target_worker_base_url
-        if recovery.get('status') == 'ok' and recovered_worker_base_url:
-            recovery_retry_wait_seconds = max(2.0, min(float(args.restart_wait_seconds or 2.0), 5.0))
-            recovery_worker_fetch = _fetch_worker_group_state_with_passive_retry(
-                recovered_worker_base_url,
-                target_registration_group,
-                timeout_seconds=args.worker_timeout_seconds,
-                passive_retry_wait_seconds=recovery_retry_wait_seconds,
-                passive_retry_count=4,
+        if str(target.get('source') or '').strip() == 'account_binding':
+            runtime_state = dict(target.get('runtime_state') or {}) if isinstance(target.get('runtime_state'), dict) else {}
+            session_state = dict(target.get('session_state') or {}) if isinstance(target.get('session_state'), dict) else {}
+            if _runtime_in_startup_grace(runtime_state, now):
+                cycle['worker_state']['startup_grace'] = {
+                    'active': True,
+                    'status': str(runtime_state.get('status') or '').strip() or 'starting',
+                    'started_at': runtime_state.get('started_at'),
+                    'reason': 'runtime_startup_grace_skip_auto_rebuild',
+                }
+                return cycle
+            gate_reason = 'worker_base_url_missing'
+            if session_state and session_state.get('session_target_match') is False:
+                gate_reason = 'session_mismatch'
+            elif runtime_state and any(runtime_state.get(flag) is False for flag in ('active', 'ready', 'authenticated')):
+                gate_reason = 'runtime_unhealthy'
+            rebuild_gate = _binding_rebuild_gate_decision(
+                args,
+                monitoring_session,
+                trigger_reason=gate_reason,
+                now=now,
             )
-            if recovery_worker_fetch.get('ok'):
-                worker_payload = recovery_worker_fetch['payload']
-                target_worker_base_url = recovered_worker_base_url
-                cycle['monitor_target']['worker_base_url'] = target_worker_base_url
-                cycle['worker_state'] = {
-                    'ok': True,
-                    'payload': worker_payload,
-                    'recovered_after_restart': True,
-                    'recovery': recovery,
-                    'recovery_probe': {
+            if gate_reason in {'session_mismatch', 'runtime_unhealthy'} and not rebuild_gate.get('allowed'):
+                cycle['worker_state']['recovery'] = {
+                    'attempted': False,
+                    'status': 'skipped',
+                    'reason': str(rebuild_gate.get('reason') or 'rebuild_gate_blocked'),
+                    'trigger_reason': gate_reason,
+                    'gate': rebuild_gate,
+                }
+                return cycle
+            recovery = _recover_worker_for_target(
+                args,
+                target,
+                failed_worker_base_url='',
+                error=RuntimeError(cycle['worker_state']['error']),
+                trigger_reason=gate_reason,
+            )
+            cycle['worker_state']['recovery'] = recovery
+            recovered_worker_base_url = str(recovery.get('recovered_worker_base_url') or '').strip()
+            if recovery.get('status') == 'ok' and recovered_worker_base_url:
+                recovery_retry_wait_seconds = max(2.0, min(float(args.restart_wait_seconds or 2.0), 5.0))
+                recovery_worker_fetch = _fetch_worker_group_state_with_passive_retry(
+                    recovered_worker_base_url,
+                    target_registration_group,
+                    timeout_seconds=args.worker_timeout_seconds,
+                    passive_retry_wait_seconds=recovery_retry_wait_seconds,
+                    passive_retry_count=4,
+                )
+                if recovery_worker_fetch.get('ok'):
+                    worker_payload = recovery_worker_fetch['payload']
+                    _clear_binding_rebuild_gate(monitoring_session)
+                    target_worker_base_url = recovered_worker_base_url
+                    cycle['monitor_target']['worker_base_url'] = target_worker_base_url
+                    cycle['worker_state'] = {
+                        'ok': True,
+                        'payload': worker_payload,
+                        'recovered_after_restart': True,
+                        'recovery': recovery,
+                        'recovery_probe': {
+                            'retry_attempts': recovery_worker_fetch.get('attempts') or [],
+                            'retry_count': int(recovery_worker_fetch.get('retry_count') or 0),
+                            'total_attempts': int(recovery_worker_fetch.get('total_attempts') or 1),
+                            'wait_seconds': recovery_retry_wait_seconds,
+                        },
+                    }
+                else:
+                    recovery['retry_error'] = str(recovery_worker_fetch.get('error') or 'worker_group_state_failed_after_recovery')
+                    recovery['recovery_probe'] = {
                         'retry_attempts': recovery_worker_fetch.get('attempts') or [],
                         'retry_count': int(recovery_worker_fetch.get('retry_count') or 0),
                         'total_attempts': int(recovery_worker_fetch.get('total_attempts') or 1),
                         'wait_seconds': recovery_retry_wait_seconds,
-                    },
-                }
-                if worker_fetch.get('attempts'):
-                    cycle['worker_state']['retry_attempts'] = worker_fetch.get('attempts') or []
+                    }
+                    cycle['worker_state'] = {
+                        'ok': False,
+                        'error': recovery['retry_error'],
+                        'recovery': recovery,
+                    }
+                    return cycle
             else:
-                recovery['retry_error'] = str(recovery_worker_fetch.get('error') or 'worker_group_state_failed_after_recovery')
-                recovery['recovery_probe'] = {
-                    'retry_attempts': recovery_worker_fetch.get('attempts') or [],
-                    'retry_count': int(recovery_worker_fetch.get('retry_count') or 0),
-                    'total_attempts': int(recovery_worker_fetch.get('total_attempts') or 1),
-                    'wait_seconds': recovery_retry_wait_seconds,
-                }
+                return cycle
+        else:
+            return cycle
+
+    if worker_payload is None:
+        passive_retry_wait_seconds = max(1.0, min(float(args.restart_wait_seconds or 1.0), 3.0))
+        passive_retry_count = 3 if str(target.get('source') or '').strip() == 'account_binding' else 2
+        worker_fetch = _fetch_worker_group_state_with_passive_retry(
+            target_worker_base_url,
+            target_registration_group,
+            timeout_seconds=args.worker_timeout_seconds,
+            passive_retry_wait_seconds=passive_retry_wait_seconds,
+            passive_retry_count=passive_retry_count,
+        )
+        if worker_fetch.get('ok'):
+            worker_payload = worker_fetch['payload']
+            _clear_binding_rebuild_gate(monitoring_session)
+            cycle['worker_state'] = {'ok': True, 'payload': worker_payload}
+            if worker_fetch.get('recovered_after_retry'):
+                cycle['worker_state']['recovered_after_retry'] = True
+                cycle['worker_state']['retry_attempts'] = worker_fetch.get('attempts') or []
+        else:
+            exc = RuntimeError(str(worker_fetch.get('error') or 'worker_group_state_failed'))
+            recovery = _recover_worker_for_target(
+                args,
+                target,
+                failed_worker_base_url=target_worker_base_url,
+                error=exc,
+            )
+            recovered_worker_base_url = str(recovery.get('recovered_worker_base_url') or '').strip() or target_worker_base_url
+            if recovery.get('status') == 'ok' and recovered_worker_base_url:
+                recovery_retry_wait_seconds = max(2.0, min(float(args.restart_wait_seconds or 2.0), 5.0))
+                recovery_worker_fetch = _fetch_worker_group_state_with_passive_retry(
+                    recovered_worker_base_url,
+                    target_registration_group,
+                    timeout_seconds=args.worker_timeout_seconds,
+                    passive_retry_wait_seconds=recovery_retry_wait_seconds,
+                    passive_retry_count=4,
+                )
+                if recovery_worker_fetch.get('ok'):
+                    worker_payload = recovery_worker_fetch['payload']
+                    _clear_binding_rebuild_gate(monitoring_session)
+                    target_worker_base_url = recovered_worker_base_url
+                    cycle['monitor_target']['worker_base_url'] = target_worker_base_url
+                    cycle['worker_state'] = {
+                        'ok': True,
+                        'payload': worker_payload,
+                        'recovered_after_restart': True,
+                        'recovery': recovery,
+                        'recovery_probe': {
+                            'retry_attempts': recovery_worker_fetch.get('attempts') or [],
+                            'retry_count': int(recovery_worker_fetch.get('retry_count') or 0),
+                            'total_attempts': int(recovery_worker_fetch.get('total_attempts') or 1),
+                            'wait_seconds': recovery_retry_wait_seconds,
+                        },
+                    }
+                    if worker_fetch.get('attempts'):
+                        cycle['worker_state']['retry_attempts'] = worker_fetch.get('attempts') or []
+                else:
+                    recovery['retry_error'] = str(recovery_worker_fetch.get('error') or 'worker_group_state_failed_after_recovery')
+                    recovery['recovery_probe'] = {
+                        'retry_attempts': recovery_worker_fetch.get('attempts') or [],
+                        'retry_count': int(recovery_worker_fetch.get('retry_count') or 0),
+                        'total_attempts': int(recovery_worker_fetch.get('total_attempts') or 1),
+                        'wait_seconds': recovery_retry_wait_seconds,
+                    }
+                    cycle['worker_state'] = {
+                        'ok': False,
+                        'error': recovery['retry_error'],
+                        'recovery': recovery,
+                        'retry_attempts': worker_fetch.get('attempts') or [],
+                    }
+                    return cycle
+            else:
                 cycle['worker_state'] = {
                     'ok': False,
-                    'error': recovery['retry_error'],
+                    'error': str(exc),
                     'recovery': recovery,
                     'retry_attempts': worker_fetch.get('attempts') or [],
                 }
                 return cycle
-        else:
-            cycle['worker_state'] = {
-                'ok': False,
-                'error': str(exc),
-                'recovery': recovery,
-                'retry_attempts': worker_fetch.get('attempts') or [],
-            }
-            return cycle
 
-    use_worker_state_directly = (
-        cycle.get('monitor_target', {}).get('source') == 'account_binding'
-        and target_worker_base_url != str(args.worker_base_url or '').strip()
-    )
+    use_worker_state_directly = True
     try:
         worker_pending_count = max(int(worker_payload.get('pending_count') or 0), 0)
     except (TypeError, ValueError):
         worker_pending_count = 0
-    zero_pending_recheck = use_worker_state_directly and worker_pending_count <= 0
+    zero_pending_recheck = worker_pending_count <= 0
 
-    if use_worker_state_directly and not zero_pending_recheck:
+    cycle['fresh_probe'] = {
+        'ok': False,
+        'skipped': True,
+        'reason': 'group_state_is_authoritative_source',
+    }
+    cycle['review_surface_probe'] = {
+        'ok': False,
+        'skipped': True,
+        'reason': 'diagnostics_only_not_authoritative',
+    }
+    cycle['independent_truth_probe'] = {
+        'ok': False,
+        'skipped': True,
+        'reason': 'async_reconcile_only_not_authoritative',
+    }
+    decision_group = {
+        'payload': {
+            **worker_payload,
+            'source': 'group_state',
+            'pending_zero_confidence': 'unverified' if zero_pending_recheck else None,
+            'data_quality': 'fresh',
+            'session_health': 'healthy',
+        },
+        'source': 'group_state',
+        'worker_signature': _group_state_signature(worker_payload),
+        'fresh_signature': None,
+        'mismatch': False,
+        'mismatch_reasons': [],
+        'pending_zero_confidence': 'unverified' if zero_pending_recheck else None,
+        'data_quality': 'fresh',
+        'session_health': 'healthy',
+        'needs_async_reconcile': bool(zero_pending_recheck),
+    }
+    if zero_pending_recheck:
         cycle['fresh_probe'] = {
-            'ok': True,
+            'ok': False,
             'skipped': True,
-            'reason': 'dedicated_runtime_worker_state',
-            'payload': worker_payload,
+            'reason': 'group_state_is_authoritative_source',
+            'zero_pending_recheck': True,
+            'recheck_source': 'group_state',
         }
-        decision_group = {
-            'payload': worker_payload,
-            'source': 'worker_state',
-            'worker_signature': _group_state_signature(worker_payload),
-            'fresh_signature': _group_state_signature(worker_payload),
-            'mismatch': False,
-            'mismatch_reasons': [],
-        }
-        cycle['decision_group_state'] = decision_group
-    else:
         try:
-            fresh_payload = _run_fresh_probe(target_fresh_probe_cmd, timeout=args.command_timeout_seconds)
-            decision_group = _resolve_decision_group_state(worker_payload, fresh_payload)
-            cycle['fresh_probe'] = {'ok': True, 'payload': fresh_payload}
-            if zero_pending_recheck:
-                cycle['fresh_probe']['zero_pending_recheck'] = True
-            cycle['decision_group_state'] = decision_group
-        except Exception as exc:
-            if zero_pending_recheck:
-                cycle['fresh_probe'] = {
-                    'ok': False,
-                    'error': str(exc),
-                    'zero_pending_recheck': True,
-                    'fallback_used': True,
-                }
+            recheck = _recheck_authoritative_group_state(
+                worker_base_url=target_worker_base_url,
+                registration_group=target_registration_group,
+                fresh_probe_cmd=target_fresh_probe_cmd,
+                use_worker_state_directly=True,
+                worker_timeout_seconds=args.worker_timeout_seconds,
+                command_timeout_seconds=args.command_timeout_seconds,
+            )
+            recheck_payload = dict((recheck.get('decision_group') or {}).get('payload') or {})
+            try:
+                recheck_pending_count = max(int(recheck_payload.get('pending_count') or 0), 0)
+            except (TypeError, ValueError):
+                recheck_pending_count = 0
+            if recheck_pending_count > 0:
                 decision_group = {
-                    'payload': worker_payload,
-                    'source': 'worker_state',
-                    'worker_signature': _group_state_signature(worker_payload),
-                    'fresh_signature': None,
-                    'mismatch': False,
-                    'mismatch_reasons': [],
-                    'zero_pending_unverified': True,
+                    **(recheck.get('decision_group') or {}),
+                    'pending_zero_confidence': None,
+                    'data_quality': 'fresh',
+                    'session_health': 'healthy',
+                    'needs_async_reconcile': False,
+                    'zero_pending_unverified': False,
+                    'zero_pending_unverified_reason': None,
                 }
-                cycle['decision_group_state'] = decision_group
             else:
-                cycle['fresh_probe'] = {'ok': False, 'error': str(exc)}
-                cycle['decision_group_state'] = {
-                    'source': 'fail_closed',
-                    'mismatch': False,
-                    'mismatch_reasons': [],
+                decision_group = {
+                    **decision_group,
+                    'zero_pending_unverified': True,
+                    'zero_pending_unverified_reason': 'same_runtime_family_zero_pending',
+                    'needs_async_reconcile': True,
                 }
-                return cycle
+        except Exception as exc:
+            decision_group = {
+                **decision_group,
+                'zero_pending_unverified': True,
+                'zero_pending_unverified_reason': 'group_state_recheck_failed',
+            }
+            cycle['fresh_probe'] = {
+                'ok': False,
+                'error': str(exc),
+                'skipped': True,
+                'reason': 'group_state_is_authoritative_source',
+                'zero_pending_recheck': True,
+                'recheck_source': 'group_state',
+            }
+    cycle['decision_group_state'] = decision_group
+
+    cycle['truth_state'] = build_truth_state(
+        status={
+            'truth_state': cycle.get('truth_state'),
+            'decision_group_state': cycle.get('decision_group_state'),
+            'review_surface_probe': cycle.get('review_surface_probe'),
+            'fresh_probe': cycle.get('fresh_probe'),
+            'worker_state': cycle.get('worker_state'),
+        },
+        runtime_state=dict(target.get('runtime_state') or {
+            'active': True,
+            'ready': True,
+            'authenticated': True,
+            'base_url': target_worker_base_url,
+        }),
+        session_state=dict(target.get('session_state') or {}),
+        monitor_target=cycle.get('monitor_target'),
+    )
 
     authoritative_payload = decision_group['payload']
     session_id = str(getattr(args, 'monitoring_session_id', '') or '').strip()
@@ -1088,6 +1711,30 @@ def _run_registration_group_cycle(
         target=cycle['monitor_target'],
     )
     pending_count = max(int(authoritative_payload.get('pending_count') or 0), 0)
+    cycle_anchor_keys = [
+        target_registration_group,
+        str(target.get('binding_link') or '').strip(),
+        str(target.get('binding_group_name') or '').strip(),
+        target_group_name,
+        str(authoritative_payload.get('group_id') or '').strip(),
+        str(authoritative_payload.get('group_name') or '').strip(),
+    ]
+    previous_pending_count_raw = monitoring_session.get('last_observed_pending_count')
+    try:
+        previous_pending_count = max(int(previous_pending_count_raw or 0), 0)
+    except (TypeError, ValueError):
+        previous_pending_count = 0
+    monitoring_session['last_observed_pending_count'] = pending_count
+    monitoring_session['last_observed_requester_fingerprint'] = requester_fingerprint(authoritative_payload)
+    if pending_count > 0 and previous_pending_count <= 0:
+        pending_wave_anchor_at = oldest_pending_at_iso(authoritative_payload) or now.isoformat()
+        _store_cycle_anchor_text(
+            state,
+            bucket_name='registration_cycle_anchors',
+            anchor_text=pending_wave_anchor_at,
+            keys=cycle_anchor_keys,
+        )
+        target_cycle_anchor_at = pending_wave_anchor_at
     cycle['schedule_end_flush'] = {
         'due': schedule_end_flush_due,
         'pending_count': pending_count,
@@ -1114,8 +1761,9 @@ def _run_registration_group_cycle(
         initial_pending_count = current_pending_count
         initial_requester_fingerprint = requester_fingerprint(current_payload)
         startup_probe_rechecks: List[Dict[str, Any]] = []
+        stable_queue_after_no_pending = False
         if current_pending_count > 0 and use_worker_state_directly:
-            for probe_attempt in range(1, 5):
+            for probe_attempt in range(1, 3):
                 try:
                     probe_payload = fetch_json(
                         f"{target_worker_base_url.rstrip('/')}/group-state",
@@ -1134,8 +1782,8 @@ def _run_registration_group_cycle(
                         current_pending_count = probe_pending_count
                 except Exception as exc:
                     startup_probe_rechecks.append({'attempt': probe_attempt, 'error': str(exc)})
-                if probe_attempt < 4:
-                    time.sleep(1.0)
+                if probe_attempt < 2:
+                    time.sleep(0.5)
         while current_pending_count > 0 and attempts < max_attempts:
             attempts += 1
             command = _build_formal_approval_command(
@@ -1149,6 +1797,8 @@ def _run_registration_group_cycle(
             )
             result = run_formal_approval_command(command, timeout=args.command_timeout_seconds)
             ok = result.get('returncode') == 0 and _formal_run_verified(result)
+            formal_run = formal_run_payload(result.get('result') or {})
+            formal_result = formal_run_result(formal_run)
             attempt_entry: Dict[str, Any] = {
                 'attempt_number': attempts,
                 'pending_count': current_pending_count,
@@ -1169,6 +1819,32 @@ def _run_registration_group_cycle(
             monitoring_session['startup_initial_batch_last_final_requester_fingerprint'] = requester_fingerprint(current_payload)
             monitoring_session['startup_initial_batch_last_probe_rechecks'] = startup_probe_rechecks
             if ok:
+                success_formal_result = formal_result
+                try:
+                    verified_pending_after = int(success_formal_result.get('pending_after'))
+                except (TypeError, ValueError):
+                    verified_pending_after = None
+                if verified_pending_after is None:
+                    try:
+                        success_recheck = _recheck_authoritative_group_state(
+                            worker_base_url=target_worker_base_url,
+                            registration_group=target_registration_group,
+                            fresh_probe_cmd=target_fresh_probe_cmd,
+                            use_worker_state_directly=use_worker_state_directly,
+                            worker_timeout_seconds=args.worker_timeout_seconds,
+                            command_timeout_seconds=args.command_timeout_seconds,
+                        )
+                        success_payload = success_recheck.get('decision_group', {}).get('payload') or {}
+                        success_recheck_pending = success_payload.get('pending_count')
+                        if success_recheck_pending is not None:
+                            verified_pending_after = max(int(success_recheck_pending), 0)
+                            current_payload = success_payload
+                    except Exception:
+                        verified_pending_after = None
+                if verified_pending_after is not None and verified_pending_after >= 0:
+                    current_pending_count = verified_pending_after
+                    monitoring_session['startup_initial_batch_pending_count'] = current_pending_count
+                    monitoring_session['startup_initial_batch_last_final_pending_count'] = current_pending_count
                 monitoring_session['startup_initial_batch_done'] = True
                 record_trigger(state, fingerprint=requester_fingerprint(current_payload), now=now)
                 _store_cycle_anchor(
@@ -1185,6 +1861,17 @@ def _run_registration_group_cycle(
                     ],
                 )
                 target_cycle_anchor_at = now.isoformat()
+                aggregate_approved_count = sum(
+                    max(int(((formal_run_result((entry.get('result') or {})) or {}).get('approved_count') or 0)), 0)
+                    for entry in attempt_results
+                    if isinstance(entry, dict)
+                )
+                approval_run_ids = [
+                    str((formal_run_payload((entry.get('result') or {})) or {}).get('approval_run_id') or '').strip()
+                    for entry in attempt_results
+                    if isinstance(entry, dict)
+                ]
+                approval_run_ids = [item for item in approval_run_ids if item]
                 cycle['startup_initial_batch'] = {
                     'triggered': True,
                     'ok': True,
@@ -1198,6 +1885,8 @@ def _run_registration_group_cycle(
                     'max_retries': max_retries,
                     'startup_probe_rechecks': startup_probe_rechecks,
                     'attempt_results': attempt_results,
+                    'aggregate_approved_count': aggregate_approved_count,
+                    'approval_run_ids': approval_run_ids,
                 }
                 return cycle
             try:
@@ -1214,8 +1903,9 @@ def _run_registration_group_cycle(
                     attempt_entry['recheck_source'] = 'fresh_probe'
                 current_payload = recheck_payload
                 current_pending_count = max(int(recheck_payload.get('pending_count') or 0), 0)
+                recheck_fingerprint = requester_fingerprint(recheck_payload)
                 attempt_entry['recheck_pending_count'] = current_pending_count
-                attempt_entry['recheck_requester_fingerprint'] = requester_fingerprint(recheck_payload)
+                attempt_entry['recheck_requester_fingerprint'] = recheck_fingerprint
                 if current_pending_count <= 0:
                     monitoring_session['startup_initial_batch_done'] = True
                     _store_cycle_anchor(
@@ -1232,6 +1922,17 @@ def _run_registration_group_cycle(
                         ],
                     )
                     target_cycle_anchor_at = now.isoformat()
+                    aggregate_approved_count = sum(
+                        max(int(((formal_run_result((entry.get('result') or {})) or {}).get('approved_count') or 0)), 0)
+                        for entry in attempt_results
+                        if isinstance(entry, dict)
+                    )
+                    approval_run_ids = [
+                        str((formal_run_payload((entry.get('result') or {})) or {}).get('approval_run_id') or '').strip()
+                        for entry in attempt_results
+                        if isinstance(entry, dict)
+                    ]
+                    approval_run_ids = [item for item in approval_run_ids if item]
                     cycle['startup_initial_batch'] = {
                         'triggered': True,
                         'ok': True,
@@ -1245,9 +1946,20 @@ def _run_registration_group_cycle(
                         'max_retries': max_retries,
                         'startup_probe_rechecks': startup_probe_rechecks,
                         'attempt_results': attempt_results,
+                        'aggregate_approved_count': aggregate_approved_count,
+                        'approval_run_ids': approval_run_ids,
                         'cleared_after_recheck': True,
                     }
                     return cycle
+                if (
+                    str(formal_result.get('result_code') or '').strip() == 'no_pending_request'
+                    and current_pending_count > 0
+                    and recheck_fingerprint
+                    and recheck_fingerprint == initial_requester_fingerprint
+                ):
+                    attempt_entry['stable_queue_after_no_pending'] = True
+                    stable_queue_after_no_pending = True
+                    break
             except Exception as exc:
                 attempt_entry['recheck_error'] = str(exc)
                 current_pending_count = 0
@@ -1266,26 +1978,27 @@ def _run_registration_group_cycle(
             'max_retries': max_retries,
             'startup_probe_rechecks': startup_probe_rechecks,
             'attempt_results': attempt_results,
-            'retries_exhausted': bool(attempt_results and current_pending_count > 0),
+            'stable_queue_after_no_pending': stable_queue_after_no_pending,
+            'retries_exhausted': bool(attempt_results and current_pending_count > 0 and not stable_queue_after_no_pending),
         }
         return cycle
 
-    try:
-        if schedule_end_flush_due and pending_count > 0:
-            release = _schedule_end_flush_release(target, target_registration_group, authoritative_payload)
-        else:
-            release = _evaluate_release(
-                args.api_base_url,
-                target_registration_group,
-                authoritative_payload,
-                batch_size=int(target.get('approval_count_threshold') or 0),
-                timeout_minutes=int(target.get('approval_timeout_minutes') or 0),
-                cycle_anchor_at=target_cycle_anchor_at,
-            )
+    if schedule_end_flush_due and pending_count > 0:
+        release = _schedule_end_flush_release(target, target_registration_group, authoritative_payload)
         cycle['release_evaluation'] = {'ok': True, 'payload': release}
-    except Exception as exc:
-        cycle['release_evaluation'] = {'ok': False, 'error': str(exc)}
-        return cycle
+    else:
+        release_result = _evaluate_release_with_backend_recovery(
+            args,
+            target_registration_group,
+            authoritative_payload,
+            batch_size=int(target.get('approval_count_threshold') or 0),
+            timeout_minutes=int(target.get('approval_timeout_minutes') or 0),
+            cycle_anchor_at=target_cycle_anchor_at,
+        )
+        cycle['release_evaluation'] = release_result
+        if not release_result.get('ok'):
+            return cycle
+        release = release_result['payload']
 
     fingerprint = requester_fingerprint(authoritative_payload)
     cycle['requester_fingerprint'] = fingerprint
@@ -1551,6 +2264,8 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
     if not backend_health.get('ok'):
         return cycle
 
+    cycle['temp_cleanup'] = _maybe_auto_cleanup_temp_profiles(args, state, now=now)
+
     target_cycles = [_run_registration_group_cycle(args, state, target, now=now) for target in ordered_targets]
     cycle['registration_group_cycles'] = target_cycles
     if target_cycles:
@@ -1629,12 +2344,43 @@ def _build_notifier_from_args(args: argparse.Namespace, cycle: Optional[Dict[str
 
 
 SUCCESS_NOTIFICATION_CODES = {
-    'formal_approval_succeeded',
-    'registration_cycle_noop',
-    'startup_initial_batch_succeeded',
-    'official_group_approval_succeeded',
-    'official_group_manual_review_required',
+    code
+    for code, policy in NOTIFICATION_POLICY_BY_CODE.items()
+    if policy.get('family') == 'success'
 }
+
+
+def _normalize_notification_state(state: Dict[str, Any], *, now_iso: str | None = None) -> bool:
+    notification_bucket = state.get('notifications')
+    if not isinstance(notification_bucket, dict):
+        return False
+    repaired = False
+    repaired_at = str(now_iso or utc_now_iso())
+    for dedupe_key, record in list(notification_bucket.items()):
+        if not isinstance(record, dict):
+            continue
+        updated = dict(record)
+        had_backfill_marker = 'backfilled_from' in updated or 'backfilled' in updated
+        if 'backfilled_from' in updated:
+            updated.pop('backfilled_from', None)
+            repaired = True
+        if 'backfilled' in updated:
+            updated.pop('backfilled', None)
+            repaired = True
+        if str(updated.get('last_status') or '').strip() == 'backfilled':
+            updated.pop('last_sent_at', None)
+            updated.pop('deliveries', None)
+            updated.pop('sent_count', None)
+            updated['last_status'] = 'legacy_backfill_cleared'
+            updated['state_repaired_from_backfill'] = True
+            updated['state_repaired_at'] = repaired_at
+            repaired = True
+        elif had_backfill_marker:
+            updated['state_repaired_from_backfill'] = True
+            updated['state_repaired_at'] = repaired_at
+        notification_bucket[dedupe_key] = updated
+    return repaired
+
 
 
 def _incident_alert_threshold(incident: Dict[str, Any]) -> int:
@@ -1646,6 +2392,7 @@ def _incident_alert_threshold(incident: Dict[str, Any]) -> int:
 
 def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Dict[str, Any], incidents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     now = datetime.fromisoformat(cycle['checked_at']) if cycle.get('checked_at') else utc_now()
+    _normalize_notification_state(state, now_iso=now.isoformat())
     sent: List[Dict[str, Any]] = []
     streaks = state.setdefault('incident_streaks', {})
     current_keys = {str(item.get('dedupe_key') or item.get('code') or 'incident') for item in incidents}
@@ -1653,6 +2400,8 @@ def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Di
         if stale_key not in current_keys:
             streaks.pop(stale_key, None)
     for incident in incidents:
+        if incident.get('notify_disabled'):
+            continue
         dedupe_key = str(incident.get('dedupe_key') or incident.get('code') or 'incident')
         threshold = max(1, int(_incident_alert_threshold(incident)))
         streak_record = streaks.get(dedupe_key) or {}
@@ -1668,7 +2417,17 @@ def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Di
         notification_code = str(incident.get('code') or '').strip()
         success_notification = notification_code in SUCCESS_NOTIFICATION_CODES
         notification_record = (state.get('notifications') or {}).get(dedupe_key) or {}
-        if success_notification and notification_record.get('last_sent_at') and str(notification_record.get('last_status') or '').strip() in {'sent', 'partial_sent'}:
+        prior_deliveries = notification_record.get('deliveries') if isinstance(notification_record.get('deliveries'), list) else []
+        previously_sent_targets = {
+            (
+                f"profile::{str(item.get('notify_profile_name') or '').strip()}"
+                if str(item.get('notify_profile_name') or '').strip()
+                else f"robot::{str(item.get('notify_robot_name') or '').strip()}"
+            )
+            for item in prior_deliveries
+            if isinstance(item, dict) and str(item.get('status') or '').strip() == 'sent'
+        }
+        if success_notification and notification_record.get('last_sent_at') and str(notification_record.get('last_status') or '').strip() == 'sent':
             continue
         if not success_notification:
             if not register_notification(state, dedupe_key=dedupe_key, now=now, cooldown_seconds=args.notify_cooldown_seconds):
@@ -1697,6 +2456,12 @@ def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Di
             payload['notify_profile_name'] = resolved_notify_profile_name
         if resolved_notify_robot_name:
             payload['notify_robot_name'] = resolved_notify_robot_name
+        preserved_deliveries: List[Dict[str, Any]] = [
+            dict(item)
+            for item in prior_deliveries
+            if isinstance(item, dict)
+            and str(item.get('status') or '').strip() == 'sent'
+        ] if success_notification else []
         deliveries: List[Dict[str, Any]] = []
         targets = _expand_notify_profile_targets(resolved_notify_profile_name, resolved_notify_robot_name)
         if not targets:
@@ -1704,6 +2469,9 @@ def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Di
         for target in targets:
             target_profile_name = str(target.get('profile_name') or '').strip()
             target_robot_name = str(target.get('robot_name') or '').strip()
+            target_key = f'profile::{target_profile_name}' if target_profile_name else f'robot::{target_robot_name}'
+            if success_notification and target_key in previously_sent_targets:
+                continue
             monitor_target = dict(effective_cycle.get('monitor_target') or {}) if isinstance(effective_cycle.get('monitor_target'), dict) else {}
             if target_profile_name:
                 monitor_target['notify_profile_name'] = target_profile_name
@@ -1727,8 +2495,9 @@ def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Di
                 delivery['status'] = 'failed'
                 delivery['error'] = str(exc)
             deliveries.append(delivery)
-        payload['deliveries'] = deliveries
-        statuses = {str(item.get('status') or '') for item in deliveries}
+        all_deliveries = [*preserved_deliveries, *deliveries]
+        payload['deliveries'] = all_deliveries
+        statuses = {str(item.get('status') or '') for item in all_deliveries}
         if statuses == {'sent'}:
             payload['status'] = 'sent'
         elif 'sent' in statuses and ('failed' in statuses or 'skipped_no_notifier' in statuses):
@@ -1740,11 +2509,22 @@ def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Di
         if success_notification:
             notification_bucket = state.setdefault('notifications', {})
             existing_record = notification_bucket.get(dedupe_key) or {}
-            if payload['status'] in {'sent', 'partial_sent'}:
+            preserved_record = dict(existing_record)
+            if payload['status'] == 'sent':
                 register_notification(state, dedupe_key=dedupe_key, now=now, cooldown_seconds=args.notify_cooldown_seconds)
-                existing_record = (state.get('notifications') or {}).get(dedupe_key) or existing_record
+                existing_record = {**preserved_record, **((state.get('notifications') or {}).get(dedupe_key) or {})}
             updated_record = dict(existing_record)
             updated_record['last_status'] = payload['status']
+            updated_record['deliveries'] = [
+                {
+                    'notify_profile_name': item.get('notify_profile_name'),
+                    'notify_robot_name': item.get('notify_robot_name'),
+                    'status': item.get('status'),
+                    'error': item.get('error'),
+                }
+                for item in all_deliveries
+                if isinstance(item, dict)
+            ]
             notification_bucket[dedupe_key] = updated_record
         else:
             notification_bucket = state.setdefault('notifications', {})
@@ -1787,6 +2567,7 @@ def main() -> int:
     parser.add_argument('--worker-base-url', default='')
     parser.add_argument('--registration-group', default='')
     parser.add_argument('--fresh-probe-cmd', default='')
+    parser.add_argument('--independent-truth-probe-cmd', default='')
     parser.add_argument('--worker-restart-cmd', default=str(ROOT_DIR / 'scripts' / 'restart_registration_group_webjs_worker.sh'))
     parser.add_argument('--backend-restart-cmd', default=str(ROOT_DIR / 'scripts' / 'ensure_registration_group_backend.sh'))
     parser.add_argument('--worker-event-log', default='')
@@ -1807,6 +2588,8 @@ def main() -> int:
     parser.add_argument('--worker-timeout-seconds', type=float, default=60.0)
     parser.add_argument('--restart-command-timeout-seconds', type=float, default=120.0)
     parser.add_argument('--restart-wait-seconds', type=float, default=8.0)
+    parser.add_argument('--worker-recovery-rebuild-threshold', type=int, default=2)
+    parser.add_argument('--worker-recovery-rebuild-cooldown-seconds', type=float, default=120.0)
     parser.add_argument('--area', default='Indonesia')
     parser.add_argument('--remark', default='production auto approval daemon')
     parser.add_argument('--approved-count', type=int, default=1)
@@ -1816,6 +2599,10 @@ def main() -> int:
     parser.add_argument('--decided-by-name', default='Song Yuqi')
     parser.add_argument('--auto-recover-worker', action='store_true', default=True)
     parser.add_argument('--no-auto-recover-worker', dest='auto_recover_worker', action='store_false')
+    parser.add_argument('--temp-cleanup-enabled', action='store_true', default=True)
+    parser.add_argument('--temp-cleanup-disabled', dest='temp_cleanup_enabled', action='store_false')
+    parser.add_argument('--temp-cleanup-interval-seconds', type=float, default=600.0)
+    parser.add_argument('--temp-cleanup-min-age-hours', type=float, default=1.0)
     parser.add_argument('--monitoring-session-id', default='')
     args = parser.parse_args()
 
@@ -1827,6 +2614,7 @@ def main() -> int:
     state_path = Path(args.state_path).expanduser().resolve()
     status_path = Path(args.status_path).expanduser().resolve()
     state = load_json_state(state_path)
+    _normalize_notification_state(state)
 
     while True:
         cycle: Dict[str, Any]

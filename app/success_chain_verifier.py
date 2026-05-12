@@ -27,7 +27,12 @@ def _fetch_runtime_health(runtime_health_url: Optional[str]) -> Optional[Dict[st
     if not runtime_health_url:
         return None
     try:
-        with urllib.request.urlopen(runtime_health_url, timeout=8) as resp:
+        headers = {}
+        internal_token = str(os.getenv('AUTH_INTERNAL_TOKEN') or '').strip()
+        if internal_token and '/api/ops/' in str(runtime_health_url or ''):
+            headers['x-ops-internal-token'] = internal_token
+        req = urllib.request.Request(runtime_health_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
         return {"fetch_error": str(exc), "url": runtime_health_url}

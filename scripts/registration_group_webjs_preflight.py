@@ -27,6 +27,9 @@ def _fetch_json(url: str, *, method: str = 'GET', payload: Optional[Dict[str, An
     if payload is not None:
         data = json.dumps(payload).encode('utf-8')
         headers['Content-Type'] = 'application/json'
+    internal_token = str(os.getenv('AUTH_INTERNAL_TOKEN') or '').strip()
+    if internal_token and '/api/ops/' in str(url or ''):
+        headers['x-ops-internal-token'] = internal_token
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         body = json.loads(resp.read().decode('utf-8'))

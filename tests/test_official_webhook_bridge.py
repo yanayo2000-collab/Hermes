@@ -484,7 +484,7 @@ def test_official_group_bridge_passthrough_routes_to_runtime_worker_payload():
     assert body['status'] == 'success'
     assert body['result_code'] == 'approved'
     assert body['raw_result']['bridge_request_id']
-    assert session.gets[0]['url'] == 'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts'
+    assert session.gets[0]['url'] == 'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/official-binding-directory'
     upstream_request = session.posts[0]
     assert upstream_request['url'] == 'http://127.0.0.1:63568/approve'
     assert upstream_request['json']['registration_group'] == '120363400000000001@g.us'

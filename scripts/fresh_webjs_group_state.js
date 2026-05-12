@@ -3,11 +3,14 @@
 const registrationGroup = String(process.argv[2] || '').trim();
 const explicitWorkerBaseUrl = String(process.argv[3] || '').trim();
 const apiBaseUrl = String(process.env.PRODUCTION_OPS_API_BASE_URL || 'http://127.0.0.1:8011').trim();
+const internalToken = String(process.env.AUTH_INTERNAL_TOKEN || '').trim();
 
 if (!registrationGroup) {
   console.error('usage: fresh_webjs_group_state.js <registration_group> [worker_base_url]');
   process.exit(2);
 }
+
+console.error('[deprecated] fresh_webjs_group_state.js now acts as a debug wrapper around authoritative /group-state and no longer provides an independent truth source.');
 
 function normalizeBaseUrl(value) {
   const raw = String(value || '').trim();
@@ -15,10 +18,15 @@ function normalizeBaseUrl(value) {
 }
 
 async function fetchJson(url, options = {}) {
+  const normalizedUrl = String(url || '');
+  const extraHeaders = internalToken && normalizedUrl.includes('/api/ops/')
+    ? { 'x-ops-internal-token': internalToken }
+    : {};
   const response = await fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...extraHeaders,
       ...(options.headers || {}),
     },
   });
@@ -59,9 +67,9 @@ async function resolveWorkerBaseUrl(targetValue) {
   }
 
   try {
-    const daemon = await fetchJson(`${normalizeBaseUrl(apiBaseUrl)}/api/ops/production-ops-daemon`);
-    const runtimeStatus = (((daemon || {}).runtime || {}).status) || {};
-    const monitorTarget = runtimeStatus.monitor_target || {};
+    const daemon = await fetchJson(`${normalizeBaseUrl(apiBaseUrl)}/api/ops/production-ops-daemon/monitor-target`);
+    const runtimeStatus = (daemon || {}).runtime_status || {};
+    const monitorTarget = daemon.monitor_target || {};
     const daemonCandidates = [
       runtimeStatus.registration_group,
       monitorTarget.registration_group,
@@ -75,7 +83,7 @@ async function resolveWorkerBaseUrl(targetValue) {
     }
   } catch (_) {}
 
-  const accounts = await fetchJson(`${normalizeBaseUrl(apiBaseUrl)}/api/ops/whatsapp-approval-accounts`);
+  const accounts = await fetchJson(`${normalizeBaseUrl(apiBaseUrl)}/api/ops/whatsapp-approval-accounts/registration-runtime-directory`);
   const rows = Array.isArray(accounts.rows) ? accounts.rows : [];
   for (const row of rows) {
     if (!row || row.enabled === false) continue;
@@ -94,11 +102,16 @@ async function resolveWorkerBaseUrl(targetValue) {
 (async () => {
   try {
     const workerBaseUrl = await resolveWorkerBaseUrl(registrationGroup);
-    const payload = await fetchJson(`${workerBaseUrl}/probe-group-state`, {
+    const payload = await fetchJson(`${workerBaseUrl}/group-state`, {
       method: 'POST',
       body: JSON.stringify({ registration_group: registrationGroup }),
     });
-    console.log(JSON.stringify(payload, null, 2));
+    console.log(JSON.stringify({
+      ...payload,
+      debug_wrapper: 'fresh_webjs_group_state',
+      debug_only: true,
+      authoritative_source: 'group_state',
+    }, null, 2));
   } catch (error) {
     console.error(String(error && error.stack ? error.stack : error));
     process.exit(1);

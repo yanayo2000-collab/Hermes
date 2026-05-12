@@ -788,6 +788,9 @@ class OfficialGroupBridgeState:
             self.session = session
         else:
             self.session = requests.Session() if requests is not None else None
+        internal_token = str(os.getenv('AUTH_INTERNAL_TOKEN') or '').strip()
+        if self.session is not None and internal_token and self.ops_base_url:
+            self.session.headers.setdefault('x-ops-internal-token', internal_token)
 
     def _require_auth(self, authorization: Optional[str]) -> None:
         if not self.token:
@@ -876,7 +879,7 @@ class OfficialGroupBridgeState:
                 rows = []
         if not rows and self.session is not None and self.ops_base_url:
             response = self.session.get(
-                f'{self.ops_base_url}/api/ops/whatsapp-approval-accounts',
+                f'{self.ops_base_url}/api/ops/whatsapp-approval-accounts/official-binding-directory',
                 timeout=self.timeout_seconds,
             )
             try:

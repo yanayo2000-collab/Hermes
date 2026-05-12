@@ -10,6 +10,9 @@ def fetch_json(url: str, *, method: str = 'GET', payload: dict | None = None) ->
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode('utf-8')
     req = request.Request(url, data=data, method=method)
     req.add_header('Content-Type', 'application/json')
+    internal_token = str(__import__('os').getenv('AUTH_INTERNAL_TOKEN') or '').strip()
+    if internal_token and '/api/ops/' in str(url or ''):
+        req.add_header('x-ops-internal-token', internal_token)
     with request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode('utf-8'))
 

@@ -19,9 +19,17 @@ if [[ -f "$ROOT_DIR/data/production_ops_daemon.env" ]]; then
   set +a
 fi
 
+if [[ -f "$ROOT_DIR/data/internal_auth.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/data/internal_auth.env"
+  set +a
+fi
+
 resolved_worker_base_url="${PRODUCTION_OPS_WORKER_BASE_URL-}"
 resolved_registration_group="${PRODUCTION_OPS_REGISTRATION_GROUP-}"
 resolved_fresh_probe_cmd="${PRODUCTION_OPS_FRESH_PROBE_CMD-}"
+resolved_independent_truth_probe_cmd="${PRODUCTION_OPS_INDEPENDENT_TRUTH_PROBE_CMD-}"
 if [[ -z "$resolved_fresh_probe_cmd" && -n "$resolved_registration_group" ]]; then
   resolved_fresh_probe_cmd="node $ROOT_DIR/scripts/fresh_webjs_group_state.js $(printf '%q' "$resolved_registration_group")"
 fi
@@ -31,11 +39,14 @@ exec python3 "$ROOT_DIR/scripts/production_ops_daemon.py" \
   --worker-base-url "$resolved_worker_base_url" \
   --registration-group "$resolved_registration_group" \
   --fresh-probe-cmd "$resolved_fresh_probe_cmd" \
+  --independent-truth-probe-cmd "$resolved_independent_truth_probe_cmd" \
   --worker-restart-cmd "${PRODUCTION_OPS_WORKER_RESTART_CMD:-$ROOT_DIR/scripts/restart_registration_group_webjs_worker.sh}" \
   --backend-restart-cmd "${PRODUCTION_OPS_BACKEND_RESTART_CMD:-$ROOT_DIR/scripts/ensure_registration_group_backend.sh}" \
   --state-path "${PRODUCTION_OPS_STATE_PATH:-$ROOT_DIR/data/production_ops_daemon_state.json}" \
   --status-path "${PRODUCTION_OPS_STATUS_PATH:-$ROOT_DIR/data/production_ops_daemon_status.json}" \
   --interval-seconds "${PRODUCTION_OPS_INTERVAL_SECONDS:-20}" \
+  --temp-cleanup-interval-seconds "${PRODUCTION_OPS_TEMP_CLEANUP_INTERVAL_SECONDS:-600}" \
+  --temp-cleanup-min-age-hours "${PRODUCTION_OPS_TEMP_CLEANUP_MIN_AGE_HOURS:-1}" \
   --monitoring-session-id "${PRODUCTION_OPS_MONITORING_SESSION_ID:-}" \
   --notify-chat-id "${PRODUCTION_OPS_NOTIFY_CHAT_ID:-${FEISHU_HOME_CHANNEL:-}}" \
   --feishu-app-id "${PRODUCTION_OPS_FEISHU_APP_ID:-${FEISHU_APP_ID:-}}" \

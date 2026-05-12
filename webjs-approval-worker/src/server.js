@@ -19,6 +19,8 @@ const APPROVAL_PER_REQUESTER_TIMEOUT_MS = Math.max(1200, Number(process.env.REGI
 const APPROVAL_PER_REQUESTER_SLEEP_MS = Math.max(0, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_PER_REQUESTER_SLEEP_MS || 50));
 const APPROVAL_VERIFY_WAIT_MS = Math.max(300, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_VERIFY_WAIT_MS || 1200));
 const APPROVAL_VERIFY_RETRIES = Math.max(1, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_VERIFY_RETRIES || 4));
+const ZERO_PENDING_RECHECK_WAIT_MS = Math.max(0, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_ZERO_PENDING_RECHECK_WAIT_MS || 800));
+const ZERO_PENDING_RECHECK_RETRIES = Math.max(0, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_ZERO_PENDING_RECHECK_RETRIES || 2));
 const CHROME_EXECUTABLE = process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_CHROME_EXECUTABLE || process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 const WORKER_EVENT_LOG = process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_EVENT_LOG || path.join(process.cwd(), 'logs', 'registration_group_webjs_worker.jsonl');
 const AUTH_MODE = String(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_AUTH_MODE || '').trim().toLowerCase();
@@ -242,6 +244,11 @@ function isRecoverableApprovalClientError(error) {
     || message.includes('Execution context was destroyed')
     || message.includes('Runtime.callFunctionOn')
   );
+}
+
+function isExecutionContextDestroyedError(error) {
+  const message = String(error && error.message ? error.message : error || '');
+  return message.includes('Execution context was destroyed');
 }
 
 function isBrowserAlreadyRunningError(error) {
@@ -983,11 +990,304 @@ function selectRequests(requests, context) {
   return ranked.filter((item) => item.nameExactMatch).slice(0, approvedCount);
 }
 
+async function waitForPageDelay(page, timeoutMs) {
+  if (page && typeof page.waitForTimeout === 'function') {
+    await page.waitForTimeout(timeoutMs);
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, timeoutMs));
+}
+
+function isUnconfirmedZeroSurface(surface) {
+  const pendingCount = Math.max(0, Number(surface && surface.pending_count || 0));
+  return pendingCount <= 0
+    && Boolean(surface && surface.page_ready)
+    && !Boolean(surface && surface.empty_queue_visible)
+    && !Boolean(surface && surface.has_pending_section)
+    && !Boolean(surface && surface.has_pending_request_row);
+}
+
+function parseReviewSurfaceBody(bodyText, domSnapshot = null) {
+  const text = String(bodyText || '');
+  const groupInfoMarkers = ['群组信息', 'Group info'];
+  const pendingSectionMarkers = ['待处理请求', 'Membership requests'];
+  const emptyQueueMarkers = ['没有要审核的成员', 'No membership requests'];
+  const contactInfoMarkers = ['联系人信息', 'Contact info'];
+  const requestRowPatterns = [
+    /([^\n]+)\s*\n\s*请求加入。点击以审核。/g,
+    /([^\n]+)\s*\n\s*Requested to join\. Tap to review\./gi,
+  ];
+  const hasGroupInfo = groupInfoMarkers.some((marker) => text.includes(marker));
+  const hasPendingSection = pendingSectionMarkers.some((marker) => text.includes(marker));
+  const emptyQueueVisible = emptyQueueMarkers.some((marker) => text.includes(marker));
+  const contactInfoVisible = contactInfoMarkers.some((marker) => text.includes(marker));
+  const requesters = [];
+  requestRowPatterns.forEach((pattern) => {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      const name = String(match[1] || '').trim();
+      if (name && !requesters.includes(name)) {
+        requesters.push(name);
+      }
+    }
+  });
+  const domRequesters = Array.isArray(domSnapshot && domSnapshot.requesters)
+    ? domSnapshot.requesters.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  for (const name of domRequesters) {
+    if (!requesters.includes(name)) {
+      requesters.push(name);
+    }
+  }
+  const inferredHeaderNames = [];
+  const headerPatterns = [/(?:群组信息|Group info)\s*\n\s*([^\n]+)/i, /(?:聊天信息|Chat info)\s*\n\s*([^\n]+)/i];
+  for (const pattern of headerPatterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const candidate = String(match[1] || '').trim();
+      if (candidate && !inferredHeaderNames.includes(candidate)) {
+        inferredHeaderNames.push(candidate);
+      }
+    }
+  }
+  const ignoredRequesterNames = new Set([
+    '所有',
+    'All',
+    '未读',
+    'Unread',
+    '未读消息',
+    'Unread messages',
+    ...inferredHeaderNames,
+  ]);
+  const filteredRequesters = requesters.filter((name) => !ignoredRequesterNames.has(String(name || '').trim()));
+  let pendingCount = 0;
+  const countPatterns = [/待处理请求\s*(\d+)/, /Membership requests\s*(\d+)/i];
+  for (const pattern of countPatterns) {
+    const match = text.match(pattern);
+    if (match) {
+      pendingCount = Math.max(pendingCount, Number(match[1] || 0));
+    }
+  }
+  const domRequestRowCount = Math.max(0, Number(domSnapshot && domSnapshot.request_row_count || 0));
+  pendingCount = Math.max(pendingCount, filteredRequesters.length);
+  if (!pendingCount && domRequestRowCount > 0) {
+    pendingCount = domRequestRowCount;
+  }
+  if (!pendingCount && filteredRequesters.length > 0) {
+    pendingCount = filteredRequesters.length;
+  }
+  const pageReady = Boolean(
+    hasGroupInfo
+    || hasPendingSection
+    || emptyQueueVisible
+    || domRequestRowCount > 0
+  ) && !(contactInfoVisible && !hasGroupInfo && !hasPendingSection && !emptyQueueVisible && domRequestRowCount <= 0 && requesters.length <= 0);
+  const effectiveRequesters = pageReady ? filteredRequesters : [];
+  const effectiveHasPendingRequestRow = Boolean(pageReady && (filteredRequesters.length > 0 || domRequestRowCount > 0));
+  const effectivePendingCount = pageReady ? pendingCount : 0;
+  return {
+    body_text: text,
+    page_ready: pageReady,
+    has_group_info: hasGroupInfo,
+    has_pending_section: hasPendingSection,
+    empty_queue_visible: emptyQueueVisible,
+    contact_info_visible: contactInfoVisible,
+    has_pending_request_row: effectiveHasPendingRequestRow,
+    pending_count: effectivePendingCount,
+    requesters: effectiveRequesters,
+    dom_request_row_count: domRequestRowCount,
+  };
+}
+
+async function inspectApprovalReviewSurface(context, options = {}) {
+  if (!approvalState.ready) {
+    throw new Error(approvalState.last_qr ? 'approval client awaiting qr scan' : 'approval client is not ready');
+  }
+  const allowReloadOnUnconfirmedZero = options.allowReloadOnUnconfirmedZero !== false;
+  const reloaded = Boolean(options.reloaded);
+  const group = await resolveApprovalGroup(context.registration_group);
+  const page = approvalClient && approvalClient.pupPage;
+  if (!page || typeof page.evaluate !== 'function') {
+    throw new Error('approval client page unavailable');
+  }
+  const groupId = safeString(group.id);
+  const navigationWaitMs = Math.max(120, Number(options.navigationWaitMs || 220));
+  if (approvalClient.interface && typeof approvalClient.interface.openChatWindow === 'function' && groupId) {
+    await approvalClient.interface.openChatWindow(groupId);
+    await waitForPageDelay(page, navigationWaitMs);
+  }
+  if (approvalClient.interface && typeof approvalClient.interface.openChatDrawer === 'function' && groupId) {
+    try {
+      await approvalClient.interface.openChatDrawer(groupId);
+      await waitForPageDelay(page, navigationWaitMs);
+    } catch (_) {}
+  }
+  const domSnapshot = await page.evaluate(() => {
+    const textOf = (node) => String((node && (node.innerText || node.textContent)) || '').replace(/\u200e|\u200f|\u202a|\u202c/g, '').trim();
+    const normalizeLine = (line) => String(line || '').replace(/\s+/g, ' ').trim();
+    const isCtaLine = (line) => /^(请求加入。点击以审核。|Requested to join\. Tap to review\.?|Tap to review\.?|点击以审核。?)$/i.test(normalizeLine(line));
+    const ignoredLine = (line) => {
+      const normalized = normalizeLine(line);
+      return !normalized
+        || normalized === '群组信息'
+        || normalized === 'Group info'
+        || normalized === '待处理请求'
+        || normalized === 'Membership requests'
+        || normalized === '联系人信息'
+        || normalized === 'Contact info'
+        || normalized === '没有要审核的成员'
+        || normalized === 'No membership requests'
+        || normalized === '所有'
+        || normalized === 'All'
+        || /^待处理请求\s*\d+$/i.test(normalized)
+        || /^Membership requests\s*\d+$/i.test(normalized)
+        || isCtaLine(normalized);
+    };
+    const ctaRegex = /(请求加入。点击以审核。|Requested to join\. Tap to review\.?|Tap to review\.?|点击以审核。?)/i;
+    const ctaCount = (value) => {
+      const matches = String(value || '').match(new RegExp(ctaRegex.source, 'gi'));
+      return matches ? matches.length : 0;
+    };
+    const nodes = Array.from(document.querySelectorAll('div, span, button, [role="button"]'));
+    const seenRows = new Set();
+    const requesters = [];
+    let requestRowCount = 0;
+    for (const node of nodes) {
+      const ownText = textOf(node);
+      if (!ctaRegex.test(ownText)) continue;
+      let row = node;
+      let depth = 0;
+      while (row && depth < 6) {
+        const rowText = textOf(row);
+        const lines = rowText.split('\n').map(normalizeLine).filter(Boolean);
+        if (ctaRegex.test(rowText) && ctaCount(rowText) === 1 && lines.length >= 2 && lines.length <= 12) {
+          break;
+        }
+        row = row.parentElement;
+        depth += 1;
+      }
+      const rowText = textOf(row || node);
+      const rowKey = rowText || ownText;
+      if (!rowKey || seenRows.has(rowKey)) continue;
+      seenRows.add(rowKey);
+      requestRowCount += 1;
+      const lines = rowText.split('\n').map(normalizeLine).filter(Boolean);
+      const requesterName = lines.find((line) => !ignoredLine(line));
+      if (requesterName && !requesters.includes(requesterName)) {
+        requesters.push(requesterName);
+      }
+    }
+    return {
+      body_text: textOf(document.body),
+      request_row_count: requestRowCount,
+      requesters,
+    };
+  });
+  let surface = parseReviewSurfaceBody(domSnapshot.body_text, domSnapshot);
+  if (!surface.page_ready) {
+    for (const selector of ['[data-testid="conversation-header"]', '[data-testid="conversation-subheader"]']) {
+      try {
+        await page.click(selector, { timeout: 1200 });
+        await waitForPageDelay(page, navigationWaitMs);
+        const retriedSnapshot = await page.evaluate(() => {
+          const textOf = (node) => String((node && (node.innerText || node.textContent)) || '').replace(/\u200e|\u200f|\u202a|\u202c/g, '').trim();
+          const normalizeLine = (line) => String(line || '').replace(/\s+/g, ' ').trim();
+          const isCtaLine = (line) => /^(请求加入。点击以审核。|Requested to join\. Tap to review\.?|Tap to review\.?|点击以审核。?)$/i.test(normalizeLine(line));
+          const ignoredLine = (line) => {
+            const normalized = normalizeLine(line);
+            return !normalized
+              || normalized === '群组信息'
+              || normalized === 'Group info'
+              || normalized === '待处理请求'
+              || normalized === 'Membership requests'
+              || normalized === '联系人信息'
+              || normalized === 'Contact info'
+              || normalized === '没有要审核的成员'
+              || normalized === 'No membership requests'
+              || normalized === '所有'
+              || normalized === 'All'
+              || /^待处理请求\s*\d+$/i.test(normalized)
+              || /^Membership requests\s*\d+$/i.test(normalized)
+              || isCtaLine(normalized);
+          };
+          const ctaRegex = /(请求加入。点击以审核。|Requested to join\. Tap to review\.?|Tap to review\.?|点击以审核。?)/i;
+          const ctaCount = (value) => {
+            const matches = String(value || '').match(new RegExp(ctaRegex.source, 'gi'));
+            return matches ? matches.length : 0;
+          };
+          const nodes = Array.from(document.querySelectorAll('div, span, button, [role="button"]'));
+          const seenRows = new Set();
+          const requesters = [];
+          let requestRowCount = 0;
+          for (const node of nodes) {
+            const ownText = textOf(node);
+            if (!ctaRegex.test(ownText)) continue;
+            let row = node;
+            let depth = 0;
+            while (row && depth < 6) {
+              const rowText = textOf(row);
+              const lines = rowText.split('\n').map(normalizeLine).filter(Boolean);
+              if (ctaRegex.test(rowText) && ctaCount(rowText) === 1 && lines.length >= 2 && lines.length <= 12) {
+                break;
+              }
+              row = row.parentElement;
+              depth += 1;
+            }
+            const rowText = textOf(row || node);
+            const rowKey = rowText || ownText;
+            if (!rowKey || seenRows.has(rowKey)) continue;
+            seenRows.add(rowKey);
+            requestRowCount += 1;
+            const lines = rowText.split('\n').map(normalizeLine).filter(Boolean);
+            const requesterName = lines.find((line) => !ignoredLine(line));
+            if (requesterName && !requesters.includes(requesterName)) {
+              requesters.push(requesterName);
+            }
+          }
+          return {
+            body_text: textOf(document.body),
+            request_row_count: requestRowCount,
+            requesters,
+          };
+        });
+        surface = parseReviewSurfaceBody(retriedSnapshot.body_text, retriedSnapshot);
+        if (surface.page_ready) break;
+      } catch (_) {}
+    }
+  }
+  if (allowReloadOnUnconfirmedZero && !reloaded && isUnconfirmedZeroSurface(surface)) {
+    await reloadApprovalGroupFromFreshSession(context, 'review_surface_unconfirmed_zero_recheck');
+    return inspectApprovalReviewSurface(context, { ...options, reloaded: true, allowReloadOnUnconfirmedZero: false });
+  }
+  const groupName = safeString(group && group.name) || String(context.registration_group || '').trim();
+  const memberCount = Array.isArray(group && group.participants) ? group.participants.length : null;
+  const sanitizedRequesterNames = (surface.requesters || []).filter((name) => {
+    const normalized = String(name || '').trim();
+    return normalized && normalized !== groupName && normalized !== `~${groupName}` && normalized !== '未读' && normalized !== 'Unread' && normalized !== '未读消息' && normalized !== 'Unread messages';
+  });
+  const sanitizedPendingCount = Math.max(0, sanitizedRequesterNames.length || Number(surface.pending_count || 0));
+  return {
+    group_id: groupId,
+    group_name: groupName,
+    pending_count: sanitizedPendingCount,
+    member_count: memberCount,
+    requesters: sanitizedRequesterNames.map((name) => ({ displayName: name })),
+    requester_ids: [],
+    review_surface_ready: Boolean(surface.page_ready),
+    has_pending_section: Boolean(surface.has_pending_section),
+    has_pending_request_row: Boolean(surface.has_pending_request_row),
+    empty_queue_visible: Boolean(surface.empty_queue_visible),
+    zero_pending_unverified: isUnconfirmedZeroSurface(surface),
+    source: 'approval_review_surface',
+  };
+}
+
 async function buildGroupStateFromGroup(context, group) {
   const groupId = safeString(group.id);
   const groupName = group.name || context.registration_group;
   const memberCount = Array.isArray(group.participants) ? group.participants.length : null;
   const requests = await getApprovalRequestEnriched(group);
+  const sourceTs = new Date().toISOString();
   return {
     group_id: groupId,
     group_name: groupName,
@@ -995,6 +1295,11 @@ async function buildGroupStateFromGroup(context, group) {
     member_count: memberCount,
     requester_ids: requests.map((row) => row.requesterId).filter(Boolean),
     requesters: requests,
+    source: 'group_state',
+    source_ts: sourceTs,
+    data_quality: 'fresh',
+    session_health: 'healthy',
+    pending_zero_confidence: requests.length <= 0 ? 'unverified' : null,
   };
 }
 
@@ -1014,13 +1319,79 @@ async function probeGroupState(context) {
   return buildGroupStateFromGroup(context, group);
 }
 
+function buildAuthoritativeGroupState(statePayload, reviewSurface) {
+  const basePayload = {
+    ...(statePayload || {}),
+    source_layer: 'group_object',
+    verification_stage: 'direct',
+    zero_pending_unverified: Boolean(statePayload && statePayload.zero_pending_unverified),
+    source: 'group_state',
+    source_ts: (statePayload && statePayload.source_ts) || new Date().toISOString(),
+    data_quality: (statePayload && statePayload.data_quality) || 'fresh',
+    session_health: (statePayload && statePayload.session_health) || 'healthy',
+  };
+  const basePendingCount = Math.max(0, Number(basePayload.pending_count || 0));
+  const nextPayload = {
+    ...basePayload,
+    pending_zero_confidence: basePendingCount <= 0
+      ? String(basePayload.pending_zero_confidence || 'unverified')
+      : null,
+  };
+  if (reviewSurface && typeof reviewSurface === 'object') {
+    nextPayload.review_surface_diagnostics = {
+      pending_count: Math.max(0, Number(reviewSurface.pending_count || 0)),
+      requesters: Array.isArray(reviewSurface.requesters) ? reviewSurface.requesters : [],
+      requester_ids: Array.isArray(reviewSurface.requester_ids)
+        ? reviewSurface.requester_ids.map((value) => String(value || '').trim()).filter(Boolean)
+        : [],
+      review_surface_ready: Boolean(reviewSurface.review_surface_ready),
+      has_pending_section: Boolean(reviewSurface.has_pending_section),
+      has_pending_request_row: Boolean(reviewSurface.has_pending_request_row),
+      empty_queue_visible: Boolean(reviewSurface.empty_queue_visible),
+      source: 'review_surface_diagnostics',
+    };
+  }
+  return nextPayload;
+}
+
+function attachZeroPendingRecheckEvidence(authoritativeState, rechecks) {
+  const normalizedRechecks = Array.isArray(rechecks) ? rechecks.filter(Boolean) : [];
+  if (!normalizedRechecks.length) {
+    return authoritativeState;
+  }
+  return {
+    ...authoritativeState,
+    zero_pending_recheck_attempted: true,
+    zero_pending_recheck_count: normalizedRechecks.length,
+    zero_pending_recheck_resolved: normalizedRechecks.some((entry) => !entry.error && (Number(entry.pending_count || 0) > 0 || entry.zero_pending_unverified === false)),
+    zero_pending_rechecks: normalizedRechecks,
+  };
+}
+
+async function resolveAuthoritativeGroupState(context, options = {}) {
+  const stateLoader = typeof options.stateLoader === 'function'
+    ? options.stateLoader
+    : async () => groupState(context);
+  const diagnosticsLoader = typeof options.reviewSurfaceLoader === 'function'
+    ? options.reviewSurfaceLoader
+    : async (reviewOptions = {}) => inspectApprovalReviewSurface(context, reviewOptions);
+
+  const initialStatePayload = await stateLoader();
+  const reviewSurface = await diagnosticsLoader({ allowReloadOnUnconfirmedZero: false }).catch(() => null);
+  return buildAuthoritativeGroupState(initialStatePayload, reviewSurface);
+}
+
 async function groupStateWithRecovery(context) {
   try {
-    return await groupState(context);
+    return await resolveAuthoritativeGroupState(context);
   } catch (error) {
+    if (isExecutionContextDestroyedError(error)) {
+      await sleep(400);
+      return await resolveAuthoritativeGroupState(context);
+    }
     if (isRecoverableApprovalClientError(error)) {
       const group = await reloadApprovalGroupFromFreshSession(context, error && error.stack ? error.stack : error);
-      return await buildGroupStateFromGroup(context, group);
+      return buildAuthoritativeGroupState(await buildGroupStateFromGroup(context, group), null);
     }
     throw error;
   }
@@ -1030,7 +1401,11 @@ async function probeGroupStateWithRecovery(context) {
   try {
     return await probeGroupState(context);
   } catch (error) {
-    if (isRecoverableClientError(error)) {
+    if (isExecutionContextDestroyedError(error)) {
+      await sleep(400);
+      return await probeGroupState(context);
+    }
+    if (isRecoverableApprovalClientError(error)) {
       const group = await reloadGroupFromFreshSession(context, error && error.stack ? error.stack : error);
       return await buildGroupStateFromGroup(context, group);
     }
@@ -1496,6 +1871,31 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'POST' && req.url === '/review-surface-state') {
+      const payload = await collectJson(req);
+      approvalState.last_action_at = new Date().toISOString();
+      const result = await withActionLock(async () => {
+        await ensureApprovalClientStarted();
+        await waitForApprovalReady(QR_TIMEOUT_MS).catch(() => {
+          if (!approvalState.ready) {
+            throw new Error(approvalState.last_qr ? 'approval client awaiting qr scan' : 'approval client not ready');
+          }
+        });
+        return inspectApprovalReviewSurface(payload);
+      });
+      logEvent('review_surface_state', {
+        registration_group: payload.registration_group || null,
+        auth_strategy: approvalState.auth_strategy,
+        group_id: result.group_id || null,
+        group_name: result.group_name || payload.registration_group || null,
+        pending_count: result.pending_count,
+        review_surface_ready: Boolean(result.review_surface_ready),
+        empty_queue_visible: Boolean(result.empty_queue_visible),
+      });
+      sendJson(res, 200, result);
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/approve') {
       const payload = await collectJson(req);
       state.last_action_at = new Date().toISOString();
@@ -1586,6 +1986,11 @@ module.exports = {
   scoreRequest,
   selectRequests,
   getRequestEnrichedWithClient,
+  parseReviewSurfaceBody,
+  inspectApprovalReviewSurface,
+  isUnconfirmedZeroSurface,
+  buildAuthoritativeGroupState,
+  resolveAuthoritativeGroupState,
   resolveLocalAuthSessionDir,
   parseChromeProcessesUsingUserDataDir,
   recoverLocalAuthBrowserConflict,

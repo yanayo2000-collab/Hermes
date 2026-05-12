@@ -15,10 +15,11 @@ if str(ROOT_DIR) not in sys.path:
 from app.main import DEFAULT_DB_PATH, Database, Service
 
 
-def _load_candidate_rows(service, *, approved_date_start: str, approved_date_end: str, registration_group: str, approval_run_id: str, limit: int) -> List[Dict[str, Any]]:
+def _load_candidate_rows(service, *, approved_date_start: str, approved_date_end: str, registration_group: str, approval_run_id: str, limit: int, force: bool = False) -> Tuple[List[Dict[str, Any]], int]:
     query = '''
     SELECT member_id, approval_run_id, registration_group, registration_group_name, requester_id, display_name,
-           wa_phone_raw, wa_phone_normalized, requested_at, approved_at, batch_index, created_at, updated_at
+           wa_phone_raw, wa_phone_normalized, requested_at, approved_at, batch_index,
+           repair_last_attempt_at, repair_last_result, repair_next_attempt_at, created_at, updated_at
     FROM registration_group_approval_batch_members
     ORDER BY approved_at DESC, approval_run_id DESC, batch_index ASC
     LIMIT ?
@@ -26,6 +27,7 @@ def _load_candidate_rows(service, *, approved_date_start: str, approved_date_end
     with service.db.connect() as conn:
         rows = [dict(r) for r in conn.execute(query, (max(int(limit or 0), 1),)).fetchall()]
     candidates: List[Dict[str, Any]] = []
+    skipped_cooldown = 0
     for row in rows:
         beijing_parts = service._registration_group_batch_member_beijing_parts(str(row.get('approved_at') or ''))
         approved_date_value = str(beijing_parts.get('approved_date_beijing') or '')
@@ -37,10 +39,12 @@ def _load_candidate_rows(service, *, approved_date_start: str, approved_date_end
             continue
         if registration_group and str(row.get('registration_group') or '').strip() != registration_group:
             continue
-        if not service._registration_group_batch_member_should_attempt_repair(row):
+        if service._registration_group_batch_member_should_attempt_repair(row, force=force):
+            candidates.append(row)
             continue
-        candidates.append(row)
-    return candidates
+        if service._registration_group_batch_member_name_needs_repair(row.get('display_name')) and str(row.get('requester_id') or '').strip():
+            skipped_cooldown += 1
+    return candidates, skipped_cooldown
 
 
 def main() -> int:
@@ -52,6 +56,7 @@ def main() -> int:
     parser.add_argument('--registration-group', default='')
     parser.add_argument('--approval-run-id', default='')
     parser.add_argument('--limit', type=int, default=500)
+    parser.add_argument('--force', action='store_true')
     args = parser.parse_args()
 
     db_path = str(Path(args.db_path).expanduser())
@@ -63,13 +68,14 @@ def main() -> int:
             approved_date_start=args.approved_date_start,
             approved_date_end=args.approved_date_end,
         )
-    rows = _load_candidate_rows(
+    rows, skipped_cooldown = _load_candidate_rows(
         service,
         approved_date_start=approved_date_start,
         approved_date_end=approved_date_end,
         registration_group=str(args.registration_group or '').strip(),
         approval_run_id=str(args.approval_run_id or '').strip(),
         limit=max(int(args.limit or 0), 1),
+        force=bool(args.force),
     )
     grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -82,6 +88,7 @@ def main() -> int:
             rows=group_rows,
             registration_group=registration_group,
             registration_group_name=registration_group_name,
+            force=bool(args.force),
         )
         repairs.append({
             'registration_group': registration_group,
@@ -94,9 +101,11 @@ def main() -> int:
         'approved_date_start': approved_date_start,
         'approved_date_end': approved_date_end,
         'candidate_count': len(rows),
+        'skipped_cooldown': skipped_cooldown,
         'group_count': len(grouped),
         'updated': total_updated,
         'unresolved': total_unresolved,
+        'force': bool(args.force),
         'repairs': repairs,
     }, ensure_ascii=False, indent=2))
     return 0

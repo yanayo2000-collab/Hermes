@@ -33,7 +33,9 @@ def test_webjs_worker_group_state_uses_same_approval_client_as_real_approval_pat
     assert "await ensureApprovalClientStarted();" in server_text
     assert "await waitForApprovalReady(QR_TIMEOUT_MS).catch(() => {" in server_text
     assert "auth_strategy: approvalState.auth_strategy," in server_text
-    assert "if (isRecoverableApprovalClientError(error)) {" in server_text
+    assert "function isExecutionContextDestroyedError(error) {" in server_text
+    assert "if (isExecutionContextDestroyedError(error)) {" in server_text
+    assert "await sleep(400);" in server_text
     assert "return await groupStateWithRecovery(payload);" in server_text
 
 
@@ -47,17 +49,28 @@ def test_webjs_worker_exposes_probe_group_state_route_for_runtime_probe_client()
     assert "await waitForReady(QR_TIMEOUT_MS).catch(() => {" in server_text
     assert "return await probeGroupStateWithRecovery(payload);" in server_text
     assert "auth_strategy: state.auth_strategy," in server_text
-    assert "if (isRecoverableClientError(error)) {" in server_text
+    assert "function isExecutionContextDestroyedError(error) {" in server_text
+    assert "if (isExecutionContextDestroyedError(error)) {" in server_text
+
+
+def test_webjs_worker_marks_review_surface_positive_without_pending_section_and_without_requester_ids_as_suspected_residue():
+    server_text = Path('webjs-approval-worker/src/server.js').read_text()
+
+    assert "review_surface_diagnostics" in server_text
+    assert "source: 'review_surface_diagnostics'" in server_text
+    assert "pending_zero_confidence: basePendingCount <= 0" in server_text
 
 
 def test_fresh_group_state_script_uses_runtime_probe_endpoint_instead_of_temp_browser_copy():
     script_text = Path('scripts/fresh_webjs_group_state.js').read_text()
 
     assert "usage: fresh_webjs_group_state.js <registration_group> [worker_base_url]" in script_text
+    assert "[deprecated] fresh_webjs_group_state.js now acts as a debug wrapper" in script_text
     assert "async function resolveWorkerBaseUrl(targetValue) {" in script_text
     assert '/api/ops/production-ops-daemon' in script_text
     assert '/api/ops/whatsapp-approval-accounts' in script_text
-    assert '/probe-group-state' in script_text
+    assert '/group-state' in script_text
+    assert "authoritative_source: 'group_state'" in script_text
     assert "JSON.stringify({ registration_group: registrationGroup })" in script_text
     assert "cp', ['-R'" not in script_text
     assert "new NoAuth()" not in script_text

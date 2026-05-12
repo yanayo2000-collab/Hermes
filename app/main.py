@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
+import hashlib
+import hmac
 import io
 import json
 import os
 import random
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -19,20 +23,31 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import requests
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from fastapi import Body, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi import Body, FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 from app.async_pipeline import CircuitBreaker, TokenBucketRateLimiter, fingerprint_payload
 from app.crm_adapter import LiveCrmAdapter
 from app.native_ocr import normalize_native_ocr_fields
 from app.ocr_adapter import RapidOcrAdapter
-from app.production_ops import build_success_notifications, expand_notify_profile_targets, fetch_json, format_lark_alert
+from app.production_ops import (
+    build_success_notifications,
+    expand_notify_profile_targets,
+    fetch_json,
+    format_lark_alert,
+    load_json_state,
+    requester_fingerprint,
+    save_json_state,
+)
+from app.registration_group_truth import build_truth_state
 
 
 PHONE_PREFIX_COUNTRY_MAP = {
@@ -1083,7 +1098,7 @@ setInterval(() => {
   reloadPresets().catch(err => showToast(err.message, 'error'));
   reloadGuildExecutors().catch(err => showToast(err.message, 'error'));
   reloadProductionOpsDaemonConfig().catch(err => showToast(err.message, 'error'));
-}, 15000);
+}, 5000);
 </script>
   </div>
 </body>
@@ -1261,7 +1276,8 @@ PRODUCTION_OPS_PAGE_HTML = """
       <div id=\"approvalAccountRows\" class=\"account-grid\"></div>
     </div>
 
-    <div class="card">
+    <!-- OPS_ADMIN_ONLY_APPROVAL_EDITOR_START -->
+    <div class="card" id="approvalAccountAdminEditorCard">
       <h2 style="margin-top:0;">新增 / 更新 WhatsApp 审批账号</h2>
       <div class="section-split">
         <div class="field-stack">
@@ -1493,7 +1509,9 @@ PRODUCTION_OPS_PAGE_HTML = """
 
       </div>
     </div>
+    <!-- OPS_ADMIN_ONLY_APPROVAL_EDITOR_END -->
 
+    <!-- OPS_ADMIN_ONLY_AREA_OPTIONS_START -->
     <div class=\"card\">
       <h2 style=\"margin-top:0;\">地区选项源</h2>
       <div class=\"field-stack\" style=\"margin-top:12px;\">
@@ -1504,6 +1522,7 @@ PRODUCTION_OPS_PAGE_HTML = """
         <button type=\"button\" onclick=\"saveAreaOptions()\">保存地区选项</button>
       </div>
     </div>
+    <!-- OPS_ADMIN_ONLY_AREA_OPTIONS_END -->
 
     <div class=\"card\">
       <h2 style=\"margin-top:0;\">日志与状态入口</h2>
@@ -1513,6 +1532,7 @@ PRODUCTION_OPS_PAGE_HTML = """
 
 
     <div id=\"productionOpsToast\" class=\"toast\"></div>
+    <!-- OPS_ADMIN_ONLY_QR_MODAL_START -->
     <div id=\"approvalQrModal\" class=\"qr-modal\" onclick=\"dismissApprovalQrModal(event)\">
       <div class=\"qr-modal-card\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"approvalQrModalTitle\" onclick=\"event.stopPropagation()\">
         <div class=\"qr-modal-head\">
@@ -1532,6 +1552,7 @@ PRODUCTION_OPS_PAGE_HTML = """
         </div>
       </div>
     </div>
+    <!-- OPS_ADMIN_ONLY_QR_MODAL_END -->
   </div>
 <script>
 async function loadJson(url, options) {
@@ -1912,12 +1933,28 @@ function renderBindingCardState(index, binding) {
   const hasLink = Boolean(String(binding?.link || '').trim());
   card.classList.toggle('is-empty', !hasLink);
 }
+const VERIFIER_FRAMEWORK_STATUS_TEXT = {
+  live_probe_ready: '已接探针',
+  zero_pending_unverified: '待验证',
+  seed_required: '待补齐',
+  unavailable: '未就绪',
+};
+const VERIFIER_BINDING_STATUS_TEXT = {
+  live_probe_ready: '已接探针',
+  mapped_live_probe_ready: '已接探针',
+  inferred_live_probe_ready: '已接探针',
+  zero_pending_unverified: '待验证',
+  monitor_disabled: '不监控',
+  other_binding_live_probe_active: '待切换',
+  mapping_mismatch: '映射异常',
+  runtime_unavailable: '未就绪',
+  login_unready: '待登录',
+  binding_target_missing: '缺目标',
+  probe_unavailable: '探针异常',
+};
 function formatVerifierFrameworkStatus(status) {
   const normalized = String(status || '').trim();
-  if (normalized === 'live_probe_ready') return '已接入群状态探针';
-  if (normalized === 'seed_required') return '待补齐';
-  if (normalized === 'unavailable') return '暂不可用';
-  return normalized || '-';
+  return VERIFIER_FRAMEWORK_STATUS_TEXT[normalized] || normalized || '-';
 }
 function formatOfficialBridgeMode(mode) {
   const normalized = String(mode || '').trim();
@@ -1933,21 +1970,11 @@ function formatOfficialBridgeHealthStatus(status) {
   return normalized || '-';
 }
 function bindingVerifierReadinessText(verifier) {
-  return verifier?.ready ? '已就绪' : '待校验';
+  return verifier?.ready ? '已就绪' : '未就绪';
 }
 function bindingVerifierStatusText(verifier) {
   const status = String(verifier?.status || '').trim();
-  if (status === 'live_probe_ready') return '已接探针';
-  if (status === 'mapped_live_probe_ready') return '已命中';
-  if (status === 'inferred_live_probe_ready') return '已推断';
-  if (status === 'monitor_disabled') return '不监控';
-  if (status === 'other_binding_live_probe_active') return '待切换';
-  if (status === 'mapping_mismatch') return '映射异常';
-  if (status === 'runtime_unavailable') return '未就绪';
-  if (status === 'login_unready') return '待登录';
-  if (status === 'binding_target_missing') return '缺目标';
-  if (status === 'probe_unavailable') return '探针异常';
-  return status || '-';
+  return VERIFIER_BINDING_STATUS_TEXT[status] || status || '-';
 }
 function escapeHtmlAttr(value) {
   return String(value || '')
@@ -2060,6 +2087,8 @@ function bindingSummaryHtml(binding, row, bindingIndex) {
   </div>`;
 }
 function accountCardHtml(row) {
+  const currentRole = String(window.__opsUserRole || '').trim();
+  const isAdminUser = currentRole === 'admin';
   const groupBindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
     ? row.group_binding_runtimes
     : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
@@ -2083,9 +2112,13 @@ function accountCardHtml(row) {
     ? { level: 'red', title: '账号受限', detail: loginStatusText }
     : (loginStatusCode === 'auth_failed'
       ? { level: 'amber', title: '登录异常', detail: loginStatusText }
-      : (loginStatusCode === 'waiting_for_scan'
-        ? { level: 'blue', title: '等待扫码', detail: loginStatusText }
-        : null));
+      : (loginStatusCode === 'auto_recovering'
+        ? { level: 'blue', title: '自动恢复中', detail: loginStatusText }
+        : (loginStatusCode === 'session_mismatch'
+          ? { level: 'blue', title: '待切换', detail: loginStatusText }
+          : (loginStatusCode === 'waiting_for_scan'
+            ? { level: 'blue', title: '等待扫码', detail: loginStatusText }
+            : null))));
   const accountAlert = alertConfig
     ? `<div class="account-alert ${alertConfig.level}"><strong>${alertConfig.title}</strong><div>${alertConfig.detail}</div></div>`
     : '';
@@ -2093,11 +2126,32 @@ function accountCardHtml(row) {
     ? `<div style="margin-top:10px;"><div class="field-hint" style="margin-bottom:6px;">绑定二维码</div><pre style="margin:0; padding:12px; overflow:auto; background:#0f172a; color:#e2e8f0; border-radius:12px; font-size:10px; line-height:1.05;">${String(sessionState.qr_ascii || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre><div class="muted" style="margin-top:6px;">请用这个账号的 WhatsApp - 关联设备 扫描上面的二维码。</div></div>`
     : '';
   const noteValue = String(row.notes || '').trim();
+  const accountToggleButtonHtml = isAdminUser
+    ? `<button type="button" class="card-monitor-toggle ${monitorButtonClass}" onclick="setApprovalAccountEnabled('${accountKeyEscaped}', ${row.enabled ? 'false' : 'true'})" ${pendingAction ? 'disabled' : ''}>${monitorButtonText}</button>`
+    : `<span class="card-monitor-toggle ${monitorButtonClass}" style="cursor:default;">${monitorButtonText}</span>`;
+  const adminActionsHtml = isAdminUser
+    ? `<button type="button" class="secondary" onclick="fillApprovalAccountForm('${accountKeyEscaped}')">回填编辑</button>
+      <button type="button" class="${isSessionLoading ? 'button-loading' : ''}" ${isSessionLoading ? 'disabled' : ''} onclick="startApprovalAccountSession('${accountKeyEscaped}')">${isSessionLoading ? '生成中…' : '生成二维码'}</button>
+      <button type="button" class="secondary" onclick="deleteApprovalAccount('${accountKeyEscaped}')">删除账号</button>`
+    : '';
+  const adminMoreActionsHtml = isAdminUser
+    ? `<details class="advanced-fields" style="margin-top:10px;">
+      <summary>更多操作</summary>
+      <div class="advanced-fields-body">
+        <div class="link-actions" style="margin-top:0;">
+          <button type="button" onclick="startApprovalAccountRuntime('${accountKeyEscaped}')">启动扫码服务</button>
+          <button type="button" class="secondary" onclick="stopApprovalAccountRuntime('${accountKeyEscaped}')">停止扫码服务</button>
+          <button type="button" class="secondary" onclick="refreshApprovalAccountSession('${accountKeyEscaped}')">刷新状态</button>
+          <button type="button" class="secondary" onclick="resetApprovalAccountSession('${accountKeyEscaped}')">重置会话</button>
+        </div>
+      </div>
+    </details>`
+    : '';
   return `<div class="account-card">
     <h3>
       <span class="account-head-left">
         <span class="account-head-title">${row.account_name || row.account_key || ''}</span>
-        <button type="button" class="card-monitor-toggle ${monitorButtonClass}" onclick="setApprovalAccountEnabled('${accountKeyEscaped}', ${row.enabled ? 'false' : 'true'})" ${pendingAction ? 'disabled' : ''}>${monitorButtonText}</button>
+        ${accountToggleButtonHtml}
       </span>
       <span class="status-line"><span class="status-dot ${row.status_color || 'gray'}"></span>${row.status_text || '-'}</span>
     </h3>
@@ -2119,22 +2173,8 @@ function accountCardHtml(row) {
       <div class="advanced-fields-body"><div class="muted">${verificationText}</div></div>
     </details>
     ${qrBlock}
-    <div class="link-actions">
-      <button type="button" class="secondary" onclick="fillApprovalAccountForm('${accountKeyEscaped}')">回填编辑</button>
-      <button type="button" class="${isSessionLoading ? 'button-loading' : ''}" ${isSessionLoading ? 'disabled' : ''} onclick="startApprovalAccountSession('${accountKeyEscaped}')">${isSessionLoading ? '生成中…' : '生成二维码'}</button>
-      <button type="button" class="secondary" onclick="deleteApprovalAccount('${accountKeyEscaped}')">删除账号</button>
-    </div>
-    <details class="advanced-fields" style="margin-top:10px;">
-      <summary>更多操作</summary>
-      <div class="advanced-fields-body">
-        <div class="link-actions" style="margin-top:0;">
-          <button type="button" onclick="startApprovalAccountRuntime('${accountKeyEscaped}')">启动扫码服务</button>
-          <button type="button" class="secondary" onclick="stopApprovalAccountRuntime('${accountKeyEscaped}')">停止扫码服务</button>
-          <button type="button" class="secondary" onclick="refreshApprovalAccountSession('${accountKeyEscaped}')">刷新状态</button>
-          <button type="button" class="secondary" onclick="resetApprovalAccountSession('${accountKeyEscaped}')">重置会话</button>
-        </div>
-      </div>
-    </details>
+    ${adminActionsHtml ? `<div class="link-actions">${adminActionsHtml}</div>` : ''}
+    ${adminMoreActionsHtml}
   </div>`;
 }
 function renderApprovalAccountRows() {
@@ -2143,6 +2183,13 @@ function renderApprovalAccountRows() {
     : '<div class="muted">暂无 WhatsApp 审批账号，请先新增。</div>';
   startApprovalCountdownTicker();
   refreshApprovalCountdownNodes();
+}
+function applyApprovalAccountRoleView(role) {
+  const normalizedRole = String(role || '').trim();
+  const adminEditorCard = document.getElementById('approvalAccountAdminEditorCard');
+  if (adminEditorCard) {
+    adminEditorCard.style.display = normalizedRole === 'admin' ? '' : 'none';
+  }
 }
 async function refreshApprovalBindingProbe(accountKey, bindingIndex) {
   const normalized = String(accountKey || '').trim();
@@ -2255,15 +2302,28 @@ function parseScheduleWindowsText(text) {
   });
 }
 async function reloadApprovalAccounts() {
-  const data = await loadJson('/api/ops/whatsapp-approval-accounts');
+  const authStatus = await loadJson('/api/ops/auth/status');
+  const currentRole = String(authStatus?.user?.role || '').trim();
+  window.__opsUserRole = currentRole;
+  applyApprovalAccountRoleView(currentRole);
+  const accountsApiPath = currentRole === 'admin'
+    ? '/api/ops/whatsapp-approval-accounts'
+    : '/api/ops/whatsapp-approval-accounts/overview';
+  const data = await loadJson(accountsApiPath);
   const previousSessionState = window.__approvalSessionStateByAccount || {};
   window.__approvalAccounts = Array.isArray(data.rows) ? data.rows : [];
   window.__approvalSessionStateByAccount = Object.fromEntries(window.__approvalAccounts.map(item => {
     const accountKey = String(item.account_key || '').trim();
     return [accountKey, mergeApprovalSessionState(previousSessionState[accountKey], item.session_state || {})];
   }).filter(item => item[0]));
-  window.__notifyRobotOptions = Array.isArray(data.notify_robot_options) ? data.notify_robot_options : [];
-  window.__approvalAreaOptions = Array.isArray(data.area_options) ? data.area_options : [];
+  const notifyRobotOptions = Array.isArray(data.notify_robot_options) ? data.notify_robot_options : [];
+  const approvalAreaOptions = Array.isArray(data.area_options) ? data.area_options : [];
+  window.__notifyRobotOptions = currentRole === 'admin'
+    ? notifyRobotOptions
+    : (Array.isArray(window.__notifyRobotOptions) ? window.__notifyRobotOptions : []);
+  window.__approvalAreaOptions = currentRole === 'admin'
+    ? approvalAreaOptions
+    : (Array.isArray(window.__approvalAreaOptions) ? window.__approvalAreaOptions : []);
   renderAllGroupNotifyRobotSelects(
     window.__notifyRobotOptions,
     [1, 2, 3].map(index => String(document.getElementById(`wa_group_notify_profile_name_${index}`)?.value || '').trim()),
@@ -2286,18 +2346,18 @@ async function reloadApprovalAccounts() {
   renderRegistrationGroupOverview();
 }
 async function reloadApprovalCandidates() {
-  const data = await loadJson('/api/ops/whatsapp-approval-candidates');
+  const data = await loadJson('/api/ops/whatsapp-approval-candidates/summary');
   const summary = data.summary || {};
   const framework = data.verifier_framework || {};
   renderStatusMeta('approvalCandidateMeta', [
     ['可调度账号', String(summary.eligible_count ?? 0)],
     ['注册群', String(summary.registration_group_count ?? 0)],
     ['官方群', String(summary.official_group_count ?? 0)],
-    ['真实校验已就绪', String(summary.verifier_ready_count ?? 0)],
+    ['真实校验就绪数', String(summary.verifier_ready_count ?? 0)],
   ]);
   renderStatusMeta('approvalVerifierMeta', [
-    ['状态', formatVerifierFrameworkStatus(framework.status)],
-    ['真实校验可用', String(Boolean(framework.real_membership_check_ready))],
+    ['真实校验状态', formatVerifierFrameworkStatus(framework.status)],
+    ['真实校验已就绪', String(Boolean(framework.real_membership_check_ready))],
     ['需人工补齐', String(Boolean(framework.requires_manual_seed))],
     ['说明', framework.detail || '-'],
   ]);
@@ -2520,7 +2580,7 @@ async function deleteApprovalAccount(accountKey) {
   await reloadApprovalAccounts();
 }
 async function reloadOfficialBridgeSummary() {
-  const data = await loadJson('/api/ops/official-group-bridge-summary');
+  const data = await loadJson('/api/ops/official-group-bridge-summary/summary');
   window.__officialBridgeSummaryData = data;
   const health = data.health || {};
   const summary = data.summary || {};
@@ -2528,7 +2588,7 @@ async function reloadOfficialBridgeSummary() {
   renderStatusMeta('officialBridgeSummaryMeta', [
     ['状态', formatOfficialBridgeHealthStatus(health.status)],
     ['模式', formatOfficialBridgeMode(health.mode)],
-    ['目标群数', String(Object.keys(summary.by_target_group || {}).length)],
+    ['目标群数', String(summary.target_group_count ?? 0)],
     ['待处理', String(summary.pending_count ?? 0)],
     ['今日新增', String(summary.today_created_count ?? 0)],
     ['超时超1小时', String(summary.pending_timeout_over_1h_count ?? 0)],
@@ -2592,7 +2652,7 @@ setInterval(() => {
   reloadAreaOptions().catch(err => showToast(err.message, 'error'));
   reloadApprovalAccounts().catch(err => showToast(err.message, 'error'));
   reloadOfficialBridgeSummary().catch(err => showToast(err.message, 'error'));
-}, 15000);
+}, 5000);
 </script>
 </body>
 </html>
@@ -2639,10 +2699,10 @@ OPS_PAGE_HTML = """
   <div class="page-shell">
     <div class="shell-nav">
       <a href="/ops">运营工作台</a>
-      <a href="/ops/intake-bot-presets">收口配置中心</a>
-      <a href="/ops/production-ops">群审批控制台</a>
-      <a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a>
-      <a href="/ops/official-group-bridge">官方群审批桥接台</a>
+      <a href="/ops/intake-bot-presets" data-admin-only-nav="true">收口配置中心</a>
+      <a href="/ops/production-ops" data-admin-only-nav="true">群审批控制台</a>
+      <a href="/ops/registration-group-approval-batch-members" data-admin-only-nav="true">注册群审批留存页</a>
+      <a href="/ops/official-group-bridge" data-admin-only-nav="true">官方群审批桥接台</a>
     </div>
     <div class="hero">
       <h1>运营工作台</h1>
@@ -2743,6 +2803,14 @@ async function loadJson(url, options) {
     throw new Error(detail || `Failed to load ${url}: ${res.status}`);
   }
   return await res.json();
+}
+function applyOpsNavRoleView(authStatus) {
+  const authEnabled = Boolean(authStatus?.auth_enabled);
+  const currentRole = String(authStatus?.user?.role || '').trim();
+  const hideAdminOnly = authEnabled && currentRole !== 'admin';
+  document.querySelectorAll('[data-admin-only-nav="true"]').forEach(node => {
+    node.style.display = hideAdminOnly ? 'none' : '';
+  });
 }
 async function showDetail(leadId) {
   const data = await loadJson(`/api/leads/${leadId}/timeline`);
@@ -2997,7 +3065,9 @@ async function rejectManualReview(leadId) {
   });
 }
 async function init() {
-  const batchQueue = await loadJson('/api/ops/approval-batch-queue');
+  const authStatus = await loadJson('/api/ops/auth/status').catch(() => null);
+  applyOpsNavRoleView(authStatus);
+  const batchQueue = await loadJson('/api/ops/approval-batch-queue/summary');
   document.getElementById('registrationBatchRows').innerHTML = batchQueue.registration_groups.map(approvalBatchRowHtml).join('');
   document.getElementById('officialBatchRows').innerHTML = batchQueue.official_groups.map(approvalBatchRowHtml).join('');
 
@@ -3263,7 +3333,71 @@ class OfficialGroupBatchRunRequest(BaseModel):
     remark: Optional[str] = None
     limit_groups: int = 10
     limit_leads_per_group: Optional[int] = None
-    allow_crm_only_test_match: bool = False
+    allow_crm_only_test_match: bool = True
+    suppress_success_notifications: bool = False
+
+
+class GroupApprovalCheckRequest(BaseModel):
+    approval_scope: str
+    registration_group: Optional[str] = None
+    lead_id: Optional[str] = None
+    target_group: Optional[str] = None
+    checked_at: str
+    checked_by: Optional[str] = None
+    checked_by_name: Optional[str] = None
+    source_platform: Optional[str] = None
+    source_campaign: Optional[str] = None
+    source_adset: Optional[str] = None
+    source_ad: Optional[str] = None
+    target_phone_hint: Optional[str] = None
+    target_requester_id: Optional[str] = None
+    remark: Optional[str] = None
+
+
+class GroupApprovalDecisionRequest(BaseModel):
+    approval_scope: str
+    registration_group: Optional[str] = None
+    lead_id: Optional[str] = None
+    target_group: Optional[str] = None
+    decision: str = 'approve'
+    decided_at: str
+    decided_by: Optional[str] = None
+    decided_by_name: Optional[str] = None
+    source_platform: Optional[str] = None
+    source_campaign: Optional[str] = None
+    source_adset: Optional[str] = None
+    source_ad: Optional[str] = None
+    target_name_hint: Optional[str] = None
+    target_phone_hint: Optional[str] = None
+    target_requester_id: Optional[str] = None
+    approved_count: int = 1
+    area: str = 'Indonesia'
+    remark: Optional[str] = None
+    force_immediate: bool = False
+    expected_pending_count: Optional[int] = None
+    expected_member_count: Optional[int] = None
+    expected_requester_ids: Optional[List[str]] = None
+    expected_requesters: Optional[List[Dict[str, Any]]] = None
+
+
+class GroupApprovalBatchRunRequest(BaseModel):
+    approval_scope: str
+    decided_at: str
+    decided_by: Optional[str] = None
+    decided_by_name: Optional[str] = None
+    source_platform: Optional[str] = None
+    source_campaign: Optional[str] = None
+    source_adset: Optional[str] = None
+    source_ad: Optional[str] = None
+    remark: Optional[str] = None
+    limit_groups: int = 10
+    limit_leads_per_group: Optional[int] = None
+    allow_crm_only_test_match: bool = True
+    suppress_success_notifications: bool = False
+
+
+class GroupApprovalExecutorWarmupRequest(BaseModel):
+    approval_scope: str
 
 
 class NotificationReadRequest(BaseModel):
@@ -3386,6 +3520,8 @@ WHATSAPP_APPROVAL_WORKER_AUTH_ACCOUNTS_DIR=WHATSAPP_APPROVAL_WORKER_ROOT / '.wwe
 WHATSAPP_APPROVAL_WORKER_RUNTIME_DIR = PROJECT_ROOT / 'data' / 'whatsapp_approval_worker_runtimes'
 WHATSAPP_APPROVAL_WORKER_LOG_DIR = PROJECT_ROOT / 'logs' / 'whatsapp_approval_workers'
 WHATSAPP_APPROVAL_WORKER_RESTART_SCRIPT = PROJECT_ROOT / 'scripts' / 'restart_registration_group_webjs_worker.sh'
+OFFICIAL_GROUP_BRIDGE_DEFAULT_BASE_URL = 'http://127.0.0.1:55801'
+OFFICIAL_GROUP_BRIDGE_START_SCRIPT = PROJECT_ROOT / 'scripts' / 'start_official_group_bridge.sh'
 
 
 def _coerce_positive_int(value: Any, default: int) -> int:
@@ -3425,6 +3561,46 @@ WHATSAPP_APPROVAL_DEFAULT_AREA_OPTIONS: list[dict[str, str]] = [
     {'value': 'Brazil', 'label': 'Brazil'},
     {'value': 'Mexico', 'label': 'Mexico'},
 ]
+
+
+def _shared_group_approval_target_label(*, approval_scope: str, result: Optional[Dict[str, Any]] = None, registration_group: Optional[str] = None, target_group: Optional[str] = None) -> str:
+    payload = result if isinstance(result, dict) else {}
+    details = payload.get('details') if isinstance(payload.get('details'), dict) else {}
+    candidates = [
+        details.get('target_group_label'),
+        payload.get('target_group_label'),
+        details.get('group_name'),
+        details.get('target_group'),
+        payload.get('group_name'),
+        payload.get('target_group'),
+        target_group,
+        registration_group,
+    ]
+    for candidate in candidates:
+        value = str(candidate or '').strip()
+        if value:
+            return value
+    return str(approval_scope or '').strip()
+
+
+def _with_shared_group_approval_result(result: Dict[str, Any], *, approval_scope: str, registration_group: Optional[str] = None, target_group: Optional[str] = None) -> Dict[str, Any]:
+    normalized = dict(result or {})
+    normalized['approval_scope'] = str(approval_scope or '').strip()
+    normalized['target_group_label'] = _shared_group_approval_target_label(
+        approval_scope=approval_scope,
+        result=normalized,
+        registration_group=registration_group,
+        target_group=target_group,
+    )
+    return normalized
+
+
+def _with_shared_group_approval_executor_result(result: Dict[str, Any], *, approval_scope: str, target_group: Optional[str] = None) -> Dict[str, Any]:
+    normalized = dict(result or {})
+    normalized['approval_scope'] = str(approval_scope or '').strip()
+    if target_group is not None:
+        normalized['target_group_label'] = str(target_group or '').strip()
+    return normalized
 
 
 def _normalize_area_options(options: list[str]) -> list[dict[str, str]]:
@@ -3494,6 +3670,32 @@ class ApprovalBatchEvaluateRequest(BaseModel):
     batch_size: Optional[int] = None
     timeout_minutes: Optional[int] = None
     cycle_anchor_at: Optional[str] = None
+
+
+class OpsAuthBootstrapRequest(BaseModel):
+    username: str
+    password: str
+    display_name: Optional[str] = None
+
+
+class OpsAuthLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class OpsAccountCreateRequest(BaseModel):
+    username: str
+    password: str
+    role: str = 'operator'
+    display_name: Optional[str] = None
+    enabled: bool = True
+
+
+class OpsAccountUpdateRequest(BaseModel):
+    role: Optional[str] = None
+    display_name: Optional[str] = None
+    enabled: Optional[bool] = None
+    password: Optional[str] = None
 
 
 class Database:
@@ -3860,6 +4062,9 @@ class Database:
                     requested_at TEXT,
                     approved_at TEXT NOT NULL,
                     batch_index INTEGER NOT NULL DEFAULT 0,
+                    repair_last_attempt_at TEXT,
+                    repair_last_result TEXT NOT NULL DEFAULT '',
+                    repair_next_attempt_at TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -3872,6 +4077,29 @@ class Database:
                     event_source TEXT NOT NULL,
                     payload TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS ops_users (
+                    user_id TEXT PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    display_name TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_login_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS ops_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    session_token_hash TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    ip_address TEXT,
+                    user_agent TEXT
                 );
                 """
             )
@@ -3912,6 +4140,12 @@ class Database:
             "ALTER TABLE whatsapp_approval_accounts ADD COLUMN approval_count_threshold INTEGER NOT NULL DEFAULT 30",
             "ALTER TABLE whatsapp_approval_accounts ADD COLUMN approval_timeout_minutes INTEGER NOT NULL DEFAULT 30",
             "ALTER TABLE whatsapp_approval_accounts ADD COLUMN auto_recover_worker INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE registration_group_approval_batch_members ADD COLUMN repair_last_attempt_at TEXT",
+            "ALTER TABLE registration_group_approval_batch_members ADD COLUMN repair_last_result TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE registration_group_approval_batch_members ADD COLUMN repair_next_attempt_at TEXT",
+            "ALTER TABLE ops_users ADD COLUMN display_name TEXT",
+            "ALTER TABLE ops_users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE ops_users ADD COLUMN last_login_at TEXT",
         ]:
             try:
                 conn.execute(statement)
@@ -3929,6 +4163,9 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_registration_group_approval_batch_members_run_idx ON registration_group_approval_batch_members (approval_run_id, batch_index)",
             "CREATE INDEX IF NOT EXISTS idx_registration_group_approval_batch_members_phone_idx ON registration_group_approval_batch_members (wa_phone_normalized, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_operator_audit_log_lead_created_at ON operator_audit_log (lead_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_ops_users_username ON ops_users (username)",
+            "CREATE INDEX IF NOT EXISTS idx_ops_sessions_user_id ON ops_sessions (user_id, expires_at)",
+            "CREATE INDEX IF NOT EXISTS idx_ops_sessions_expires_at ON ops_sessions (expires_at)",
         ]:
             conn.execute(statement)
         conn.commit()
@@ -3950,6 +4187,292 @@ def parse_iso_datetime(value: str) -> datetime:
 
 def create_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+OPS_AUTH_SESSION_COOKIE = 'mcn_ops_session'
+OPS_AUTH_INTERNAL_HEADER = 'x-ops-internal-token'
+OPS_AUTH_ROLE_ADMIN = 'admin'
+OPS_AUTH_ROLE_OPERATOR = 'operator'
+OPS_AUTH_ROLE_INTERNAL = 'internal'
+OPS_AUTH_ALLOWED_ROLES = {OPS_AUTH_ROLE_ADMIN, OPS_AUTH_ROLE_OPERATOR}
+
+
+def normalize_ops_role(value: Optional[str]) -> str:
+    normalized = str(value or '').strip().lower()
+    return normalized if normalized in OPS_AUTH_ALLOWED_ROLES else OPS_AUTH_ROLE_OPERATOR
+
+
+def _pbkdf2_hash_password(password: str, *, salt: Optional[bytes] = None, iterations: int = 240000) -> str:
+    secret = str(password or '')
+    if not secret:
+        raise ValueError('password_required')
+    raw_salt = salt or secrets.token_bytes(16)
+    derived = hashlib.pbkdf2_hmac('sha256', secret.encode('utf-8'), raw_salt, int(iterations))
+    return 'pbkdf2_sha256${iterations}${salt}${digest}'.format(
+        iterations=int(iterations),
+        salt=base64.b64encode(raw_salt).decode('ascii'),
+        digest=base64.b64encode(derived).decode('ascii'),
+    )
+
+
+def verify_ops_password(password: str, password_hash: str) -> bool:
+    try:
+        algorithm, iterations_text, salt_b64, digest_b64 = str(password_hash or '').split('$', 3)
+        if algorithm != 'pbkdf2_sha256':
+            return False
+        expected = _pbkdf2_hash_password(
+            password,
+            salt=base64.b64decode(salt_b64.encode('ascii')),
+            iterations=int(iterations_text),
+        )
+    except Exception:
+        return False
+    return hmac.compare_digest(expected, str(password_hash or ''))
+
+
+class OpsAuthManager:
+    def __init__(
+        self,
+        db: Database,
+        *,
+        session_ttl_hours: int = 12,
+        cookie_name: str = OPS_AUTH_SESSION_COOKIE,
+        cookie_secure: bool = False,
+    ) -> None:
+        self.db = db
+        self.session_ttl_hours = max(1, int(session_ttl_hours or 12))
+        self.cookie_name = str(cookie_name or OPS_AUTH_SESSION_COOKIE).strip() or OPS_AUTH_SESSION_COOKIE
+        self.cookie_secure = bool(cookie_secure)
+
+    @staticmethod
+    def _serialize_user(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        username = str(row['username'] or '').strip()
+        display_name = str(row['display_name'] or '').strip()
+        return {
+            'user_id': row['user_id'],
+            'username': username,
+            'display_name': display_name or username,
+            'role': normalize_ops_role(row['role']),
+            'enabled': bool(row['enabled']),
+            'last_login_at': row['last_login_at'],
+            'created_at': row['created_at'],
+            'updated_at': row['updated_at'],
+        }
+
+    @staticmethod
+    def _hash_session_token(token: str) -> str:
+        return hashlib.sha256(str(token or '').encode('utf-8')).hexdigest()
+
+    def has_users(self) -> bool:
+        conn = self.db.connect()
+        row = conn.execute('SELECT COUNT(*) AS total FROM ops_users').fetchone()
+        return bool(row and int(row['total'] or 0) > 0)
+
+    def create_user(
+        self,
+        *,
+        username: str,
+        password: str,
+        role: str,
+        display_name: Optional[str] = None,
+        enabled: bool = True,
+    ) -> Dict[str, Any]:
+        normalized_username = str(username or '').strip().lower()
+        if not re.fullmatch(r'[a-z0-9][a-z0-9._-]{2,31}', normalized_username):
+            raise ValueError('invalid_username')
+        secret = str(password or '')
+        if len(secret) < 8:
+            raise ValueError('password_too_short')
+        now = utc_now()
+        conn = self.db.connect()
+        with conn:
+            existing = conn.execute(
+                'SELECT user_id FROM ops_users WHERE username = ?',
+                (normalized_username,),
+            ).fetchone()
+            if existing is not None:
+                raise ValueError('username_taken')
+            user_id = create_id('ops_user')
+            conn.execute(
+                '''
+                INSERT INTO ops_users (
+                    user_id, username, password_hash, role, display_name, enabled, last_login_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    user_id,
+                    normalized_username,
+                    _pbkdf2_hash_password(secret),
+                    normalize_ops_role(role),
+                    str(display_name or '').strip() or normalized_username,
+                    1 if enabled else 0,
+                    None,
+                    now,
+                    now,
+                ),
+            )
+        return self.get_user_by_id(user_id) or {}
+
+    def bootstrap_admin(self, *, username: str, password: str, display_name: Optional[str] = None) -> Dict[str, Any]:
+        if self.has_users():
+            raise ValueError('bootstrap_closed')
+        return self.create_user(
+            username=username,
+            password=password,
+            role=OPS_AUTH_ROLE_ADMIN,
+            display_name=display_name,
+            enabled=True,
+        )
+
+    def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        conn = self.db.connect()
+        row = conn.execute(
+            'SELECT user_id, username, role, display_name, enabled, last_login_at, created_at, updated_at FROM ops_users WHERE user_id = ?',
+            (str(user_id or '').strip(),),
+        ).fetchone()
+        return self._serialize_user(row)
+
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        normalized_username = str(username or '').strip().lower()
+        if not normalized_username:
+            return None
+        conn = self.db.connect()
+        row = conn.execute(
+            'SELECT user_id, username, role, display_name, enabled, last_login_at, created_at, updated_at FROM ops_users WHERE username = ?',
+            (normalized_username,),
+        ).fetchone()
+        return self._serialize_user(row)
+
+    def authenticate(self, username: str, password: str) -> Optional[Dict[str, Any]]:
+        normalized_username = str(username or '').strip().lower()
+        conn = self.db.connect()
+        row = conn.execute('SELECT * FROM ops_users WHERE username = ?', (normalized_username,)).fetchone()
+        if row is None or not bool(row['enabled']):
+            return None
+        if not verify_ops_password(password, str(row['password_hash'] or '')):
+            return None
+        now = utc_now()
+        with conn:
+            conn.execute('UPDATE ops_users SET last_login_at = ?, updated_at = ? WHERE user_id = ?', (now, now, row['user_id']))
+        return self.get_user_by_id(row['user_id'])
+
+    def list_users(self) -> List[Dict[str, Any]]:
+        conn = self.db.connect()
+        rows = conn.execute(
+            'SELECT user_id, username, role, display_name, enabled, last_login_at, created_at, updated_at FROM ops_users ORDER BY created_at ASC'
+        ).fetchall()
+        return [user for user in (self._serialize_user(row) for row in rows) if user]
+
+    def update_user(
+        self,
+        user_id: str,
+        *,
+        role: Optional[str] = None,
+        display_name: Optional[str] = None,
+        enabled: Optional[bool] = None,
+        password: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_user_id = str(user_id or '').strip()
+        conn = self.db.connect()
+        row = conn.execute('SELECT * FROM ops_users WHERE user_id = ?', (normalized_user_id,)).fetchone()
+        if row is None:
+            raise ValueError('user_not_found')
+        updates = []
+        params: List[Any] = []
+        if role is not None:
+            updates.append('role = ?')
+            params.append(normalize_ops_role(role))
+        if display_name is not None:
+            normalized_display_name = str(display_name or '').strip() or str(row['username'] or '').strip()
+            updates.append('display_name = ?')
+            params.append(normalized_display_name)
+        if enabled is not None:
+            updates.append('enabled = ?')
+            params.append(1 if enabled else 0)
+        if password is not None:
+            secret = str(password or '')
+            if len(secret) < 8:
+                raise ValueError('password_too_short')
+            updates.append('password_hash = ?')
+            params.append(_pbkdf2_hash_password(secret))
+        if not updates:
+            return self.get_user_by_id(normalized_user_id) or {}
+        params.extend([utc_now(), normalized_user_id])
+        with conn:
+            conn.execute(f"UPDATE ops_users SET {', '.join(updates)}, updated_at = ? WHERE user_id = ?", tuple(params))
+        return self.get_user_by_id(normalized_user_id) or {}
+
+    def create_session(self, user: Dict[str, Any], *, ip_address: Optional[str] = None, user_agent: Optional[str] = None) -> str:
+        raw_token = secrets.token_urlsafe(32)
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        expires_at = (now_dt + timedelta(hours=self.session_ttl_hours)).isoformat()
+        conn = self.db.connect()
+        with conn:
+            conn.execute('DELETE FROM ops_sessions WHERE expires_at <= ?', (now,))
+            conn.execute(
+                '''
+                INSERT INTO ops_sessions (
+                    session_id, user_id, session_token_hash, created_at, expires_at, last_seen_at, ip_address, user_agent
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    create_id('ops_session'),
+                    user['user_id'],
+                    self._hash_session_token(raw_token),
+                    now,
+                    expires_at,
+                    now,
+                    str(ip_address or '').strip() or None,
+                    str(user_agent or '').strip() or None,
+                ),
+            )
+        return raw_token
+
+    def revoke_session(self, raw_token: Optional[str]) -> None:
+        token = str(raw_token or '').strip()
+        if not token:
+            return
+        conn = self.db.connect()
+        with conn:
+            conn.execute('DELETE FROM ops_sessions WHERE session_token_hash = ?', (self._hash_session_token(token),))
+
+    def session_user(self, raw_token: Optional[str]) -> Optional[Dict[str, Any]]:
+        token = str(raw_token or '').strip()
+        if not token:
+            return None
+        now = utc_now()
+        conn = self.db.connect()
+        row = conn.execute(
+            '''
+            SELECT u.user_id, u.username, u.role, u.display_name, u.enabled, u.last_login_at, u.created_at, u.updated_at, s.session_id
+            FROM ops_sessions s
+            JOIN ops_users u ON u.user_id = s.user_id
+            WHERE s.session_token_hash = ? AND s.expires_at > ?
+            ''',
+            (self._hash_session_token(token), now),
+        ).fetchone()
+        if row is None or not bool(row['enabled']):
+            return None
+        with conn:
+            conn.execute('UPDATE ops_sessions SET last_seen_at = ? WHERE session_id = ?', (now, row['session_id']))
+        return self._serialize_user(row)
+
+    def apply_session_cookie(self, response: Response, raw_token: str) -> None:
+        response.set_cookie(
+            key=self.cookie_name,
+            value=raw_token,
+            httponly=True,
+            samesite='lax',
+            secure=self.cookie_secure,
+            path='/',
+            max_age=self.session_ttl_hours * 3600,
+        )
+
+    def clear_session_cookie(self, response: Response) -> None:
+        response.delete_cookie(key=self.cookie_name, path='/')
 
 
 def _run_registration_group_executor_warmup(executor: Any) -> None:
@@ -4082,6 +4605,11 @@ class Service:
         self._worker_threads: List[threading.Thread] = []
         self._worker_stop = threading.Event()
         self._registration_group_approval_batch_lock = threading.Lock()
+        self._whatsapp_approval_runtime_lock = threading.RLock()
+        self._official_group_bridge_recover_lock = threading.Lock()
+        self._official_group_bridge_recover_state: Dict[str, Any] = {}
+        self._whatsapp_approval_auto_recover_lock = threading.Lock()
+        self._whatsapp_approval_auto_recover_state: Dict[str, Any] = {}
         self._task_residue_reconcile_interval_seconds = 60.0
         self._bind_processing_stale_seconds = 900.0
         self._group_join_pending_stale_seconds = 900.0
@@ -5944,7 +6472,9 @@ class Service:
         if pending_count <= 0:
             return {
                 'approval_type': payload.approval_type,
+                'approval_scope': payload.approval_type,
                 'registration_group': payload.registration_group,
+                'target_group_label': payload.registration_group,
                 'pending_count': pending_count,
                 'oldest_pending_at': payload.oldest_pending_at,
                 'ready': False,
@@ -5960,7 +6490,7 @@ class Service:
             }
 
         if cycle_anchor_at:
-            pending_cycle = self._approval_cycle_window(now=now, timeout_minutes=rule['timeout_minutes'], cycle_anchor_at=cycle_anchor_at)
+            pending_cycle = self._approval_cycle_anchor_deadline(now=now, timeout_minutes=rule['timeout_minutes'], cycle_anchor_at=cycle_anchor_at)
             active_cycle_start = pending_cycle['cycle_started_at']
             next_boundary_after_oldest = pending_cycle['cycle_ends_at']
         else:
@@ -5971,7 +6501,9 @@ class Service:
         if pending_count >= rule['batch_size']:
             return {
                 'approval_type': payload.approval_type,
+                'approval_scope': payload.approval_type,
                 'registration_group': payload.registration_group,
+                'target_group_label': payload.registration_group,
                 'pending_count': pending_count,
                 'oldest_pending_at': payload.oldest_pending_at,
                 'ready': True,
@@ -5988,7 +6520,9 @@ class Service:
         if now >= next_boundary_after_oldest:
             return {
                 'approval_type': payload.approval_type,
+                'approval_scope': payload.approval_type,
                 'registration_group': payload.registration_group,
+                'target_group_label': payload.registration_group,
                 'pending_count': pending_count,
                 'oldest_pending_at': payload.oldest_pending_at,
                 'ready': True,
@@ -6006,7 +6540,9 @@ class Service:
         remaining_minutes = max((remaining_seconds + 59) // 60, 0)
         return {
             'approval_type': payload.approval_type,
+            'approval_scope': payload.approval_type,
             'registration_group': payload.registration_group,
+            'target_group_label': payload.registration_group,
             'pending_count': pending_count,
             'oldest_pending_at': payload.oldest_pending_at,
             'ready': False,
@@ -6057,6 +6593,26 @@ class Service:
         }
 
     @staticmethod
+    def _approval_cycle_anchor_deadline(*, now: datetime, timeout_minutes: int, cycle_anchor_at: Optional[str] = None) -> Dict[str, datetime]:
+        interval_seconds = max(int(timeout_minutes or 0), 1) * 60
+        anchor = now
+        if cycle_anchor_at:
+            try:
+                parsed_anchor = parse_iso_datetime(cycle_anchor_at)
+                if parsed_anchor.tzinfo is None:
+                    parsed_anchor = parsed_anchor.replace(tzinfo=timezone.utc)
+                anchor = parsed_anchor
+            except Exception:
+                anchor = now
+        if anchor > now:
+            anchor = now
+        return {
+            'anchor_at': anchor,
+            'cycle_started_at': anchor,
+            'cycle_ends_at': anchor + timedelta(seconds=interval_seconds),
+        }
+
+    @staticmethod
     def _binding_oldest_pending_at(probe: Dict[str, Any]) -> Optional[str]:
         requesters = list(probe.get('requesters') or []) if isinstance(probe.get('requesters'), list) else []
         oldest_candidates: List[str] = []
@@ -6093,6 +6649,15 @@ class Service:
         timeout_minutes = max(int(binding.get('approval_timeout_minutes') or 0), 1)
         now = parse_iso_datetime(utc_now())
         cycle_anchor_at = str(binding.get('cycle_anchor_at') or '').strip() or None
+        if cycle_anchor_at:
+            try:
+                parsed_cycle_anchor = parse_iso_datetime(cycle_anchor_at)
+                if parsed_cycle_anchor.tzinfo is None:
+                    parsed_cycle_anchor = parsed_cycle_anchor.replace(tzinfo=timezone.utc)
+                if parsed_cycle_anchor > now:
+                    cycle_anchor_at = None
+            except Exception:
+                cycle_anchor_at = None
         if pending_count <= 0:
             if cycle_anchor_at:
                 cycle_window = self._approval_cycle_window(now=now, timeout_minutes=timeout_minutes, cycle_anchor_at=cycle_anchor_at)
@@ -6125,24 +6690,24 @@ class Service:
                 'next_approval_remaining_seconds': remaining_seconds,
                 'next_approval_oldest_pending_at': oldest_pending_at,
             }
-        if not oldest_pending_at:
-            return {
-                'next_approval_ready': False,
-                'next_approval_reason_code': 'oldest_pending_unknown',
-                'next_approval_eta_text': '已有待审批，等待更多实时数据后再计算',
-                'next_approval_pending_count': pending_count,
-                'next_approval_batch_size': batch_size,
-                'next_approval_timeout_minutes': timeout_minutes,
-                'next_approval_elapsed_minutes': 0,
-                'next_approval_remaining_minutes': timeout_minutes,
-                'next_approval_remaining_seconds': timeout_minutes * 60,
-                'next_approval_oldest_pending_at': oldest_pending_at,
-            }
         if cycle_anchor_at:
-            cycle_window = self._approval_cycle_window(now=now, timeout_minutes=timeout_minutes, cycle_anchor_at=cycle_anchor_at)
+            cycle_window = self._approval_cycle_anchor_deadline(now=now, timeout_minutes=timeout_minutes, cycle_anchor_at=cycle_anchor_at)
             cycle_end = cycle_window['cycle_ends_at']
             cycle_start = cycle_window['cycle_started_at']
         else:
+            if not oldest_pending_at:
+                return {
+                    'next_approval_ready': False,
+                    'next_approval_reason_code': 'oldest_pending_unknown',
+                    'next_approval_eta_text': '已有待审批，等待更多实时数据后再计算',
+                    'next_approval_pending_count': pending_count,
+                    'next_approval_batch_size': batch_size,
+                    'next_approval_timeout_minutes': timeout_minutes,
+                    'next_approval_elapsed_minutes': 0,
+                    'next_approval_remaining_minutes': timeout_minutes,
+                    'next_approval_remaining_seconds': timeout_minutes * 60,
+                    'next_approval_oldest_pending_at': oldest_pending_at,
+                }
             oldest = parse_iso_datetime(oldest_pending_at)
             cycle_end = self._approval_cycle_next_boundary(now=oldest, timeout_minutes=timeout_minutes)
             cycle_start = cycle_end - timedelta(minutes=timeout_minutes)
@@ -6266,7 +6831,7 @@ class Service:
                     candidate_base_urls.append(runtime_base_url)
             else:
                 candidate_base_urls.append(runtime_base_url)
-        if normalized_type == 'registration_group' and allow_shared_fallback:
+        if normalized_type == 'registration_group' and allow_shared_fallback and str(runtime_state.get('source') or '').strip() != 'dedicated':
             config = self.get_production_ops_daemon_config().get('config') or {}
             shared_base_url = str(config.get('worker_base_url') or '').strip().rstrip('/')
             if shared_base_url and shared_base_url not in candidate_base_urls:
@@ -6343,7 +6908,8 @@ class Service:
             live_group_name = str((runtime_row or {}).get('runtime_probe_group_name') or '').strip()
             live_group_id = str((runtime_row or {}).get('runtime_probe_group_id') or '').strip()
             if status in live_ready_statuses:
-                if live_group_name and live_group_name != str(current.get('group_name') or '').strip():
+                current_group_name = str(current.get('group_name') or '').strip()
+                if live_group_name and not current_group_name:
                     current['group_name'] = live_group_name
                     changed = True
                 if live_group_id and live_group_id != str(current.get('group_id') or '').strip():
@@ -7502,6 +8068,72 @@ class Service:
             ).fetchone()
         return row is not None
 
+    def _official_group_success_notification_already_sent_by_daemon(self, dedupe_key: Optional[str], notify_profile_name: Optional[str] = None) -> bool:
+        normalized_dedupe_key = str(dedupe_key or '').strip()
+        if not normalized_dedupe_key:
+            return False
+        state_path = Path(__file__).resolve().parents[1] / 'data' / 'production_ops_daemon_state.json'
+        try:
+            state = json.loads(state_path.read_text(encoding='utf-8'))
+        except Exception:
+            return False
+        notifications = state.get('notifications') if isinstance(state, dict) else {}
+        record = notifications.get(normalized_dedupe_key) if isinstance(notifications, dict) else None
+        if not isinstance(record, dict):
+            return False
+        if str(record.get('last_status') or '').strip() not in {'sent', 'partial_sent'}:
+            return False
+        deliveries = record.get('deliveries') if isinstance(record.get('deliveries'), list) else []
+        normalized_profile_name = str(notify_profile_name or '').strip()
+        if normalized_profile_name:
+            return any(
+                isinstance(item, dict)
+                and str(item.get('status') or '').strip() == 'sent'
+                and str(item.get('notify_profile_name') or '').strip() == normalized_profile_name
+                for item in deliveries
+            )
+        return bool(record.get('last_sent_at'))
+
+    def _record_official_group_success_notification_in_daemon_state(
+        self,
+        *,
+        dedupe_key: Optional[str],
+        checked_at: Optional[str],
+        status: Optional[str],
+        deliveries: List[Dict[str, Any]],
+    ) -> None:
+        normalized_dedupe_key = str(dedupe_key or '').strip()
+        if not normalized_dedupe_key:
+            return
+        try:
+            existing_state = json.loads(PRODUCTION_OPS_DAEMON_STATE_PATH.read_text(encoding='utf-8'))
+        except Exception:
+            existing_state = {}
+        state = dict(existing_state) if isinstance(existing_state, dict) else {}
+        notifications = state.get('notifications') if isinstance(state.get('notifications'), dict) else {}
+        updated_notifications = dict(notifications)
+        previous = updated_notifications.get(normalized_dedupe_key) if isinstance(updated_notifications.get(normalized_dedupe_key), dict) else {}
+        sent_deliveries = [
+            {
+                'notify_profile_name': str(item.get('notify_profile_name') or '').strip() or None,
+                'notify_robot_name': str(item.get('notify_robot_name') or '').strip() or None,
+                'status': str(item.get('status') or '').strip() or None,
+                'error': str(item.get('error') or '').strip() or None,
+            }
+            for item in list(deliveries or [])
+            if isinstance(item, dict)
+        ]
+        updated_record = dict(previous)
+        updated_record['last_status'] = str(status or '').strip() or updated_record.get('last_status') or 'sent'
+        if checked_at:
+            updated_record['last_sent_at'] = str(checked_at).strip()
+        updated_record['deliveries'] = sent_deliveries
+        updated_record['sent_count'] = sum(1 for item in sent_deliveries if str(item.get('status') or '').strip() == 'sent')
+        updated_notifications[normalized_dedupe_key] = updated_record
+        state['notifications'] = updated_notifications
+        PRODUCTION_OPS_DAEMON_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PRODUCTION_OPS_DAEMON_STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+
     def _record_official_group_success_notification_sent(
         self,
         conn: sqlite3.Connection,
@@ -7522,6 +8154,7 @@ class Service:
             event_source='official_group_batch_runner',
             payload={
                 'lead_id': lead_id,
+                'approval_scope': 'official_group',
                 'approval_run_id': approval_run_id,
                 'approval_run_ids': [str(item).strip() for item in list(approval_run_ids or []) if str(item).strip()],
                 'notify_profile_name': str(notify_profile_name or '').strip() or None,
@@ -7530,6 +8163,7 @@ class Service:
                 'dedupe_key': str(dedupe_key or '').strip() or None,
                 'target_group': str(target_group or '').strip() or None,
                 'group_name': str(group_name or '').strip() or None,
+                'target_group_label': str(group_name or target_group or '').strip() or None,
             },
             lead_id=str(lead_id or '').strip() or None,
         )
@@ -7578,6 +8212,22 @@ class Service:
         if not incidents:
             return []
         notifications: List[Dict[str, Any]] = []
+        if bool(getattr(self, 'official_group_success_notifications_suppressed', False)):
+            for incident in incidents:
+                details = incident.get('details') if isinstance(incident.get('details'), dict) else {}
+                notifications.append({
+                    'code': incident.get('code'),
+                    'dedupe_key': incident.get('dedupe_key'),
+                    'approval_run_ids': [
+                        str(item).strip()
+                        for item in list(details.get('approval_run_ids') or [])
+                        if str(item).strip()
+                    ],
+                    'notify_profile_name': str(incident.get('notify_profile_name') or '').strip() or None,
+                    'notify_robot_name': str(incident.get('notify_robot_name') or '').strip() or None,
+                    'status': 'skipped_daemon_owned',
+                })
+            return notifications
         with self.db.connect() as conn:
             for incident in incidents:
                 details = incident.get('details') if isinstance(incident.get('details'), dict) else {}
@@ -7600,6 +8250,13 @@ class Service:
                     notifications.append(payload)
                     continue
                 targets = self._expand_notify_profile_targets(notify_profile_name, notify_robot_name)
+                if approval_run_ids and targets and all(
+                    self._official_group_success_notification_already_sent_by_daemon(str(incident.get('dedupe_key') or '').strip(), str(target.get('profile_name') or '').strip())
+                    for target in targets
+                ):
+                    payload['status'] = 'skipped_duplicate'
+                    notifications.append(payload)
+                    continue
                 if approval_run_ids and targets and all(
                     all(self._official_group_success_notification_already_sent(conn, item, str(target.get('profile_name') or '').strip()) for item in approval_run_ids)
                     for target in targets
@@ -7675,6 +8332,13 @@ class Service:
                     payload['status'] = 'failed'
                 else:
                     payload['status'] = 'skipped_no_notifier'
+                if payload['status'] in {'sent', 'partial_sent'}:
+                    self._record_official_group_success_notification_in_daemon_state(
+                        dedupe_key=str(incident.get('dedupe_key') or '').strip() or None,
+                        checked_at=checked_at,
+                        status=payload['status'],
+                        deliveries=deliveries,
+                    )
                 notifications.append(payload)
         return notifications
 
@@ -9179,6 +9843,16 @@ class Service:
         account_id: Optional[str],
         created_at: str,
     ) -> Dict[str, Any]:
+        dedupe_key = f"group_join:{lead_id}:{submission_id}"
+        existing_dedupe_task = conn.execute(
+            "SELECT task_id FROM automation_tasks WHERE dedupe_key = ? ORDER BY created_at DESC LIMIT 1",
+            (dedupe_key,),
+        ).fetchone()
+        if existing_dedupe_task:
+            return {
+                'group_join_task_type': 'group_join',
+                'group_join_task_id': existing_dedupe_task['task_id'],
+            }
         existing_group_join = conn.execute(
             "SELECT task_id FROM automation_tasks WHERE lead_id = ? AND task_type = 'group_join' AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
             (lead_id,),
@@ -9208,7 +9882,7 @@ class Service:
                     "group_join",
                     "P0",
                     json.dumps(group_payload, ensure_ascii=False),
-                    f"group_join:{lead_id}:{submission_id}",
+                    dedupe_key,
                     "system",
                     created_at,
                     "pending",
@@ -10272,6 +10946,40 @@ class Service:
                 return True
         return False
 
+    def _lead_eligible_for_official_group_runtime_matching(
+        self,
+        *,
+        lead: Dict[str, Any],
+        target_group: str,
+        official_statuses: tuple[str, ...],
+    ) -> bool:
+        if not isinstance(lead, dict):
+            return False
+        current_status = str(lead.get('current_status') or '').strip()
+        if current_status == 'archived_test_residue':
+            return False
+        if current_status not in official_statuses:
+            if current_status != 'console_cleared_test_data':
+                return False
+            if not (
+                str(lead.get('matched_customer_id') or '').strip()
+                or str(lead.get('crm_verified_official_group') or '').strip()
+                or str(lead.get('crm_verified_registration_group') or '').strip()
+            ):
+                return False
+        normalized_target_group = str(target_group or '').strip()
+        if not normalized_target_group:
+            return True
+        candidate_values = [
+            self._resolve_official_group_target_group(lead=lead),
+            lead.get('crm_verified_official_group'),
+        ]
+        return any(
+            self._official_group_value_matches_target(value=value, target_group=normalized_target_group)
+            for value in candidate_values
+            if str(value or '').strip()
+        )
+
     def create_registration_group_approval_batch(self, payload: RegistrationGroupApprovalBatchRequest) -> Dict[str, Any]:
         if self.crm_adapter is None:
             raise HTTPException(status_code=400, detail='crm adapter not configured')
@@ -10547,6 +11255,9 @@ class Service:
                 requested_at,
                 str(approved_at or '').strip(),
                 index,
+                None,
+                '',
+                None,
                 now,
                 now,
             ))
@@ -10555,7 +11266,7 @@ class Service:
             conn.execute('DELETE FROM registration_group_approval_batch_members WHERE approval_run_id = ?', (normalized_run_id,))
             if rows:
                 conn.executemany(
-                    "INSERT INTO registration_group_approval_batch_members (member_id, approval_run_id, registration_group, registration_group_name, requester_id, display_name, wa_phone_raw, wa_phone_normalized, requested_at, approved_at, batch_index, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO registration_group_approval_batch_members (member_id, approval_run_id, registration_group, registration_group_name, requester_id, display_name, wa_phone_raw, wa_phone_normalized, requested_at, approved_at, batch_index, repair_last_attempt_at, repair_last_result, repair_next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     rows,
                 )
             conn.commit()
@@ -10647,17 +11358,60 @@ class Service:
             return True
         return re.fullmatch(r'[.。·•~～—_\-\s]+', name) is not None
 
+    @staticmethod
+    def _registration_group_batch_member_repair_cooldown_seconds() -> int:
+        raw_value = str(os.getenv('REGISTRATION_GROUP_BATCH_MEMBER_REPAIR_COOLDOWN_SECONDS') or '').strip()
+        try:
+            parsed = int(raw_value or 21600)
+        except Exception:
+            parsed = 21600
+        return max(parsed, 0)
+
     @classmethod
-    def _registration_group_batch_member_should_attempt_repair(cls, row: Dict[str, Any]) -> bool:
+    def _registration_group_batch_member_repair_next_attempt_at(cls, attempted_at: str) -> Optional[str]:
+        cooldown_seconds = cls._registration_group_batch_member_repair_cooldown_seconds()
+        if cooldown_seconds <= 0:
+            return None
+        try:
+            return (parse_iso_datetime(attempted_at) + timedelta(seconds=cooldown_seconds)).isoformat()
+        except Exception:
+            return None
+
+    @classmethod
+    def _registration_group_batch_member_is_in_repair_cooldown(cls, row: Dict[str, Any], *, now: Optional[datetime] = None) -> bool:
+        if not isinstance(row, dict):
+            return False
+        next_attempt_at = str(row.get('repair_next_attempt_at') or '').strip()
+        if not next_attempt_at:
+            return False
+        try:
+            next_attempt_dt = parse_iso_datetime(next_attempt_at)
+        except Exception:
+            return False
+        current_dt = now or datetime.now(timezone.utc)
+        if current_dt.tzinfo is None:
+            current_dt = current_dt.replace(tzinfo=timezone.utc)
+        else:
+            current_dt = current_dt.astimezone(timezone.utc)
+        return next_attempt_dt > current_dt
+
+    @classmethod
+    def _registration_group_batch_member_should_attempt_repair(cls, row: Dict[str, Any], *, now: Optional[datetime] = None, force: bool = False) -> bool:
         if not isinstance(row, dict):
             return False
         requester_id = str(row.get('requester_id') or '').strip()
-        if not requester_id or not cls._registration_group_batch_member_name_needs_repair(row.get('display_name')):
+        if not requester_id:
             return False
         display_name = str(row.get('display_name') or '').strip()
         phone_raw = str(row.get('wa_phone_raw') or '').strip()
         phone_normalized = str(row.get('wa_phone_normalized') or '').strip()
-        return not display_name or '*' in phone_raw or '*' in phone_normalized
+        name_needs_repair = cls._registration_group_batch_member_name_needs_repair(display_name)
+        phone_needs_repair = (not phone_raw or '*' in phone_raw or not phone_normalized or '*' in phone_normalized)
+        if not name_needs_repair and not phone_needs_repair:
+            return False
+        if force:
+            return True
+        return not cls._registration_group_batch_member_is_in_repair_cooldown(row, now=now)
 
     @staticmethod
     def _registration_group_batch_member_normalize_phone_from_resolver(phone_value: Any) -> str:
@@ -10757,15 +11511,37 @@ class Service:
         rows: List[Dict[str, Any]],
         registration_group: str,
         registration_group_name: str,
+        force: bool = False,
     ) -> Dict[str, Any]:
         candidate_rows = [dict(item) for item in (rows or []) if isinstance(item, dict)]
-        repair_rows = [item for item in candidate_rows if self._registration_group_batch_member_should_attempt_repair(item)]
+        repair_now = datetime.now(timezone.utc)
+        repair_rows = [item for item in candidate_rows if self._registration_group_batch_member_should_attempt_repair(item, now=repair_now, force=force)]
+        skipped_cooldown = sum(
+            1
+            for item in candidate_rows
+            if self._registration_group_batch_member_name_needs_repair(item.get('display_name'))
+            and str(item.get('requester_id') or '').strip()
+            and not self._registration_group_batch_member_should_attempt_repair(item, now=repair_now, force=force)
+        )
         if not repair_rows:
-            return {'checked': len(candidate_rows), 'candidates': 0, 'updated': 0, 'unresolved': 0, 'applied': []}
+            return {'checked': len(candidate_rows), 'candidates': 0, 'updated': 0, 'unresolved': 0, 'skipped_cooldown': skipped_cooldown, 'applied': []}
         runtime_candidates = self._list_registration_group_batch_member_runtime_candidates(
             registration_group=registration_group,
             registration_group_name=registration_group_name,
         )
+        ingress_phone_by_run: Dict[str, str] = {}
+        for item in repair_rows:
+            approval_run_id = str(item.get('approval_run_id') or '').strip()
+            if not approval_run_id or approval_run_id in ingress_phone_by_run:
+                continue
+            ingress_event = self._find_registration_group_approval_ingress_event(approval_run_id)
+            result_snapshot = (ingress_event or {}).get('result_snapshot_dict') or {}
+            target_member = result_snapshot.get('target_member') if isinstance(result_snapshot, dict) else {}
+            normalized_phone = self._registration_group_batch_member_normalize_phone_from_resolver(
+                (target_member or {}).get('phone_normalized') or (target_member or {}).get('phone_raw') or ''
+            )
+            if normalized_phone:
+                ingress_phone_by_run[approval_run_id] = normalized_phone
         requester_ids = [str(item.get('requester_id') or '').strip() for item in repair_rows if str(item.get('requester_id') or '').strip()]
         resolved_by_requester: Dict[str, Dict[str, Any]] = {}
         unresolved_requesters = set(requester_ids)
@@ -10791,16 +11567,19 @@ class Service:
                     continue
                 resolved_by_requester[requester_id] = {'phone': resolved_phone, 'display_name': resolved_name}
                 unresolved_requesters.discard(requester_id)
-        updates: List[tuple[str, str, str, str]] = []
+        updates: List[tuple[str, str, str, str, Optional[str], str]] = []
         applied: List[Dict[str, Any]] = []
         unresolved = 0
         now = utc_now()
         for row in repair_rows:
             requester_id = str(row.get('requester_id') or '').strip()
             member_id = str(row.get('member_id') or '').strip()
+            approval_run_id = str(row.get('approval_run_id') or '').strip()
             resolved = resolved_by_requester.get(requester_id) or {}
             resolved_name = str(resolved.get('display_name') or '').strip()
             resolved_phone = str(resolved.get('phone') or '').strip()
+            if not resolved_phone and approval_run_id:
+                resolved_phone = str(ingress_phone_by_run.get(approval_run_id) or '').strip()
             next_name = str(row.get('display_name') or '').strip()
             next_phone_raw = str(row.get('wa_phone_raw') or '').strip()
             next_phone_normalized = str(row.get('wa_phone_normalized') or '').strip()
@@ -10815,8 +11594,13 @@ class Service:
                 if not next_phone_normalized or '*' in next_phone_normalized:
                     next_phone_normalized = resolved_phone
                     changed = True
-            if changed and member_id:
-                updates.append((next_name, next_phone_raw, next_phone_normalized, now, member_id))
+            if not member_id:
+                unresolved += 1
+                continue
+            repair_result = 'updated' if changed else 'unresolved'
+            repair_next_attempt_at = None if changed else self._registration_group_batch_member_repair_next_attempt_at(now)
+            updates.append((next_name, next_phone_raw, next_phone_normalized, repair_result, repair_next_attempt_at, member_id))
+            if changed:
                 applied.append({
                     'member_id': member_id,
                     'requester_id': requester_id,
@@ -10829,17 +11613,186 @@ class Service:
         if updates:
             with self.db.connect() as conn:
                 conn.executemany(
-                    'UPDATE registration_group_approval_batch_members SET display_name = ?, wa_phone_raw = ?, wa_phone_normalized = ?, updated_at = ? WHERE member_id = ?',
-                    updates,
+                    'UPDATE registration_group_approval_batch_members SET display_name = ?, wa_phone_raw = ?, wa_phone_normalized = ?, repair_last_attempt_at = ?, repair_last_result = ?, repair_next_attempt_at = ?, updated_at = ? WHERE member_id = ?',
+                    [(name, phone_raw, phone_normalized, now, result, next_attempt, now, member_id) for (name, phone_raw, phone_normalized, result, next_attempt, member_id) in updates],
                 )
                 conn.commit()
         return {
             'checked': len(candidate_rows),
             'candidates': len(repair_rows),
-            'updated': len(updates),
+            'updated': len(applied),
             'unresolved': unresolved,
+            'skipped_cooldown': skipped_cooldown,
             'applied': applied,
         }
+
+    @staticmethod
+    def _registration_group_batch_member_crm_row_indicates_joined_official_group(crm_row: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(crm_row, dict) or not crm_row:
+            return False
+        official_group_value = str(
+            crm_row.get('officialGroup')
+            or crm_row.get('official_group')
+            or crm_row.get('crm_verified_official_group')
+            or crm_row.get('joinGroupName')
+            or crm_row.get('join_group_name')
+            or ''
+        ).strip()
+        if official_group_value:
+            return True
+        join_group_value = crm_row.get('joinGroup', crm_row.get('join_group'))
+        if isinstance(join_group_value, bool):
+            return join_group_value
+        return str(join_group_value or '').strip().lower() in {'1', 'true', 'yes', 'y', 'joined', 'done', 'success'}
+
+    @staticmethod
+    def _registration_group_batch_member_crm_row_has_abnormal_marker(crm_row: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(crm_row, dict) or not crm_row:
+            return False
+        abnormal_text = ' '.join(
+            str(crm_row.get(key) or '').strip().lower()
+            for key in ('userQuality', 'user_quality', 'remark', 'remarks', 'statusRemark', 'status_remark')
+            if str(crm_row.get(key) or '').strip()
+        )
+        if not abnormal_text:
+            return False
+        return any(
+            marker in abnormal_text
+            for marker in ('异常', 'abnormal', 'blacklist', '黑名单', '封禁', '封号', '违规', '拉黑')
+        )
+
+    def _registration_group_batch_member_historical_registered_snapshot(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        phone_value: str,
+        mobile_body: str,
+        area_code: int,
+        digits_only: str,
+        country: str,
+        lead_dict: Optional[Dict[str, Any]] = None,
+        allow_live_crm: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        def build_snapshot(source_row: Dict[str, Any], *, source: str) -> Dict[str, Any]:
+            lead_id = str((lead_dict or {}).get('lead_id') or source_row.get('lead_id') or '').strip() or None
+            submission_count = 0
+            if lead_id:
+                submission_count = int(conn.execute('SELECT COUNT(1) FROM account_submissions WHERE lead_id = ?', (lead_id,)).fetchone()[0] or 0)
+            return {
+                'registration_status': 'registered',
+                'registration_status_label': '已注册',
+                'lead_id': lead_id,
+                'lead_current_status': str((lead_dict or {}).get('current_status') or 'historical_official_group_registered').strip() or 'historical_official_group_registered',
+                'submission_count': submission_count,
+                'country': source_row.get('country') or (lead_dict or {}).get('country') or country or None,
+                'area_code': source_row.get('area_code') or (lead_dict or {}).get('area_code') or int(area_code or 0) or None,
+                'historical_registered_source': source,
+            }
+
+        matched_customer_id = str((lead_dict or {}).get('matched_customer_id') or '').strip()
+        projection_row = None
+        if matched_customer_id:
+            projection_row = conn.execute(
+                'SELECT * FROM customer_projection WHERE customer_id = ? LIMIT 1',
+                (matched_customer_id,),
+            ).fetchone()
+        if projection_row is None and mobile_body and area_code:
+            projection_row = conn.execute(
+                'SELECT * FROM customer_projection WHERE mobile = ? AND area_code = ? ORDER BY updated_at DESC LIMIT 1',
+                (mobile_body, int(area_code)),
+            ).fetchone()
+        if projection_row is None and digits_only and digits_only != mobile_body and area_code:
+            projection_row = conn.execute(
+                'SELECT * FROM customer_projection WHERE mobile = ? AND area_code = ? ORDER BY updated_at DESC LIMIT 1',
+                (digits_only, int(area_code)),
+            ).fetchone()
+        if projection_row is not None:
+            projection_dict = dict(projection_row)
+            if (
+                self._registration_group_batch_member_crm_row_indicates_joined_official_group(projection_dict)
+                and not self._registration_group_batch_member_crm_row_has_abnormal_marker(projection_dict)
+            ):
+                return build_snapshot(projection_dict, source='customer_projection')
+
+        crm_candidates: List[Tuple[Optional[str], Optional[str]]] = []
+        seen_crm_keys: set[Tuple[str, str]] = set()
+
+        def add_crm_candidate(yw_id_value: Optional[str], mobile_value: Optional[str]) -> None:
+            yw_key = str(yw_id_value or '').strip()
+            mobile_key = str(mobile_value or '').strip()
+            if not yw_key and not mobile_key:
+                return
+            dedupe_key = (yw_key, mobile_key)
+            if dedupe_key in seen_crm_keys:
+                return
+            seen_crm_keys.add(dedupe_key)
+            crm_candidates.append((yw_key or None, mobile_key or None))
+
+        add_crm_candidate((lead_dict or {}).get('yw_id'), (lead_dict or {}).get('mobile'))
+        add_crm_candidate((lead_dict or {}).get('yw_id'), mobile_body)
+        add_crm_candidate((lead_dict or {}).get('yw_id'), digits_only)
+        add_crm_candidate((lead_dict or {}).get('yw_id'), phone_value)
+        add_crm_candidate(None, mobile_body)
+        add_crm_candidate(None, digits_only)
+        add_crm_candidate(None, phone_value)
+        if projection_row is not None:
+            projection_dict = dict(projection_row)
+            add_crm_candidate(projection_dict.get('yw_id'), projection_dict.get('mobile'))
+
+        if allow_live_crm and self.crm_adapter is not None:
+            for yw_id_candidate, mobile_candidate in crm_candidates:
+                try:
+                    crm_row = self.crm_adapter.find_customer(yw_id=yw_id_candidate, mobile=mobile_candidate)
+                except Exception:
+                    crm_row = None
+                if not crm_row:
+                    continue
+                crm_dict = dict(crm_row)
+                crm_customer_id = str(crm_dict.get('id') or '').strip()
+                if matched_customer_id and crm_customer_id and crm_customer_id != matched_customer_id:
+                    continue
+                if (
+                    self._registration_group_batch_member_crm_row_indicates_joined_official_group(crm_dict)
+                    and not self._registration_group_batch_member_crm_row_has_abnormal_marker(crm_dict)
+                ):
+                    return build_snapshot(crm_dict, source='live_crm')
+        return None
+
+    def _registration_group_batch_member_historical_registered_snapshot_from_masked_phone(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        phone_value: str,
+        allow_live_crm: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        compact = re.sub(r'\s+', '', str(phone_value or '').strip())
+        if not compact or '*' not in compact:
+            return None
+        match = re.fullmatch(r'\+?(\d{1,4})\*+(\d{3,})', compact)
+        if not match:
+            return None
+        area_code = int(match.group(1))
+        suffix = match.group(2)
+        candidate_rows = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT lead_id, current_status, area_code, country, crm_verified_at, matched_customer_id, crm_verified_official_group, yw_id, mobile FROM leads WHERE area_code = ? AND mobile LIKE ? ORDER BY updated_at DESC LIMIT 5",
+                (area_code, f'%{suffix}'),
+            ).fetchall()
+        ]
+        if len(candidate_rows) != 1:
+            return None
+        candidate = candidate_rows[0]
+        return self._registration_group_batch_member_historical_registered_snapshot(
+            conn,
+            phone_value=phone_value,
+            mobile_body=str(candidate.get('mobile') or '').strip(),
+            area_code=int(candidate.get('area_code') or area_code),
+            digits_only=str(candidate.get('mobile') or '').strip(),
+            country=str(candidate.get('country') or '').strip(),
+            lead_dict=candidate,
+            allow_live_crm=allow_live_crm,
+        )
 
     def _registration_group_batch_member_registration_snapshot(
         self,
@@ -10847,9 +11800,25 @@ class Service:
         *,
         wa_phone_raw: str,
         wa_phone_normalized: str,
+        allow_live_crm: bool = True,
     ) -> Dict[str, Any]:
         phone_value = str(wa_phone_raw or wa_phone_normalized or '').strip()
         if not phone_value:
+            return {
+                'registration_status': 'not_found',
+                'registration_status_label': '未注册',
+                'lead_id': None,
+                'lead_current_status': None,
+                'submission_count': 0,
+            }
+        if '*' in phone_value:
+            historical_snapshot = self._registration_group_batch_member_historical_registered_snapshot_from_masked_phone(
+                conn,
+                phone_value=phone_value,
+                allow_live_crm=allow_live_crm,
+            )
+            if historical_snapshot is not None:
+                return historical_snapshot
             return {
                 'registration_status': 'not_found',
                 'registration_status_label': '未注册',
@@ -10861,16 +11830,27 @@ class Service:
             mobile_body, area_code, country = normalize_phone_identity(mobile=phone_value, area_code=0, country='')
         except Exception:
             mobile_body, area_code, country = ('', 0, '')
+        digits_only = re.sub(r'\D+', '', phone_value)
         lead_row = None
         if mobile_body and area_code:
             lead_row = conn.execute(
-                "SELECT lead_id, current_status, area_code, country, crm_verified_at FROM leads WHERE mobile = ? AND area_code = ? ORDER BY updated_at DESC LIMIT 1",
+                "SELECT lead_id, current_status, area_code, country, crm_verified_at, matched_customer_id, crm_verified_official_group, yw_id, mobile FROM leads WHERE mobile = ? AND area_code = ? ORDER BY updated_at DESC LIMIT 1",
                 (mobile_body, int(area_code)),
             ).fetchone()
         if lead_row is None and mobile_body:
             lead_row = conn.execute(
-                "SELECT lead_id, current_status, area_code, country, crm_verified_at FROM leads WHERE mobile = ? ORDER BY updated_at DESC LIMIT 1",
+                "SELECT lead_id, current_status, area_code, country, crm_verified_at, matched_customer_id, crm_verified_official_group, yw_id, mobile FROM leads WHERE mobile = ? ORDER BY updated_at DESC LIMIT 1",
                 (mobile_body,),
+            ).fetchone()
+        if lead_row is None and digits_only and digits_only != mobile_body and area_code:
+            lead_row = conn.execute(
+                "SELECT lead_id, current_status, area_code, country, crm_verified_at, matched_customer_id, crm_verified_official_group, yw_id, mobile FROM leads WHERE mobile = ? AND area_code = ? ORDER BY updated_at DESC LIMIT 1",
+                (digits_only, int(area_code)),
+            ).fetchone()
+        if lead_row is None and digits_only and digits_only != mobile_body:
+            lead_row = conn.execute(
+                "SELECT lead_id, current_status, area_code, country, crm_verified_at, matched_customer_id, crm_verified_official_group, yw_id, mobile FROM leads WHERE mobile = ? ORDER BY updated_at DESC LIMIT 1",
+                (digits_only,),
             ).fetchone()
         if lead_row is None:
             return {
@@ -10883,8 +11863,30 @@ class Service:
                 'area_code': int(area_code or 0) or None,
             }
         lead_dict = dict(lead_row)
-        submission_count = int(conn.execute('SELECT COUNT(1) FROM account_submissions WHERE lead_id = ?', (lead_dict['lead_id'],)).fetchone()[0] or 0)
         lead_current_status = str(lead_dict.get('current_status') or '').strip()
+        if lead_current_status in IGNORED_HISTORY_LEAD_STATUSES:
+            historical_snapshot = self._registration_group_batch_member_historical_registered_snapshot(
+                conn,
+                phone_value=phone_value,
+                mobile_body=mobile_body,
+                area_code=int(area_code or 0),
+                digits_only=digits_only,
+                country=country,
+                lead_dict=lead_dict,
+                allow_live_crm=allow_live_crm,
+            )
+            if historical_snapshot is not None:
+                return historical_snapshot
+            return {
+                'registration_status': 'not_found',
+                'registration_status_label': '未注册',
+                'lead_id': None,
+                'lead_current_status': None,
+                'submission_count': 0,
+                'country': lead_dict.get('country') or country or None,
+                'area_code': lead_dict.get('area_code') or int(area_code or 0) or None,
+            }
+        submission_count = int(conn.execute('SELECT COUNT(1) FROM account_submissions WHERE lead_id = ?', (lead_dict['lead_id'],)).fetchone()[0] or 0)
         crm_verified_at = str(lead_dict.get('crm_verified_at') or '').strip()
         registered_statuses = {'bind_success', 'group_join_pending', 'group_join_success', 'synced'}
         if crm_verified_at and lead_current_status.lower() in registered_statuses:
@@ -10922,6 +11924,16 @@ class Service:
             return cls._default_registration_group_batch_members_date()
 
     @classmethod
+    def _parse_registration_group_batch_members_date(cls, approved_date: Optional[str]) -> Optional[str]:
+        text = str(approved_date or '').strip()
+        if not text:
+            return None
+        try:
+            return datetime.strptime(text, '%Y-%m-%d').date().isoformat()
+        except Exception:
+            return None
+
+    @classmethod
     def _resolve_registration_group_batch_members_date_range(
         cls,
         *,
@@ -10929,14 +11941,20 @@ class Service:
         approved_date: Optional[str] = None,
         approved_date_start: Optional[str] = None,
         approved_date_end: Optional[str] = None,
-    ) -> Tuple[str, str]:
+    ) -> Tuple[Optional[str], Optional[str]]:
         derived_date = cls._registration_group_batch_members_external_date_from_batch_id(approval_run_id)
         if derived_date:
             return derived_date, derived_date
-        fallback_date = cls._normalize_registration_group_batch_members_date(approved_date)
-        start_date = cls._normalize_registration_group_batch_members_date(approved_date_start or fallback_date)
-        end_date = cls._normalize_registration_group_batch_members_date(approved_date_end or fallback_date)
-        if start_date > end_date:
+        single_date = cls._parse_registration_group_batch_members_date(approved_date)
+        start_date = cls._parse_registration_group_batch_members_date(approved_date_start)
+        end_date = cls._parse_registration_group_batch_members_date(approved_date_end)
+        if single_date and not start_date and not end_date:
+            return single_date, single_date
+        if start_date and not end_date:
+            end_date = start_date
+        elif end_date and not start_date:
+            start_date = end_date
+        if start_date and end_date and start_date > end_date:
             start_date, end_date = end_date, start_date
         return start_date, end_date
 
@@ -10963,15 +11981,29 @@ class Service:
         }
 
     @classmethod
+    def _registration_group_batch_member_date_in_range(
+        cls,
+        approved_date_value: str,
+        approved_date_start: Optional[str],
+        approved_date_end: Optional[str],
+    ) -> bool:
+        normalized_value = str(approved_date_value or '').strip()
+        if not normalized_value:
+            return False
+        if approved_date_start and normalized_value < approved_date_start:
+            return False
+        if approved_date_end and normalized_value > approved_date_end:
+            return False
+        return True
+
+    @classmethod
     def _build_registration_group_batch_display_map(cls, rows: List[Dict[str, Any]], approved_date_start: Optional[str] = None, approved_date_end: Optional[str] = None) -> Dict[str, str]:
         per_date_sequence_source: Dict[str, Dict[str, datetime]] = {}
         for row in rows:
             approved_date = str(row.get('approved_date_beijing') or '')
             if not approved_date:
                 continue
-            if approved_date_start and approved_date < approved_date_start:
-                continue
-            if approved_date_end and approved_date > approved_date_end:
+            if not cls._registration_group_batch_member_date_in_range(approved_date, approved_date_start, approved_date_end):
                 continue
             approval_run_id = str(row.get('approval_run_id') or '').strip()
             if not approval_run_id:
@@ -11022,34 +12054,52 @@ class Service:
         summary = {'total_members': 0, 'registered_members': 0, 'in_progress_members': 0, 'not_registered_members': 0}
         with self.db.connect() as conn:
             raw_rows = [dict(r) for r in conn.execute(query).fetchall()]
-            repair_candidates = [
-                dict(row) for row in raw_rows
-                if str(row.get('registration_group') or '').strip()
-                and str(row.get('registration_group_name') or '').strip()
-                and self._registration_group_batch_member_should_attempt_repair(row)
-                and effective_approved_date_start <= str(self._registration_group_batch_member_beijing_parts(str(row.get('approved_at') or '')).get('approved_date_beijing') or '') <= effective_approved_date_end
-            ]
-            if repair_candidates:
-                primary_row = repair_candidates[0]
-                repair_result = self._repair_registration_group_batch_member_rows(
-                    rows=repair_candidates,
-                    registration_group=str(primary_row.get('registration_group') or '').strip(),
-                    registration_group_name=str(primary_row.get('registration_group_name') or '').strip(),
-                )
-                if int(repair_result.get('updated') or 0) > 0:
-                    raw_rows = [dict(r) for r in conn.execute(query).fetchall()]
             for row in raw_rows:
                 row.update(self._registration_group_batch_member_beijing_parts(str(row.get('approved_at') or '')))
             display_map = self._build_registration_group_batch_display_map(raw_rows, effective_approved_date_start, effective_approved_date_end)
             group_options_map: Dict[str, str] = {}
             area_options_map: Dict[str, str] = {}
-            enriched_rows: List[Dict[str, Any]] = []
+            registration_meta_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+            date_filtered_rows: List[Dict[str, Any]] = []
             for row in raw_rows:
-                registration_meta = self._registration_group_batch_member_registration_snapshot(
-                    conn,
-                    wa_phone_raw=str(row.get('wa_phone_raw') or ''),
-                    wa_phone_normalized=str(row.get('wa_phone_normalized') or ''),
+                approved_date_value = str(row.get('approved_date_beijing') or '')
+                if not self._registration_group_batch_member_date_in_range(
+                    approved_date_value,
+                    effective_approved_date_start,
+                    effective_approved_date_end,
+                ):
+                    continue
+                group_value = str(row.get('registration_group') or '').strip() or str(row.get('registration_group_name') or '').strip()
+                group_label = str(row.get('registration_group_name') or row.get('registration_group') or '').strip()
+                if group_value and group_value not in group_options_map:
+                    group_options_map[group_value] = group_label or group_value
+                date_filtered_rows.append(row)
+            candidate_rows: List[Dict[str, Any]] = []
+            for row in date_filtered_rows:
+                display_batch_id = display_map.get(str(row.get('approval_run_id') or '').strip(), '')
+                if normalized_run_id and normalized_run_id not in {str(row.get('approval_run_id') or '').strip(), display_batch_id}:
+                    continue
+                if normalized_group and normalized_group not in {
+                    str(row.get('registration_group') or '').strip(),
+                    str(row.get('registration_group_name') or '').strip(),
+                }:
+                    continue
+                candidate_rows.append(row)
+            enriched_rows: List[Dict[str, Any]] = []
+            for row in candidate_rows:
+                cache_key = (
+                    str(row.get('wa_phone_raw') or '').strip(),
+                    str(row.get('wa_phone_normalized') or '').strip(),
                 )
+                registration_meta = registration_meta_cache.get(cache_key)
+                if registration_meta is None:
+                    registration_meta = self._registration_group_batch_member_registration_snapshot(
+                        conn,
+                        wa_phone_raw=cache_key[0],
+                        wa_phone_normalized=cache_key[1],
+                        allow_live_crm=False,
+                    )
+                    registration_meta_cache[cache_key] = registration_meta
                 enriched_row = {
                     **row,
                     **registration_meta,
@@ -11059,32 +12109,15 @@ class Service:
                     'area': str(registration_meta.get('country') or '').strip() or None,
                 }
                 enriched_rows.append(enriched_row)
-                approved_date_value = str(enriched_row.get('approved_date_beijing') or '')
-                if approved_date_value < effective_approved_date_start or approved_date_value > effective_approved_date_end:
-                    continue
-                group_value = str(enriched_row.get('registration_group') or '').strip() or str(enriched_row.get('registration_group_name') or '').strip()
-                group_label = str(enriched_row.get('registration_group_name') or enriched_row.get('registration_group') or '').strip()
-                if group_value and group_value not in group_options_map:
-                    group_options_map[group_value] = group_label or group_value
                 area_value = str(enriched_row.get('area') or '').strip()
                 if area_value and area_value not in area_options_map:
                     area_options_map[area_value] = area_value
             matched_rows: List[Dict[str, Any]] = []
             for normalized_row in enriched_rows:
-                approved_date_value = str(normalized_row.get('approved_date_beijing') or '')
-                if approved_date_value < effective_approved_date_start or approved_date_value > effective_approved_date_end:
-                    continue
-                display_batch_id = str(normalized_row.get('approval_batch_display_id') or '').strip()
-                if normalized_run_id and normalized_run_id not in {str(normalized_row.get('approval_run_id') or '').strip(), display_batch_id}:
-                    continue
-                if normalized_group and normalized_group not in {
-                    str(normalized_row.get('registration_group') or '').strip(),
-                    str(normalized_row.get('registration_group_name') or '').strip(),
-                }:
-                    continue
                 if normalized_area and normalized_area != str(normalized_row.get('area') or '').strip():
                     continue
                 if normalized_keyword:
+                    display_batch_id = str(normalized_row.get('approval_batch_display_id') or '').strip()
                     like_candidates = [
                         str(normalized_row.get('approval_run_id') or '').strip(),
                         display_batch_id,
@@ -11413,6 +12446,41 @@ class Service:
         health['warmed'] = False
         health['warmup_supported'] = False
         return health
+
+    def group_approval_executor_health(self, approval_scope: str) -> Dict[str, Any]:
+        normalized_scope = str(approval_scope or '').strip()
+        if normalized_scope == 'registration_group':
+            return _with_shared_group_approval_executor_result(
+                self.registration_group_approval_executor_health(),
+                approval_scope='registration_group',
+            )
+        if normalized_scope == 'official_group':
+            return _with_shared_group_approval_executor_result(
+                self.official_group_approval_executor_health(),
+                approval_scope='official_group',
+            )
+        raise HTTPException(status_code=400, detail='unsupported approval_scope')
+
+    def group_approval_executor_warmup(self, approval_scope: str) -> Dict[str, Any]:
+        normalized_scope = str(approval_scope or '').strip()
+        if normalized_scope != 'registration_group':
+            raise HTTPException(status_code=400, detail='group approval executor warmup currently supports registration_group only')
+        return _with_shared_group_approval_executor_result(
+            self.registration_group_approval_executor_warmup(),
+            approval_scope='registration_group',
+        )
+
+    def group_approval_executor_target_state(self, approval_scope: str, target_group: str) -> Dict[str, Any]:
+        normalized_scope = str(approval_scope or '').strip()
+        normalized_target = str(target_group or '').strip()
+        if normalized_scope != 'registration_group':
+            raise HTTPException(status_code=400, detail='group approval executor target-state currently supports registration_group only')
+        result = self.registration_group_approval_executor_group_state(normalized_target)
+        return _with_shared_group_approval_executor_result(
+            result,
+            approval_scope='registration_group',
+            target_group=normalized_target,
+        )
 
     def registration_group_approval_executor_group_state(self, registration_group: str) -> Dict[str, Any]:
         normalized_group = str(registration_group or '').strip()
@@ -12454,18 +13522,21 @@ class Service:
             with self.db.connect() as conn:
                 if target_group_filter:
                     candidate_rows = conn.execute(
-                        f"""
+                        """
                         SELECT * FROM leads
-                        WHERE current_status IN ({','.join(['?'] * len(official_statuses))})
                         ORDER BY updated_at ASC, created_at ASC
-                        """,
-                        official_statuses,
+                        """
                     ).fetchall()
                     filtered_rows = []
                     for lead_row in candidate_rows:
                         lead = dict(lead_row)
-                        if str(self._resolve_official_group_target_group(lead=lead) or '').strip() == target_group_filter:
-                            filtered_rows.append(lead_row)
+                        if not self._lead_eligible_for_official_group_runtime_matching(
+                            lead=lead,
+                            target_group=target_group_filter,
+                            official_statuses=official_statuses,
+                        ):
+                            continue
+                        filtered_rows.append(lead_row)
                     lead_rows, unmatched_requesters = self._match_official_group_requesters_to_leads(
                         lead_rows=filtered_rows,
                         requesters=requesters,
@@ -12572,11 +13643,16 @@ class Service:
                     executed_count += 1
                 else:
                     skipped_count += 1
-        notification_results = self._send_official_group_success_notifications(
-            decided_at=now_iso,
-            ready_groups=ready_groups,
-            results=results,
-        )
+        previous_suppress_success_notifications = bool(getattr(self, 'official_group_success_notifications_suppressed', False))
+        self.official_group_success_notifications_suppressed = bool(payload.suppress_success_notifications)
+        try:
+            notification_results = self._send_official_group_success_notifications(
+                decided_at=now_iso,
+                ready_groups=ready_groups,
+                results=results,
+            )
+        finally:
+            self.official_group_success_notifications_suppressed = previous_suppress_success_notifications
         return {
             'executed': True,
             'decided_at': now_iso,
@@ -12609,6 +13685,8 @@ class Service:
         target_group: str,
         target_phone_hint: Optional[str] = None,
         target_requester_id: Optional[str] = None,
+        area_code: Any = 0,
+        country: Any = '',
     ) -> bool:
         routed_runtime = self._resolve_whatsapp_approval_runtime_executor(target_group=target_group, responsible_type='official_group')
         if not routed_runtime:
@@ -12629,7 +13707,11 @@ class Service:
         except Exception:
             return False
         target_requester_id_normalized = str(target_requester_id or '').strip()
-        target_phone_keys = self._official_group_phone_match_keys(phone=target_phone_hint)
+        target_phone_keys = self._official_group_phone_match_keys(
+            phone=target_phone_hint,
+            area_code=area_code,
+            country=country,
+        )
         for requester in list(group_state.get('requesters') or []):
             if not isinstance(requester, dict):
                 continue
@@ -12710,8 +13792,10 @@ class Service:
             else:
                 target_requester_still_pending = self._official_group_requester_pending_in_runtime(
                     target_group=target_group,
-                    target_phone_hint=payload.target_phone_hint,
+                    target_phone_hint=payload.target_phone_hint or lead.get('mobile'),
                     target_requester_id=payload.target_requester_id,
+                    area_code=lead.get('area_code'),
+                    country=lead.get('country'),
                 )
                 result['target_requester_still_pending'] = target_requester_still_pending
                 crm_row = self._find_existing_customer_with_fallback(
@@ -13239,7 +14323,7 @@ class Service:
             'status': 'not_started',
             'ready': False,
             'authenticated': False,
-            'session_target_match': False,
+            'session_target_match': None,
             'status_text': '尚未启动独立 Runtime',
             'health_error': None,
         }
@@ -13266,7 +14350,7 @@ class Service:
                     base_runtime['status'] = str(approval_payload.get('status') or health_payload.get('status') or '').strip() or 'running'
                     base_runtime['ready'] = bool(approval_payload.get('ready'))
                     base_runtime['authenticated'] = bool(approval_payload.get('authenticated'))
-                    base_runtime['session_target_match'] = bool(current_client_id in {expected_client_id, expected_approval_client_id} and current_auth_path == expected_auth_path)
+                    base_runtime['session_target_match'] = None if (not current_client_id or not current_auth_path) else bool(current_client_id in {expected_client_id, expected_approval_client_id} and current_auth_path == expected_auth_path)
                     base_runtime['status_text'] = '独立 Runtime 运行中'
                 else:
                     base_runtime['status'] = 'running'
@@ -13302,7 +14386,7 @@ class Service:
                 'status': str(approval_payload.get('status') or health_payload.get('status') or '').strip() or 'shared',
                 'ready': bool(approval_payload.get('ready')),
                 'authenticated': bool(approval_payload.get('authenticated')),
-                'session_target_match': bool(current_client_id in {expected_client_id, expected_approval_client_id} and current_auth_path == expected_auth_path),
+                'session_target_match': None if (not current_client_id or not current_auth_path) else bool(current_client_id in {expected_client_id, expected_approval_client_id} and current_auth_path == expected_auth_path),
                 'status_text': '当前仍在复用共享 legacy worker',
             })
         return base_runtime
@@ -13359,7 +14443,8 @@ class Service:
         match = self._find_whatsapp_approval_account_binding(responsible_type=responsible_type, target_group=target_group)
         if not match:
             return None
-        runtime_state = self._build_whatsapp_approval_runtime_state(match['account_key'], allow_shared_fallback=False)
+        allow_shared_fallback = str(responsible_type or '').strip().lower() == 'registration_group'
+        runtime_state = self._build_whatsapp_approval_runtime_state(match['account_key'], allow_shared_fallback=allow_shared_fallback)
         if not runtime_state.get('active') or not runtime_state.get('base_url'):
             return None
         executor = self._build_runtime_registration_group_executor(str(runtime_state.get('base_url') or ''))
@@ -13403,10 +14488,12 @@ class Service:
         current_client_id = str(selected_payload.get('client_id') or payload.get('client_id') or '').strip()
         current_auth_path = str(selected_payload.get('auth_path') or payload.get('auth_path') or '').strip()
         qr_text = str(selected_payload.get('last_qr') or payload.get('last_qr') or '').strip()
-        session_target_match = bool(
-            current_client_id in {expected_client_id, expected_approval_client_id}
-            and current_auth_path == str(expected_auth_path)
-        )
+        session_target_match = None
+        if current_client_id and current_auth_path:
+            session_target_match = bool(
+                current_client_id in {expected_client_id, expected_approval_client_id}
+                and current_auth_path == str(expected_auth_path)
+            )
         authenticated = bool(selected_payload.get('authenticated'))
         ready = bool(selected_payload.get('ready'))
         login_verified = bool(authenticated and session_target_match)
@@ -13424,12 +14511,24 @@ class Service:
             'account restricted',
             'account has been banned',
         )
+        meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
+        try:
+            last_recover_attempt_ts = float((meta or {}).get('last_session_mismatch_recover_attempt_ts') or 0.0)
+        except (TypeError, ValueError):
+            last_recover_attempt_ts = 0.0
+        auto_recovering = bool(session_target_match is False and last_recover_attempt_ts and (time.time() - last_recover_attempt_ts) < 15.0)
         if login_verified:
             login_check_status = 'passed'
             login_check_message = '账号已登录，可以正常使用。'
         elif any(marker in combined_failure_text for marker in restricted_markers):
             login_check_status = 'account_restricted'
             login_check_message = '账号疑似受限，需先在手机端核查封禁/限制状态后再处理。'
+        elif auto_recovering:
+            login_check_status = 'auto_recovering'
+            login_check_message = '系统正在自动切回这个账号，请稍候几秒后自动刷新。'
+        elif session_target_match is False:
+            login_check_status = 'session_mismatch'
+            login_check_message = '当前扫码服务还未切到这个账号；点“生成二维码”或“刷新状态”后会按该账号重新校验。'
         elif qr_text:
             login_check_status = 'waiting_for_scan'
             login_check_message = '已生成二维码，等待扫码完成登录。'
@@ -13487,114 +14586,121 @@ class Service:
         }
 
     def start_whatsapp_approval_account_runtime(self, account_key: str, *, reset: bool = False) -> Dict[str, Any]:
-        account_row = self._get_whatsapp_approval_account_row(account_key)
-        if not account_row:
-            raise HTTPException(status_code=404, detail='whatsapp approval account not found')
-        normalized_key = str(account_key or '').strip()
-        existing_meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
-        if existing_meta and not reset:
-            existing_runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, allow_shared_fallback=False)
-            if bool(existing_runtime_state.get('active')) and bool(existing_runtime_state.get('session_target_match')):
-                worker_health: Dict[str, Any] = {}
-                base_url = str(existing_runtime_state.get('base_url') or '').strip()
-                if base_url:
-                    try:
-                        worker_health = self._request_whatsapp_approval_worker_health(base_url)
-                    except Exception:
-                        worker_health = {}
-                return {
-                    'started': True,
-                    'reused_existing_runtime': True,
-                    'reset': False,
-                    'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=existing_runtime_state, worker_health=worker_health),
-                    'runtime': existing_runtime_state,
-                    'meta': existing_meta,
-                }
-        if existing_meta:
-            self.stop_whatsapp_approval_account_runtime(normalized_key)
-        auth_path = self._whatsapp_approval_session_auth_path(normalized_key)
-        auth_path.parent.mkdir(parents=True, exist_ok=True)
-        if reset and auth_path.exists():
-            shutil.rmtree(auth_path)
-        port = self._pick_whatsapp_approval_runtime_port()
-        base_url = f'http://127.0.0.1:{port}'
-        log_path = self._whatsapp_approval_runtime_log_path(normalized_key)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        env = os.environ.copy()
-        env.update({
-            'REGISTRATION_GROUP_APPROVAL_WEBJS_PORT': str(port),
-            'REGISTRATION_GROUP_APPROVAL_WEBJS_HOST': '127.0.0.1',
-            'REGISTRATION_GROUP_APPROVAL_WEBJS_AUTH_MODE': 'dedicated_localauth',
-            'REGISTRATION_GROUP_APPROVAL_WEBJS_AUTH_DATA_PATH': str(auth_path),
-            'REGISTRATION_GROUP_APPROVAL_WEBJS_CLIENT_ID': self._whatsapp_approval_session_client_id(normalized_key),
-            'REGISTRATION_GROUP_APPROVAL_WEBJS_EVENT_LOG': str(log_path.with_suffix('.jsonl')),
-        })
-        with log_path.open('a', encoding='utf-8') as log_file:
-            proc = subprocess.Popen(
-                ['npm', 'start'],
-                cwd=str(WHATSAPP_APPROVAL_WORKER_ROOT),
-                env=env,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        meta = self._write_whatsapp_approval_runtime_meta(normalized_key, {
-            'account_key': normalized_key,
-            'pid': proc.pid,
-            'port': port,
-            'base_url': base_url,
-            'auth_path': str(auth_path),
-            'client_id': self._whatsapp_approval_session_client_id(normalized_key),
-            'log_path': str(log_path),
-            'started_at': utc_now(),
-            'reset': reset,
-        })
-        deadline = time.time() + 20.0
-        worker_health: Dict[str, Any] = {}
-        last_error = ''
-        while time.time() < deadline:
-            try:
-                worker_health = self._request_whatsapp_approval_worker_health(base_url)
-                break
-            except Exception as exc:
-                last_error = str(exc)
-                time.sleep(0.5)
-        if not worker_health:
-            self.stop_whatsapp_approval_account_runtime(normalized_key)
-            raise HTTPException(status_code=500, detail=last_error or 'failed to start dedicated whatsapp approval runtime')
-        runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, worker_health=worker_health, allow_shared_fallback=False)
-        return {
-            'started': True,
-            'reset': reset,
-            'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=runtime_state, worker_health=worker_health),
-            'runtime': runtime_state,
-            'meta': meta,
-        }
+        with self._whatsapp_approval_runtime_lock:
+            account_row = self._get_whatsapp_approval_account_row(account_key)
+            if not account_row:
+                raise HTTPException(status_code=404, detail='whatsapp approval account not found')
+            normalized_key = str(account_key or '').strip()
+            existing_meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
+            if existing_meta and not reset:
+                existing_runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, allow_shared_fallback=False)
+                existing_session_state = self._build_whatsapp_approval_session_state(normalized_key, include_qr_ascii=False)
+                if bool(existing_runtime_state.get('active')) and bool(existing_runtime_state.get('session_target_match')) and bool(existing_session_state.get('login_verified')):
+                    worker_health: Dict[str, Any] = {}
+                    base_url = str(existing_runtime_state.get('base_url') or '').strip()
+                    if base_url:
+                        try:
+                            worker_health = self._request_whatsapp_approval_worker_health(base_url)
+                        except Exception:
+                            worker_health = {}
+                    return {
+                        'started': True,
+                        'reused_existing_runtime': True,
+                        'reset': False,
+                        'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=existing_runtime_state, worker_health=worker_health),
+                        'runtime': existing_runtime_state,
+                        'meta': existing_meta,
+                    }
+            if existing_meta:
+                self.stop_whatsapp_approval_account_runtime(normalized_key)
+            auth_path = self._whatsapp_approval_session_auth_path(normalized_key)
+            auth_path.parent.mkdir(parents=True, exist_ok=True)
+            if reset and auth_path.exists():
+                shutil.rmtree(auth_path)
+            port = self._pick_whatsapp_approval_runtime_port()
+            base_url = f'http://127.0.0.1:{port}'
+            log_path = self._whatsapp_approval_runtime_log_path(normalized_key)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            env = os.environ.copy()
+            env.update({
+                'REGISTRATION_GROUP_APPROVAL_WEBJS_PORT': str(port),
+                'REGISTRATION_GROUP_APPROVAL_WEBJS_HOST': '127.0.0.1',
+                'REGISTRATION_GROUP_APPROVAL_WEBJS_AUTH_MODE': 'dedicated_localauth',
+                'REGISTRATION_GROUP_APPROVAL_WEBJS_AUTH_DATA_PATH': str(auth_path),
+                'REGISTRATION_GROUP_APPROVAL_WEBJS_CLIENT_ID': self._whatsapp_approval_session_client_id(normalized_key),
+                'REGISTRATION_GROUP_APPROVAL_WEBJS_EVENT_LOG': str(log_path.with_suffix('.jsonl')),
+            })
+            system_chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+            if os.path.exists(system_chrome):
+                env.setdefault('PUPPETEER_EXECUTABLE_PATH', system_chrome)
+                env.setdefault('REGISTRATION_GROUP_APPROVAL_WEBJS_CHROME_EXECUTABLE', system_chrome)
+            with log_path.open('a', encoding='utf-8') as log_file:
+                proc = subprocess.Popen(
+                    ['npm', 'start'],
+                    cwd=str(WHATSAPP_APPROVAL_WORKER_ROOT),
+                    env=env,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            meta = self._write_whatsapp_approval_runtime_meta(normalized_key, {
+                'account_key': normalized_key,
+                'pid': proc.pid,
+                'port': port,
+                'base_url': base_url,
+                'auth_path': str(auth_path),
+                'client_id': self._whatsapp_approval_session_client_id(normalized_key),
+                'log_path': str(log_path),
+                'started_at': utc_now(),
+                'reset': reset,
+            })
+            deadline = time.time() + 20.0
+            worker_health: Dict[str, Any] = {}
+            last_error = ''
+            while time.time() < deadline:
+                try:
+                    worker_health = self._request_whatsapp_approval_worker_health(base_url)
+                    break
+                except Exception as exc:
+                    last_error = str(exc)
+                    time.sleep(0.5)
+            if not worker_health:
+                self.stop_whatsapp_approval_account_runtime(normalized_key)
+                raise HTTPException(status_code=500, detail=last_error or 'failed to start dedicated whatsapp approval runtime')
+            runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, worker_health=worker_health, allow_shared_fallback=False)
+            return {
+                'started': True,
+                'reset': reset,
+                'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=runtime_state, worker_health=worker_health),
+                'runtime': runtime_state,
+                'meta': meta,
+            }
 
     def stop_whatsapp_approval_account_runtime(self, account_key: str) -> Dict[str, Any]:
-        normalized_key = str(account_key or '').strip()
-        meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
-        pid = meta.get('pid')
-        auth_path = str(meta.get('auth_path') or self._whatsapp_approval_session_auth_path(normalized_key)).strip()
-        runtime_pids: List[int] = []
-        if pid:
-            try:
-                runtime_pids.append(int(pid))
-            except (TypeError, ValueError):
-                pass
-        runtime_pids.extend(self._list_whatsapp_approval_runtime_processes(auth_path))
-        self._terminate_whatsapp_approval_runtime_processes(runtime_pids)
-        if meta:
-            meta['stopped_at'] = utc_now()
-            self._write_whatsapp_approval_runtime_meta(normalized_key, meta)
-        runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, allow_shared_fallback=False)
-        runtime_state['active'] = False
-        runtime_state['status'] = 'stopped'
-        runtime_state['status_text'] = '独立 Runtime 已停止'
-        return {
-            'stopped': True,
-            'runtime': runtime_state,
-        }
+        with self._whatsapp_approval_runtime_lock:
+            normalized_key = str(account_key or '').strip()
+            meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
+            pid = meta.get('pid')
+            auth_path = str(meta.get('auth_path') or self._whatsapp_approval_session_auth_path(normalized_key)).strip()
+            runtime_pids: List[int] = []
+            if pid:
+                try:
+                    runtime_pids.append(int(pid))
+                except (TypeError, ValueError):
+                    pass
+            runtime_pids.extend(self._list_whatsapp_approval_runtime_processes(auth_path))
+            self._terminate_whatsapp_approval_runtime_processes(runtime_pids)
+            if meta:
+                meta['stopped_at'] = utc_now()
+                self._write_whatsapp_approval_runtime_meta(normalized_key, meta)
+            runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, allow_shared_fallback=False)
+            runtime_state['active'] = False
+            runtime_state['status'] = 'stopped'
+            runtime_state['status_text'] = '独立 Runtime 已停止'
+            return {
+                'stopped': True,
+                'runtime': runtime_state,
+            }
 
     def get_whatsapp_approval_account_session(self, account_key: str, *, include_qr_ascii: bool = True) -> Dict[str, Any]:
         account_row = self._get_whatsapp_approval_account_row(account_key)
@@ -13606,10 +14712,17 @@ class Service:
             worker_health = self._request_whatsapp_approval_worker_health(str(runtime_state.get('base_url') or ''))
         elif runtime_state.get('source') == 'shared':
             worker_health = self._current_whatsapp_approval_worker_health()
+        session_state = self._build_whatsapp_approval_session_state(account_key, worker_health=worker_health, include_qr_ascii=include_qr_ascii)
+        runtime_state, session_state, worker_health, _ = self._maybe_auto_recover_whatsapp_approval_account_session(
+            account_key,
+            runtime_state=runtime_state,
+            session_state=session_state,
+            worker_health=worker_health,
+        )
         return {
-            'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=runtime_state, worker_health=worker_health),
+            'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=runtime_state, worker_health=worker_health, session_state=session_state),
             'runtime': runtime_state,
-            'session': self._build_whatsapp_approval_session_state(account_key, worker_health=worker_health, include_qr_ascii=include_qr_ascii),
+            'session': session_state,
         }
 
     def start_whatsapp_approval_account_session(self, account_key: str, *, reset: bool = False) -> Dict[str, Any]:
@@ -13640,6 +14753,73 @@ class Service:
     def reset_whatsapp_approval_account_session(self, account_key: str) -> Dict[str, Any]:
         return self.start_whatsapp_approval_account_session(account_key, reset=True)
 
+    def _maybe_auto_recover_whatsapp_approval_account_session(
+        self,
+        account_key: str,
+        *,
+        runtime_state: Optional[Dict[str, Any]] = None,
+        session_state: Optional[Dict[str, Any]] = None,
+        worker_health: Optional[Dict[str, Any]] = None,
+        cooldown_seconds: float = 30.0,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], bool]:
+        normalized_key = str(account_key or '').strip()
+        runtime_state = dict(runtime_state or {})
+        session_state = dict(session_state or {})
+        worker_health = dict(worker_health or {})
+        if not normalized_key:
+            return runtime_state, session_state, worker_health, False
+        if str(session_state.get('login_check_status') or '').strip() != 'session_mismatch':
+            return runtime_state, session_state, worker_health, False
+        if str(runtime_state.get('source') or '').strip() != 'dedicated':
+            return runtime_state, session_state, worker_health, False
+
+        meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
+        if not meta:
+            return runtime_state, session_state, worker_health, False
+
+        now_ts = time.time()
+        try:
+            last_attempt_ts = float(meta.get('last_session_mismatch_recover_attempt_ts') or 0.0)
+        except (TypeError, ValueError):
+            last_attempt_ts = 0.0
+        if last_attempt_ts and (now_ts - last_attempt_ts) < max(float(cooldown_seconds), 1.0):
+            return runtime_state, session_state, worker_health, False
+
+        meta['last_session_mismatch_recover_attempt_ts'] = now_ts
+        meta['last_session_mismatch_recover_attempt_at'] = utc_now()
+        self._write_whatsapp_approval_runtime_meta(normalized_key, meta)
+
+        try:
+            recovered = self.start_whatsapp_approval_account_session(normalized_key)
+        except Exception as exc:
+            latest_meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
+            latest_meta['last_session_mismatch_recover_attempt_ts'] = now_ts
+            latest_meta['last_session_mismatch_recover_attempt_at'] = meta.get('last_session_mismatch_recover_attempt_at')
+            latest_meta['last_session_mismatch_recover_error'] = str(exc)
+            self._write_whatsapp_approval_runtime_meta(normalized_key, latest_meta)
+            return runtime_state, session_state, worker_health, False
+
+        recovered_runtime = dict(recovered.get('runtime') or runtime_state)
+        recovered_session = dict(recovered.get('session') or session_state)
+        recovered_worker_health: Dict[str, Any] = {}
+        recovered_base_url = str(recovered_runtime.get('base_url') or '').strip()
+        if recovered_runtime.get('active') and recovered_base_url and str(recovered_runtime.get('source') or '').strip() == 'dedicated':
+            try:
+                recovered_worker_health = self._request_whatsapp_approval_worker_health(recovered_base_url)
+            except Exception:
+                recovered_worker_health = dict(worker_health or {})
+        elif worker_health:
+            recovered_worker_health = dict(worker_health or {})
+
+        latest_meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
+        latest_meta['last_session_mismatch_recover_attempt_ts'] = now_ts
+        latest_meta['last_session_mismatch_recover_attempt_at'] = meta.get('last_session_mismatch_recover_attempt_at')
+        latest_meta['last_session_mismatch_recover_error'] = None
+        if recovered_session.get('login_verified'):
+            latest_meta['last_session_mismatch_recovered_at'] = utc_now()
+        self._write_whatsapp_approval_runtime_meta(normalized_key, latest_meta)
+        return recovered_runtime, recovered_session, recovered_worker_health, True
+
     def _get_whatsapp_approval_account_runtime_row(self, account_key: str) -> Dict[str, Any]:
         account_row = self._get_whatsapp_approval_account_row(account_key)
         if not account_row:
@@ -13650,28 +14830,66 @@ class Service:
             shared_worker_health = self._current_whatsapp_approval_worker_health()
         except Exception:
             shared_worker_health = {}
-        normalized_key = str(account_row.get('account_key') or '').strip()
-        has_dedicated_meta = bool(self._read_whatsapp_approval_runtime_meta(normalized_key))
-        account_worker_health: Dict[str, Any] = {}
-        runtime_state = self._build_whatsapp_approval_runtime_state(
-            normalized_key,
-            worker_health=None if has_dedicated_meta else shared_worker_health,
-        )
-        if runtime_state.get('source') == 'shared':
-            account_worker_health = shared_worker_health
-        elif runtime_state.get('active') and runtime_state.get('base_url'):
-            try:
-                account_worker_health = self._request_whatsapp_approval_worker_health(str(runtime_state.get('base_url') or ''))
-                runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, worker_health=account_worker_health, allow_shared_fallback=False)
-            except Exception:
-                account_worker_health = {}
-        return self._build_whatsapp_approval_account_runtime(
+        built, _ = self._build_whatsapp_approval_account_runtime_with_auto_recover(
             account_row,
             production_ops=production_ops,
             official_bridge=official_bridge,
-            worker_health=account_worker_health,
-            runtime_state=runtime_state,
+            shared_worker_health=shared_worker_health,
         )
+        return built
+
+    def _sync_manual_registration_group_approval_to_production_ops_state(
+        self,
+        *,
+        binding: Dict[str, Any],
+        probe: Optional[Dict[str, Any]],
+        approved_at: Optional[str],
+    ) -> None:
+        state_path = PRODUCTION_OPS_DAEMON_STATE_PATH
+        if not state_path:
+            return
+        try:
+            state = load_json_state(state_path)
+            approved_at_text = str(approved_at or '').strip()
+            approved_dt = None
+            if approved_at_text:
+                try:
+                    approved_dt = datetime.fromisoformat(approved_at_text.replace('Z', '+00:00'))
+                except Exception:
+                    approved_dt = None
+            if approved_dt is None:
+                approved_dt = utc_now()
+            if approved_dt.tzinfo is None:
+                approved_dt = approved_dt.replace(tzinfo=timezone.utc)
+            probe_payload = dict(probe or {})
+            fingerprint = requester_fingerprint(probe_payload)
+            actions = state.setdefault('actions', {})
+            if not isinstance(actions, dict):
+                actions = {}
+                state['actions'] = actions
+            actions['last_registration_trigger'] = {
+                'fingerprint': fingerprint,
+                'at': approved_dt.isoformat(),
+            }
+            anchors = state.setdefault('registration_cycle_anchors', {})
+            if not isinstance(anchors, dict):
+                anchors = {}
+                state['registration_cycle_anchors'] = anchors
+            anchor_text = approved_dt.isoformat()
+            candidate_keys = [
+                str(binding.get('registration_group') or '').strip(),
+                str(binding.get('group_id') or '').strip(),
+                str(probe_payload.get('group_id') or '').strip(),
+                str(binding.get('link') or '').strip(),
+                str(binding.get('group_name') or '').strip(),
+                str(probe_payload.get('group_name') or '').strip(),
+            ]
+            for candidate in candidate_keys:
+                if candidate:
+                    anchors[candidate] = anchor_text
+            save_json_state(state_path, state)
+        except Exception:
+            return
 
     def _send_registration_group_binding_notification(
         self,
@@ -13850,6 +15068,11 @@ class Service:
             'code': 'manual_approval_succeeded',
         }
         if result.get('verified') is True and result.get('crm_recorded') is True:
+            self._sync_manual_registration_group_approval_to_production_ops_state(
+                binding=binding,
+                probe=probe,
+                approved_at=decided_at,
+            )
             incident = {
                 'severity': 'info',
                 'code': 'manual_approval_succeeded',
@@ -13936,27 +15159,306 @@ class Service:
             return webhook_url[:-len('/official-group/approve')]
         return webhook_url.rstrip('/')
 
-    def _official_group_bridge_summary_payload(self) -> Dict[str, Any]:
-        base_url = self._official_group_bridge_console_base_url()
-        if not base_url:
-            return {'configured': False, 'health': {}, 'summary': {}}
-        def _get_json(url: str) -> Dict[str, Any]:
-            response = requests.get(url, timeout=10.0)
-            response.raise_for_status()
-            return response.json()
+    @staticmethod
+    def _official_group_bridge_candidate_base_urls(base_url: Optional[str]) -> list[str]:
+        ordered: list[str] = []
+        for candidate in [str(base_url or '').strip().rstrip('/'), OFFICIAL_GROUP_BRIDGE_DEFAULT_BASE_URL]:
+            if candidate and candidate not in ordered:
+                ordered.append(candidate)
+        return ordered
+
+    def _request_official_group_bridge_json(self, url: str) -> Dict[str, Any]:
+        response = requests.get(url, timeout=10.0)
+        response.raise_for_status()
+        content_type = str(response.headers.get('content-type') or '').lower()
+        body_text = response.text
+        if 'html' in content_type or body_text.lstrip().startswith('<!doctype html') or body_text.lstrip().startswith('<html'):
+            raise ValueError('official group bridge returned html instead of json')
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError('official group bridge must return a JSON object')
+        return payload
+
+    def _probe_official_group_bridge_base_url(self, base_url: str) -> Dict[str, Any]:
+        normalized = str(base_url or '').strip().rstrip('/')
+        if not normalized:
+            return {
+                'base_url': '',
+                'health': {'status': 'unreachable', 'error': 'bridge base_url is not configured'},
+                'summary': {'status': 'unreachable', 'error': 'bridge base_url is not configured'},
+                'ready': False,
+            }
+        health_url = f'{normalized}/ops/official-group-bridge/health'
+        summary_url = f'{normalized}/ops/official-group-bridge/summary'
         try:
-            health = _get_json(f'{base_url}/ops/official-group-bridge/health')
+            health = self._request_official_group_bridge_json(health_url)
         except Exception as exc:
             health = {'status': 'unreachable', 'error': str(exc)}
         try:
-            summary = _get_json(f'{base_url}/ops/official-group-bridge/summary')
+            summary = self._request_official_group_bridge_json(summary_url)
         except Exception as exc:
             summary = {'status': 'unreachable', 'error': str(exc)}
+        ready = health.get('status') == 'healthy' and summary.get('status') != 'unreachable'
         return {
-            'configured': True,
-            'base_url': base_url,
+            'base_url': normalized,
             'health': health,
             'summary': summary,
+            'ready': bool(ready),
+        }
+
+    def _start_official_group_bridge_service(self, *, timeout_seconds: float = 30.0) -> Dict[str, Any]:
+        script_path = OFFICIAL_GROUP_BRIDGE_START_SCRIPT
+        if not script_path.exists():
+            raise RuntimeError(f'official group bridge start script not found: {script_path}')
+        completed = subprocess.run(
+            [str(script_path)],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=max(1.0, float(timeout_seconds)),
+            check=False,
+        )
+        stdout = str(completed.stdout or '').strip()
+        stderr = str(completed.stderr or '').strip()
+        if completed.returncode != 0:
+            detail = stderr or stdout or f'exit code {completed.returncode}'
+            raise RuntimeError(f'official group bridge start failed: {detail}')
+        return {
+            'started': True,
+            'stdout': stdout,
+            'stderr': stderr,
+            'timeout_seconds': float(timeout_seconds),
+        }
+
+    def _restart_shared_whatsapp_approval_worker_service(self, *, timeout_seconds: float = 30.0) -> Dict[str, Any]:
+        script_path = WHATSAPP_APPROVAL_WORKER_RESTART_SCRIPT
+        if not script_path.exists():
+            raise RuntimeError(f'shared worker restart script not found: {script_path}')
+        completed = subprocess.run(
+            [str(script_path)],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=max(1.0, float(timeout_seconds)),
+            check=False,
+        )
+        stdout = str(completed.stdout or '').strip()
+        stderr = str(completed.stderr or '').strip()
+        if completed.returncode != 0:
+            detail = stderr or stdout or f'exit code {completed.returncode}'
+            raise RuntimeError(f'shared worker restart failed: {detail}')
+        return {
+            'started': True,
+            'stdout': stdout,
+            'stderr': stderr,
+            'timeout_seconds': float(timeout_seconds),
+        }
+
+    def _whatsapp_approval_auto_recover_allowed(self, recover_key: str, *, cooldown_seconds: float = 30.0) -> bool:
+        now_ts = time.time()
+        with self._whatsapp_approval_auto_recover_lock:
+            current = dict(self._whatsapp_approval_auto_recover_state.get(recover_key) or {})
+            try:
+                last_attempt_ts = float(current.get('last_attempt_ts') or 0.0)
+            except (TypeError, ValueError):
+                last_attempt_ts = 0.0
+            if last_attempt_ts and (now_ts - last_attempt_ts) < max(float(cooldown_seconds), 1.0):
+                return False
+            current['last_attempt_ts'] = now_ts
+            current['last_attempt_at'] = utc_now()
+            self._whatsapp_approval_auto_recover_state[recover_key] = current
+        return True
+
+    def _whatsapp_approval_auto_recover_record(self, recover_key: str, *, ok: bool, detail: Optional[str] = None, payload: Optional[Dict[str, Any]] = None) -> None:
+        with self._whatsapp_approval_auto_recover_lock:
+            current = dict(self._whatsapp_approval_auto_recover_state.get(recover_key) or {})
+            current['last_result_ok'] = bool(ok)
+            current['last_result_at'] = utc_now()
+            current['last_error'] = None if ok else str(detail or '')
+            if payload is not None:
+                current['last_payload'] = dict(payload or {})
+            self._whatsapp_approval_auto_recover_state[recover_key] = current
+
+    def _maybe_auto_recover_whatsapp_approval_account_runtime(
+        self,
+        row: Dict[str, Any],
+        *,
+        runtime_state: Optional[Dict[str, Any]] = None,
+        session_state: Optional[Dict[str, Any]] = None,
+        worker_health: Optional[Dict[str, Any]] = None,
+        cooldown_seconds: float = 30.0,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], bool]:
+        runtime_state = dict(runtime_state or {})
+        session_state = dict(session_state or {})
+        worker_health = dict(worker_health or {})
+        normalized_key = str((row or {}).get('account_key') or '').strip()
+        if not normalized_key or not bool((row or {}).get('enabled')) or not bool((row or {}).get('auto_recover_worker')):
+            return runtime_state, session_state, worker_health, False
+
+        login_check_status = str(session_state.get('login_check_status') or '').strip()
+        if login_check_status in {'account_restricted', 'auth_failed', 'waiting_for_scan'}:
+            return runtime_state, session_state, worker_health, False
+
+        normalized_type = str((row or {}).get('responsible_type') or '').strip()
+        has_dedicated_meta = bool(self._read_whatsapp_approval_runtime_meta(normalized_key))
+
+        recover_key = ''
+        recovery_mode = ''
+        if normalized_type == 'official_group' and (
+            str(runtime_state.get('source') or '').strip() != 'dedicated'
+            or not bool(runtime_state.get('active'))
+            or not bool(session_state.get('login_verified'))
+        ):
+            recover_key = f'wa-dedicated:{normalized_key}'
+            recovery_mode = 'dedicated_runtime_bootstrap'
+        elif has_dedicated_meta and not bool(runtime_state.get('active')):
+            recover_key = f'wa-dedicated:{normalized_key}'
+            recovery_mode = 'dedicated_runtime_rebuild'
+        elif str(runtime_state.get('source') or '').strip() == 'unavailable':
+            recover_key = 'wa-shared-worker'
+            recovery_mode = 'shared_worker_restart'
+        else:
+            return runtime_state, session_state, worker_health, False
+
+        if not self._whatsapp_approval_auto_recover_allowed(recover_key, cooldown_seconds=cooldown_seconds):
+            return runtime_state, session_state, worker_health, False
+
+        try:
+            if recovery_mode == 'shared_worker_restart':
+                self._restart_shared_whatsapp_approval_worker_service(timeout_seconds=max(float(cooldown_seconds), 30.0))
+                recovered_worker_health = self._current_whatsapp_approval_worker_health()
+                recovered_runtime = self._build_whatsapp_approval_runtime_state(normalized_key, worker_health=recovered_worker_health)
+                recovered_session = self._build_whatsapp_approval_session_state(normalized_key, worker_health=recovered_worker_health if recovered_runtime.get('source') == 'shared' else {}, include_qr_ascii=False)
+            else:
+                recovered = self.start_whatsapp_approval_account_session(normalized_key)
+                recovered_runtime = dict(recovered.get('runtime') or {})
+                recovered_session = dict(recovered.get('session') or {})
+                recovered_worker_health = dict(worker_health or {})
+                recovered_base_url = str(recovered_runtime.get('base_url') or '').strip()
+                if recovered_runtime.get('active') and recovered_base_url and str(recovered_runtime.get('source') or '').strip() == 'dedicated':
+                    try:
+                        recovered_worker_health = self._request_whatsapp_approval_worker_health(recovered_base_url)
+                    except Exception:
+                        recovered_worker_health = dict(worker_health or {})
+            self._whatsapp_approval_auto_recover_record(recover_key, ok=True, payload={'mode': recovery_mode, 'account_key': normalized_key})
+            return recovered_runtime, recovered_session, recovered_worker_health, True
+        except Exception as exc:
+            self._whatsapp_approval_auto_recover_record(recover_key, ok=False, detail=str(exc), payload={'mode': recovery_mode, 'account_key': normalized_key})
+            return runtime_state, session_state, worker_health, False
+
+    def _build_whatsapp_approval_account_runtime_with_auto_recover(
+        self,
+        row: Dict[str, Any],
+        *,
+        production_ops: Optional[Dict[str, Any]] = None,
+        official_bridge: Optional[Dict[str, Any]] = None,
+        shared_worker_health: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        production_ops = production_ops or self._production_ops_daemon_snapshot()
+        official_bridge = official_bridge or self._official_group_bridge_summary_payload()
+        account_key = str((row or {}).get('account_key') or '').strip()
+        has_dedicated_meta = bool(self._read_whatsapp_approval_runtime_meta(account_key))
+        account_worker_health: Dict[str, Any] = {}
+        runtime_state = self._build_whatsapp_approval_runtime_state(account_key, worker_health=None if has_dedicated_meta else shared_worker_health)
+        if runtime_state.get('source') == 'shared':
+            account_worker_health = dict(shared_worker_health or {})
+        elif runtime_state.get('active') and runtime_state.get('base_url'):
+            try:
+                account_worker_health = self._request_whatsapp_approval_worker_health(str(runtime_state.get('base_url') or ''))
+                runtime_state = self._build_whatsapp_approval_runtime_state(account_key, worker_health=account_worker_health, allow_shared_fallback=False)
+            except Exception:
+                account_worker_health = {}
+        session_state = self._build_whatsapp_approval_session_state(account_key, worker_health=account_worker_health, include_qr_ascii=False)
+        runtime_state, session_state, account_worker_health, recovered_runtime = self._maybe_auto_recover_whatsapp_approval_account_runtime(
+            row,
+            runtime_state=runtime_state,
+            session_state=session_state,
+            worker_health=account_worker_health,
+        )
+        if recovered_runtime and runtime_state.get('source') == 'shared':
+            shared_worker_health = dict(account_worker_health or {})
+        runtime_state, session_state, account_worker_health, _ = self._maybe_auto_recover_whatsapp_approval_account_session(
+            account_key,
+            runtime_state=runtime_state,
+            session_state=session_state,
+            worker_health=account_worker_health,
+        )
+        built = self._build_whatsapp_approval_account_runtime(
+            row,
+            production_ops=production_ops,
+            official_bridge=official_bridge,
+            worker_health=account_worker_health,
+            runtime_state=runtime_state,
+            session_state=session_state,
+        )
+        return built, dict(shared_worker_health or {})
+
+    def _maybe_auto_recover_official_group_bridge(self, *, cooldown_seconds: float = 30.0) -> bool:
+        now_ts = time.time()
+        with self._official_group_bridge_recover_lock:
+            last_attempt_ts = 0.0
+            try:
+                last_attempt_ts = float(self._official_group_bridge_recover_state.get('last_attempt_ts') or 0.0)
+            except (TypeError, ValueError):
+                last_attempt_ts = 0.0
+            if last_attempt_ts and (now_ts - last_attempt_ts) < max(float(cooldown_seconds), 1.0):
+                return False
+            self._official_group_bridge_recover_state['last_attempt_ts'] = now_ts
+            self._official_group_bridge_recover_state['last_attempt_at'] = utc_now()
+        try:
+            result = self._start_official_group_bridge_service(timeout_seconds=max(float(cooldown_seconds), 30.0))
+        except Exception as exc:
+            with self._official_group_bridge_recover_lock:
+                self._official_group_bridge_recover_state['last_error'] = str(exc)
+                self._official_group_bridge_recover_state['last_result'] = {'started': False, 'error': str(exc)}
+            return False
+        with self._official_group_bridge_recover_lock:
+            self._official_group_bridge_recover_state['last_error'] = None
+            self._official_group_bridge_recover_state['last_result'] = dict(result or {})
+        return True
+
+    def _official_group_bridge_summary_payload(self) -> Dict[str, Any]:
+        base_url = self._official_group_bridge_console_base_url()
+        candidate_base_urls = self._official_group_bridge_candidate_base_urls(base_url)
+        if not candidate_base_urls:
+            return {'configured': False, 'health': {}, 'summary': {}, 'auto_recovered': False}
+
+        probes = [self._probe_official_group_bridge_base_url(candidate) for candidate in candidate_base_urls]
+        for probe in probes:
+            if probe.get('ready'):
+                return {
+                    'configured': True,
+                    'base_url': probe['base_url'],
+                    'health': probe['health'],
+                    'summary': probe['summary'],
+                    'auto_recovered': False,
+                }
+
+        auto_recovered = self._maybe_auto_recover_official_group_bridge()
+        if auto_recovered:
+            probes = [self._probe_official_group_bridge_base_url(candidate) for candidate in candidate_base_urls]
+            for probe in probes:
+                if probe.get('ready'):
+                    return {
+                        'configured': True,
+                        'base_url': probe['base_url'],
+                        'health': probe['health'],
+                        'summary': probe['summary'],
+                        'auto_recovered': True,
+                    }
+
+        fallback_probe = probes[0]
+        if len(probes) > 1:
+            for probe in probes[1:]:
+                if probe.get('health', {}).get('status') == 'healthy':
+                    fallback_probe = probe
+                    break
+        return {
+            'configured': True,
+            'base_url': fallback_probe['base_url'],
+            'health': fallback_probe['health'],
+            'summary': fallback_probe['summary'],
+            'auto_recovered': bool(auto_recovered),
         }
 
     def _current_local_minutes(self) -> int:
@@ -14033,31 +15535,84 @@ class Service:
         return None
 
     @staticmethod
-    def _extract_live_group_probe(production_ops: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _binding_probe_from_production_ops_status(
+        production_ops: Optional[Dict[str, Any]],
+        *,
+        responsible_type: str,
+        binding: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if str(responsible_type or '').strip() != 'registration_group':
+            return {}
         runtime = dict((production_ops or {}).get('runtime') or {})
         status = dict(runtime.get('status') or {})
-        candidates = [
-            ('decision_group_state', ((status.get('decision_group_state') or {}).get('payload') if isinstance(status.get('decision_group_state'), dict) else None)),
-            ('fresh_probe', ((status.get('fresh_probe') or {}).get('payload') if isinstance(status.get('fresh_probe'), dict) else None)),
-            ('worker_state', ((status.get('worker_state') or {}).get('payload') if isinstance(status.get('worker_state'), dict) else None)),
-        ]
-        for source, payload in candidates:
-            if not isinstance(payload, dict):
-                continue
-            group_name = str(payload.get('group_name') or '').strip()
-            group_id = str(payload.get('group_id') or '').strip()
-            pending_count = payload.get('pending_count')
-            member_count = payload.get('member_count')
-            if group_name or group_id or pending_count is not None or member_count is not None:
-                return {
-                    'source': source,
-                    'group_name': group_name,
-                    'group_id': group_id,
-                    'pending_count': pending_count,
-                    'member_count': member_count,
-                    'requester_ids': list(payload.get('requester_ids') or []),
-                    'requesters': list(payload.get('requesters') or []),
-                }
+        monitor_target = dict(status.get('monitor_target') or {}) if isinstance(status.get('monitor_target'), dict) else {}
+        decision_group_state = dict(status.get('decision_group_state') or {}) if isinstance(status.get('decision_group_state'), dict) else {}
+        payload = dict(decision_group_state.get('payload') or {}) if isinstance(decision_group_state.get('payload'), dict) else {}
+        if not monitor_target or not payload:
+            return {}
+        binding = dict(binding or {})
+        binding_group = str(binding.get('registration_group') or '').strip()
+        binding_group_id = str(binding.get('group_id') or '').strip()
+        binding_link = str(binding.get('link') or '').strip()
+        binding_group_name = str(binding.get('group_name') or '').strip()
+        target_matches_monitor = any([
+            bool(binding_group and str(monitor_target.get('registration_group') or '').strip() == binding_group),
+            bool(binding_group_id and str(payload.get('group_id') or '').strip() == binding_group_id),
+            bool(binding_link and str(monitor_target.get('binding_link') or '').strip() == binding_link),
+            bool(binding_group_name and str(monitor_target.get('group_name') or monitor_target.get('binding_group_name') or '').strip() == binding_group_name),
+        ])
+        if not target_matches_monitor:
+            return {}
+        return {
+            **payload,
+            'source': decision_group_state.get('source') or payload.get('source') or 'production_ops_daemon',
+            'source_base_url': str(monitor_target.get('worker_base_url') or '').strip() or None,
+            'probe_target': binding_group_id or binding_group or binding_link or binding_group_name or str(payload.get('group_id') or '').strip() or str(payload.get('group_name') or '').strip(),
+            'zero_pending_unverified': bool(decision_group_state.get('zero_pending_unverified', payload.get('zero_pending_unverified'))),
+            'zero_pending_unverified_reason': decision_group_state.get('zero_pending_unverified_reason') or payload.get('zero_pending_unverified_reason'),
+            'zero_pending_verified_by': decision_group_state.get('zero_pending_verified_by') or payload.get('zero_pending_verified_by'),
+            'pending_zero_confidence': decision_group_state.get('pending_zero_confidence') or payload.get('pending_zero_confidence'),
+            'empty_queue_visible': bool(decision_group_state.get('empty_queue_visible', payload.get('empty_queue_visible'))),
+            'has_pending_section': bool(decision_group_state.get('has_pending_section', payload.get('has_pending_section'))),
+            'has_pending_request_row': bool(decision_group_state.get('has_pending_request_row', payload.get('has_pending_request_row'))),
+        }
+
+    @staticmethod
+    def _extract_live_group_probe(
+        production_ops: Optional[Dict[str, Any]] = None,
+        *,
+        runtime_state: Optional[Dict[str, Any]] = None,
+        session_state: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        runtime = dict(runtime_state or (production_ops or {}).get('runtime') or {})
+        runtime_status = runtime.get('status') if isinstance(runtime.get('status'), dict) else (((production_ops or {}).get('runtime') or {}).get('status') if isinstance(((production_ops or {}).get('runtime') or {}).get('status'), dict) else {})
+        truth_kwargs = {'status': runtime_status}
+        if runtime_state:
+            truth_kwargs['runtime_state'] = runtime_state
+        if session_state:
+            truth_kwargs['session_state'] = session_state
+        truth_state = build_truth_state(**truth_kwargs)
+
+        payload = dict(truth_state.get('payload') or {})
+        if payload or truth_state.get('group_name') or truth_state.get('group_id'):
+            return {
+                'source': truth_state.get('source'),
+                'group_name': str(payload.get('group_name') or truth_state.get('group_name') or '').strip(),
+                'group_id': str(payload.get('group_id') or truth_state.get('group_id') or '').strip(),
+                'pending_count': payload.get('pending_count', truth_state.get('pending_count')),
+                'member_count': payload.get('member_count', truth_state.get('member_count')),
+                'requester_ids': list(payload.get('requester_ids') or truth_state.get('requester_ids') or []),
+                'requesters': list(payload.get('requesters') or truth_state.get('requesters') or []),
+                'zero_pending_unverified': bool(truth_state.get('zero_pending_unverified')),
+                'zero_pending_unverified_reason': truth_state.get('zero_pending_unverified_reason'),
+                'zero_pending_verified_by': truth_state.get('zero_pending_verified_by'),
+                'pending_zero_confidence': truth_state.get('pending_zero_confidence'),
+                'data_quality': truth_state.get('data_quality'),
+                'session_health': truth_state.get('session_health'),
+                'source_ts': truth_state.get('source_ts'),
+                'empty_queue_visible': bool(truth_state.get('empty_queue_visible')),
+                'truth_state': truth_state,
+            }
         return {
             'source': None,
             'group_name': '',
@@ -14066,9 +15621,98 @@ class Service:
             'member_count': None,
             'requester_ids': [],
             'requesters': [],
+            'zero_pending_unverified': False,
+            'pending_zero_confidence': None,
+            'truth_state': truth_state,
         }
 
-    def _approval_membership_verifier_state(self, *, responsible_type: str, production_ops: Optional[Dict[str, Any]] = None, official_bridge: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    @staticmethod
+    def _truth_state_from_probe_payload(
+        probe_payload: Optional[Dict[str, Any]],
+        *,
+        source: Optional[str] = None,
+        runtime_state: Optional[Dict[str, Any]] = None,
+        session_state: Optional[Dict[str, Any]] = None,
+        monitor_target: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload = dict(probe_payload or {})
+        if not payload:
+            return build_truth_state(
+                status={},
+                runtime_state=runtime_state,
+                session_state=session_state,
+                monitor_target=monitor_target,
+            )
+        decision_group_state = {
+            'payload': payload,
+            'source': str(source or payload.get('source') or payload.get('source_base_url') or 'binding_probe').strip() or 'binding_probe',
+            'zero_pending_unverified': bool(payload.get('zero_pending_unverified')),
+            'zero_pending_unverified_reason': payload.get('zero_pending_unverified_reason'),
+            'zero_pending_verified_by': payload.get('zero_pending_verified_by'),
+        }
+        return build_truth_state(
+            status={'decision_group_state': decision_group_state},
+            runtime_state=runtime_state,
+            session_state=session_state,
+            monitor_target=monitor_target,
+        )
+
+    @staticmethod
+    def _membership_verifier_gate_from_truth_state(
+        truth_state: Optional[Dict[str, Any]],
+        *,
+        probe: Optional[Dict[str, Any]] = None,
+        source_fallback: Optional[str] = None,
+        include_unconfirmed_probe_unavailable: bool = False,
+        probe_unavailable_detail: str = '实时探针结果证据不足，暂不能判定真实群状态。',
+    ) -> Optional[Dict[str, Any]]:
+        normalized_truth_state = dict(truth_state or {})
+        if not normalized_truth_state:
+            return None
+        normalized_probe = dict(probe or {})
+        truth_status = str(normalized_truth_state.get('status') or '').strip()
+        source = normalized_truth_state.get('source') or source_fallback
+        if truth_status == 'session_mismatch':
+            return {
+                'ready': False,
+                'requires_manual_seed': True,
+                'status': 'session_mismatch',
+                'detail': '当前会话与目标账号不一致，需重建会话后再使用。',
+                'source': source,
+                'probe': normalized_probe,
+                'truth_state': normalized_truth_state,
+            }
+        if truth_status == 'runtime_unhealthy':
+            return {
+                'ready': False,
+                'requires_manual_seed': True,
+                'status': 'runtime_unavailable',
+                'detail': '未就绪',
+                'source': source,
+                'probe': normalized_probe,
+                'truth_state': normalized_truth_state,
+            }
+        if include_unconfirmed_probe_unavailable and truth_status and truth_status not in {'confirmed_pending', 'confirmed_empty'}:
+            return {
+                'ready': False,
+                'requires_manual_seed': True,
+                'status': 'probe_unavailable',
+                'detail': probe_unavailable_detail,
+                'source': source,
+                'probe': normalized_probe,
+                'truth_state': normalized_truth_state,
+            }
+        return None
+
+    def _approval_membership_verifier_state(
+        self,
+        *,
+        responsible_type: str,
+        production_ops: Optional[Dict[str, Any]] = None,
+        official_bridge: Optional[Dict[str, Any]] = None,
+        runtime_state: Optional[Dict[str, Any]] = None,
+        session_state: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         if str(responsible_type or '').strip() != 'registration_group':
             return {
                 'ready': False,
@@ -14080,17 +15724,57 @@ class Service:
             }
         executor_health = self.registration_group_approval_executor_health()
         supports = {str(item).strip() for item in (executor_health.get('supports') or []) if str(item).strip()}
-        probe = self._extract_live_group_probe(production_ops)
+        runtime_state = dict(runtime_state or {})
+        session_state = dict(session_state or {})
+        runtime_gate_context = bool(
+            runtime_state.get('base_url')
+            or (
+                session_state.get('authenticated')
+                and (
+                    session_state.get('client_id')
+                    or session_state.get('auth_path')
+                )
+            )
+        )
+        probe = self._extract_live_group_probe(
+            production_ops,
+            runtime_state=runtime_state if runtime_gate_context else None,
+            session_state=session_state if runtime_gate_context else None,
+        )
+        truth_state = dict(probe.get('truth_state') or {})
+        runtime_gate_applicable = runtime_gate_context
+        if runtime_gate_applicable:
+            gated_verifier = self._membership_verifier_gate_from_truth_state(
+                truth_state,
+                probe=probe,
+                source_fallback=truth_state.get('source') or probe.get('source'),
+            )
+            if gated_verifier:
+                return gated_verifier
         has_live_probe = bool(probe.get('group_name') or probe.get('group_id') or probe.get('member_count') is not None)
+        try:
+            probe_pending_count = max(int(probe.get('pending_count') or 0), 0)
+        except (TypeError, ValueError):
+            probe_pending_count = 0
         ready = bool(has_live_probe and ('strict_queue_and_member_verify' in supports or 'approve' in supports))
         if ready:
             group_label = str(probe.get('group_name') or probe.get('group_id') or '-').strip() or '-'
+            suffix_parts = []
+            if probe_pending_count <= 0:
+                zero_confidence = str(probe.get('pending_zero_confidence') or truth_state.get('pending_zero_confidence') or 'unverified').strip() or 'unverified'
+                confidence_label = {
+                    'unverified': '待验证',
+                    'high': '高置信',
+                    'verified': '已核验',
+                }.get(zero_confidence, zero_confidence)
+                suffix_parts.append(f'零待审批置信度：{confidence_label}')
             detail = self._format_group_probe_ready_detail(
                 scope_text='注册群',
                 probe_label=group_label,
                 pending_count=probe.get('pending_count'),
                 member_count=probe.get('member_count'),
                 executor_text='共享执行器',
+                suffix='；'.join(suffix_parts),
             )
             status = 'live_probe_ready'
             requires_manual_seed = False
@@ -14109,6 +15793,7 @@ class Service:
             'detail': detail,
             'source': probe.get('source'),
             'probe': probe,
+            'truth_state': truth_state,
         }
 
     @staticmethod
@@ -14122,7 +15807,9 @@ class Service:
         suffix: str = '',
     ) -> str:
         pending_text = pending_count if pending_count is not None else '-'
-        return f'已接入群状态探针：待审批 {pending_text} 人。已有管理员权限。'
+        base = f'已接探针：待审批 {pending_text} 人。已有管理员权限。'
+        suffix_text = str(suffix or '').strip()
+        return f'{base}{suffix_text and "；" + suffix_text}'
 
     @staticmethod
     def _binding_membership_verifier_state(
@@ -14148,6 +15835,53 @@ class Service:
                 'detail': '不监控',
             }
         binding_probe = dict(live_probe or {})
+        inherited_truth_state = dict(account_verifier.get('truth_state') or {})
+        inherited_truth_gate = Service._membership_verifier_gate_from_truth_state(
+            inherited_truth_state,
+            probe=binding_probe,
+            source_fallback=inherited_truth_state.get('source') or binding_probe.get('source') or binding_probe.get('source_base_url'),
+        )
+        if inherited_truth_gate:
+            return inherited_truth_gate
+        inherited_truth_status = str(inherited_truth_state.get('status') or '').strip()
+        runtime = dict((production_ops or {}).get('runtime') or {})
+        status = dict(runtime.get('status') or {})
+        monitor_target = dict(status.get('monitor_target') or {}) if isinstance(status.get('monitor_target'), dict) else {}
+        monitor_registration_group = str(monitor_target.get('registration_group') or '').strip()
+        monitor_group_id = str(((status.get('decision_group_state') or {}).get('payload') or {}).get('group_id') or '').strip() if isinstance(status.get('decision_group_state'), dict) else ''
+        monitor_binding_link = str(monitor_target.get('binding_link') or '').strip()
+        monitor_group_name = str(monitor_target.get('group_name') or monitor_target.get('binding_group_name') or '').strip()
+        binding_group = str(binding.get('registration_group') or '').strip()
+        binding_group_id = str(binding.get('group_id') or '').strip()
+        binding_link = str(binding.get('link') or '').strip()
+        binding_group_name = str(binding.get('group_name') or '').strip()
+        target_matches_monitor = any([
+            bool(binding_group and monitor_registration_group and binding_group == monitor_registration_group),
+            bool(binding_group_id and monitor_group_id and binding_group_id == monitor_group_id),
+            bool(binding_link and monitor_binding_link and binding_link == monitor_binding_link),
+            bool(binding_group_name and monitor_group_name and binding_group_name == monitor_group_name),
+        ])
+        authoritative_probe = dict(binding_probe)
+        authoritative_truth_state = inherited_truth_state if target_matches_monitor and inherited_truth_status else {}
+        if authoritative_truth_state:
+            authoritative_payload = dict(authoritative_truth_state.get('payload') or {})
+            if authoritative_payload:
+                authoritative_probe = {
+                    **authoritative_payload,
+                    'source': authoritative_truth_state.get('source') or authoritative_payload.get('source') or binding_probe.get('source') or binding_probe.get('source_base_url'),
+                    'source_base_url': binding_probe.get('source_base_url'),
+                    'probe_target': binding_probe.get('probe_target') or binding_group or binding_group_id,
+                    'zero_pending_unverified': bool(authoritative_truth_state.get('zero_pending_unverified')),
+                    'zero_pending_unverified_reason': authoritative_truth_state.get('zero_pending_unverified_reason'),
+                    'zero_pending_verified_by': authoritative_truth_state.get('zero_pending_verified_by'),
+                    'empty_queue_visible': bool(authoritative_truth_state.get('empty_queue_visible')),
+                    'has_pending_section': bool(authoritative_truth_state.get('has_pending_section')),
+                    'has_pending_request_row': bool(authoritative_truth_state.get('has_pending_request_row')),
+                }
+        binding_truth_state = Service._truth_state_from_probe_payload(
+            authoritative_probe,
+            source=authoritative_probe.get('source') or authoritative_probe.get('source_base_url') or 'binding_probe',
+        )
         binding_probe_error = str(binding_probe.get('error') or '').strip()
         has_binding_probe = bool(
             binding_probe.get('group_name')
@@ -14155,7 +15889,9 @@ class Service:
             or binding_probe.get('pending_count') is not None
             or binding_probe.get('member_count') is not None
         )
-        if has_binding_probe:
+        if authoritative_probe:
+            probe = authoritative_probe
+        elif has_binding_probe:
             probe = binding_probe
         else:
             probe = dict(account_verifier.get('probe') or {})
@@ -14168,18 +15904,15 @@ class Service:
                         'detail': f'探针异常：{binding_probe_error}',
                         'source': binding_probe.get('source') or binding_probe.get('source_base_url'),
                         'probe': binding_probe,
+                        'truth_state': binding_truth_state,
                     }
                 return {
                     'ready': False,
                     'requires_manual_seed': True,
                     'status': account_verifier.get('status') or 'probe_unavailable',
                     'detail': account_verifier.get('detail') or '当前未拿到共享执行器实时探针结果。',
+                    'truth_state': dict(account_verifier.get('truth_state') or {}),
                 }
-        binding_group = str(binding.get('registration_group') or '').strip()
-        binding_group_id = str(binding.get('group_id') or '').strip()
-        binding_link = str(binding.get('link') or '').strip()
-        probe_group = str(probe.get('group_name') or '').strip()
-        probe_group_id = str(probe.get('group_id') or '').strip()
         runtime = dict((production_ops or {}).get('runtime') or {})
         status = dict(runtime.get('status') or {})
         monitor_target = dict(status.get('monitor_target') or {}) if isinstance(status.get('monitor_target'), dict) else {}
@@ -14187,14 +15920,34 @@ class Service:
         monitor_group_id = str(((status.get('decision_group_state') or {}).get('payload') or {}).get('group_id') or '').strip() if isinstance(status.get('decision_group_state'), dict) else ''
         monitor_binding_link = str(monitor_target.get('binding_link') or '').strip()
         monitor_group_name = str(monitor_target.get('group_name') or monitor_target.get('binding_group_name') or '').strip()
+        try:
+            binding_pending_count = max(int(probe.get('pending_count') or 0), 0)
+        except (TypeError, ValueError):
+            binding_pending_count = 0
+        binding_group = str(binding.get('registration_group') or '').strip()
+        binding_group_id = str(binding.get('group_id') or '').strip()
+        binding_link = str(binding.get('link') or '').strip()
+        probe_group = str(probe.get('group_name') or '').strip()
+        probe_group_id = str(probe.get('group_id') or '').strip()
         if binding_group or binding_group_id:
             group_ok = (not binding_group) or (binding_group and binding_group == probe_group)
             group_id_ok = (not binding_group_id) or (binding_group_id and binding_group_id == probe_group_id)
             if group_ok and group_id_ok:
                 probe_label = str(binding_group or probe_group or binding_group_id or probe_group_id or '-').strip() or '-'
                 suffix_parts = []
-                if binding_group_id or probe_group_id:
+                current_group_name = str(probe_group or binding.get('group_name') or monitor_group_name or '').strip()
+                if current_group_name and not (binding_group and current_group_name == binding_group):
+                    suffix_parts.append(f'当前群：{current_group_name}')
+                elif not current_group_name and (binding_group_id or probe_group_id):
                     suffix_parts.append(f'当前群ID：{binding_group_id or probe_group_id}')
+                if binding_pending_count <= 0:
+                    zero_confidence = str(probe.get('pending_zero_confidence') or binding_truth_state.get('pending_zero_confidence') or 'unverified').strip() or 'unverified'
+                    confidence_label = {
+                        'unverified': '待验证',
+                        'high': '高置信',
+                        'verified': '已核验',
+                    }.get(zero_confidence, zero_confidence)
+                    suffix_parts.append(f'零待审批置信度：{confidence_label}')
                 return {
                     'ready': True,
                     'requires_manual_seed': False,
@@ -14209,6 +15962,10 @@ class Service:
                     ),
                     'source': probe.get('source') or probe.get('source_base_url'),
                     'probe': probe,
+                    'truth_state': build_truth_state(
+                        status={'decision_group_state': {'payload': probe, 'source': probe.get('source') or probe.get('source_base_url') or 'binding_probe'}},
+                        runtime_state=dict(((production_ops or {}).get('runtime') or {})),
+                    ),
                 }
             if not has_binding_probe:
                 monitor_target_matches_binding = any([
@@ -14224,6 +15981,7 @@ class Service:
                             'requires_manual_seed': True,
                             'status': 'other_binding_live_probe_active',
                             'detail': '待切换',
+                            'truth_state': binding_truth_state,
                         }
             mismatch = []
             if binding_group and binding_group != probe_group:
@@ -14237,6 +15995,7 @@ class Service:
                 'detail': '绑定映射与当前真实探针不一致：' + '；'.join(mismatch),
                 'source': probe.get('source') or probe.get('source_base_url'),
                 'probe': probe,
+                'truth_state': binding_truth_state,
             }
         if binding_probe_error and not has_binding_probe:
             return {
@@ -14246,6 +16005,7 @@ class Service:
                 'detail': f'探针异常：{binding_probe_error}',
                 'source': binding_probe.get('source') or binding_probe.get('source_base_url'),
                 'probe': binding_probe,
+                'truth_state': binding_truth_state,
             }
         return {
             'ready': True,
@@ -14254,6 +16014,7 @@ class Service:
             'detail': '',
             'source': probe.get('source') or probe.get('source_base_url'),
             'probe': probe,
+            'truth_state': binding_truth_state,
         }
 
     def _official_group_binding_membership_verifier_state(
@@ -14337,7 +16098,37 @@ class Service:
             'member_count': probe.get('member_count'),
             'requester_ids': list(probe.get('requester_ids') or []),
             'requesters': list(probe.get('requesters') or []),
+            'zero_pending_unverified': bool(probe.get('zero_pending_unverified')),
+            'zero_pending_unverified_reason': probe.get('zero_pending_unverified_reason'),
+            'zero_pending_verified_by': probe.get('zero_pending_verified_by'),
+            'review_surface_ready': bool(probe.get('review_surface_ready')),
+            'empty_queue_visible': bool(probe.get('empty_queue_visible')),
+            'has_pending_section': bool(probe.get('has_pending_section')),
+            'has_pending_request_row': bool(probe.get('has_pending_request_row')),
+            'zero_pending_recheck_attempted': bool(probe.get('zero_pending_recheck_attempted')),
+            'zero_pending_recheck_resolved': bool(probe.get('zero_pending_recheck_resolved')),
+            'zero_pending_recheck_count': probe.get('zero_pending_recheck_count'),
         }
+        binding_monitor_target = {
+            'group_name': str(binding.get('group_name') or probe_payload.get('group_name') or '').strip(),
+            'group_id': str(binding.get('group_id') or probe_payload.get('group_id') or '').strip(),
+        }
+        truth_state = self._truth_state_from_probe_payload(
+            probe_payload,
+            source='official_group_runtime_group_state',
+            runtime_state=runtime_state,
+            session_state=session_state,
+            monitor_target=binding_monitor_target,
+        )
+        truth_gate = self._membership_verifier_gate_from_truth_state(
+            truth_state,
+            probe=probe_payload,
+            source_fallback='official_group_runtime_group_state',
+            include_unconfirmed_probe_unavailable=True,
+            probe_unavailable_detail='官方群实时探针结果证据不足，暂不能判定真实群状态。',
+        )
+        if truth_gate:
+            return truth_gate
         live_group_name = str(probe_payload.get('group_name') or '').strip()
         configured_group_name = str(binding.get('group_name') or '').strip()
         detail_suffix = ''
@@ -14356,8 +16147,9 @@ class Service:
             'requires_manual_seed': False,
             'status': 'live_probe_ready',
             'detail': detail,
-            'source': 'official_group_runtime_group_state',
+            'source': truth_state.get('source') or 'official_group_runtime_group_state',
             'probe': probe_payload,
+            'truth_state': truth_state,
         }
 
     @staticmethod
@@ -14416,7 +16208,7 @@ class Service:
             'binding_count': len(monitored),
         }
 
-    def _build_whatsapp_approval_account_runtime(self, row: Dict[str, Any], *, production_ops: Optional[Dict[str, Any]] = None, official_bridge: Optional[Dict[str, Any]] = None, worker_health: Optional[Dict[str, Any]] = None, runtime_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _build_whatsapp_approval_account_runtime(self, row: Dict[str, Any], *, production_ops: Optional[Dict[str, Any]] = None, official_bridge: Optional[Dict[str, Any]] = None, worker_health: Optional[Dict[str, Any]] = None, runtime_state: Optional[Dict[str, Any]] = None, session_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         serialized = dict(row)
         raw_group_links = []
         try:
@@ -14577,32 +16369,61 @@ class Service:
         )
         has_monitored_bindings = enabled_binding_count > 0
         runtime_state = runtime_state or self._build_whatsapp_approval_runtime_state(serialized.get('account_key') or '', worker_health=worker_health)
-        if runtime_state.get('active') and worker_health:
-            session_state = self._build_whatsapp_approval_session_state(serialized.get('account_key') or '', worker_health=worker_health, include_qr_ascii=False)
+        if session_state is None:
+            if runtime_state.get('active') and worker_health:
+                session_state = self._build_whatsapp_approval_session_state(serialized.get('account_key') or '', worker_health=worker_health, include_qr_ascii=False)
+            else:
+                session_state = self._build_whatsapp_approval_session_state(serialized.get('account_key') or '', worker_health=worker_health if runtime_state.get('source') == 'shared' else {}, include_qr_ascii=False)
         else:
-            session_state = self._build_whatsapp_approval_session_state(serialized.get('account_key') or '', worker_health=worker_health if runtime_state.get('source') == 'shared' else {}, include_qr_ascii=False)
+            session_state = dict(session_state or {})
 
         responsible_type = str(serialized.get('responsible_type') or '').strip()
+        serialized['approval_scope'] = responsible_type
+        for item in group_link_bindings:
+            item['approval_scope'] = responsible_type
+            item['target_group_label'] = str(
+                item.get('group_name')
+                or item.get('group_id')
+                or item.get('link')
+                or item.get('registration_group')
+                or ''
+            ).strip()
         original_group_link_bindings = [dict(item or {}) for item in (serialized.get('group_link_bindings') or [])]
         binding_live_probes: list[dict[str, Any]] = []
         for item in original_group_link_bindings:
-            probe = self._apply_live_group_identity_to_binding(
-                dict(item or {}),
+            daemon_probe = self._binding_probe_from_production_ops_status(
+                production_ops,
                 responsible_type=responsible_type,
-                runtime_state=runtime_state,
-                session_state=session_state,
-                allow_shared_fallback=responsible_type == 'registration_group',
-                attempts=1 if responsible_type == 'registration_group' else 3,
-                timeout_seconds=2.0,
+                binding=item,
             )
+            if daemon_probe:
+                probe = daemon_probe
+            else:
+                probe = self._apply_live_group_identity_to_binding(
+                    dict(item or {}),
+                    responsible_type=responsible_type,
+                    runtime_state=runtime_state,
+                    session_state=session_state,
+                    allow_shared_fallback=responsible_type == 'registration_group',
+                    attempts=1 if responsible_type == 'registration_group' else 3,
+                    timeout_seconds=2.0,
+                )
             binding_live_probes.append(probe if isinstance(probe, dict) else {})
         for runtime_row, binding, probe in zip(binding_runtime_rows, original_group_link_bindings, binding_live_probes):
             live_group_name = str((probe or {}).get('group_name') or '').strip()
             live_group_id = str((probe or {}).get('group_id') or '').strip()
             runtime_row['runtime_probe_group_name'] = live_group_name
             runtime_row['runtime_probe_group_id'] = live_group_id
+            runtime_row['approval_scope'] = responsible_type
             runtime_row['group_name'] = live_group_name or str(binding.get('group_name') or '').strip()
             runtime_row['group_id'] = live_group_id or str(binding.get('group_id') or '').strip()
+            runtime_row['target_group_label'] = str(
+                runtime_row.get('group_name')
+                or runtime_row.get('group_id')
+                or runtime_row.get('link')
+                or runtime_row.get('registration_group')
+                or ''
+            ).strip()
             runtime_row['cycle_anchor_at'] = self._lookup_binding_cycle_anchor(
                 production_ops=production_ops,
                 responsible_type=responsible_type,
@@ -14660,6 +16481,8 @@ class Service:
             responsible_type=str(serialized.get('responsible_type') or '').strip(),
             production_ops=production_ops,
             official_bridge=official_bridge,
+            runtime_state=runtime_state,
+            session_state=session_state,
         )
         if str(serialized.get('responsible_type') or '').strip() == 'official_group':
             binding_verifiers = [
@@ -14817,6 +16640,13 @@ class Service:
         serialized['area'] = str(representative_binding.get('area') or default_area).strip()
         serialized['notify_profile_name'] = str(representative_binding.get('notify_profile_name') or default_notify_profile_name).strip()
         serialized['notify_robot_name'] = str(representative_binding.get('notify_robot_name') or self._notify_robot_name(serialized['notify_profile_name'])).strip()
+        serialized['target_group_label'] = str(
+            representative_binding.get('group_name')
+            or representative_binding.get('group_id')
+            or representative_binding.get('link')
+            or representative_binding.get('registration_group')
+            or ''
+        ).strip()
         serialized['approval_count_threshold'] = _coerce_positive_int(representative_binding.get('approval_count_threshold'), default_approval_count_threshold)
         serialized['approval_timeout_minutes'] = _coerce_positive_int(representative_binding.get('approval_timeout_minutes'), default_approval_timeout_minutes)
         serialized['approval_rule_text'] = representative_binding.get('approval_rule_text') or _approval_condition_text(serialized['approval_count_threshold'], serialized['approval_timeout_minutes'])
@@ -14874,6 +16704,16 @@ class Service:
             status_color = 'amber'
             status_text = '登录异常'
             next_action = '先重新登录账号，再继续可用性检测'
+        elif login_check_status == 'auto_recovering':
+            runtime_status = 'blocked'
+            status_color = 'blue'
+            status_text = '自动恢复中'
+            next_action = '系统正在自动切换这个账号，通常几秒内会自动恢复'
+        elif login_check_status == 'session_mismatch':
+            runtime_status = 'blocked'
+            status_color = 'blue'
+            status_text = '待切换'
+            next_action = '点“生成二维码”或“刷新状态”，切到这个账号后再继续可用性检测'
         elif not session_state.get('login_verified'):
             runtime_status = 'blocked'
             status_color = 'amber'
@@ -14924,22 +16764,13 @@ class Service:
             ).fetchall()
         for raw_row in raw_rows:
             row = dict(raw_row)
-            account_key = str(row.get('account_key') or '').strip()
-            has_dedicated_meta = bool(self._read_whatsapp_approval_runtime_meta(account_key))
-            account_worker_health: Dict[str, Any] = {}
-            runtime_state = self._build_whatsapp_approval_runtime_state(
-                account_key,
-                worker_health=None if has_dedicated_meta else shared_worker_health,
+            built, shared_worker_health = self._build_whatsapp_approval_account_runtime_with_auto_recover(
+                row,
+                production_ops=production_ops,
+                official_bridge=official_bridge,
+                shared_worker_health=shared_worker_health,
             )
-            if runtime_state.get('source') == 'shared':
-                account_worker_health = shared_worker_health
-            elif runtime_state.get('active') and runtime_state.get('base_url'):
-                try:
-                    account_worker_health = self._request_whatsapp_approval_worker_health(str(runtime_state.get('base_url') or ''))
-                    runtime_state = self._build_whatsapp_approval_runtime_state(account_key, worker_health=account_worker_health, allow_shared_fallback=False)
-                except Exception:
-                    account_worker_health = {}
-            rows.append(self._build_whatsapp_approval_account_runtime(row, production_ops=production_ops, official_bridge=official_bridge, worker_health=account_worker_health, runtime_state=runtime_state))
+            rows.append(built)
         area_option_payload = self.list_whatsapp_approval_area_options()
         return {
             'rows': rows,
@@ -16410,7 +18241,24 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     cfg = {"DB_PATH": DEFAULT_DB_PATH}
     if settings:
         cfg.update(settings)
+    auth_enabled = (
+        bool(cfg.get('AUTH_ENABLED'))
+        if 'AUTH_ENABLED' in cfg
+        else cfg['DB_PATH'] != ':memory:'
+    )
+    auth_cookie_secure = (
+        bool(cfg.get('AUTH_COOKIE_SECURE'))
+        if 'AUTH_COOKIE_SECURE' in cfg
+        else str(os.getenv('AUTH_COOKIE_SECURE') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    )
+    auth_session_ttl_hours = int(cfg.get('AUTH_SESSION_TTL_HOURS') or os.getenv('AUTH_SESSION_TTL_HOURS') or 12)
+    auth_internal_token = str(cfg.get('AUTH_INTERNAL_TOKEN') or os.getenv('AUTH_INTERNAL_TOKEN') or '').strip()
     db = Database(cfg["DB_PATH"])
+    auth_manager = OpsAuthManager(
+        db,
+        session_ttl_hours=auth_session_ttl_hours,
+        cookie_secure=auth_cookie_secure,
+    )
     crm_adapter = cfg.get('CRM_ADAPTER')
     ocr_adapter = cfg.get('OCR_ADAPTER')
     lark_media_adapter = cfg.get('LARK_MEDIA_ADAPTER')
@@ -16606,6 +18454,393 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     service.ensure_current_intake_preset()
     app = FastAPI(title="MCN AI Automation")
     app.state.service = service
+    app.state.auth_enabled = auth_enabled
+    app.state.auth_manager = auth_manager
+    app.state.auth_internal_token = auth_internal_token
+
+    def _is_internal_request(request: Request) -> bool:
+        if not auth_enabled:
+            return False
+        if not auth_internal_token:
+            return False
+        provided = str(request.headers.get(OPS_AUTH_INTERNAL_HEADER) or '').strip()
+        return bool(provided) and hmac.compare_digest(provided, auth_internal_token)
+
+    def _request_session_user(request: Request) -> Optional[Dict[str, Any]]:
+        if not auth_enabled:
+            return {
+                'user_id': 'local-dev',
+                'username': 'local-dev',
+                'display_name': 'local-dev',
+                'role': OPS_AUTH_ROLE_ADMIN,
+                'enabled': True,
+            }
+        if _is_internal_request(request):
+            return {
+                'user_id': 'internal-system',
+                'username': 'internal-system',
+                'display_name': 'internal-system',
+                'role': OPS_AUTH_ROLE_INTERNAL,
+                'enabled': True,
+            }
+        cached = getattr(request.state, 'ops_user', None)
+        if cached is not None:
+            return cached
+        raw_token = request.cookies.get(auth_manager.cookie_name)
+        user = auth_manager.session_user(raw_token)
+        request.state.ops_user = user
+        return user
+
+    def _require_ops_user(request: Request, *, role: Optional[str] = None) -> Dict[str, Any]:
+        user = _request_session_user(request)
+        if not user:
+            raise HTTPException(status_code=401, detail='ops_auth_required')
+        current_role = str(user.get('role') or '').strip().lower()
+        if role == OPS_AUTH_ROLE_INTERNAL:
+            if current_role != OPS_AUTH_ROLE_INTERNAL:
+                raise HTTPException(status_code=403, detail='ops_internal_required')
+            return user
+        if current_role == OPS_AUTH_ROLE_INTERNAL:
+            return user
+        if role == OPS_AUTH_ROLE_ADMIN and current_role != OPS_AUTH_ROLE_ADMIN:
+            raise HTTPException(status_code=403, detail='ops_admin_required')
+        return user
+
+    def _ops_api_required_role(path: str, method: str) -> Optional[str]:
+        normalized_method = str(method or 'GET').upper()
+        if path.startswith('/api/ops/auth/'):
+            return None
+        if path in {
+            '/api/ops/official-group-approval-executor-health',
+            '/api/ops/whatsapp-approval-accounts/overview',
+            '/api/ops/whatsapp-approval-candidates/summary',
+            '/api/ops/runtime-health/summary',
+            '/api/ops/official-group-approval-summary/summary',
+            '/api/ops/official-group-bridge-summary/summary',
+            '/api/ops/whatsapp-approval-area-options',
+            '/api/ops/approval-batch-queue/summary',
+            '/api/ops/next-bind-task/summary',
+            '/api/ops/next-group-task/summary',
+            '/api/ops/next-action/summary',
+            '/api/ops/operator-notifications',
+            '/api/ops/parser-quality-summary',
+            '/api/ops/manual-review-queue',
+            '/api/ops/bind-queue',
+            '/api/ops/group-queue',
+            '/api/ops/dashboard/summary',
+        } and normalized_method == 'GET':
+            return OPS_AUTH_ROLE_OPERATOR
+        if path in {
+            '/api/ops/registration-group-approval-executor-health',
+            '/api/ops/group-approvals/executor/health',
+            '/api/ops/registration-group-approval-executor-group-state',
+            '/api/ops/group-approvals/executor/target-state',
+            '/api/ops/production-ops-daemon/monitor-target',
+            '/api/ops/whatsapp-approval-accounts/runtime-directory',
+            '/api/ops/whatsapp-approval-accounts/registration-runtime-directory',
+            '/api/ops/whatsapp-approval-accounts/binding-directory',
+            '/api/ops/whatsapp-approval-accounts/official-binding-directory',
+        } and normalized_method == 'GET':
+            return OPS_AUTH_ROLE_INTERNAL
+        if path.startswith('/api/ops/whatsapp-approval-accounts/') and '/runtime/internal' in path:
+            return OPS_AUTH_ROLE_INTERNAL
+        if path.startswith('/api/ops/whatsapp-approval-accounts/') and '/session/internal' in path:
+            return OPS_AUTH_ROLE_INTERNAL
+        if path.startswith('/api/ops/whatsapp-approval-accounts/') and normalized_method == 'GET':
+            if path.endswith('/runtime') or path.endswith('/session'):
+                return OPS_AUTH_ROLE_ADMIN
+            return OPS_AUTH_ROLE_OPERATOR
+        if path in {
+            '/api/ops/ingress-queue',
+            '/api/ops/operator-audit-log',
+            '/api/ops/intake-bot-presets',
+            '/api/ops/intake-bot-presets/resolve',
+            '/api/ops/guild-executors',
+            '/api/ops/production-ops-daemon',
+            '/api/ops/whatsapp-approval-accounts',
+            '/api/ops/whatsapp-approval-candidates',
+            '/api/ops/registration-group-approval-batch-members',
+            '/api/ops/registration-group-approval-batch-members/export',
+            '/api/ops/guild-executors/health',
+            '/api/ops/exception-queue',
+            '/api/ops/sla-summary',
+            '/api/ops/accounts',
+        } and normalized_method == 'GET':
+            return OPS_AUTH_ROLE_ADMIN
+        if path.startswith('/api/ops/guild-executors/') and normalized_method == 'GET':
+            return OPS_AUTH_ROLE_ADMIN
+        if path.startswith('/api/ops/accounts'):
+            return OPS_AUTH_ROLE_ADMIN
+        if path.startswith('/api/ops/intake-bot-presets/') and normalized_method == 'POST':
+            return OPS_AUTH_ROLE_ADMIN
+        if path in {
+            '/api/ops/registration-group-approval-executor-warmup',
+            '/api/ops/group-approvals/executor/warmup',
+            '/api/ops/official-group-approval-batches/run-ready',
+            '/api/ops/group-approvals/batches/run-ready',
+        }:
+            return OPS_AUTH_ROLE_INTERNAL
+        if path == '/api/ops/ingress-queue/run-next':
+            return OPS_AUTH_ROLE_INTERNAL
+        if path == '/api/ops/approval-batches/evaluate':
+            return OPS_AUTH_ROLE_INTERNAL
+        if path in {
+            '/api/ops/runtime-health',
+            '/api/ops/official-group-approval-summary',
+            '/api/ops/official-group-bridge-summary',
+            '/api/ops/production-ops-daemon',
+            '/api/ops/approval-batch-queue',
+            '/api/ops/next-bind-task',
+            '/api/ops/next-group-task',
+            '/api/ops/next-action',
+            '/api/ops/whatsapp-approval-area-options',
+        }:
+            return OPS_AUTH_ROLE_ADMIN
+        if path.startswith('/api/ops/operator-notifications/') and normalized_method == 'POST':
+            return OPS_AUTH_ROLE_OPERATOR
+        if path.startswith('/api/ops/manual-review/') and normalized_method == 'POST':
+            return OPS_AUTH_ROLE_OPERATOR
+        if path.startswith('/api/ops/guild-executors/') and normalized_method in {'POST', 'DELETE'}:
+            return OPS_AUTH_ROLE_ADMIN
+        if path.startswith('/api/ops/whatsapp-approval-accounts/') and normalized_method in {'POST', 'DELETE'}:
+            if '/runtime/' in path or '/session/' in path:
+                return OPS_AUTH_ROLE_ADMIN
+            if '/manual-approve' in path:
+                return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_ADMIN
+        if path.startswith('/api/ops/submissions/') and normalized_method == 'POST':
+            return OPS_AUTH_ROLE_OPERATOR
+        if path.startswith('/api/ops/leads/') and normalized_method == 'POST':
+            return OPS_AUTH_ROLE_OPERATOR
+        return None
+
+    def _assert_ops_api_permissions_complete(app: FastAPI) -> None:
+        unmapped: List[str] = []
+        for route in app.routes:
+            if not isinstance(route, APIRoute):
+                continue
+            path = str(route.path or '')
+            if not path.startswith('/api/ops/') or path.startswith('/api/ops/auth/'):
+                continue
+            methods = sorted(str(method).upper() for method in (route.methods or set()) if str(method).upper() not in {'HEAD', 'OPTIONS'})
+            for method in methods:
+                required_role = _ops_api_required_role(path, method)
+                if required_role is None:
+                    unmapped.append(f'{method} {path}')
+        if unmapped:
+            raise RuntimeError('unmapped_ops_api_routes: ' + ', '.join(sorted(unmapped)))
+
+    def _login_redirect_target(request: Request) -> str:
+        path = str(request.url.path or '/ops')
+        query = str(request.url.query or '').strip()
+        if query:
+            path = f'{path}?{query}'
+        return f'/login?next={quote(path, safe="/?=&")}'
+
+    @app.middleware('http')
+    async def ops_auth_middleware(request: Request, call_next):
+        path = request.url.path or '/'
+        public_paths = {'/health', '/login', '/api/ops/auth/login', '/api/ops/auth/logout', '/api/ops/auth/status', '/api/ops/auth/bootstrap'}
+        if (not auth_enabled) or path in public_paths:
+            return await call_next(request)
+        if path.startswith('/api/ops/'):
+            should_enforce_ops_api_auth = bool(auth_internal_token) or path.startswith('/api/ops/accounts')
+            if should_enforce_ops_api_auth:
+                required_role = _ops_api_required_role(path, request.method)
+                if required_role is not None:
+                    try:
+                        _require_ops_user(request, role=required_role)
+                    except HTTPException as exc:
+                        return JSONResponse(status_code=exc.status_code, content={'detail': exc.detail})
+            return await call_next(request)
+        if path == '/ops' or path.startswith('/ops/'):
+            user = _request_session_user(request)
+            if not user:
+                return RedirectResponse(url=_login_redirect_target(request), status_code=307)
+        return await call_next(request)
+
+    def _ops_login_page_html() -> str:
+        return """<!doctype html>
+<html lang=\"zh-CN\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>后台登录</title>
+  <style>
+    body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; background:#f4f7fb; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; color:#142033; }
+    .card { width:min(420px, calc(100vw - 32px)); background:#fff; border:1px solid #dbe4f0; border-radius:18px; padding:24px; box-shadow:0 10px 28px rgba(15,23,42,.08); }
+    h1 { margin:0 0 10px; font-size:28px; }
+    p { margin:0 0 16px; color:#5d6b82; font-size:13px; line-height:1.6; }
+    label { display:block; margin-bottom:12px; }
+    .label { font-size:12px; color:#475569; margin-bottom:6px; }
+    input { width:100%; box-sizing:border-box; min-height:42px; padding:10px 12px; border:1px solid #cbd5e1; border-radius:10px; font-size:14px; }
+    button { width:100%; min-height:42px; border:none; border-radius:10px; background:#2563eb; color:#fff; font-weight:600; cursor:pointer; }
+    .muted { font-size:12px; color:#64748b; }
+    .error { color:#b91c1c; font-size:13px; min-height:20px; margin-top:10px; }
+    .hidden { display:none; }
+    .switch { display:flex; gap:8px; margin-bottom:16px; }
+    .switch button { width:auto; background:#e2e8f0; color:#334155; padding:8px 12px; min-height:36px; }
+    .switch button.active { background:#2563eb; color:#fff; }
+  </style>
+</head>
+<body>
+  <div class=\"card\">
+    <h1>后台登录</h1>
+    <p id=\"loginHint\">登录后进入当前后台系统。首次启用时，先创建管理员账号。</p>
+    <div class=\"switch\">
+      <button id=\"loginTab\" type=\"button\" class=\"active\" onclick=\"switchAuthMode('login')\">登录</button>
+      <button id=\"bootstrapTab\" type=\"button\" onclick=\"switchAuthMode('bootstrap')\">初始化管理员</button>
+    </div>
+    <form id=\"loginForm\" onsubmit=\"submitLogin(event)\">
+      <label><div class=\"label\">账号</div><input id=\"loginUsername\" autocomplete=\"username\" /></label>
+      <label><div class=\"label\">密码</div><input id=\"loginPassword\" type=\"password\" autocomplete=\"current-password\" /></label>
+      <button type=\"submit\">登录</button>
+    </form>
+    <form id=\"bootstrapForm\" class=\"hidden\" onsubmit=\"submitBootstrap(event)\">
+      <label><div class=\"label\">管理员账号</div><input id=\"bootstrapUsername\" autocomplete=\"username\" /></label>
+      <label><div class=\"label\">显示名</div><input id=\"bootstrapDisplayName\" /></label>
+      <label><div class=\"label\">密码</div><input id=\"bootstrapPassword\" type=\"password\" autocomplete=\"new-password\" /></label>
+      <button type=\"submit\">创建管理员并登录</button>
+    </form>
+    <div id=\"authError\" class=\"error\"></div>
+  </div>
+  <script>
+    const nextUrl = new URLSearchParams(window.location.search).get('next') || '/ops';
+    let bootstrapOpen = false;
+    function switchAuthMode(mode) {
+      const loginMode = mode !== 'bootstrap';
+      document.getElementById('loginForm').classList.toggle('hidden', !loginMode);
+      document.getElementById('bootstrapForm').classList.toggle('hidden', loginMode || !bootstrapOpen);
+      document.getElementById('loginTab').classList.toggle('active', loginMode);
+      document.getElementById('bootstrapTab').classList.toggle('active', !loginMode);
+      document.getElementById('bootstrapTab').disabled = !bootstrapOpen;
+      document.getElementById('authError').textContent = '';
+    }
+    async function fetchStatus() {
+      const res = await fetch('/api/ops/auth/status', { credentials: 'same-origin' });
+      const data = await res.json();
+      bootstrapOpen = !!data.bootstrap_open;
+      document.getElementById('bootstrapTab').disabled = !bootstrapOpen;
+      if (data.authenticated) {
+        window.location.replace(nextUrl);
+        return;
+      }
+      if (bootstrapOpen) {
+        document.getElementById('loginHint').textContent = '当前还没有后台账号，请先初始化管理员账号。';
+        switchAuthMode('bootstrap');
+      } else {
+        switchAuthMode('login');
+      }
+    }
+    async function submitLogin(event) {
+      event.preventDefault();
+      const res = await fetch('/api/ops/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          username: document.getElementById('loginUsername').value,
+          password: document.getElementById('loginPassword').value,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        document.getElementById('authError').textContent = data.detail || '登录失败';
+        return;
+      }
+      window.location.replace(nextUrl);
+    }
+    async function submitBootstrap(event) {
+      event.preventDefault();
+      const res = await fetch('/api/ops/auth/bootstrap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          username: document.getElementById('bootstrapUsername').value,
+          display_name: document.getElementById('bootstrapDisplayName').value,
+          password: document.getElementById('bootstrapPassword').value,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        document.getElementById('authError').textContent = data.detail || '初始化失败';
+        return;
+      }
+      window.location.replace(nextUrl);
+    }
+    fetchStatus();
+  </script>
+</body>
+</html>"""
+
+    def _ops_accounts_page_html() -> str:
+        return """<!doctype html>
+<html lang=\"zh-CN\"><head><meta charset=\"utf-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><title>后台账号管理</title>
+<style>
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; margin:0; padding:24px; background:#f4f7fb; color:#142033; }
+.page { max-width:1100px; margin:0 auto; }
+.nav { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
+.nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:6px 10px; border-radius:999px; background:#eef2ff; }
+.card { background:#fff; border:1px solid #dbe4f0; border-radius:18px; padding:18px; box-shadow:0 10px 28px rgba(15,23,42,.06); margin-bottom:16px; }
+h1 { margin:0 0 8px 0; font-size:30px; }
+.muted { color:#5d6b82; font-size:13px; }
+.grid { display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap:10px; align-items:end; }
+label { display:block; }
+.label { color:#5d6b82; font-size:12px; margin-bottom:6px; }
+input, select { width:100%; min-height:40px; padding:10px 12px; box-sizing:border-box; border:1px solid #cbd5e1; border-radius:10px; font-size:14px; }
+button { min-height:40px; padding:10px 14px; border:none; border-radius:10px; background:#2563eb; color:#fff; font-weight:600; cursor:pointer; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th, td { padding:10px 12px; border-bottom:1px solid #e5edf6; text-align:left; vertical-align:top; }
+th { color:#5d6b82; background:#f8fbff; }
+.badge { display:inline-flex; padding:4px 8px; border-radius:999px; font-size:12px; font-weight:600; }
+.badge.admin { background:#dbeafe; color:#1d4ed8; }
+.badge.operator { background:#dcfce7; color:#166534; }
+.badge.off { background:#fee2e2; color:#991b1b; }
+.error { color:#b91c1c; font-size:13px; margin-top:8px; }
+.success { color:#166534; font-size:13px; margin-top:8px; }
+</style></head>
+<body><div class=\"page\"><div class=\"nav\"><a href=\"/ops\">运营工作台</a><a href=\"/ops/intake-bot-presets\">收口配置中心</a><a href=\"/ops/production-ops\">群审批控制台</a><a href=\"/ops/accounts\">账号管理</a></div>
+<div class=\"card\"><h1>后台账号管理</h1><div class=\"muted\">管理员可创建账号、分配管理员/普通运营角色、停用账号、重置密码。</div></div>
+<div class=\"card\"><div class=\"grid\"><label><div class=\"label\">账号</div><input id=\"username\" placeholder=\"例如 ops01\" /></label><label><div class=\"label\">显示名</div><input id=\"displayName\" placeholder=\"例如 印尼运营A\" /></label><label><div class=\"label\">角色</div><select id=\"role\"><option value=\"operator\">普通运营</option><option value=\"admin\">管理员</option></select></label><label><div class=\"label\">密码</div><input id=\"password\" type=\"password\" placeholder=\"至少 8 位\" /></label><div><button type=\"button\" onclick=\"createAccount()\">创建账号</button></div></div><div id=\"createMessage\" class=\"muted\"></div></div>
+<div class=\"card\"><table><thead><tr><th>账号</th><th>显示名</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead><tbody id=\"rows\"><tr><td colspan=\"6\" class=\"muted\">加载中...</td></tr></tbody></table></div>
+</div>
+<script>
+function escapeHtml(value) { return String(value ?? '').replace(/[&<>\"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[char])); }
+function badgeRole(role) { return `<span class=\"badge ${escapeHtml(role)}\">${role === 'admin' ? '管理员' : '普通运营'}</span>`; }
+function badgeEnabled(enabled) { return enabled ? '<span class=\"badge operator\">启用</span>' : '<span class=\"badge off\">停用</span>'; }
+async function loadAccounts() {
+  const res = await fetch('/api/ops/accounts', { credentials: 'same-origin' });
+  const data = await res.json();
+  if (!res.ok) { document.getElementById('rows').innerHTML = `<tr><td colspan=\"6\">${escapeHtml(data.detail || '加载失败')}</td></tr>`; return; }
+  const rows = Array.isArray(data.rows) ? data.rows : [];
+  if (!rows.length) { document.getElementById('rows').innerHTML = '<tr><td colspan=\"6\" class=\"muted\">暂无账号</td></tr>'; return; }
+  document.getElementById('rows').innerHTML = rows.map((row) => `<tr><td>${escapeHtml(row.username)}</td><td><input value=${JSON.stringify(String(row.display_name || ''))} onchange=\"updateAccount(${JSON.stringify(row.user_id)}, {display_name:this.value})\" /></td><td><select onchange=\"updateAccount(${JSON.stringify(row.user_id)}, {role:this.value})\"><option value=\"operator\" ${row.role === 'operator' ? 'selected' : ''}>普通运营</option><option value=\"admin\" ${row.role === 'admin' ? 'selected' : ''}>管理员</option></select></td><td><label style=\"display:flex; gap:8px; align-items:center;\">${badgeEnabled(!!row.enabled)} <input type=\"checkbox\" ${row.enabled ? 'checked' : ''} onchange=\"updateAccount(${JSON.stringify(row.user_id)}, {enabled:this.checked})\" /></label></td><td>${escapeHtml(row.last_login_at || '-')}</td><td><button type=\"button\" onclick=\"resetPassword(${JSON.stringify(row.user_id)})\">重置密码</button></td></tr>`).join('');
+}
+async function createAccount() {
+  const payload = { username: document.getElementById('username').value, display_name: document.getElementById('displayName').value, role: document.getElementById('role').value, password: document.getElementById('password').value, enabled: true };
+  const res = await fetch('/api/ops/accounts', { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify(payload) });
+  const data = await res.json();
+  document.getElementById('createMessage').className = res.ok ? 'success' : 'error';
+  document.getElementById('createMessage').textContent = res.ok ? '创建成功' : (data.detail || '创建失败');
+  if (res.ok) { document.getElementById('username').value = ''; document.getElementById('displayName').value = ''; document.getElementById('password').value = ''; loadAccounts(); }
+}
+async function updateAccount(userId, patch) {
+  const res = await fetch(`/api/ops/accounts/${encodeURIComponent(userId)}`, { method:'PUT', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify(patch) });
+  if (!res.ok) { const data = await res.json(); alert(data.detail || '更新失败'); }
+  await loadAccounts();
+}
+async function resetPassword(userId) {
+  const password = window.prompt('输入新密码（至少 8 位）');
+  if (!password) return;
+  const res = await fetch(`/api/ops/accounts/${encodeURIComponent(userId)}`, { method:'PUT', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify({ password }) });
+  const data = await res.json();
+  if (!res.ok) { alert(data.detail || '重置失败'); return; }
+  alert('密码已重置');
+  await loadAccounts();
+}
+loadAccounts();
+</script></body></html>"""
 
     def _official_group_bridge_console_base_url() -> Optional[str]:
         webhook_url = str(official_group_approval_webhook_url or '').strip()
@@ -17002,8 +19237,8 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
       const pagination = data.pagination || {};
       window.__batchMembersPage = Number((data.filters || {}).page || pagination.page || 1);
       setBatchMembersDateRange(
-        (data.filters || {}).approved_date_start || (data.filters || {}).approved_date || currentBeijingDateString(),
-        (data.filters || {}).approved_date_end || (data.filters || {}).approved_date || currentBeijingDateString(),
+        (data.filters || {}).approved_date_start || (data.filters || {}).approved_date || '',
+        (data.filters || {}).approved_date_end || (data.filters || {}).approved_date || '',
       );
       syncRegistrationGroupOptions(data.registration_group_options || [], currentGroupValue || (data.filters || {}).registration_group || '');
       syncAreaOptions(data.area_options || [], currentAreaValue || (data.filters || {}).area || '');
@@ -17040,24 +19275,158 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     def health() -> Dict[str, str]:
         return {"status": "ok"}
 
+    @app.get('/login', response_class=HTMLResponse)
+    def ops_login_page() -> str:
+        if not auth_enabled:
+            return '<html><body>auth disabled</body></html>'
+        return _ops_login_page_html()
+
+    @app.get('/api/ops/auth/status')
+    def ops_auth_status(request: Request) -> Dict[str, Any]:
+        user = _request_session_user(request) if auth_enabled else _request_session_user(request)
+        return {
+            'auth_enabled': auth_enabled,
+            'authenticated': bool(user),
+            'bootstrap_open': auth_enabled and (not auth_manager.has_users()),
+            'user': user,
+        }
+
+    @app.post('/api/ops/auth/bootstrap')
+    def ops_auth_bootstrap(request: Request, response: Response, payload: OpsAuthBootstrapRequest) -> Dict[str, Any]:
+        if not auth_enabled:
+            raise HTTPException(status_code=400, detail='ops_auth_disabled')
+        try:
+            user = auth_manager.bootstrap_admin(
+                username=payload.username,
+                password=payload.password,
+                display_name=payload.display_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raw_token = auth_manager.create_session(
+            user,
+            ip_address=str(request.client.host if request.client else ''),
+            user_agent=request.headers.get('user-agent'),
+        )
+        auth_manager.apply_session_cookie(response, raw_token)
+        return {'ok': True, 'user': user}
+
+    @app.post('/api/ops/auth/login')
+    def ops_auth_login(request: Request, response: Response, payload: OpsAuthLoginRequest) -> Dict[str, Any]:
+        if not auth_enabled:
+            raise HTTPException(status_code=400, detail='ops_auth_disabled')
+        user = auth_manager.authenticate(payload.username, payload.password)
+        if not user:
+            raise HTTPException(status_code=401, detail='invalid_credentials')
+        raw_token = auth_manager.create_session(
+            user,
+            ip_address=str(request.client.host if request.client else ''),
+            user_agent=request.headers.get('user-agent'),
+        )
+        auth_manager.apply_session_cookie(response, raw_token)
+        return {'ok': True, 'user': user}
+
+    @app.post('/api/ops/auth/logout')
+    def ops_auth_logout(request: Request, response: Response) -> Dict[str, Any]:
+        raw_token = request.cookies.get(auth_manager.cookie_name)
+        auth_manager.revoke_session(raw_token)
+        auth_manager.clear_session_cookie(response)
+        return {'ok': True}
+
+    def _ops_page_html(role: str) -> str:
+        html = OPS_PAGE_HTML
+        if str(role or '').strip() == OPS_AUTH_ROLE_ADMIN:
+            return html
+        html = re.sub(
+            r'\s*<a[^>]*data-admin-only-nav="true"[^>]*>.*?</a>',
+            '',
+            html,
+            flags=re.S,
+        )
+        html = re.sub(
+            r'\s*<!-- OPS_ADMIN_ONLY_APPROVAL_EDITOR_START -->.*?<!-- OPS_ADMIN_ONLY_APPROVAL_EDITOR_END -->\s*',
+            '\n',
+            html,
+            flags=re.S,
+        )
+        html = re.sub(
+            r'\s*<!-- OPS_ADMIN_ONLY_AREA_OPTIONS_START -->.*?<!-- OPS_ADMIN_ONLY_AREA_OPTIONS_END -->\s*',
+            '\n',
+            html,
+            flags=re.S,
+        )
+        html = re.sub(
+            r'\s*<!-- OPS_ADMIN_ONLY_QR_MODAL_START -->.*?<!-- OPS_ADMIN_ONLY_QR_MODAL_END -->\s*',
+            '\n',
+            html,
+            flags=re.S,
+        )
+        return html
+
     @app.get('/ops', response_class=HTMLResponse)
-    def ops_page() -> str:
-        return OPS_PAGE_HTML
+    def ops_page(request: Request) -> str:
+        user = _require_ops_user(request)
+        return _ops_page_html(str(user.get('role') or '').strip())
+
+    @app.get('/ops/accounts', response_class=HTMLResponse)
+    def ops_accounts_page(request: Request) -> str:
+        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        return _ops_accounts_page_html()
+
+    @app.get('/api/ops/accounts')
+    def ops_accounts_list(request: Request) -> Dict[str, Any]:
+        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        return {'rows': auth_manager.list_users()}
+
+    @app.post('/api/ops/accounts')
+    def ops_accounts_create(request: Request, payload: OpsAccountCreateRequest) -> Dict[str, Any]:
+        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        try:
+            user = auth_manager.create_user(
+                username=payload.username,
+                password=payload.password,
+                role=payload.role,
+                display_name=payload.display_name,
+                enabled=payload.enabled,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {'ok': True, 'user': user}
+
+    @app.put('/api/ops/accounts/{user_id}')
+    def ops_accounts_update(request: Request, user_id: str, payload: OpsAccountUpdateRequest) -> Dict[str, Any]:
+        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        try:
+            user = auth_manager.update_user(
+                user_id,
+                role=payload.role,
+                display_name=payload.display_name,
+                enabled=payload.enabled,
+                password=payload.password,
+            )
+        except ValueError as exc:
+            status_code = 404 if str(exc) == 'user_not_found' else 400
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        return {'ok': True, 'user': user}
 
     @app.get('/ops/intake-bot-presets', response_class=HTMLResponse)
-    def intake_bot_presets_page() -> str:
+    def intake_bot_presets_page(request: Request) -> str:
+        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
         return INTAKE_BOT_PRESETS_PAGE_HTML
 
     @app.get('/ops/production-ops', response_class=HTMLResponse)
-    def production_ops_page() -> str:
+    def production_ops_page(request: Request) -> str:
+        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
         return PRODUCTION_OPS_PAGE_HTML
 
     @app.get('/ops/registration-group-approval-batch-members', response_class=HTMLResponse)
-    def registration_group_approval_batch_members_page() -> str:
+    def registration_group_approval_batch_members_page(request: Request) -> str:
+        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
         return _registration_group_approval_batch_members_page_html()
 
     @app.get('/ops/official-group-bridge')
-    def official_group_bridge_page_redirect() -> RedirectResponse:
+    def official_group_bridge_page_redirect(request: Request) -> RedirectResponse:
+        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
         bridge_url = str(official_group_approval_webhook_url or '').strip()
         if not bridge_url:
             raise HTTPException(status_code=404, detail='official_group_bridge_not_configured')
@@ -17068,17 +19437,81 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     def ops_runtime_health() -> Dict[str, Any]:
         return service.runtime_health()
 
+    @app.get('/api/ops/runtime-health/summary')
+    def ops_runtime_health_summary() -> Dict[str, Any]:
+        payload = service.runtime_health() or {}
+        crm = payload.get('crm') or {}
+        lark = payload.get('lark') or {}
+        simulation = payload.get('simulation') or {}
+        registration_group_approval = payload.get('registration_group_approval') or {}
+        official_group_approval = payload.get('official_group_approval') or {}
+        ingress = payload.get('ingress') or {}
+        return {
+            'crm': {
+                'enabled': crm.get('enabled'),
+                'status': crm.get('status'),
+                'token_ready': crm.get('token_ready'),
+            },
+            'lark': {
+                'default_app': lark.get('default_app'),
+                'default_guild': lark.get('default_guild'),
+                'current_app_id': lark.get('current_app_id'),
+            },
+            'simulation': {
+                'mode': simulation.get('mode'),
+                'auto_bind_simulation': simulation.get('auto_bind_simulation'),
+            },
+            'registration_group_approval': {
+                'configured': registration_group_approval.get('configured'),
+                'provider': registration_group_approval.get('provider'),
+                'status': registration_group_approval.get('status'),
+                'ready': registration_group_approval.get('ready'),
+                'authenticated': registration_group_approval.get('authenticated'),
+            },
+            'official_group_approval': {
+                'configured': official_group_approval.get('configured'),
+                'provider': official_group_approval.get('provider'),
+                'status': official_group_approval.get('status'),
+                'ready': official_group_approval.get('ready'),
+                'authenticated': official_group_approval.get('authenticated'),
+            },
+            'ingress': {
+                'async_default': ingress.get('async_default'),
+                'worker_enabled': ingress.get('worker_enabled'),
+                'worker_count': ingress.get('worker_count'),
+                'worker_alive': ingress.get('worker_alive'),
+                'active_worker_threads': ingress.get('active_worker_threads'),
+                'queued_jobs': ingress.get('queued_jobs'),
+                'processing_jobs': ingress.get('processing_jobs'),
+                'pending_bind_tasks': ingress.get('pending_bind_tasks'),
+                'processing_bind_tasks': ingress.get('processing_bind_tasks'),
+                'pending_bind_human_action_count': ingress.get('pending_bind_human_action_count'),
+            },
+        }
+
     @app.get('/api/ops/registration-group-approval-executor-health')
     def ops_registration_group_approval_executor_health() -> Dict[str, Any]:
         return service.registration_group_approval_executor_health()
+
+    @app.get('/api/ops/group-approvals/executor/health')
+    def ops_group_approval_executor_health(approval_scope: str) -> Dict[str, Any]:
+        return service.group_approval_executor_health(approval_scope)
 
     @app.post('/api/ops/registration-group-approval-executor-warmup')
     def ops_registration_group_approval_executor_warmup() -> Dict[str, Any]:
         return service.registration_group_approval_executor_warmup()
 
+    @app.post('/api/ops/group-approvals/executor/warmup')
+    def ops_group_approval_executor_warmup(payload: GroupApprovalExecutorWarmupRequest) -> Dict[str, Any]:
+        return service.group_approval_executor_warmup(payload.approval_scope)
+
     @app.get('/api/ops/registration-group-approval-executor-group-state')
     def ops_registration_group_approval_executor_group_state(registration_group: str) -> Dict[str, Any]:
         return service.registration_group_approval_executor_group_state(registration_group)
+
+    @app.get('/api/ops/group-approvals/executor/target-state')
+    def ops_group_approval_executor_target_state(approval_scope: str, target_group: str) -> Dict[str, Any]:
+        return service.group_approval_executor_target_state(approval_scope, target_group)
 
     @app.get('/api/ops/ingress-queue')
     def ops_ingress_queue() -> Dict[str, Any]:
@@ -17177,6 +19610,73 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     def official_group_approval_decisions(payload: OfficialGroupApprovalDecisionRequest):
         return service.official_group_approval_decision(payload)
 
+    @app.post('/api/group-approvals/checks')
+    def group_approval_checks(payload: GroupApprovalCheckRequest):
+        approval_scope = str(payload.approval_scope or '').strip()
+        if approval_scope != 'official_group':
+            raise HTTPException(status_code=400, detail='group approval checks currently support official_group only')
+        result = service.official_group_approval_check(OfficialGroupApprovalCheckRequest(
+            lead_id=str(payload.lead_id or '').strip(),
+            target_group=str(payload.target_group or '').strip(),
+            checked_at=payload.checked_at,
+            checked_by=payload.checked_by,
+            checked_by_name=payload.checked_by_name,
+            source_platform=payload.source_platform,
+            source_campaign=payload.source_campaign,
+            source_adset=payload.source_adset,
+            source_ad=payload.source_ad,
+            target_phone_hint=payload.target_phone_hint,
+            target_requester_id=payload.target_requester_id,
+            remark=payload.remark,
+        ))
+        return _with_shared_group_approval_result(result, approval_scope='official_group', target_group=payload.target_group)
+
+    @app.post('/api/group-approvals/decisions')
+    def group_approval_decisions(payload: GroupApprovalDecisionRequest):
+        approval_scope = str(payload.approval_scope or '').strip()
+        if approval_scope == 'registration_group':
+            result = service.registration_group_approval_decision(RegistrationGroupApprovalDecisionRequest(
+                registration_group=str(payload.registration_group or '').strip(),
+                decision=payload.decision,
+                decided_at=payload.decided_at,
+                decided_by=payload.decided_by,
+                decided_by_name=payload.decided_by_name,
+                source_platform=payload.source_platform,
+                source_campaign=payload.source_campaign,
+                source_adset=payload.source_adset,
+                source_ad=payload.source_ad,
+                target_name_hint=payload.target_name_hint,
+                target_phone_hint=payload.target_phone_hint,
+                approved_count=payload.approved_count,
+                area=payload.area,
+                remark=payload.remark,
+                force_immediate=payload.force_immediate,
+                expected_pending_count=payload.expected_pending_count,
+                expected_member_count=payload.expected_member_count,
+                expected_requester_ids=payload.expected_requester_ids,
+                expected_requesters=payload.expected_requesters,
+            ))
+            return _with_shared_group_approval_result(result, approval_scope='registration_group', registration_group=payload.registration_group)
+        if approval_scope == 'official_group':
+            result = service.official_group_approval_decision(OfficialGroupApprovalDecisionRequest(
+                lead_id=str(payload.lead_id or '').strip(),
+                target_group=str(payload.target_group or '').strip(),
+                decision=payload.decision,
+                decided_at=payload.decided_at,
+                decided_by=payload.decided_by,
+                decided_by_name=payload.decided_by_name,
+                source_platform=payload.source_platform,
+                source_campaign=payload.source_campaign,
+                source_adset=payload.source_adset,
+                source_ad=payload.source_ad,
+                target_name_hint=payload.target_name_hint,
+                target_phone_hint=payload.target_phone_hint,
+                target_requester_id=payload.target_requester_id,
+                remark=payload.remark,
+            ))
+            return _with_shared_group_approval_result(result, approval_scope='official_group', target_group=payload.target_group)
+        raise HTTPException(status_code=400, detail='unsupported approval_scope')
+
     @app.post('/api/ops/leads/{lead_id}/retry-official-group-approval')
     def ops_retry_official_group_approval(lead_id: str, payload: OfficialGroupApprovalRetryRequest):
         return service.retry_official_group_approval(lead_id, payload)
@@ -17189,9 +19689,45 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     def ops_official_group_approval_summary():
         return service.official_group_approval_summary()
 
+    @app.get('/api/ops/official-group-approval-summary/summary')
+    def ops_official_group_approval_summary_summary():
+        payload = service.official_group_approval_summary() or {}
+        by_target_group = payload.get('by_target_group') or {}
+        return {
+            'view_scope': payload.get('view_scope'),
+            'pending_count': payload.get('pending_count'),
+            'approved_count': payload.get('approved_count'),
+            'failed_count': payload.get('failed_count'),
+            'skipped_duplicate_count': payload.get('skipped_duplicate_count'),
+            'retryable_failed_count': payload.get('retryable_failed_count'),
+            'manual_required_count': payload.get('manual_required_count'),
+            'target_group_count': len(by_target_group) if isinstance(by_target_group, dict) else 0,
+        }
+
     @app.post('/api/ops/official-group-approval-batches/run-ready')
     def ops_run_ready_official_group_batches(payload: OfficialGroupBatchRunRequest):
         return service.run_ready_official_group_batches(payload)
+
+    @app.post('/api/ops/group-approvals/batches/run-ready')
+    def ops_group_approval_batches_run_ready(payload: GroupApprovalBatchRunRequest):
+        approval_scope = str(payload.approval_scope or '').strip()
+        if approval_scope != 'official_group':
+            raise HTTPException(status_code=400, detail='group approval batch run-ready currently supports official_group only')
+        result = service.run_ready_official_group_batches(OfficialGroupBatchRunRequest(
+            decided_at=payload.decided_at,
+            decided_by=payload.decided_by,
+            decided_by_name=payload.decided_by_name,
+            source_platform=payload.source_platform,
+            source_campaign=payload.source_campaign,
+            source_adset=payload.source_adset,
+            source_ad=payload.source_ad,
+            remark=payload.remark,
+            limit_groups=payload.limit_groups,
+            limit_leads_per_group=payload.limit_leads_per_group,
+            allow_crm_only_test_match=payload.allow_crm_only_test_match,
+            suppress_success_notifications=payload.suppress_success_notifications,
+        ))
+        return _with_shared_group_approval_result(result, approval_scope='official_group')
 
     @app.get("/api/ops/manual-review-queue")
     def ops_manual_review_queue():
@@ -17233,32 +19769,187 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     def ops_production_ops_daemon():
         return service.get_production_ops_daemon_config()
 
+    @app.get('/api/ops/production-ops-daemon/monitor-target')
+    def ops_production_ops_daemon_monitor_target():
+        snapshot = service.get_production_ops_daemon_config() or {}
+        config = snapshot.get('config') or {}
+        runtime = snapshot.get('runtime') or {}
+        status = runtime.get('status') or {}
+        return {
+            'registration_group': str(status.get('registration_group') or config.get('registration_group') or '').strip(),
+            'monitor_target': status.get('monitor_target') or {},
+            'runtime_status': status,
+        }
+
     @app.get('/api/ops/whatsapp-approval-accounts')
     def ops_whatsapp_approval_accounts():
         return service.list_whatsapp_approval_accounts()
 
+    @app.get('/api/ops/whatsapp-approval-accounts/overview')
+    def ops_whatsapp_approval_accounts_overview():
+        payload = service.list_whatsapp_approval_accounts() or {}
+        rows = payload.get('rows') or []
+        trimmed_rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            trimmed_rows.append({
+                'account_key': row.get('account_key'),
+                'account_name': row.get('account_name'),
+                'responsible_type': row.get('responsible_type'),
+                'enabled': row.get('enabled'),
+                'area': row.get('area'),
+                'group_count': row.get('group_count'),
+                'status_text': row.get('status_text'),
+                'status_color': row.get('status_color'),
+                'runtime_status': row.get('runtime_status'),
+                'verification_status': row.get('verification_status'),
+                'verification_status_label': row.get('verification_status_label'),
+                'verification_checks': row.get('verification_checks') or [],
+                'service_scope': row.get('service_scope') or {},
+                'session_state': row.get('session_state') or {},
+                'group_link_bindings': row.get('group_link_bindings') or [],
+                'group_binding_runtimes': row.get('group_binding_runtimes') or [],
+            })
+        return {
+            'rows': trimmed_rows,
+            'summary': payload.get('summary') or {},
+        }
+
+    @app.get('/api/ops/whatsapp-approval-accounts/runtime-directory')
+    def ops_whatsapp_approval_accounts_runtime_directory():
+        payload = service.list_whatsapp_approval_accounts() or {}
+        rows = payload.get('rows') or []
+        trimmed_rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            trimmed_rows.append({
+                'account_key': row.get('account_key'),
+                'account_name': row.get('account_name'),
+                'responsible_type': row.get('responsible_type'),
+                'enabled': row.get('enabled'),
+                'area': row.get('area'),
+                'runtime_state': row.get('runtime_state') or {},
+                'session_state': row.get('session_state') or {},
+                'group_link_bindings': row.get('group_link_bindings') or [],
+                'group_binding_runtimes': row.get('group_binding_runtimes') or [],
+                'group_links': row.get('group_links') or [],
+            })
+        return {'rows': trimmed_rows}
+
+    @app.get('/api/ops/whatsapp-approval-accounts/registration-runtime-directory')
+    def ops_whatsapp_approval_accounts_registration_runtime_directory():
+        payload = service.list_whatsapp_approval_accounts() or {}
+        rows = payload.get('rows') or []
+        trimmed_rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get('responsible_type') or '').strip() != 'registration_group':
+                continue
+            trimmed_rows.append({
+                'account_key': row.get('account_key'),
+                'account_name': row.get('account_name'),
+                'responsible_type': row.get('responsible_type'),
+                'enabled': row.get('enabled'),
+                'area': row.get('area'),
+                'runtime_state': row.get('runtime_state') or {},
+                'session_state': row.get('session_state') or {},
+                'group_link_bindings': row.get('group_link_bindings') or [],
+                'group_binding_runtimes': row.get('group_binding_runtimes') or [],
+                'group_links': row.get('group_links') or [],
+            })
+        return {'rows': trimmed_rows}
+
+    @app.get('/api/ops/whatsapp-approval-accounts/binding-directory')
+    def ops_whatsapp_approval_accounts_binding_directory():
+        payload = service.list_whatsapp_approval_accounts() or {}
+        rows = payload.get('rows') or []
+        trimmed_rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            trimmed_rows.append({
+                'account_key': row.get('account_key'),
+                'account_name': row.get('account_name'),
+                'responsible_type': row.get('responsible_type'),
+                'enabled': row.get('enabled'),
+                'area': row.get('area'),
+                'group_link_bindings': row.get('group_link_bindings') or [],
+                'group_binding_runtimes': row.get('group_binding_runtimes') or [],
+                'group_links': row.get('group_links') or [],
+            })
+        return {'rows': trimmed_rows}
+
+    @app.get('/api/ops/whatsapp-approval-accounts/official-binding-directory')
+    def ops_whatsapp_approval_accounts_official_binding_directory():
+        payload = service.list_whatsapp_approval_accounts() or {}
+        rows = payload.get('rows') or []
+        trimmed_rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get('responsible_type') or '').strip() != 'official_group':
+                continue
+            trimmed_rows.append({
+                'account_key': row.get('account_key'),
+                'account_name': row.get('account_name'),
+                'responsible_type': row.get('responsible_type'),
+                'enabled': row.get('enabled'),
+                'area': row.get('area'),
+                'group_link_bindings': row.get('group_link_bindings') or [],
+                'group_binding_runtimes': row.get('group_binding_runtimes') or [],
+                'group_links': row.get('group_links') or [],
+            })
+        return {'rows': trimmed_rows}
+
     @app.get('/api/ops/whatsapp-approval-accounts/{account_key}/runtime')
     def ops_whatsapp_approval_account_runtime(account_key: str):
+        return service.get_whatsapp_approval_account_runtime(account_key)
+
+    @app.get('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/internal')
+    def ops_whatsapp_approval_account_runtime_internal(account_key: str):
         return service.get_whatsapp_approval_account_runtime(account_key)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/start')
     def ops_whatsapp_approval_account_runtime_start(account_key: str):
         return service.start_whatsapp_approval_account_runtime(account_key)
 
+    @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/internal/start')
+    def ops_whatsapp_approval_account_runtime_internal_start(account_key: str):
+        return service.start_whatsapp_approval_account_runtime(account_key)
+
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/stop')
     def ops_whatsapp_approval_account_runtime_stop(account_key: str):
+        return service.stop_whatsapp_approval_account_runtime(account_key)
+
+    @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/internal/stop')
+    def ops_whatsapp_approval_account_runtime_internal_stop(account_key: str):
         return service.stop_whatsapp_approval_account_runtime(account_key)
 
     @app.get('/api/ops/whatsapp-approval-accounts/{account_key}/session')
     def ops_whatsapp_approval_account_session(account_key: str):
         return service.get_whatsapp_approval_account_session(account_key)
 
+    @app.get('/api/ops/whatsapp-approval-accounts/{account_key}/session/internal')
+    def ops_whatsapp_approval_account_session_internal(account_key: str):
+        return service.get_whatsapp_approval_account_session(account_key, include_qr_ascii=False)
+
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/session/start')
     def ops_whatsapp_approval_account_session_start(account_key: str):
         return service.start_whatsapp_approval_account_session(account_key)
 
+    @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/session/internal/start')
+    def ops_whatsapp_approval_account_session_internal_start(account_key: str):
+        return service.start_whatsapp_approval_account_session(account_key)
+
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/session/reset')
     def ops_whatsapp_approval_account_session_reset(account_key: str):
+        return service.reset_whatsapp_approval_account_session(account_key)
+
+    @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/session/internal/reset')
+    def ops_whatsapp_approval_account_session_internal_reset(account_key: str):
         return service.reset_whatsapp_approval_account_session(account_key)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/bindings/{binding_index}/manual-approve')
@@ -17276,6 +19967,14 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     @app.get('/api/ops/whatsapp-approval-candidates')
     def ops_whatsapp_approval_candidates():
         return service.list_whatsapp_approval_candidates()
+
+    @app.get('/api/ops/whatsapp-approval-candidates/summary')
+    def ops_whatsapp_approval_candidates_summary():
+        payload = service.list_whatsapp_approval_candidates() or {}
+        return {
+            'summary': payload.get('summary') or {},
+            'verifier_framework': payload.get('verifier_framework') or {},
+        }
 
     @app.get('/api/ops/registration-group-approval-batch-members')
     def ops_registration_group_approval_batch_members(
@@ -17359,6 +20058,26 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     def ops_official_group_bridge_summary():
         return _official_group_bridge_summary_payload()
 
+    @app.get('/api/ops/official-group-bridge-summary/summary')
+    def ops_official_group_bridge_summary_summary():
+        payload = _official_group_bridge_summary_payload() or {}
+        health = payload.get('health') or {}
+        summary = payload.get('summary') or {}
+        by_target_group = summary.get('by_target_group') or {}
+        return {
+            'configured': payload.get('configured'),
+            'health': {
+                'status': health.get('status'),
+                'mode': health.get('mode'),
+            },
+            'summary': {
+                'pending_count': summary.get('pending_count'),
+                'today_created_count': summary.get('today_created_count'),
+                'pending_timeout_over_1h_count': summary.get('pending_timeout_over_1h_count'),
+                'target_group_count': len(by_target_group) if isinstance(by_target_group, dict) else 0,
+            },
+        }
+
     @app.post('/api/ops/production-ops-daemon')
     def ops_production_ops_daemon_update(payload: ProductionOpsDaemonConfigUpdateRequest):
         return service.update_production_ops_daemon_config(payload)
@@ -17403,13 +20122,66 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     def ops_next_bind_task():
         return service.ops_next_bind_task()
 
+    @app.get("/api/ops/next-bind-task/summary")
+    def ops_next_bind_task_summary():
+        payload = service.ops_next_bind_task() or {}
+        row = payload.get('row') or {}
+        return {
+            'kind': payload.get('kind'),
+            'row': {
+                'lead_id': row.get('lead_id'),
+                'task_id': row.get('task_id'),
+                'current_status': row.get('current_status'),
+                'updated_at': row.get('updated_at'),
+                'app_name': row.get('app_name'),
+                'dept_name': row.get('dept_name'),
+                'registration_group': row.get('pendaftaran_group'),
+            } if row else None,
+        }
+
     @app.get("/api/ops/next-group-task")
     def ops_next_group_task():
         return service.ops_next_group_task()
 
+    @app.get("/api/ops/next-group-task/summary")
+    def ops_next_group_task_summary():
+        payload = service.ops_next_group_task() or {}
+        row = payload.get('row') or {}
+        return {
+            'kind': payload.get('kind'),
+            'row': {
+                'lead_id': row.get('lead_id'),
+                'task_id': row.get('task_id'),
+                'current_status': row.get('current_status'),
+                'updated_at': row.get('updated_at'),
+                'app_name': row.get('app_name'),
+                'dept_name': row.get('dept_name'),
+                'registration_group': row.get('pendaftaran_group'),
+            } if row else None,
+        }
+
     @app.get("/api/ops/next-action")
     def ops_next_action():
         return service.ops_next_action()
+
+    @app.get("/api/ops/next-action/summary")
+    def ops_next_action_summary():
+        payload = service.ops_next_action() or {}
+        row = payload.get('row') or {}
+        return {
+            'kind': payload.get('kind'),
+            'score': payload.get('score'),
+            'reason': payload.get('reason'),
+            'row': {
+                'lead_id': row.get('lead_id'),
+                'task_id': row.get('task_id'),
+                'current_status': row.get('current_status'),
+                'updated_at': row.get('updated_at'),
+                'app_name': row.get('app_name'),
+                'dept_name': row.get('dept_name'),
+                'registration_group': row.get('pendaftaran_group'),
+            } if row else None,
+        }
 
     @app.get("/api/ops/operator-notifications")
     def ops_operator_notifications(status: Optional[str] = None, query: Optional[str] = None):
@@ -17431,6 +20203,31 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     def ops_approval_batch_queue():
         return service.approval_batch_queue()
 
+    @app.get("/api/ops/approval-batch-queue/summary")
+    def ops_approval_batch_queue_summary():
+        payload = service.approval_batch_queue() or {}
+
+        def _trim_rows(rows: Any) -> list[Dict[str, Any]]:
+            trimmed: list[Dict[str, Any]] = []
+            for row in list(rows or []):
+                if not isinstance(row, dict):
+                    continue
+                trimmed.append({
+                    'approval_scope': row.get('approval_scope'),
+                    'registration_group': row.get('registration_group'),
+                    'group_name': row.get('group_name'),
+                    'target_group_label': row.get('target_group_label'),
+                    'ready': row.get('ready'),
+                    'release_count': row.get('release_count'),
+                    'reason_code': row.get('reason_code'),
+                })
+            return trimmed
+
+        return {
+            'registration_groups': _trim_rows(payload.get('registration_groups')),
+            'official_groups': _trim_rows(payload.get('official_groups')),
+        }
+
     @app.get("/api/reports/funnel")
     def reports_funnel():
         return service.funnel_report()
@@ -17438,6 +20235,9 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     @app.get("/api/reports/daily-summary")
     def reports_daily_summary():
         return service.daily_summary()
+
+    _assert_ops_api_permissions_complete(app)
+    app.state.assert_ops_api_permissions_complete = lambda: _assert_ops_api_permissions_complete(app)
 
     return app
 

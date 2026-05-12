@@ -110,6 +110,102 @@ def test_evaluate_release_uses_cycle_anchor_for_waiting_next_cycle(monkeypatch):
 
 
 
+def test_registration_cycle_resets_stale_anchor_when_pending_reappears_after_zero(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    target = {
+        'registration_group': 'RG',
+        'group_name': '测试群',
+        'worker_base_url': 'http://worker-1',
+        'source': 'fallback_config',
+        'runtime_state': {'active': True, 'ready': True, 'authenticated': True},
+        'session_state': {'session_target_match': True, 'login_verified': True},
+    }
+    state = {
+        'registration_cycle_anchors': {
+            'RG': '2026-05-09T08:20:00+00:00',
+            '测试群': '2026-05-09T08:20:00+00:00',
+        }
+    }
+    evaluate_payloads = []
+    worker_payloads = iter([
+        {
+            'group_id': 'g',
+            'group_name': '测试群',
+            'pending_count': 0,
+            'member_count': 5,
+            'requesters': [],
+            'requester_ids': [],
+        },
+        {
+            'group_id': 'g',
+            'group_name': '测试群',
+            'pending_count': 0,
+            'member_count': 5,
+            'requesters': [],
+            'requester_ids': [],
+        },
+        {
+            'group_id': 'g',
+            'group_name': '测试群',
+            'pending_count': 1,
+            'member_count': 4,
+            'requesters': [{'requesterId': 'u1', 'requestedAtUnix': 1778315459}],
+            'requester_ids': ['u1'],
+        },
+    ])
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url == 'http://worker-1/group-state':
+            return next(worker_payloads)
+        if url.endswith('/api/ops/approval-batches/evaluate'):
+            evaluate_payloads.append(dict(payload or {}))
+            return {
+                'approval_type': 'registration_group',
+                'registration_group': 'RG',
+                'pending_count': int((payload or {}).get('pending_count') or 0),
+                'oldest_pending_at': (payload or {}).get('oldest_pending_at'),
+                'ready': False,
+                'release_count': 0,
+                'reason_code': 'waiting_for_batch',
+                'batch_size': 30,
+                'timeout_minutes': 5,
+                'elapsed_minutes': 0,
+                'remaining_minutes': 5,
+                'remaining_seconds': 300,
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon._run_fresh_probe', lambda *_args, **_kwargs: {
+        'group_id': 'g',
+        'group_name': '测试群',
+        'pending_count': 0,
+        'member_count': 5,
+        'requesters': [],
+        'requester_ids': [],
+    })
+
+    first_cycle = _run_registration_group_cycle(
+        args,
+        state,
+        target,
+        now=datetime(2026, 5, 9, 8, 30, 41, tzinfo=timezone.utc),
+    )
+    second_cycle = _run_registration_group_cycle(
+        args,
+        state,
+        target,
+        now=datetime(2026, 5, 9, 8, 31, 6, tzinfo=timezone.utc),
+    )
+
+    assert len(evaluate_payloads) == 1
+    assert evaluate_payloads[0]['cycle_anchor_at'] in (None, '2026-05-09T08:30:59+00:00')
+    assert state['registration_cycle_anchors']['RG'] == '2026-05-09T08:30:59+00:00'
+    assert state['registration_cycle_anchors']['测试群'] == '2026-05-09T08:30:59+00:00'
+    assert second_cycle['release_evaluation']['payload']['reason_code'] == 'waiting_for_batch'
+
+
+
 def test_notification_delivery_summary_keeps_target_and_status_fields():
     summary = _notification_delivery_summary([
         {
@@ -166,6 +262,7 @@ def test_success_notification_codes_exact_match_guardrail():
         'startup_initial_batch_succeeded',
         'official_group_approval_succeeded',
         'official_group_manual_review_required',
+        'official_group_cycle_noop',
     }
 
 
@@ -191,7 +288,8 @@ def test_run_cycle_backend_recovery_does_not_raise_after_restart(monkeypatch):
     assert cycle['backend_health']['recovered_after_restart'] is True
     assert cycle['backend_health']['restart']['attempted'] is True
     assert cycle['worker_state']['ok'] is True
-    assert cycle['fresh_probe']['ok'] is True
+    assert cycle['fresh_probe']['skipped'] is True
+    assert cycle['fresh_probe']['reason'] == 'group_state_is_authoritative_source'
 
 
 def test_run_cycle_backend_transient_refusal_recovers_without_restart(monkeypatch):
@@ -216,7 +314,8 @@ def test_run_cycle_backend_transient_refusal_recovers_without_restart(monkeypatc
     assert cycle['backend_health']['recovered_after_retry'] is True
     assert restart_calls == []
     assert cycle['worker_state']['ok'] is True
-    assert cycle['fresh_probe']['ok'] is True
+    assert cycle['fresh_probe']['skipped'] is True
+    assert cycle['fresh_probe']['reason'] == 'group_state_is_authoritative_source'
 
 
 def test_registration_group_cycle_transient_worker_refusal_recovers_without_runtime_restart(monkeypatch):
@@ -256,7 +355,7 @@ def test_registration_group_cycle_transient_worker_refusal_recovers_without_runt
                 'member_count': 5,
                 'requesters': [],
             }
-        if url == 'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/wa-admin-demo-1/runtime/start':
+        if url == 'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/wa-admin-demo-1/runtime/internal/start':
             attempts['runtime_start'] += 1
             return {'runtime': {'active': True, 'base_url': 'http://127.0.0.1:62000'}}
         raise AssertionError(url)
@@ -272,6 +371,7 @@ def test_registration_group_cycle_transient_worker_refusal_recovers_without_runt
     assert len(cycle['worker_state']['retry_attempts']) == 2
     assert attempts['runtime_start'] == 0
     assert [entry[0] for entry in calls] == [
+        'http://127.0.0.1:61150/group-state',
         'http://127.0.0.1:61150/group-state',
         'http://127.0.0.1:61150/group-state',
         'http://127.0.0.1:61150/group-state',
@@ -306,7 +406,7 @@ def test_registration_group_cycle_recovered_runtime_waits_through_warmup_refusal
         calls.append((url, method, payload))
         if url == 'http://127.0.0.1:61150/group-state':
             raise RuntimeError('<urlopen error [Errno 61] Connection refused>')
-        if url == 'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/wa-admin-demo-1/runtime/start':
+        if url == 'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/wa-admin-demo-1/runtime/internal/start':
             return {'runtime': {'active': True, 'base_url': 'http://127.0.0.1:62000'}}
         if url == 'http://127.0.0.1:62000/group-state':
             recovered_attempts['n'] += 1
@@ -337,7 +437,8 @@ def test_registration_group_cycle_recovered_runtime_waits_through_warmup_refusal
         'http://127.0.0.1:61150/group-state',
         'http://127.0.0.1:61150/group-state',
         'http://127.0.0.1:61150/group-state',
-        'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/wa-admin-demo-1/runtime/start',
+        'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/wa-admin-demo-1/runtime/internal/start',
+        'http://127.0.0.1:62000/group-state',
         'http://127.0.0.1:62000/group-state',
         'http://127.0.0.1:62000/group-state',
         'http://127.0.0.1:62000/group-state',
@@ -372,7 +473,7 @@ def test_registration_group_cycle_restarts_account_runtime_before_reporting_work
         calls.append((url, method, payload))
         if url == 'http://127.0.0.1:61150/group-state':
             raise RuntimeError('<urlopen error [Errno 61] Connection refused>')
-        if url == 'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/wa-admin-demo-1/runtime/start':
+        if url == 'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/wa-admin-demo-1/runtime/internal/start':
             return {'runtime': {'active': True, 'base_url': 'http://127.0.0.1:62000'}}
         if url == 'http://127.0.0.1:62000/group-state':
             return {
@@ -400,7 +501,8 @@ def test_registration_group_cycle_restarts_account_runtime_before_reporting_work
         'http://127.0.0.1:61150/group-state',
         'http://127.0.0.1:61150/group-state',
         'http://127.0.0.1:61150/group-state',
-        'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/wa-admin-demo-1/runtime/start',
+        'http://127.0.0.1:8011/api/ops/whatsapp-approval-accounts/wa-admin-demo-1/runtime/internal/start',
+        'http://127.0.0.1:62000/group-state',
         'http://127.0.0.1:62000/group-state',
     ]
 
@@ -541,24 +643,10 @@ def test_run_cycle_startup_initial_batch_rechecks_worker_state_and_uses_larger_p
             'member_count': 100,
             'requesters': [{'requesterId': f'w{i}', 'requestedAtUnix': 100 + i} for i in range(9)],
         },
-        {
-            'group_id': 'g',
-            'group_name': 'RG',
-            'pending_count': 9,
-            'member_count': 100,
-            'requesters': [{'requesterId': f'w{i}', 'requestedAtUnix': 100 + i} for i in range(9)],
-        },
-        {
-            'group_id': 'g',
-            'group_name': 'RG',
-            'pending_count': 9,
-            'member_count': 100,
-            'requesters': [{'requesterId': f'w{i}', 'requestedAtUnix': 100 + i} for i in range(9)],
-        },
     ])
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             return {
                 'rows': [
                     {
@@ -616,11 +704,11 @@ def test_run_cycle_startup_initial_batch_rechecks_worker_state_and_uses_larger_p
 
     assert cycle['monitor_target']['source'] == 'account_binding'
     assert cycle['worker_state']['ok'] is True
-    assert cycle['decision_group_state']['source'] == 'worker_state'
+    assert cycle['decision_group_state']['source'] == 'group_state'
     assert cycle['startup_initial_batch']['initial_pending_count'] == 6
     assert cycle['startup_initial_batch']['final_pending_count'] == 9
     assert cycle['startup_initial_batch']['pending_count'] == 9
-    assert [item['pending_count'] for item in cycle['startup_initial_batch']['startup_probe_rechecks']] == [6, 9, 9, 9]
+    assert [item['pending_count'] for item in cycle['startup_initial_batch']['startup_probe_rechecks']] == [6, 9]
     assert '--approved-count' in captured['command']
     assert captured['command'][captured['command'].index('--approved-count') + 1] == '9'
 
@@ -666,21 +754,92 @@ def test_run_cycle_startup_initial_batch_uses_larger_pending_count_when_worker_a
 
     cycle = run_cycle(args, {})
 
-    assert cycle['decision_group_state']['mismatch'] is True
-    assert 'pending_count' in cycle['decision_group_state']['mismatch_reasons']
+    assert cycle['decision_group_state']['source'] == 'group_state'
+    assert cycle['decision_group_state']['mismatch'] is False
+    assert cycle['fresh_probe']['skipped'] is True
+    assert cycle['fresh_probe']['reason'] == 'group_state_is_authoritative_source'
     assert cycle['startup_initial_batch']['pending_count'] == 9
     assert '--approved-count' in captured['command']
     assert captured['command'][captured['command'].index('--approved-count') + 1] == '9'
 
 
 
-def test_run_cycle_account_binding_zero_pending_rechecks_with_fresh_probe(monkeypatch):
+def test_run_cycle_account_binding_zero_pending_rechecks_with_authoritative_group_state(monkeypatch):
     args = SimpleNamespace(**Args.__dict__)
     args.monitoring_session_id = 'session-zero-recheck-1'
     invite_link = 'RG'
 
+    group_state_calls = {'n': 0}
+
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
+            return {
+                'rows': [
+                    {
+                        'account_key': 'wa-admin-demo-1',
+                        'account_name': 'WA Admin',
+                        'responsible_type': 'registration_group',
+                        'enabled': True,
+                        'area': 'Indonesia',
+                        'runtime_state': {
+                            'active': True,
+                            'base_url': 'http://worker-1',
+                        },
+                        'group_link_bindings': [
+                            {
+                                'link': invite_link,
+                                'group_name': 'RG',
+                                'enabled': True,
+                                'area': 'Indonesia',
+                                'schedule_runtime': {'configured': True, 'active_now': True},
+                            }
+                        ],
+                    }
+                ]
+            }
+        if url == 'http://worker-1/group-state':
+            group_state_calls['n'] += 1
+            if group_state_calls['n'] == 1:
+                return {
+                    'group_id': 'g',
+                    'group_name': 'RG',
+                    'pending_count': 0,
+                    'member_count': 100,
+                    'requesters': [],
+                }
+            return {
+                'group_id': 'g',
+                'group_name': 'RG',
+                'pending_count': 3,
+                'member_count': 103,
+                'requesters': [{'requesterId': f'f{i}', 'requestedAtUnix': 300 + i} for i in range(3)],
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon._run_fresh_probe', lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('fresh probe should not run')))
+    monkeypatch.setattr('scripts.production_ops_daemon.time.sleep', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr('scripts.production_ops_daemon.run_formal_approval_command', lambda *args, **kwargs: {'returncode': 0, 'result': {'formal_run': {'approval_run_id': 'approval-1', 'result': {'verified': True, 'crm_recorded': True}}}})
+
+    cycle = run_cycle(args, {})
+
+    cycle_row = cycle['registration_group_cycles'][0]
+    assert group_state_calls['n'] >= 2
+    assert cycle_row['fresh_probe']['skipped'] is True
+    assert cycle_row['fresh_probe']['zero_pending_recheck'] is True
+    assert cycle_row['fresh_probe']['recheck_source'] == 'group_state'
+    assert cycle_row['decision_group_state']['payload']['pending_count'] == 3
+
+
+
+def test_run_cycle_account_binding_ignores_suspected_review_surface_positive_residue(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.monitoring_session_id = 'session-zero-recheck-residue'
+    invite_link = 'RG'
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             return {
                 'rows': [
                     {
@@ -712,36 +871,21 @@ def test_run_cycle_account_binding_zero_pending_rechecks_with_fresh_probe(monkey
                 'pending_count': 0,
                 'member_count': 100,
                 'requesters': [],
+                'requester_ids': [],
             }
         raise AssertionError(url)
 
-    fresh_probe_calls = {'n': 0}
-
-    def fake_run_fresh_probe(*_args, **_kwargs):
-        fresh_probe_calls['n'] += 1
-        return {
-            'group_id': 'g',
-            'group_name': 'RG',
-            'pending_count': 3,
-            'member_count': 103,
-            'requesters': [{'requesterId': f'f{i}', 'requestedAtUnix': 300 + i} for i in range(3)],
-        }
-
     monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
     monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
-    monkeypatch.setattr('scripts.production_ops_daemon._run_fresh_probe', fake_run_fresh_probe)
     monkeypatch.setattr('scripts.production_ops_daemon.time.sleep', lambda *_args, **_kwargs: None)
-    monkeypatch.setattr('scripts.production_ops_daemon.run_formal_approval_command', lambda *args, **kwargs: {'returncode': 0, 'result': {'formal_run': {'approval_run_id': 'approval-1', 'result': {'verified': True, 'crm_recorded': True}}}})
 
     cycle = run_cycle(args, {})
-
     cycle_row = cycle['registration_group_cycles'][0]
-    assert fresh_probe_calls['n'] == 1
-    assert cycle_row['fresh_probe']['ok'] is True
-    assert cycle_row['fresh_probe']['zero_pending_recheck'] is True
-    assert cycle_row['decision_group_state']['mismatch'] is True
-    assert cycle_row['decision_group_state']['payload']['pending_count'] == 3
 
+    assert cycle_row['fresh_probe']['skipped'] is True
+    assert cycle_row['review_surface_probe']['skipped'] is True
+    assert cycle_row['decision_group_state']['source'] == 'group_state'
+    assert cycle_row['decision_group_state']['payload']['pending_count'] == 0
 
 
 def test_run_cycle_account_binding_zero_pending_fresh_probe_failure_marks_unverified(monkeypatch):
@@ -750,7 +894,7 @@ def test_run_cycle_account_binding_zero_pending_fresh_probe_failure_marks_unveri
     invite_link = 'RG'
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             return {
                 'rows': [
                     {
@@ -787,19 +931,52 @@ def test_run_cycle_account_binding_zero_pending_fresh_probe_failure_marks_unveri
 
     monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
     monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
-    monkeypatch.setattr('scripts.production_ops_daemon._run_fresh_probe', lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('probe timeout')))
     monkeypatch.setattr('scripts.production_ops_daemon.time.sleep', lambda *_args, **_kwargs: None)
 
     cycle = run_cycle(args, {})
     cycle_row = cycle['registration_group_cycles'][0]
     notifications = build_success_notifications(cycle)
 
-    assert cycle_row['fresh_probe']['ok'] is False
+    assert cycle_row['fresh_probe']['skipped'] is True
+    assert cycle_row['fresh_probe']['reason'] == 'group_state_is_authoritative_source'
     assert cycle_row['fresh_probe']['zero_pending_recheck'] is True
-    assert cycle_row['fresh_probe']['fallback_used'] is True
-    assert cycle_row['decision_group_state']['source'] == 'worker_state'
+    assert cycle_row['fresh_probe']['recheck_source'] == 'group_state'
+    assert cycle_row['decision_group_state']['source'] == 'group_state'
+    assert cycle_row['decision_group_state']['pending_zero_confidence'] == 'unverified'
     assert cycle_row['decision_group_state']['zero_pending_unverified'] is True
+    assert cycle_row['truth_state']['status'] == 'empty_unverified'
     assert notifications == []
+
+
+def test_run_cycle_fallback_target_without_explicit_independent_truth_probe_does_not_auto_build_default(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.monitoring_session_id = 'session-no-default-independent-probe'
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
+            return {'rows': []}
+        if url == 'http://127.0.0.1:8787/group-state':
+            return {
+                'group_id': 'g',
+                'group_name': 'RG',
+                'pending_count': 0,
+                'member_count': 100,
+                'requesters': [],
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon.time.sleep', lambda *_args, **_kwargs: None)
+
+    cycle = run_cycle(args, {})
+    cycle_row = cycle['registration_group_cycles'][0]
+
+    assert cycle_row['monitor_target']['source'] == 'fallback_config'
+    assert cycle_row['monitor_target']['independent_truth_probe_cmd'] == ''
+    assert cycle_row['independent_truth_probe']['skipped'] is True
+    assert cycle_row['independent_truth_probe']['reason'] == 'async_reconcile_only_not_authoritative'
+    assert cycle_row['decision_group_state']['pending_zero_confidence'] == 'unverified'
 
 
 def test_run_cycle_startup_initial_batch_rechecks_and_stops_when_queue_clears(monkeypatch):
@@ -856,8 +1033,12 @@ def test_run_cycle_startup_initial_batch_rechecks_and_stops_when_queue_clears(mo
     cycle = run_cycle(args, state)
 
     assert cycle['startup_initial_batch']['triggered'] is True
-    assert cycle['startup_initial_batch']['ok'] is True
-    assert cycle['startup_initial_batch']['cleared_after_recheck'] is True
+    assert cycle['startup_initial_batch']['ok'] is False
+    assert cycle['startup_initial_batch']['pending_count'] == 0
+    assert cycle['startup_initial_batch']['final_pending_count'] == 0
+    assert cycle['startup_initial_batch']['attempt_results'][0]['recheck_error'] == ''
+    assert cycle['startup_initial_batch']['startup_probe_rechecks'][0]['pending_count'] == 0
+    assert 'error' in cycle['startup_initial_batch']['startup_probe_rechecks'][1]
     assert cycle['startup_initial_batch']['attempts'] == 1
     assert state['monitoring_session']['startup_initial_batch_done'] is True
     assert state['monitoring_session']['startup_initial_batch_attempts'] == 1
@@ -1190,10 +1371,15 @@ def test_run_cycle_drains_newly_surfaced_registration_pending_into_same_success_
     assert cycle['formal_approval']['aggregate_approved_count'] == 8
     assert cycle['formal_approval']['approval_run_ids'] == ['run-1', 'run-2']
     assert cycle['formal_approval']['final_pending_count'] == 0
-    assert len(notifications) == 1
-    assert notifications[0]['details']['approved_count'] == 8
-    assert notifications[0]['details']['approval_run_ids'] == ['run-1', 'run-2']
-    assert notifications[0]['dedupe_key'] == 'formal_approval_succeeded:run-1|run-2'
+    assert len(notifications) == 2
+    assert [item['code'] for item in notifications] == ['formal_approval_succeeded', 'formal_approval_succeeded']
+    assert [item['dedupe_key'] for item in notifications] == [
+        'formal_approval_succeeded:run-1',
+        'formal_approval_succeeded:run-2',
+    ]
+    assert [item['details']['approval_run_ids'] for item in notifications] == [['run-1'], ['run-2']]
+    assert [item['details']['approved_count'] for item in notifications] == [4, 4]
+    assert [item['details']['pending_after'] for item in notifications] == [4, 0]
 
 
 
@@ -1371,6 +1557,45 @@ def test_notify_incidents_resets_worker_state_failed_streak_after_recovery(monke
     assert _notify_incidents(args, state, cycle, []) == []
     assert 'worker_state_failed' not in state.get('incident_streaks', {})
     assert _notify_incidents(args, state, cycle, incidents) == []
+
+
+
+def test_notify_incidents_skips_registration_zero_pending_unverified_alert(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.notify_cooldown_seconds = 900
+    state = {}
+    cycle = {
+        'checked_at': '2026-05-09T09:07:49+00:00',
+        'registration_group': 'RG',
+        'monitor_target': {'group_name': '注册测试1'},
+    }
+    incidents = [{
+        'severity': 'critical',
+        'code': 'registration_zero_pending_unverified',
+        'summary': '注册群零待审批未核实',
+        'notify_disabled': True,
+        'details': {
+            'group_name': '注册测试1',
+            'pending_count': 0,
+            'reason': 'same_runtime_family_zero_pending',
+        },
+        'dedupe_key': 'registration_zero_pending_unverified:注册测试1|2026-05-09T09:07:17+00:00',
+    }]
+    sent_texts = []
+
+    class DummyNotifier:
+        def send_text(self, text):
+            sent_texts.append(text)
+            return {'code': 0}
+
+    monkeypatch.setattr('scripts.production_ops_daemon._build_notifier_from_args', lambda args, cycle=None: DummyNotifier())
+
+    result = _notify_incidents(args, state, cycle, incidents)
+
+    assert result == []
+    assert sent_texts == []
+    assert state.get('incident_streaks', {}) == {}
+    assert state.get('notifications', {}) == {}
 
 
 
@@ -1555,13 +1780,18 @@ def test_notify_incidents_retries_success_notification_after_failed_delivery(mon
     monkeypatch.setattr('scripts.production_ops_daemon._build_notifier_from_args', lambda args, cycle=None: FlakyNotifier())
 
     first = _notify_incidents(args, state, cycle, incidents)
-    second = _notify_incidents(args, state, cycle, incidents)
 
     assert len(first) == 1
     assert first[0]['status'] == 'partial_sent'
     assert state['notifications']['formal_approval_succeeded:test-retry']['last_status'] == 'partial_sent'
+    assert 'last_sent_at' not in state['notifications']['formal_approval_succeeded:test-retry']
+
+    second = _notify_incidents(args, state, cycle, incidents)
+
+    assert len(second) == 1
+    assert second[0]['status'] == 'sent'
+    assert state['notifications']['formal_approval_succeeded:test-retry']['last_status'] == 'sent'
     assert state['notifications']['formal_approval_succeeded:test-retry']['last_sent_at'] == '2026-05-08T02:40:00+00:00'
-    assert second == []
 
 
 
@@ -1630,8 +1860,9 @@ def test_notify_incidents_sends_official_group_manual_review_required_only_once(
         'details': {
             'group_name': '官方测试1',
             'reason_code': 'crm_customer_not_found',
+            'remaining_pending_count': 1,
         },
-        'dedupe_key': 'official_group_manual_review_required:official-group-1:lead-1:crm_customer_not_found',
+        'dedupe_key': 'official_group_manual_review_required:official-group-1:lead-1:crm_customer_not_found:1',
     }]
     sent_texts = []
 
@@ -1650,6 +1881,59 @@ def test_notify_incidents_sends_official_group_manual_review_required_only_once(
     assert len(first[0]['deliveries']) == 2
     assert len(sent_texts) == 2
     assert second == []
+
+
+def test_notify_incidents_sends_distinct_official_group_manual_review_notifications_when_remaining_count_changes(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.notify_cooldown_seconds = 900
+    state = {}
+    cycle = {
+        'checked_at': '2026-05-08T03:05:00+00:00',
+        'registration_group': 'RG',
+        'monitor_target': {
+            'notify_profile_name': 'wa-approval-broadcast',
+            'notify_robot_name': '审批bot01',
+        },
+    }
+    sent_texts = []
+
+    class DummyNotifier:
+        def send_text(self, text):
+            sent_texts.append(text)
+            return {'code': 0}
+
+    monkeypatch.setattr('scripts.production_ops_daemon._build_notifier_from_args', lambda args, cycle=None: DummyNotifier())
+
+    first = _notify_incidents(args, state, cycle, [{
+        'severity': 'warning',
+        'code': 'official_group_manual_review_required',
+        'summary': '官方群审批需人工复核',
+        'details': {
+            'group_name': '官方测试1',
+            'mobile': '+852****3942',
+            'reason_code': 'official_group_requester_unmatched',
+            'remaining_pending_count': 2,
+        },
+        'dedupe_key': 'official_group_manual_review_required:official-group-permata:150749711495258@lid:official_group_requester_unmatched:2',
+    }])
+    second = _notify_incidents(args, state, cycle, [{
+        'severity': 'warning',
+        'code': 'official_group_manual_review_required',
+        'summary': '官方群审批需人工复核',
+        'details': {
+            'group_name': '官方测试1',
+            'mobile': '+852****3942',
+            'reason_code': 'official_group_requester_unmatched',
+            'remaining_pending_count': 1,
+        },
+        'dedupe_key': 'official_group_manual_review_required:official-group-permata:150749711495258@lid:official_group_requester_unmatched:1',
+    }])
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert first[0]['status'] == 'sent'
+    assert second[0]['status'] == 'sent'
+    assert len(sent_texts) == 4
 
 
 
@@ -1799,6 +2083,8 @@ def test_notify_incidents_prefers_incident_notify_profile_credentials(monkeypatc
     assert captured['inits'][1]['chat_id'] == 'oc_bot02'
     assert captured['inits'][1]['app_secret'] == 'bot02-secret'
     assert all('官方群审批成功' in text for text in captured['texts'])
+    assert all('本次通过人数: 1' in text for text in captured['texts'])
+    assert all('剩余待审批人数: 0' in text for text in captured['texts'])
     assert all('原因: 已审批通过 1 人' in text for text in captured['texts'])
 
 
@@ -1941,9 +2227,10 @@ def test_run_cycle_uses_fresh_probe_as_authoritative_source(monkeypatch):
     monkeypatch.setattr('scripts.production_ops_daemon.run_formal_approval_command', fake_run_formal_approval_command)
 
     cycle = run_cycle(args, {})
-    assert cycle['decision_group_state']['source'] == 'reconciled_max_pending'
-    assert cycle['decision_group_state']['mismatch'] is True
-    assert 'pending_count' in cycle['decision_group_state']['mismatch_reasons']
+    assert cycle['decision_group_state']['source'] == 'group_state'
+    assert cycle['decision_group_state']['mismatch'] is False
+    assert cycle['fresh_probe']['skipped'] is True
+    assert cycle['fresh_probe']['reason'] == 'group_state_is_authoritative_source'
     assert cycle['formal_approval']['release_count'] == 10
     assert captured['command'][captured['command'].index('--approved-count') + 1] == '10'
 
@@ -1954,7 +2241,7 @@ def test_run_cycle_prefers_active_monitored_binding_target_from_accounts_api(mon
     calls = {'group_state': [], 'fresh_probe_called': False}
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             return {
                 'rows': [
                     {
@@ -2016,10 +2303,10 @@ def test_run_cycle_prefers_active_monitored_binding_target_from_accounts_api(mon
     assert cycle['monitor_target']['source'] == 'account_binding'
     assert cycle['monitor_target']['worker_base_url'] == 'http://127.0.0.1:52681'
     assert cycle['monitor_target']['group_name'] == '测试85'
-    assert cycle['fresh_probe']['ok'] is True
+    assert cycle['fresh_probe']['ok'] is False
     assert cycle['fresh_probe']['skipped'] is True
-    assert cycle['fresh_probe']['reason'] == 'dedicated_runtime_worker_state'
-    assert cycle['decision_group_state']['source'] == 'worker_state'
+    assert cycle['fresh_probe']['reason'] == 'group_state_is_authoritative_source'
+    assert cycle['decision_group_state']['source'] == 'group_state'
     assert calls['fresh_probe_called'] is False
     assert len(calls['group_state']) == 1
 
@@ -2030,7 +2317,7 @@ def test_run_cycle_does_not_fallback_to_shared_worker_when_binding_runtime_is_un
     calls = {'group_state': []}
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             return {
                 'rows': [
                     {
@@ -2080,13 +2367,82 @@ def test_run_cycle_does_not_fallback_to_shared_worker_when_binding_runtime_is_un
 
 
 
+def test_run_cycle_recent_binding_runtime_startup_grace_skips_rebuild_when_health_not_ready(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    invite_link = 'https://chat.whatsapp.com/EoHAaKPML7p3BG7LNEbOl1'
+    now = datetime.now(timezone.utc)
+    calls = {'group_state': [], 'runtime_stop': 0, 'runtime_start': 0, 'session_start': 0}
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
+            return {
+                'rows': [
+                    {
+                        'account_key': 'wa-admin-demo-1',
+                        'account_name': 'WA Admin',
+                        'responsible_type': 'registration_group',
+                        'enabled': True,
+                        'area': 'Indonesia',
+                        'runtime_state': {
+                            'active': False,
+                            'pid': 12345,
+                            'port': 58354,
+                            'base_url': 'http://127.0.0.1:58354',
+                            'status': 'stopped',
+                            'started_at': now.isoformat(),
+                            'stopped_at': None,
+                        },
+                        'group_link_bindings': [
+                            {
+                                'link': invite_link,
+                                'group_name': '注册01',
+                                'enabled': True,
+                                'area': 'Indonesia',
+                                'schedule_runtime': {'configured': True, 'active_now': True},
+                            }
+                        ],
+                    }
+                ]
+            }
+        if url.endswith('/runtime/internal/stop'):
+            calls['runtime_stop'] += 1
+            raise AssertionError('startup grace should skip runtime stop')
+        if url.endswith('/runtime/internal/start'):
+            calls['runtime_start'] += 1
+            raise AssertionError('startup grace should skip runtime restart')
+        if url.endswith('/session/internal/start'):
+            calls['session_start'] += 1
+            raise AssertionError('startup grace should skip session start')
+        if url.endswith('/group-state'):
+            calls['group_state'].append({'url': url, 'payload': payload})
+            raise AssertionError('shared worker fetch should not run during startup grace')
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon._run_fresh_probe', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('fresh probe must not run during startup grace')))
+
+    cycle = run_cycle(args, {})
+
+    registration_cycle = cycle['registration_group_cycles'][0]
+    assert registration_cycle['worker_state']['ok'] is False
+    assert registration_cycle['worker_state']['error'] == 'worker_base_url_missing_for_selected_binding'
+    assert registration_cycle['worker_state']['startup_grace']['active'] is True
+    assert registration_cycle['worker_state']['startup_grace']['reason'] == 'runtime_startup_grace_skip_auto_rebuild'
+    assert calls['runtime_stop'] == 0
+    assert calls['runtime_start'] == 0
+    assert calls['session_start'] == 0
+    assert calls['group_state'] == []
+
+
+
 def test_run_cycle_outside_schedule_does_not_fallback_to_stale_shared_worker(monkeypatch):
     args = SimpleNamespace(**Args.__dict__)
     invite_link = 'https://chat.whatsapp.com/EoHAaKPML7p3BG7LNEbOl1'
     calls = {'group_state': []}
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             return {
                 'rows': [
                     {
@@ -2140,7 +2496,7 @@ def test_run_cycle_outside_schedule_flushes_pending_batch_once_at_window_end(mon
     calls = {'group_state': [], 'formal': []}
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             return {
                 'rows': [
                     {
@@ -2229,7 +2585,7 @@ def test_run_cycle_startup_batch_command_uses_selected_binding_runtime_and_targe
     captured = {}
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             return {
                 'rows': [
                     {
@@ -2313,7 +2669,7 @@ def test_run_cycle_selected_binding_passes_custom_thresholds_to_release_evaluati
     evaluate_payloads = []
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             return {
                 'rows': [
                     {
@@ -2388,7 +2744,7 @@ def test_run_cycle_startup_recheck_uses_worker_state_for_dedicated_binding(monke
     calls = {'group_state': 0, 'fresh_probe_called': False}
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             return {
                 'rows': [{
                     'account_key': 'wa-admin-demo-1',
@@ -2446,8 +2802,9 @@ def test_run_cycle_startup_recheck_uses_worker_state_for_dedicated_binding(monke
 
     assert cycle['startup_initial_batch']['cleared_after_recheck'] is True
     assert cycle['startup_initial_batch']['attempt_results'][0]['recheck_source'] == 'worker_state'
-    assert len(cycle['startup_initial_batch']['startup_probe_rechecks']) == 4
-    assert calls['group_state'] == 6
+    assert len(cycle['startup_initial_batch']['startup_probe_rechecks']) == 2
+    assert [item['pending_count'] for item in cycle['startup_initial_batch']['startup_probe_rechecks']] == [0, 0]
+    assert calls['group_state'] == 4
     assert calls['fresh_probe_called'] is False
 
 
@@ -2461,8 +2818,85 @@ def test_run_cycle_fresh_probe_failure_fails_closed(monkeypatch):
     cycle = run_cycle(args, {})
     assert cycle['worker_state']['ok'] is True
     assert cycle['fresh_probe']['ok'] is False
-    assert cycle['decision_group_state']['source'] == 'fail_closed'
-    assert cycle.get('formal_approval') is None
+    assert cycle['fresh_probe']['skipped'] is True
+    assert cycle['fresh_probe']['reason'] == 'group_state_is_authoritative_source'
+    assert cycle['decision_group_state']['source'] == 'group_state'
+    assert cycle['formal_approval']['triggered'] is False
+    assert cycle['formal_approval']['ready'] is False
+
+
+
+def test_registration_group_cycle_retries_release_evaluation_after_backend_refusal(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.restart_wait_seconds = 0.0
+    target = {
+        'registration_group': 'RG',
+        'group_name': '测试群',
+        'worker_base_url': 'http://worker-1',
+        'source': 'fallback_config',
+        'approval_count_threshold': 30,
+        'approval_timeout_minutes': 5,
+        'runtime_state': {'active': True, 'ready': True, 'authenticated': True},
+        'session_state': {'session_target_match': True, 'login_verified': True},
+    }
+    evaluate_attempts = {'n': 0}
+    restart_calls = []
+    health_checks = []
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url == 'http://worker-1/group-state':
+            return {
+                'group_id': 'g',
+                'group_name': '测试群',
+                'pending_count': 2,
+                'member_count': 5,
+                'requesters': [
+                    {'requesterId': 'u1', 'requestedAtUnix': 100},
+                    {'requesterId': 'u2', 'requestedAtUnix': 101},
+                ],
+            }
+        if url.endswith('/api/ops/approval-batches/evaluate'):
+            evaluate_attempts['n'] += 1
+            if evaluate_attempts['n'] == 1:
+                raise RuntimeError('<urlopen error [Errno 61] Connection refused>')
+            return {
+                'approval_type': 'registration_group',
+                'registration_group': 'RG',
+                'pending_count': 2,
+                'oldest_pending_at': payload['oldest_pending_at'],
+                'ready': False,
+                'release_count': 0,
+                'reason_code': 'waiting_for_batch',
+                'batch_size': 30,
+                'timeout_minutes': 5,
+                'elapsed_minutes': 0,
+                'remaining_minutes': 5,
+                'remaining_seconds': 300,
+            }
+        raise AssertionError(url)
+
+    def fake_check_backend_health(api_base_url, *, timeout):
+        health_checks.append((api_base_url, timeout))
+        return {'ok': True, 'payload': {'status': 'ok'}}
+
+    def fake_restart(command, *, timeout):
+        restart_calls.append((command, timeout))
+        return {'attempted': True, 'ok': True, 'command': command}
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', fake_check_backend_health)
+    monkeypatch.setattr('scripts.production_ops_daemon.maybe_restart', fake_restart)
+    monkeypatch.setattr('scripts.production_ops_daemon.time.sleep', lambda seconds: None)
+
+    cycle = _run_registration_group_cycle(args, {}, target, now=datetime(2026, 5, 9, 8, 31, 6, tzinfo=timezone.utc))
+
+    assert cycle['worker_state']['ok'] is True
+    assert cycle['release_evaluation']['ok'] is True
+    assert cycle['release_evaluation']['payload']['reason_code'] == 'waiting_for_batch'
+    assert cycle['release_evaluation']['recovered_after_retry'] is True
+    assert evaluate_attempts['n'] == 2
+    assert restart_calls == []
+    assert len(health_checks) == 1
 
 
 def test_run_cycle_dispatches_ready_official_group_batches(monkeypatch):
@@ -2471,7 +2905,7 @@ def test_run_cycle_dispatches_ready_official_group_batches(monkeypatch):
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
         calls.append({'url': url, 'method': method, 'payload': payload})
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             return {'rows': []}
         if url.endswith('/group-state'):
             return {'group_id': 'g', 'group_name': 'RG', 'pending_count': 0, 'member_count': 339, 'requesters': []}
@@ -2540,7 +2974,7 @@ def test_run_cycle_official_group_dispatch_uses_binding_timeout_for_cooldown(mon
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
         calls.append({'url': url, 'method': method, 'payload': payload})
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             return {'rows': []}
         if url.endswith('/group-state'):
             return {'group_id': 'g', 'group_name': 'RG', 'pending_count': 0, 'member_count': 339, 'requesters': []}
@@ -2654,7 +3088,7 @@ def test_run_cycle_adding_new_binding_starts_monitoring_only_for_new_group(monke
         }
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             call_state['accounts_calls'] += 1
             return accounts_payload(include_group_b=call_state['accounts_calls'] >= 2)
         if url == 'http://127.0.0.1:52681/group-state':
@@ -2754,7 +3188,7 @@ def test_run_cycle_binding_config_change_restarts_only_changed_group_session(mon
         }
 
     def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
-        if url.endswith('/api/ops/whatsapp-approval-accounts'):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
             call_state['accounts_calls'] += 1
             return accounts_payload(group_b_threshold=30 if call_state['accounts_calls'] == 1 else 10)
         if url == 'http://127.0.0.1:52681/group-state':

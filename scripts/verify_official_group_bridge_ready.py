@@ -8,7 +8,12 @@ from urllib import request, error
 
 
 def fetch_json(url: str) -> dict:
-    with request.urlopen(url, timeout=20) as resp:
+    headers = {}
+    internal_token = str(__import__('os').getenv('AUTH_INTERNAL_TOKEN') or '').strip()
+    if internal_token and '/api/ops/' in str(url or ''):
+        headers['x-ops-internal-token'] = internal_token
+    req = request.Request(url, headers=headers)
+    with request.urlopen(req, timeout=20) as resp:
         return json.loads(resp.read().decode('utf-8'))
 
 

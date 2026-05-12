@@ -479,6 +479,212 @@ def test_open_group_info_skips_navigation_when_cached_page_is_ready():
     assert executor._page.locator_clicks == 0
 
 
+def test_group_state_uses_requested_group_name_and_live_review_surface(monkeypatch):
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
+    opened = []
+    monkeypatch.setattr(executor, '_ensure_browser', lambda: None)
+    monkeypatch.setattr(executor, '_open_group_info', lambda target_group_name=None, allow_index_fallback=True: opened.append((target_group_name, allow_index_fallback)))
+    monkeypatch.setattr(executor, '_snapshot_group_state', lambda: {
+        'pending_count': 2,
+        'member_count': 123,
+        'body_excerpt': '群组信息\n待处理请求 2\nAlice\nBob',
+        'contact_info_detected': False,
+        'empty_queue_detected': False,
+    })
+    monkeypatch.setattr(executor, '_review_surface_state', lambda prefer_fast_path=False: {
+        'candidate_rows': [
+            {'display_name': 'Alice', 'phones': ['+62811'], 'actionable': True},
+            {'display_name': 'Bob', 'phones': ['+62812'], 'actionable': True},
+        ],
+        'review_surface_ready': True,
+        'has_pending_section': True,
+        'has_pending_request_row': True,
+        'empty_queue_visible': False,
+        'zero_pending_unverified': False,
+    })
+
+    payload = executor.group_state('RG Live Truth')
+
+    assert opened == [('RG Live Truth', False)]
+    assert payload['group_name'] == 'RG Live Truth'
+    assert payload['pending_count'] == 2
+    assert payload['verification_source'] == 'live_review_surface'
+    assert payload['review_surface_ready'] is True
+    assert payload['has_pending_section'] is True
+    assert payload['has_pending_request_row'] is True
+    assert payload['empty_queue_visible'] is False
+    assert payload['zero_pending_unverified'] is False
+    assert [row['display_name'] for row in payload['requesters']] == ['Alice', 'Bob']
+
+
+def test_group_state_disallows_index_fallback_for_unmatched_target(monkeypatch):
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
+    monkeypatch.setattr(executor, '_ensure_browser', lambda: None)
+    monkeypatch.setattr(executor, '_try_open_group_info_on_current_surface', lambda timeout_seconds=1.2: False)
+    monkeypatch.setattr(executor, '_enter_groups_tab', lambda: None)
+    monkeypatch.setattr(executor, '_wait_for_home_surface_ready', lambda timeout_seconds=0.0: None)
+    monkeypatch.setattr(executor, '_page_has_loading_gate', lambda: False)
+    monkeypatch.setattr(executor, '_page', type('P', (), {'wait_for_timeout': staticmethod(lambda value: None)})())
+    monkeypatch.setattr(executor, '_open_registration_chat_row', lambda target_group_name=None, allow_index_fallback=True: (_ for _ in ()).throw(RuntimeError(f'target_group_not_visible:{target_group_name}')))
+
+    try:
+        executor.group_state('Missing Group')
+        raised = None
+    except Exception as exc:
+        raised = str(exc)
+
+    assert raised is not None
+    assert 'target_group_not_visible:Missing Group' in raised
+
+
+def test_group_state_marks_zero_pending_unverified_without_explicit_empty_queue(monkeypatch):
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
+    monkeypatch.setattr(executor, '_ensure_browser', lambda: None)
+    monkeypatch.setattr(executor, '_open_group_info', lambda target_group_name=None, allow_index_fallback=True: None)
+    monkeypatch.setattr(executor, '_snapshot_group_state', lambda: {
+        'pending_count': 0,
+        'member_count': 5,
+        'body_excerpt': '群组信息\n添加成员标记',
+        'contact_info_detected': False,
+        'empty_queue_detected': False,
+    })
+    monkeypatch.setattr(executor, '_review_surface_state', lambda prefer_fast_path=False: {
+        'candidate_rows': [],
+        'review_surface_ready': False,
+        'has_pending_section': False,
+        'has_pending_request_row': False,
+        'empty_queue_visible': False,
+        'zero_pending_unverified': False,
+    })
+    monkeypatch.setattr(executor, '_open_pending_review', lambda pending_before: {
+        'pending_count': 2,
+        'review_surface_ready': True,
+        'has_pending_section': False,
+        'has_pending_request_row': True,
+        'empty_queue_visible': False,
+        'zero_pending_unverified': False,
+        'candidate_rows': [
+            {'display_name': 'Alice', 'phones': ['+62811'], 'actionable': True},
+            {'display_name': 'Bob', 'phones': ['+62812'], 'actionable': True},
+        ],
+    })
+
+    payload = executor.group_state('RG Live Truth')
+
+    assert payload['pending_count'] == 2
+    assert payload['has_pending_request_row'] is True
+    assert payload['zero_pending_unverified'] is False
+
+
+def test_group_state_keeps_zero_pending_unverified_when_open_review_stays_ambiguous(monkeypatch):
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
+    monkeypatch.setattr(executor, '_ensure_browser', lambda: None)
+    monkeypatch.setattr(executor, '_open_group_info', lambda target_group_name=None, allow_index_fallback=True: None)
+    monkeypatch.setattr(executor, '_snapshot_group_state', lambda: {
+        'pending_count': 0,
+        'member_count': 5,
+        'body_excerpt': '群组信息\n添加成员标记',
+        'contact_info_detected': False,
+        'empty_queue_detected': False,
+    })
+    monkeypatch.setattr(executor, '_review_surface_state', lambda prefer_fast_path=False: {
+        'candidate_rows': [],
+        'review_surface_ready': False,
+        'has_pending_section': False,
+        'has_pending_request_row': False,
+        'empty_queue_visible': False,
+        'zero_pending_unverified': False,
+    })
+    monkeypatch.setattr(executor, '_open_pending_review', lambda pending_before: {
+        'pending_count': 0,
+        'review_surface_ready': False,
+        'has_pending_section': False,
+        'has_pending_request_row': False,
+        'empty_queue_visible': False,
+        'zero_pending_unverified': False,
+        'candidate_rows': [],
+    })
+
+    payload = executor.group_state('RG Live Truth')
+
+    assert payload['pending_count'] == 0
+    assert payload['zero_pending_unverified'] is True
+    assert payload['zero_pending_unverified_reason'] == 'review_surface_zero_not_confirmed'
+
+
+def test_open_registration_chat_row_uses_sidebar_search_before_index_fallback(monkeypatch):
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
+
+    class _DummyPage:
+        def get_by_text(self, text, exact=False):
+            class _Locator:
+                def count(self):
+                    return 0
+                @property
+                def first(self):
+                    return self
+                def click(self, timeout=0):
+                    return None
+            return _Locator()
+        def locator(self, selector):
+            class _Locator:
+                def click(self, timeout=0):
+                    raise AssertionError('index fallback should not be used')
+                def count(self):
+                    return 0
+            return _Locator()
+
+    executor._page = _DummyPage()
+    monkeypatch.setattr(executor, '_search_chat_by_group_name', lambda target_group_name: True)
+
+    result = executor._open_registration_chat_row('Target Group', allow_index_fallback=False)
+
+    assert result == 'sidebar_search_exact'
+
+
+def test_search_chat_by_group_name_supports_short_search_placeholder(monkeypatch):
+    executor = LiveWarmWhatsAppRegistrationGroupApprovalExecutor(navigation_wait_ms=0, initial_wait_ms=0)
+
+    class _SearchInput:
+        def __init__(self, present):
+            self.present = present
+            self.filled = []
+        def count(self):
+            return 1 if self.present else 0
+        @property
+        def first(self):
+            return self
+        def click(self, timeout=0):
+            return None
+        def fill(self, value, timeout=0):
+            self.filled.append(value)
+
+    class _NamedLocator:
+        def count(self):
+            return 1
+        @property
+        def first(self):
+            return self
+        def click(self, timeout=0):
+            return None
+
+    class _DummyPage:
+        def __init__(self):
+            self.short = _SearchInput(True)
+        def get_by_placeholder(self, text):
+            if text == '搜索':
+                return self.short
+            return _SearchInput(False)
+        def get_by_text(self, text, exact=False):
+            return _NamedLocator()
+        def wait_for_timeout(self, value):
+            return None
+
+    executor._page = _DummyPage()
+
+    assert executor._search_chat_by_group_name('注册测试1') is True
+
+
 class _OpenGroupInfoRetryPage:
     def __init__(self):
         self.header_clicks = 0
@@ -1126,7 +1332,7 @@ def test_open_group_info_skips_chat_row_open_attempts_until_loading_gate_clears(
     executor._enter_groups_tab = lambda: enter_groups_calls.append('enter')
     executor._wait_for_home_surface_ready = lambda timeout_seconds=0.0: None
     executor._page_has_loading_gate = lambda: next(loading_states)
-    executor._open_registration_chat_row = lambda: open_calls.append('open') or 'list_item_index_0'
+    executor._open_registration_chat_row = lambda target_group_name=None, allow_index_fallback=True: open_calls.append(target_group_name or 'open') or 'list_item_index_0'
     executor._page_ready_for_approval = lambda: bool(open_calls)
 
     executor._open_group_info()

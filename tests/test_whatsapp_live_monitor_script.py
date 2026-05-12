@@ -79,6 +79,26 @@ def test_enter_groups_tab_raises_after_both_paths_fail():
     assert page.text_locator.clicks >= 1
 
 
+def test_assert_home_surface_authenticated_rejects_login_gate():
+    from scripts.whatsapp_live_monitor import _assert_home_surface_authenticated
+
+    class _BodyLocator:
+        async def inner_text(self):
+            return '下载 Mac 版 WhatsApp\n扫描登录\n请改用电话号码关联。'
+
+    class _AsyncPage:
+        def locator(self, selector, *args, **kwargs):
+            assert selector == 'body'
+            return _BodyLocator()
+
+    try:
+        asyncio.run(_assert_home_surface_authenticated(_AsyncPage()))
+    except RuntimeError as exc:
+        assert str(exc) == 'whatsapp_home_not_authenticated_in_copied_profile'
+    else:
+        raise AssertionError('expected copied-profile login gate to be rejected')
+
+
 def test_ensure_group_info_uses_subheader_fallback_until_panel_is_ready():
     from scripts.whatsapp_live_monitor import _ensure_group_info
 

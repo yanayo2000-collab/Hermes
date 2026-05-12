@@ -63,6 +63,25 @@ async def _enter_groups_tab(page, *, navigation_wait_ms: int = 120, timeout_ms: 
         await page.wait_for_timeout(120)
 
 
+async def _assert_home_surface_authenticated(page) -> None:
+    try:
+        body_text = str(await page.locator('body').inner_text() or '')
+    except Exception:
+        body_text = ''
+    normalized = ' '.join(body_text.split())
+    unauth_markers = [
+        '扫描登录',
+        '请改用电话号码关联',
+        '使用电话号码登录',
+        '下载 Mac 版 WhatsApp',
+        'Scan to log in',
+        'Use phone number to log in',
+        'Download WhatsApp for Mac',
+    ]
+    if any(marker in normalized for marker in unauth_markers):
+        raise RuntimeError('whatsapp_home_not_authenticated_in_copied_profile')
+
+
 async def _page_ready_for_group_info(page) -> bool:
     try:
         group_info_visible = bool(await page.get_by_text('群组信息', exact=True).count())
@@ -160,6 +179,7 @@ async def run(args) -> int:
                 page = context.pages[0] if context.pages else await context.new_page()
                 await page.goto('https://web.whatsapp.com/', wait_until='domcontentloaded', timeout=60000)
                 await page.wait_for_timeout(args.initial_wait_ms)
+                await _assert_home_surface_authenticated(page)
                 await _enter_groups_tab(page, navigation_wait_ms=120, timeout_ms=2600)
 
                 reg = await inspect_group(page, list_item_index=args.registration_list_item_index, open_wait_ms=args.open_wait_ms)
