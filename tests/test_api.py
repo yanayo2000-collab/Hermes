@@ -186,8 +186,9 @@ def test_operator_cannot_access_admin_account_management():
     login = client.post('/api/ops/auth/login', json={'username': 'ops02', 'password': 'operator123'})
     assert login.status_code == 200
 
-    accounts_page = client.get('/ops/accounts')
-    assert accounts_page.status_code == 403
+    accounts_page = client.get('/ops/accounts', follow_redirects=False)
+    assert accounts_page.status_code == 303
+    assert accounts_page.headers['location'] == '/ops'
 
     accounts_api = client.get('/api/ops/accounts')
     assert accounts_api.status_code == 403
@@ -209,7 +210,7 @@ def test_operator_can_access_ops_runtime_health_but_not_admin_only_ops_api():
     assert login.status_code == 200
 
     runtime = client.get('/api/ops/runtime-health')
-    assert runtime.status_code == 403
+    assert runtime.status_code == 200
 
     runtime_summary = client.get('/api/ops/runtime-health/summary')
     assert runtime_summary.status_code == 200
@@ -222,25 +223,25 @@ def test_operator_can_access_ops_runtime_health_but_not_admin_only_ops_api():
     assert 'recent_bind_traces' not in runtime_summary_body['ingress']
 
     approval_accounts_full = client.get('/api/ops/whatsapp-approval-accounts')
-    assert approval_accounts_full.status_code == 403
+    assert approval_accounts_full.status_code == 200
 
     approval_accounts_overview = client.get('/api/ops/whatsapp-approval-accounts/overview')
     assert approval_accounts_overview.status_code == 200
 
     approval_candidates_full = client.get('/api/ops/whatsapp-approval-candidates')
-    assert approval_candidates_full.status_code == 403
+    assert approval_candidates_full.status_code == 200
 
     approval_candidates_summary = client.get('/api/ops/whatsapp-approval-candidates/summary')
     assert approval_candidates_summary.status_code == 200
 
     official_approval_full = client.get('/api/ops/official-group-approval-summary')
-    assert official_approval_full.status_code == 403
+    assert official_approval_full.status_code == 200
 
     official_approval_summary = client.get('/api/ops/official-group-approval-summary/summary')
     assert official_approval_summary.status_code == 200
 
     official_bridge_full = client.get('/api/ops/official-group-bridge-summary')
-    assert official_bridge_full.status_code == 403
+    assert official_bridge_full.status_code == 200
 
     official_bridge_summary = client.get('/api/ops/official-group-bridge-summary/summary')
     assert official_bridge_summary.status_code == 200
@@ -248,20 +249,20 @@ def test_operator_can_access_ops_runtime_health_but_not_admin_only_ops_api():
     ops_page = client.get('/ops')
     assert ops_page.status_code == 200
     ops_page_body = ops_page.text
-    assert '/ops/intake-bot-presets' not in ops_page_body
-    assert '/ops/production-ops' not in ops_page_body
-    assert '/ops/registration-group-approval-batch-members' not in ops_page_body
-    assert '/ops/official-group-bridge' not in ops_page_body
+    assert '/ops/intake-bot-presets' in ops_page_body
+    assert '/ops/production-ops' in ops_page_body
+    assert '/ops/registration-group-approval-batch-members' in ops_page_body
+    assert '/ops/official-group-bridge' in ops_page_body
     assert '/ops/accounts' not in ops_page_body
 
     account_runtime = client.get('/api/ops/whatsapp-approval-accounts/wa-admin-demo/runtime')
-    assert account_runtime.status_code == 403
+    assert account_runtime.status_code == 200
 
     account_session = client.get('/api/ops/whatsapp-approval-accounts/wa-admin-demo/session')
-    assert account_session.status_code == 403
+    assert account_session.status_code == 200
 
     daemon_config = client.get('/api/ops/production-ops-daemon')
-    assert daemon_config.status_code == 403
+    assert daemon_config.status_code == 200
 
     executor_health = client.get('/api/ops/registration-group-approval-executor-health')
     assert executor_health.status_code == 403
@@ -269,17 +270,21 @@ def test_operator_can_access_ops_runtime_health_but_not_admin_only_ops_api():
     executor_state = client.get('/api/ops/registration-group-approval-executor-group-state', params={'registration_group': '8️⃣5️⃣'})
     assert executor_state.status_code == 403
 
-    intake_page = client.get('/ops/intake-bot-presets')
-    assert intake_page.status_code == 403
+    intake_page = client.get('/ops/intake-bot-presets', follow_redirects=False)
+    assert intake_page.status_code == 303
+    assert intake_page.headers['location'] == '/ops'
 
-    production_ops_page = client.get('/ops/production-ops')
-    assert production_ops_page.status_code == 403
+    production_ops_page = client.get('/ops/production-ops', follow_redirects=False)
+    assert production_ops_page.status_code == 303
+    assert production_ops_page.headers['location'] == '/ops'
 
-    batch_members_page = client.get('/ops/registration-group-approval-batch-members')
-    assert batch_members_page.status_code == 403
+    batch_members_page = client.get('/ops/registration-group-approval-batch-members', follow_redirects=False)
+    assert batch_members_page.status_code == 303
+    assert batch_members_page.headers['location'] == '/ops'
 
     official_group_bridge_page = client.get('/ops/official-group-bridge', follow_redirects=False)
-    assert official_group_bridge_page.status_code == 403
+    assert official_group_bridge_page.status_code == 303
+    assert official_group_bridge_page.headers['location'] == '/ops'
 
     daemon_update = client.post('/api/ops/production-ops-daemon', json={})
     assert daemon_update.status_code == 403

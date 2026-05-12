@@ -622,7 +622,6 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
     </div>
     <div class="hero">
       <h1>收口配置中心</h1>
-      <div class="subtitle">统一维护收口机器人默认项与公会执行器配置。</div>
     </div>
 
     <div class="config-workspace">
@@ -681,14 +680,11 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
 
   <div class=\"card\" style=\"margin-top:16px;\">
     <h2 style=\"margin-top:0;\">执行器总览</h2>
-    <div class=\"muted\" style=\"margin-bottom:8px;\">公会执行器配置</div>
-    <div class=\"muted\">用于配置每个公会的后台地址、账号、密码引用、代理与浏览器执行参数。接口：/api/ops/guild-executors</div>
     <div id=\"guildExecutorRows\" class=\"executor-card-grid\"></div>
   </div>
 
   <div class=\"card\" style=\"margin-top:16px;\">
     <h2 style=\"margin-top:0;\">新增 / 更新公会执行器</h2>
-    <div class=\"muted\" style=\"margin-bottom:12px;\">字段均提供中文说明；英文键名保留在括号中，便于后续技术对接。</div>
     <div class=\"executor-form-grid\">
       <div class=\"field-stack\">
         <label class=\"field-hint\">公会名（guild_name）</label>
@@ -713,7 +709,6 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
       <div class=\"field-stack\">
         <label class=\"field-hint\">代理地区（proxy_region）</label>
         <select id=\"new_executor_proxy_region\"></select>
-        <div class=\"field-hint\">先按 15 个大型城市预置；后续扩城市时直接加到统一选项表。</div>
       </div>
       <div class=\"field-stack\">
         <label class=\"field-hint\">代理类型（proxy_type）</label>
@@ -818,14 +813,8 @@ function presetFieldHtml(kind, row, options, source, currentValue) {
   const placeholder = kind === 'default_app' ? 'No CRM app options available' : 'No CRM guild options available';
   const disabledAttr = unavailable ? ' disabled data-unavailable="true"' : '';
   const selectHtml = `<select id="${fieldId}"${disabledAttr}>${renderSelectOptions(rows, currentValue, placeholder)}</select>`;
-  let hint = 'CRM dropdown options are currently unavailable. Saving is disabled.';
-  if (source === 'live' && hasOptions) {
-    hint = 'Using live CRM dropdown options only.';
-  } else if (source === 'cache' && hasOptions) {
-    hint = 'Using cached CRM dropdown options only.';
-  }
-  const currentText = currentValue ? `<div class="field-hint">Current saved value: ${currentValue}</div>` : '';
-  return `<div class="field-stack">${selectHtml}<div class="field-hint">${hint}</div>${currentText}</div>`;
+  const currentText = currentValue ? `<div class="field-hint">当前值：${currentValue}</div>` : '';
+  return `<div class="field-stack">${selectHtml}${currentText}</div>`;
 }
 function robotNameFieldHtml(row) {
   const inputId = `robot_name_${row.profile_name}`;
@@ -857,34 +846,8 @@ function renderCreatePresetForm(data) {
   const guildOptions = data.guild_options || [];
   const appSource = data.app_options_source || 'unavailable';
   const guildSource = data.guild_options_source || 'unavailable';
-  const appSelect = document.getElementById('new_default_app');
-  const guildSelect = document.getElementById('new_default_guild');
-  const createButton = document.getElementById('createPresetButton');
-  appSelect.innerHTML = renderSelectOptions(appOptions, '', 'No CRM app options available');
-  guildSelect.innerHTML = renderSelectOptions(guildOptions, '', 'No CRM guild options available');
-  document.getElementById('new_default_app_hint').textContent = appSource === 'live'
-    ? 'Using live CRM dropdown options only.'
-    : appSource === 'cache'
-      ? 'Using cached CRM dropdown options only.'
-      : 'CRM dropdown options are currently unavailable. Saving is disabled.';
-  document.getElementById('new_default_guild_hint').textContent = guildSource === 'live'
-    ? 'Using live CRM dropdown options only.'
-    : guildSource === 'cache'
-      ? 'Using cached CRM dropdown options only.'
-      : 'CRM dropdown options are currently unavailable. Saving is disabled.';
-  const disabled = appSource === 'unavailable' || guildSource === 'unavailable' || !appOptions.length || !guildOptions.length;
-  appSelect.disabled = disabled;
-  guildSelect.disabled = disabled;
-  createButton.disabled = disabled;
-}
-function refreshExecutorProxyRegionSelect(selectedValue) {
-  const field = document.getElementById('new_executor_proxy_region');
-  if (!field) return;
-  field.innerHTML = renderExecutorProxyRegionOptions(selectedValue || '');
-  field.value = selectedValue || '';
-}
-function guildExecutorRowHtml(row) {
-  const passwordState = row.password_configured ? '已配置' : '未配置';
+  document.getElementById('new_default_app_hint').textContent = '';
+  document.getElementById('new_default_guild_hint').textContent = '';onst passwordState = row.password_configured ? '已配置' : '未配置';
   const enabledText = row.enabled ? '启用' : '停用';
   return `<div class="executor-card">
     <h3>${row.guild_name || ''}</h3>
@@ -1286,7 +1249,6 @@ PRODUCTION_OPS_PAGE_HTML = """
 
     <div class=\"card\" id=\"groupAtmosphereEntryCard\">
       <h2 style=\"margin-top:0;\">群活跃助手</h2>
-      <div class=\"muted\">基于已绑定 WhatsApp 账号，在目标群内按话术池和频率做群氛围运营；仅用户明确 @ 时触发 FAQ 级回复。</div>
       <div class=\"link-actions\"><a href=\"/ops/group-atmosphere\">进入群活跃助手</a></div>
     </div>
 
@@ -1303,16 +1265,16 @@ PRODUCTION_OPS_PAGE_HTML = """
           <div class="executor-form-grid">
             <input type="hidden" id="wa_account_key" />
             <div class="field-stack">
-              <label class="field-hint">账号名称（account_name）</label>
+              <label class="field-hint">账号名称</label>
               <input id="wa_account_name" placeholder="例如 WA Admin 1" />
             </div>
             <div class="field-stack">
-              <label class="field-hint">负责类型（responsible_type）</label>
+              <label class="field-hint">负责类型</label>
               <select id="wa_responsible_type"><option value="registration_group">注册群</option><option value="official_group">官方群</option></select>
             </div>
             <input type="hidden" id="wa_enabled" value="true" />
             <div class="field-stack">
-              <label class="field-hint">备注（notes）</label>
+              <label class="field-hint">备注</label>
               <input id="wa_notes" placeholder="例如负责印尼注册群审批" />
             </div>
           </div>
@@ -1366,12 +1328,12 @@ PRODUCTION_OPS_PAGE_HTML = """
                   <div class="advanced-fields-body">
                     <div class="advanced-mapping-grid">
                       <div class="field-stack">
-                        <label class="field-hint">系统映射 registration_group（可留空）</label>
-                        <input id="wa_group_registration_group_1" placeholder="可留空；系统默认按实时探针推断" />
+                        <label class="field-hint">注册群映射</label>
+                        <input id="wa_group_registration_group_1" />
                       </div>
                       <div class="field-stack">
-                        <label class="field-hint">系统映射 group_id（可留空）</label>
-                        <input id="wa_group_group_id_1" placeholder="可留空；拿不到时不要手填" />
+                        <label class="field-hint">群 ID 映射</label>
+                        <input id="wa_group_group_id_1" />
                       </div>
                     </div>
                   </div>
@@ -1432,12 +1394,12 @@ PRODUCTION_OPS_PAGE_HTML = """
                   <div class="advanced-fields-body">
                     <div class="advanced-mapping-grid">
                       <div class="field-stack">
-                        <label class="field-hint">系统映射 registration_group（可留空）</label>
-                        <input id="wa_group_registration_group_2" placeholder="可留空；系统默认按实时探针推断" />
+                        <label class="field-hint">注册群映射</label>
+                        <input id="wa_group_registration_group_2" />
                       </div>
                       <div class="field-stack">
-                        <label class="field-hint">系统映射 group_id（可留空）</label>
-                        <input id="wa_group_group_id_2" placeholder="可留空；拿不到时不要手填" />
+                        <label class="field-hint">群 ID 映射</label>
+                        <input id="wa_group_group_id_2" />
                       </div>
                     </div>
                   </div>
@@ -1498,12 +1460,12 @@ PRODUCTION_OPS_PAGE_HTML = """
                   <div class="advanced-fields-body">
                     <div class="advanced-mapping-grid">
                       <div class="field-stack">
-                        <label class="field-hint">系统映射 registration_group（可留空）</label>
-                        <input id="wa_group_registration_group_3" placeholder="可留空；系统默认按实时探针推断" />
+                        <label class="field-hint">注册群映射</label>
+                        <input id="wa_group_registration_group_3" />
                       </div>
                       <div class="field-stack">
-                        <label class="field-hint">系统映射 group_id（可留空）</label>
-                        <input id="wa_group_group_id_3" placeholder="可留空；拿不到时不要手填" />
+                        <label class="field-hint">群 ID 映射</label>
+                        <input id="wa_group_group_id_3" />
                       </div>
                     </div>
                   </div>
@@ -1543,13 +1505,6 @@ PRODUCTION_OPS_PAGE_HTML = """
     </div>
     <!-- OPS_ADMIN_ONLY_AREA_OPTIONS_END -->
 
-    <div class=\"card\">
-      <h2 style=\"margin-top:0;\">日志与状态入口</h2>
-      <div class=\"muted\" id=\"productionOpsPathsHint\" style=\"margin-top:12px;\">状态文件路径加载中…</div>
-    </div>
-
-
-
     <div id=\"productionOpsToast\" class=\"toast\"></div>
     <!-- OPS_ADMIN_ONLY_QR_MODAL_START -->
     <div id=\"approvalQrModal\" class=\"qr-modal\" onclick=\"dismissApprovalQrModal(event)\">
@@ -1557,7 +1512,6 @@ PRODUCTION_OPS_PAGE_HTML = """
         <div class=\"qr-modal-head\">
           <div>
             <h3 id=\"approvalQrModalTitle\">账号激活二维码</h3>
-            <div class=\"muted\" id=\"approvalQrModalSubtitle\">请使用对应 WhatsApp 账号扫码。</div>
           </div>
           <button type=\"button\" class=\"secondary\" onclick=\"closeApprovalQrModal()\">关闭</button>
         </div>
@@ -1666,13 +1620,13 @@ function renderApprovalQrModal() {
   const loading = Boolean(state.loading);
   const error = String(state.error || '').trim();
   titleEl.textContent = `${accountName} · 激活二维码`;
-  subtitleEl.textContent = '请使用这个 WhatsApp 账号，在“关联设备”里扫码。';
+  subtitleEl.textContent = '';
   if (loading) {
-    statusEl.innerHTML = '<div class="qr-loading">正在启动扫码服务并生成二维码，请保持这个弹窗打开。</div>';
+    statusEl.innerHTML = '<div class="qr-loading">生成中</div>';
   } else if (error) {
     statusEl.innerHTML = `<span style="color:#b91c1c;">${error}</span>`;
   } else if (sessionState.login_verified) {
-    statusEl.innerHTML = '<span style="color:#166534;">已完成登录检测：账号已登录，可以正常使用。</span>';
+    statusEl.innerHTML = '<span style="color:#166534;">已登录</span>';
     if (!state.successAnnounced) {
       window.__approvalQrModalState = {...state, successAnnounced: true};
       showToast('账号已登录，可以正常使用', 'success');
@@ -2718,11 +2672,11 @@ OPS_PAGE_HTML = """
   <div class="page-shell">
     <div class="shell-nav">
       <a href="/ops">运营工作台</a>
-      <a href="/ops/intake-bot-presets" data-admin-only-nav="true">收口配置中心</a>
-      <a href="/ops/production-ops" data-admin-only-nav="true">群审批控制台</a>
-      <a href="/ops/group-atmosphere" data-admin-only-nav="true">群活跃助手</a>
-      <a href="/ops/registration-group-approval-batch-members" data-admin-only-nav="true">注册群审批留存页</a>
-      <a href="/ops/official-group-bridge" data-admin-only-nav="true">官方群审批桥接台</a>
+      <a href="/ops/intake-bot-presets">收口配置中心</a>
+      <a href="/ops/production-ops">群审批控制台</a>
+      <a href="/ops/group-atmosphere">群活跃助手</a>
+      <a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a>
+      <a href="/ops/official-group-bridge">官方群审批桥接台</a>
       <a href="/ops/accounts" data-admin-only-nav="true">账号管理</a>
     </div>
     <div class="hero">
@@ -18916,16 +18870,12 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         } and normalized_method == 'GET':
             return OPS_AUTH_ROLE_INTERNAL
         if path.startswith('/api/ops/group-atmosphere/'):
-            if normalized_method == 'GET':
-                return OPS_AUTH_ROLE_OPERATOR
-            return OPS_AUTH_ROLE_ADMIN
+            return OPS_AUTH_ROLE_OPERATOR
         if path.startswith('/api/ops/whatsapp-approval-accounts/') and '/runtime/internal' in path:
             return OPS_AUTH_ROLE_INTERNAL
         if path.startswith('/api/ops/whatsapp-approval-accounts/') and '/session/internal' in path:
             return OPS_AUTH_ROLE_INTERNAL
         if path.startswith('/api/ops/whatsapp-approval-accounts/') and normalized_method == 'GET':
-            if path.endswith('/runtime') or path.endswith('/session'):
-                return OPS_AUTH_ROLE_ADMIN
             return OPS_AUTH_ROLE_OPERATOR
         if path in {
             '/api/ops/ingress-queue',
@@ -18941,15 +18891,14 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             '/api/ops/guild-executors/health',
             '/api/ops/exception-queue',
             '/api/ops/sla-summary',
-            '/api/ops/accounts',
         } and normalized_method == 'GET':
-            return OPS_AUTH_ROLE_ADMIN
+            return OPS_AUTH_ROLE_OPERATOR
         if path.startswith('/api/ops/guild-executors/') and normalized_method == 'GET':
-            return OPS_AUTH_ROLE_ADMIN
+            return OPS_AUTH_ROLE_OPERATOR
         if path.startswith('/api/ops/accounts'):
             return OPS_AUTH_ROLE_ADMIN
         if path.startswith('/api/ops/intake-bot-presets/') and normalized_method == 'POST':
-            return OPS_AUTH_ROLE_ADMIN
+            return OPS_AUTH_ROLE_OPERATOR
         if path in {
             '/api/ops/registration-group-approval-executor-warmup',
             '/api/ops/group-approvals/executor/warmup',
@@ -18972,19 +18921,15 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             '/api/ops/next-action',
             '/api/ops/whatsapp-approval-area-options',
         }:
-            return OPS_AUTH_ROLE_ADMIN
+            return OPS_AUTH_ROLE_OPERATOR
         if path.startswith('/api/ops/operator-notifications/') and normalized_method == 'POST':
             return OPS_AUTH_ROLE_OPERATOR
         if path.startswith('/api/ops/manual-review/') and normalized_method == 'POST':
             return OPS_AUTH_ROLE_OPERATOR
         if path.startswith('/api/ops/guild-executors/') and normalized_method in {'POST', 'DELETE'}:
-            return OPS_AUTH_ROLE_ADMIN
+            return OPS_AUTH_ROLE_OPERATOR
         if path.startswith('/api/ops/whatsapp-approval-accounts/') and normalized_method in {'POST', 'DELETE'}:
-            if '/runtime/' in path or '/session/' in path:
-                return OPS_AUTH_ROLE_ADMIN
-            if '/manual-approve' in path:
-                return OPS_AUTH_ROLE_OPERATOR
-            return OPS_AUTH_ROLE_ADMIN
+            return OPS_AUTH_ROLE_OPERATOR
         if path.startswith('/api/ops/submissions/') and normalized_method == 'POST':
             return OPS_AUTH_ROLE_OPERATOR
         if path.startswith('/api/ops/leads/') and normalized_method == 'POST':
@@ -19085,11 +19030,6 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     const nextUrl = new URLSearchParams(window.location.search).get('next') || '/ops';
     const adminOnlyNextTargets = [
       '/ops/accounts',
-      '/ops/intake-bot-presets',
-      '/ops/production-ops',
-      '/ops/group-atmosphere',
-      '/ops/registration-group-approval-batch-members',
-      '/ops/official-group-bridge',
     ];
     function safeNextUrlForRole(role) {
       const normalizedRole = String(role || '').trim().toLowerCase();
@@ -19929,31 +19869,12 @@ h1 { letter-spacing: -0.02em; }
         html = OPS_PAGE_HTML
         if str(role or '').strip() == OPS_AUTH_ROLE_ADMIN:
             return html
-        html = re.sub(
-            r'\s*<a[^>]*data-admin-only-nav="true"[^>]*>.*?</a>',
+        return re.sub(
+            r'\s*<a[^>]*href="/ops/accounts"[^>]*data-admin-only-nav="true"[^>]*>.*?</a>',
             '',
             html,
             flags=re.S,
         )
-        html = re.sub(
-            r'\s*<!-- OPS_ADMIN_ONLY_APPROVAL_EDITOR_START -->.*?<!-- OPS_ADMIN_ONLY_APPROVAL_EDITOR_END -->\s*',
-            '\n',
-            html,
-            flags=re.S,
-        )
-        html = re.sub(
-            r'\s*<!-- OPS_ADMIN_ONLY_AREA_OPTIONS_START -->.*?<!-- OPS_ADMIN_ONLY_AREA_OPTIONS_END -->\s*',
-            '\n',
-            html,
-            flags=re.S,
-        )
-        html = re.sub(
-            r'\s*<!-- OPS_ADMIN_ONLY_QR_MODAL_START -->.*?<!-- OPS_ADMIN_ONLY_QR_MODAL_END -->\s*',
-            '\n',
-            html,
-            flags=re.S,
-        )
-        return html
 
     def _render_ops_home_page(request: Request) -> str:
         user = _require_ops_user(request)
@@ -20010,27 +19931,27 @@ h1 { letter-spacing: -0.02em; }
 
     @app.get('/ops/intake-bot-presets', response_class=HTMLResponse)
     def intake_bot_presets_page(request: Request) -> str:
-        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        _require_ops_user(request)
         return _with_ops_shell_style(INTAKE_BOT_PRESETS_PAGE_HTML)
 
     @app.get('/ops/production-ops', response_class=HTMLResponse)
     def production_ops_page(request: Request) -> str:
-        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        _require_ops_user(request)
         return _with_ops_shell_style(PRODUCTION_OPS_PAGE_HTML)
 
     @app.get('/ops/group-atmosphere', response_class=HTMLResponse)
     def group_atmosphere_page(request: Request) -> str:
-        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        _require_ops_user(request)
         return _with_ops_shell_style(GROUP_ATMOSPHERE_PAGE_HTML)
 
     @app.get('/ops/registration-group-approval-batch-members', response_class=HTMLResponse)
     def registration_group_approval_batch_members_page(request: Request) -> str:
-        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        _require_ops_user(request)
         return _with_ops_shell_style(_registration_group_approval_batch_members_page_html())
 
     @app.get('/ops/official-group-bridge')
     def official_group_bridge_page_redirect(request: Request) -> RedirectResponse:
-        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        _require_ops_user(request)
         bridge_url = str(official_group_approval_webhook_url or '').strip()
         if not bridge_url:
             raise HTTPException(status_code=404, detail='official_group_bridge_not_configured')
