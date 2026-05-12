@@ -617,6 +617,7 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
       <a href="/ops/production-ops">群审批控制台</a>
       <a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a>
       <a href="/ops/official-group-bridge">官方群审批桥接台</a>
+      <a href="/ops/accounts" data-admin-only-nav="true">账号管理</a>
     </div>
     <div class="hero">
       <h1>收口配置中心</h1>
@@ -1246,6 +1247,7 @@ PRODUCTION_OPS_PAGE_HTML = """
       <a href=\"/ops/production-ops\">群审批控制台</a>
       <a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a>
       <a href=\"/ops/official-group-bridge\">官方群审批桥接台</a>
+      <a href=\"/ops/accounts\" data-admin-only-nav=\"true\">账号管理</a>
     </div>
     <div class=\"hero\">
       <h1>群审批控制台</h1>
@@ -2703,6 +2705,7 @@ OPS_PAGE_HTML = """
       <a href="/ops/production-ops" data-admin-only-nav="true">群审批控制台</a>
       <a href="/ops/registration-group-approval-batch-members" data-admin-only-nav="true">注册群审批留存页</a>
       <a href="/ops/official-group-bridge" data-admin-only-nav="true">官方群审批桥接台</a>
+      <a href="/ops/accounts" data-admin-only-nav="true">账号管理</a>
     </div>
     <div class="hero">
       <h1>运营工作台</h1>
@@ -3698,6 +3701,56 @@ class OpsAccountUpdateRequest(BaseModel):
     password: Optional[str] = None
 
 
+class OpsPasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class GroupAtmosphereTemplate(BaseModel):
+    template_id: Optional[str] = None
+    category: Optional[str] = None
+    text: str
+
+
+class GroupAtmosphereFaqRule(BaseModel):
+    keyword: str
+    reply: str
+
+
+class GroupAtmosphereConfigRequest(BaseModel):
+    config_name: str
+    enabled: bool = True
+    account_key: str
+    target_group: str
+    group_name: Optional[str] = None
+    language: str = 'en'
+    timezone: str = 'UTC'
+    worker_base_url: Optional[str] = None
+    daily_max_messages: int = Field(default=4, ge=0, le=50)
+    min_interval_minutes: int = Field(default=60, ge=0, le=1440)
+    allowed_windows: List[Dict[str, Any]] = Field(default_factory=list)
+    template_pool: List[GroupAtmosphereTemplate] = Field(default_factory=list)
+    mention_reply_enabled: bool = True
+    faq_rules: List[GroupAtmosphereFaqRule] = Field(default_factory=list)
+    status: Optional[str] = None
+
+
+class GroupAtmosphereDispatchRequest(BaseModel):
+    config_name: str
+    message_text: Optional[str] = None
+    trigger_type: str = 'manual'
+
+
+class GroupAtmosphereInboundMessageRequest(BaseModel):
+    account_key: str
+    target_group: str
+    sender_id: Optional[str] = None
+    text: str = ''
+    mentioned: bool = False
+    quoted_own_message: bool = False
+
+
+
 class Database:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
@@ -4079,6 +4132,43 @@ class Database:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS whatsapp_group_atmosphere_configs (
+                    config_name TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    account_key TEXT NOT NULL,
+                    target_group TEXT NOT NULL,
+                    group_name TEXT,
+                    language TEXT NOT NULL DEFAULT 'en',
+                    timezone TEXT NOT NULL DEFAULT 'UTC',
+                    worker_base_url TEXT,
+                    daily_max_messages INTEGER NOT NULL DEFAULT 4,
+                    min_interval_minutes INTEGER NOT NULL DEFAULT 60,
+                    allowed_windows TEXT NOT NULL DEFAULT '[]',
+                    template_pool TEXT NOT NULL DEFAULT '[]',
+                    mention_reply_enabled INTEGER NOT NULL DEFAULT 1,
+                    faq_rules TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'enabled',
+                    last_sent_at TEXT,
+                    sent_count_today INTEGER NOT NULL DEFAULT 0,
+                    sent_count_date TEXT,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS whatsapp_group_atmosphere_logs (
+                    log_id TEXT PRIMARY KEY,
+                    config_name TEXT,
+                    account_key TEXT NOT NULL,
+                    target_group TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    trigger_type TEXT NOT NULL,
+                    message_text TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    result_code TEXT,
+                    result_reason TEXT,
+                    raw_result TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS ops_users (
                     user_id TEXT PRIMARY KEY,
                     username TEXT NOT NULL UNIQUE,
@@ -4163,6 +4253,8 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_registration_group_approval_batch_members_run_idx ON registration_group_approval_batch_members (approval_run_id, batch_index)",
             "CREATE INDEX IF NOT EXISTS idx_registration_group_approval_batch_members_phone_idx ON registration_group_approval_batch_members (wa_phone_normalized, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_operator_audit_log_lead_created_at ON operator_audit_log (lead_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_group_atmosphere_config_account_group ON whatsapp_group_atmosphere_configs (account_key, target_group)",
+            "CREATE INDEX IF NOT EXISTS idx_group_atmosphere_logs_config_created ON whatsapp_group_atmosphere_logs (config_name, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_ops_users_username ON ops_users (username)",
             "CREATE INDEX IF NOT EXISTS idx_ops_sessions_user_id ON ops_sessions (user_id, expires_at)",
             "CREATE INDEX IF NOT EXISTS idx_ops_sessions_expires_at ON ops_sessions (expires_at)",
@@ -4404,6 +4496,21 @@ class OpsAuthManager:
             conn.execute(f"UPDATE ops_users SET {', '.join(updates)}, updated_at = ? WHERE user_id = ?", tuple(params))
         return self.get_user_by_id(normalized_user_id) or {}
 
+    def change_user_password(self, user_id: str, *, current_password: str, new_password: str) -> Dict[str, Any]:
+        normalized_user_id = str(user_id or '').strip()
+        conn = self.db.connect()
+        row = conn.execute('SELECT * FROM ops_users WHERE user_id = ?', (normalized_user_id,)).fetchone()
+        if row is None or not bool(row['enabled']):
+            raise ValueError('user_not_found')
+        if not verify_ops_password(str(current_password or ''), str(row['password_hash'] or '')):
+            raise ValueError('invalid_current_password')
+        secret = str(new_password or '')
+        if len(secret) < 8:
+            raise ValueError('password_too_short')
+        with conn:
+            conn.execute('UPDATE ops_users SET password_hash = ?, updated_at = ? WHERE user_id = ?', (_pbkdf2_hash_password(secret), utc_now(), normalized_user_id))
+        return self.get_user_by_id(normalized_user_id) or {}
+
     def create_session(self, user: Dict[str, Any], *, ip_address: Optional[str] = None, user_agent: Optional[str] = None) -> str:
         raw_token = secrets.token_urlsafe(32)
         now_dt = datetime.now(timezone.utc)
@@ -4622,6 +4729,220 @@ class Service:
         self._load_persisted_crm_option_cache()
         if self.ingress_worker_enabled:
             self._start_ingress_worker()
+
+    def _row_to_group_atmosphere_config(self, row: sqlite3.Row) -> Dict[str, Any]:
+        data = dict(row)
+        template_pool = json.loads(data.get('template_pool') or '[]')
+        faq_rules = json.loads(data.get('faq_rules') or '[]')
+        allowed_windows = json.loads(data.get('allowed_windows') or '[]')
+        data['enabled'] = bool(data.get('enabled'))
+        data['mention_reply_enabled'] = bool(data.get('mention_reply_enabled'))
+        data['template_pool'] = template_pool
+        data['faq_rules'] = faq_rules
+        data['allowed_windows'] = allowed_windows
+        data['template_count'] = len(template_pool)
+        data['faq_rule_count'] = len(faq_rules)
+        return data
+
+    def upsert_group_atmosphere_config(self, payload: GroupAtmosphereConfigRequest) -> Dict[str, Any]:
+        now = utc_now()
+        status = str(payload.status or ('enabled' if payload.enabled else 'disabled')).strip() or 'enabled'
+        template_pool = [item.model_dump() for item in payload.template_pool]
+        faq_rules = [item.model_dump() for item in payload.faq_rules]
+        conn = self.db.connect()
+        conn.execute(
+            """
+            INSERT INTO whatsapp_group_atmosphere_configs (
+                config_name, enabled, account_key, target_group, group_name, language, timezone,
+                worker_base_url, daily_max_messages, min_interval_minutes, allowed_windows,
+                template_pool, mention_reply_enabled, faq_rules, status, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(config_name) DO UPDATE SET
+                enabled=excluded.enabled, account_key=excluded.account_key, target_group=excluded.target_group,
+                group_name=excluded.group_name, language=excluded.language, timezone=excluded.timezone,
+                worker_base_url=excluded.worker_base_url, daily_max_messages=excluded.daily_max_messages,
+                min_interval_minutes=excluded.min_interval_minutes, allowed_windows=excluded.allowed_windows,
+                template_pool=excluded.template_pool, mention_reply_enabled=excluded.mention_reply_enabled,
+                faq_rules=excluded.faq_rules, status=excluded.status, updated_at=excluded.updated_at
+            """,
+            (
+                payload.config_name.strip(), 1 if payload.enabled else 0, payload.account_key.strip(),
+                payload.target_group.strip(), str(payload.group_name or '').strip() or None,
+                str(payload.language or 'en').strip() or 'en', str(payload.timezone or 'UTC').strip() or 'UTC',
+                str(payload.worker_base_url or '').strip(), int(payload.daily_max_messages), int(payload.min_interval_minutes),
+                json.dumps(payload.allowed_windows, ensure_ascii=False), json.dumps(template_pool, ensure_ascii=False),
+                1 if payload.mention_reply_enabled else 0, json.dumps(faq_rules, ensure_ascii=False), status, now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM whatsapp_group_atmosphere_configs WHERE config_name=?",
+            (payload.config_name.strip(),),
+        ).fetchone()
+        return self._row_to_group_atmosphere_config(row)
+
+    def list_group_atmosphere_configs(self) -> List[Dict[str, Any]]:
+        conn = self.db.connect()
+        rows = conn.execute(
+            "SELECT * FROM whatsapp_group_atmosphere_configs ORDER BY updated_at DESC, config_name ASC"
+        ).fetchall()
+        return [self._row_to_group_atmosphere_config(row) for row in rows]
+
+    def _get_group_atmosphere_config(self, config_name: str) -> Optional[Dict[str, Any]]:
+        row = self.db.connect().execute(
+            "SELECT * FROM whatsapp_group_atmosphere_configs WHERE config_name=?",
+            (str(config_name or '').strip(),),
+        ).fetchone()
+        return self._row_to_group_atmosphere_config(row) if row else None
+
+    def _log_group_atmosphere_event(self, *, config_name: str, account_key: str, target_group: str, direction: str, trigger_type: str, message_text: str, status: str, result_code: str, result_reason: str = '', raw_result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        record = {
+            'log_id': create_id('walog'),
+            'config_name': config_name,
+            'account_key': account_key,
+            'target_group': target_group,
+            'direction': direction,
+            'trigger_type': trigger_type,
+            'message_text': message_text,
+            'status': status,
+            'result_code': result_code,
+            'result_reason': result_reason,
+            'raw_result': raw_result or {},
+            'created_at': utc_now(),
+        }
+        conn = self.db.connect()
+        conn.execute(
+            """
+            INSERT INTO whatsapp_group_atmosphere_logs (
+                log_id, config_name, account_key, target_group, direction, trigger_type, message_text,
+                status, result_code, result_reason, raw_result, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record['log_id'], config_name, account_key, target_group, direction, trigger_type, message_text,
+                status, result_code, result_reason, json.dumps(record['raw_result'], ensure_ascii=False), record['created_at'],
+            ),
+        )
+        conn.commit()
+        return record
+
+    def list_group_atmosphere_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        rows = self.db.connect().execute(
+            "SELECT * FROM whatsapp_group_atmosphere_logs ORDER BY created_at DESC LIMIT ?",
+            (max(1, min(200, int(limit or 50))),),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item['raw_result'] = json.loads(item.get('raw_result') or '{}')
+            result.append(item)
+        return result
+
+    def dispatch_group_atmosphere_once(self, payload: GroupAtmosphereDispatchRequest) -> Dict[str, Any]:
+        config = self._get_group_atmosphere_config(payload.config_name)
+        if not config:
+            raise HTTPException(status_code=404, detail='group_atmosphere_config_not_found')
+        if not config.get('enabled') or config.get('status') != 'enabled':
+            return {'sent': False, 'result_code': 'config_disabled', 'result_reason': 'group atmosphere config is disabled'}
+        today = datetime.now(timezone.utc).date().isoformat()
+        sent_count_today = int(config.get('sent_count_today') or 0) if config.get('sent_count_date') == today else 0
+        daily_max = int(config.get('daily_max_messages') or 0)
+        if daily_max and sent_count_today >= daily_max:
+            return {'sent': False, 'result_code': 'daily_limit_reached', 'result_reason': 'daily max messages reached'}
+        last_sent_at = str(config.get('last_sent_at') or '').strip()
+        min_interval = int(config.get('min_interval_minutes') or 0)
+        if min_interval and last_sent_at:
+            try:
+                elapsed = datetime.now(timezone.utc) - parse_iso_datetime(last_sent_at)
+                if elapsed < timedelta(minutes=min_interval):
+                    return {'sent': False, 'result_code': 'min_interval_not_reached', 'result_reason': 'minimum send interval has not elapsed'}
+            except Exception:
+                pass
+        message_text = str(payload.message_text or '').strip()
+        if not message_text:
+            templates = list(config.get('template_pool') or [])
+            if not templates:
+                return {'sent': False, 'result_code': 'template_pool_empty', 'result_reason': 'no message template configured'}
+            message_text = str(templates[sent_count_today % len(templates)].get('text') or '').strip()
+        if not message_text:
+            return {'sent': False, 'result_code': 'message_text_empty', 'result_reason': 'selected template has empty text'}
+        worker_base_url = str(config.get('worker_base_url') or '').strip().rstrip('/')
+        raw_result: Dict[str, Any] = {'dry_run': True}
+        status = 'success'
+        result_code = 'dry_run'
+        result_reason = 'worker_base_url not configured; logged as dry run'
+        if worker_base_url:
+            try:
+                resp = requests.post(
+                    f"{worker_base_url}/send-group-message",
+                    json={
+                        'target_group': config['target_group'],
+                        'message_text': message_text,
+                        'metadata': {'config_name': config['config_name'], 'trigger_type': payload.trigger_type},
+                    },
+                    timeout=30,
+                )
+                raw_result = resp.json() if hasattr(resp, 'json') else {'text': getattr(resp, 'text', '')}
+                if int(getattr(resp, 'status_code', 500)) >= 400:
+                    status = 'failed'
+                    result_code = str(raw_result.get('result_code') or 'worker_send_failed')
+                    result_reason = str(raw_result.get('result_reason') or getattr(resp, 'text', ''))
+                else:
+                    status = 'success'
+                    result_code = str(raw_result.get('result_code') or raw_result.get('status') or 'sent')
+                    result_reason = str(raw_result.get('result_reason') or 'message sent via whatsapp web worker')
+            except Exception as exc:
+                raw_result = {'error': str(exc)}
+                status = 'failed'
+                result_code = 'worker_send_exception'
+                result_reason = str(exc)
+        self._log_group_atmosphere_event(
+            config_name=config['config_name'], account_key=config['account_key'], target_group=config['target_group'],
+            direction='outbound', trigger_type=payload.trigger_type, message_text=message_text,
+            status=status, result_code=result_code, result_reason=result_reason, raw_result=raw_result,
+        )
+        if status == 'success':
+            now = utc_now()
+            conn = self.db.connect()
+            conn.execute(
+                "UPDATE whatsapp_group_atmosphere_configs SET last_sent_at=?, sent_count_today=?, sent_count_date=?, status=?, updated_at=? WHERE config_name=?",
+                (now, sent_count_today + 1, today, 'enabled', now, config['config_name']),
+            )
+            conn.commit()
+        return {
+            'sent': status == 'success',
+            'dry_run': not bool(worker_base_url),
+            'message_text': message_text,
+            'status': status,
+            'result_code': result_code,
+            'result_reason': result_reason,
+            'raw_result': raw_result,
+        }
+
+    def handle_group_atmosphere_inbound_message(self, payload: GroupAtmosphereInboundMessageRequest) -> Dict[str, Any]:
+        rows = self.list_group_atmosphere_configs()
+        config = next((row for row in rows if row.get('account_key') == payload.account_key and row.get('target_group') == payload.target_group), None)
+        if not config:
+            return {'should_respond': False, 'result_code': 'config_not_found'}
+        if not payload.mentioned and not payload.quoted_own_message:
+            return {'should_respond': False, 'result_code': 'not_mentioned'}
+        if not config.get('mention_reply_enabled'):
+            return {'should_respond': False, 'result_code': 'mention_reply_disabled'}
+        text = str(payload.text or '').lower()
+        reply_text = ''
+        for rule in list(config.get('faq_rules') or []):
+            keyword = str(rule.get('keyword') or '').strip().lower()
+            if keyword and keyword in text:
+                reply_text = str(rule.get('reply') or '').strip()
+                break
+        if not reply_text:
+            reply_text = 'Please contact the group admin for help.'
+        self._log_group_atmosphere_event(
+            config_name=config['config_name'], account_key=config['account_key'], target_group=config['target_group'],
+            direction='inbound', trigger_type='mention_reply', message_text=str(payload.text or ''),
+            status='matched', result_code='faq_reply_matched', result_reason=reply_text, raw_result={'sender_id': payload.sender_id},
+        )
+        return {'should_respond': True, 'result_code': 'faq_reply_matched', 'reply_text': reply_text}
 
     def _start_ingress_worker(self) -> None:
         self._worker_threads = [thread for thread in self._worker_threads if thread.is_alive()]
@@ -18371,12 +18692,18 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     bind_retry_max_attempts = cfg.get('BIND_RETRY_MAX_ATTEMPTS') or os.getenv('BIND_RETRY_MAX_ATTEMPTS') or 2
     crm_login_error = None
     if crm_adapter is None and crm_base_url and crm_username and crm_password:
-        candidate_crm_adapter = LiveCrmAdapter(
-            base_url=crm_base_url,
-            username=crm_username,
-            password=crm_password,
-            automation_token=crm_automation_token,
-        )
+        live_crm_kwargs = {
+            'base_url': crm_base_url,
+            'username': crm_username,
+            'password': crm_password,
+        }
+        if crm_automation_token:
+            live_crm_kwargs['automation_token'] = crm_automation_token
+        try:
+            candidate_crm_adapter = LiveCrmAdapter(**live_crm_kwargs)
+        except TypeError:
+            live_crm_kwargs.pop('automation_token', None)
+            candidate_crm_adapter = LiveCrmAdapter(**live_crm_kwargs)
         crm_adapter = candidate_crm_adapter
         try:
             candidate_crm_adapter.login()
@@ -18559,6 +18886,10 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             '/api/ops/whatsapp-approval-accounts/official-binding-directory',
         } and normalized_method == 'GET':
             return OPS_AUTH_ROLE_INTERNAL
+        if path.startswith('/api/ops/group-atmosphere/'):
+            if normalized_method == 'GET':
+                return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_ADMIN
         if path.startswith('/api/ops/whatsapp-approval-accounts/') and '/runtime/internal' in path:
             return OPS_AUTH_ROLE_INTERNAL
         if path.startswith('/api/ops/whatsapp-approval-accounts/') and '/session/internal' in path:
@@ -18793,68 +19124,209 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
 
     def _ops_accounts_page_html() -> str:
         return """<!doctype html>
-<html lang=\"zh-CN\"><head><meta charset=\"utf-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><title>后台账号管理</title>
+<html lang="zh-CN"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>后台账号管理</title>
 <style>
-body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; margin:0; padding:24px; background:#f4f7fb; color:#142033; }
-.page { max-width:1100px; margin:0 auto; }
-.nav { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
-.nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:6px 10px; border-radius:999px; background:#eef2ff; }
-.card { background:#fff; border:1px solid #dbe4f0; border-radius:18px; padding:18px; box-shadow:0 10px 28px rgba(15,23,42,.06); margin-bottom:16px; }
-h1 { margin:0 0 8px 0; font-size:30px; }
-.muted { color:#5d6b82; font-size:13px; }
-.grid { display:grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap:10px; align-items:end; }
+:root { --bg:#f4f7fb; --card:#fff; --line:#dbe4f0; --text:#142033; --muted:#64748b; --blue:#2563eb; --green:#166534; --red:#b91c1c; --amber:#92400e; }
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; margin:0; padding:24px; background:var(--bg); color:var(--text); }
+.page { max-width:1280px; margin:0 auto; }
+.nav { position:sticky; top:0; z-index:10; display:flex; gap:10px; flex-wrap:wrap; margin:0 0 16px 0; padding:10px 0 12px; background:rgba(244,247,251,.96); backdrop-filter:blur(8px); }
+.nav a { color:var(--blue); text-decoration:none; font-size:13px; padding:6px 10px; border-radius:999px; background:#eef2ff; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow:0 10px 28px rgba(15,23,42,.06); margin-bottom:16px; }
+.hero { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }
+h1 { margin:0 0 8px 0; font-size:30px; letter-spacing:-.02em; }
+h2 { margin:0 0 12px 0; font-size:18px; }
+.muted { color:var(--muted); font-size:13px; line-height:1.6; }
+.summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:14px; }
+.summary-item { background:#f8fbff; border:1px solid #e2e8f0; border-radius:14px; padding:12px; }
+.summary-item .label { margin:0 0 6px; }
+.summary-item .value { font-size:24px; font-weight:800; }
+.grid { display:grid; grid-template-columns: 1.1fr 1.1fr .9fr 1.1fr auto; gap:12px; align-items:end; }
 label { display:block; }
-.label { color:#5d6b82; font-size:12px; margin-bottom:6px; }
-input, select { width:100%; min-height:40px; padding:10px 12px; box-sizing:border-box; border:1px solid #cbd5e1; border-radius:10px; font-size:14px; }
-button { min-height:40px; padding:10px 14px; border:none; border-radius:10px; background:#2563eb; color:#fff; font-weight:600; cursor:pointer; }
-table { width:100%; border-collapse:collapse; font-size:13px; }
-th, td { padding:10px 12px; border-bottom:1px solid #e5edf6; text-align:left; vertical-align:top; }
-th { color:#5d6b82; background:#f8fbff; }
-.badge { display:inline-flex; padding:4px 8px; border-radius:999px; font-size:12px; font-weight:600; }
+.label { color:#475569; font-size:12px; font-weight:700; margin-bottom:6px; }
+.hint { color:#64748b; font-size:12px; margin-top:6px; line-height:1.5; }
+input, select { width:100%; min-height:42px; padding:10px 12px; box-sizing:border-box; border:1px solid #cbd5e1; border-radius:10px; font-size:14px; background:#fff; }
+input:focus, select:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(37,99,235,.12); }
+button { min-height:40px; padding:10px 14px; border:none; border-radius:10px; background:var(--blue); color:#fff; font-weight:700; cursor:pointer; white-space:nowrap; }
+button.secondary { background:#334155; }
+button.ghost { background:#e2e8f0; color:#334155; }
+button.danger { background:#dc2626; }
+button:disabled { opacity:.58; cursor:not-allowed; }
+.toolbar { display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+.toolbar-left { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.search { width:260px; }
+.table-wrap { overflow-x:auto; }
+table { width:100%; min-width:1040px; border-collapse:collapse; font-size:13px; }
+th, td { padding:12px; border-bottom:1px solid #e5edf6; text-align:left; vertical-align:middle; }
+th { color:#475569; background:#f8fbff; font-weight:800; white-space:nowrap; }
+tr:hover td { background:#fbfdff; }
+.account-main { font-weight:800; font-size:14px; }
+.account-sub { color:#64748b; font-size:12px; margin-top:3px; }
+.badge { display:inline-flex; align-items:center; gap:5px; padding:4px 9px; border-radius:999px; font-size:12px; font-weight:800; }
 .badge.admin { background:#dbeafe; color:#1d4ed8; }
 .badge.operator { background:#dcfce7; color:#166534; }
 .badge.off { background:#fee2e2; color:#991b1b; }
-.error { color:#b91c1c; font-size:13px; margin-top:8px; }
-.success { color:#166534; font-size:13px; margin-top:8px; }
+.badge.pending { background:#fef3c7; color:#92400e; }
+.actions { display:flex; gap:8px; flex-wrap:wrap; }
+.inline-edit { display:flex; gap:8px; align-items:center; }
+.inline-edit input { min-width:180px; }
+.status-line { min-height:20px; color:#64748b; font-size:13px; margin-top:10px; }
+.status-line.success { color:#166534; }
+.status-line.error { color:#b91c1c; }
+.toast { position:fixed; right:24px; bottom:24px; min-width:260px; max-width:420px; background:#111827; color:#fff; padding:12px 14px; border-radius:12px; display:none; box-shadow:0 18px 45px rgba(15,23,42,.24); z-index:50; font-size:14px; }
+.toast.success { background:#065f46; }
+.toast.error { background:#991b1b; }
+.modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,.42); display:none; align-items:center; justify-content:center; padding:20px; z-index:40; }
+.modal { width:min(520px,100%); background:#fff; border-radius:18px; padding:20px; box-shadow:0 24px 70px rgba(15,23,42,.28); }
+.modal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:14px; }
+.modal h2 { margin:0 0 6px 0; }
+.modal-grid { display:grid; gap:12px; }
+.modal-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:16px; }
+@media (max-width: 900px) { .summary { grid-template-columns:repeat(2,minmax(0,1fr)); } .grid { grid-template-columns:1fr; } .hero { flex-direction:column; } .search { width:100%; } }
 </style></head>
-<body><div class=\"page\"><div class=\"nav\"><a href=\"/ops\">运营工作台</a><a href=\"/ops/intake-bot-presets\">收口配置中心</a><a href=\"/ops/production-ops\">群审批控制台</a><a href=\"/ops/accounts\">账号管理</a></div>
-<div class=\"card\"><h1>后台账号管理</h1><div class=\"muted\">管理员可创建账号、分配管理员/普通运营角色、停用账号、重置密码。</div></div>
-<div class=\"card\"><div class=\"grid\"><label><div class=\"label\">账号</div><input id=\"username\" placeholder=\"例如 ops01\" /></label><label><div class=\"label\">显示名</div><input id=\"displayName\" placeholder=\"例如 印尼运营A\" /></label><label><div class=\"label\">角色</div><select id=\"role\"><option value=\"operator\">普通运营</option><option value=\"admin\">管理员</option></select></label><label><div class=\"label\">密码</div><input id=\"password\" type=\"password\" placeholder=\"至少 8 位\" /></label><div><button type=\"button\" onclick=\"createAccount()\">创建账号</button></div></div><div id=\"createMessage\" class=\"muted\"></div></div>
-<div class=\"card\"><table><thead><tr><th>账号</th><th>显示名</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead><tbody id=\"rows\"><tr><td colspan=\"6\" class=\"muted\">加载中...</td></tr></tbody></table></div>
+<body><div class="page">
+  <div class="nav"><a href="/ops">运营工作台</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/accounts">账号管理</a></div>
+  <div class="card hero">
+    <div><h1>后台账号管理</h1><div class="muted">管理后台登录账号、角色权限、启停状态与密码。管理员重置他人密码；当前登录账号可在本页修改自己的密码。</div></div>
+    <button class="secondary" type="button" onclick="openChangeOwnPassword()">修改我的密码</button>
+  </div>
+  <div class="summary" id="summaryCards">
+    <div class="summary-item"><div class="label">总账号</div><div class="value" id="totalCount">-</div></div>
+    <div class="summary-item"><div class="label">管理员</div><div class="value" id="adminCount">-</div></div>
+    <div class="summary-item"><div class="label">普通运营</div><div class="value" id="operatorCount">-</div></div>
+    <div class="summary-item"><div class="label">停用</div><div class="value" id="disabledCount">-</div></div>
+  </div>
+  <div class="card">
+    <h2>新增账号</h2>
+    <div class="grid">
+      <label><div class="label">账号</div><input id="username" autocomplete="off" placeholder="例如 ops01" /><div class="hint">3-32 位，小写字母/数字/._-</div></label>
+      <label><div class="label">显示名</div><input id="displayName" autocomplete="off" placeholder="例如 印尼运营A" /></label>
+      <label><div class="label">角色</div><select id="role"><option value="operator">普通运营</option><option value="admin">管理员</option></select><div class="hint">管理员可管理账号和配置页</div></label>
+      <label><div class="label">初始密码</div><input id="password" type="password" autocomplete="new-password" placeholder="至少 8 位" /></label>
+      <div><button id="createBtn" type="button" onclick="createAccount()">创建账号</button></div>
+    </div>
+    <div id="createMessage" class="status-line"></div>
+  </div>
+  <div class="card">
+    <div class="toolbar">
+      <div><h2>账号列表</h2><div class="muted">修改显示名、角色、启停后会立即保存，并显示结果。</div></div>
+      <div class="toolbar-left"><input id="accountSearch" class="search" placeholder="搜索账号/显示名" oninput="renderAccounts()" /><button class="ghost" type="button" onclick="loadAccounts()">刷新</button></div>
+    </div>
+    <div id="tableMessage" class="status-line">加载中...</div>
+    <div class="table-wrap"><table><thead><tr><th>账号</th><th>角色</th><th>状态</th><th>最近登录</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="rows"><tr><td colspan="6" class="muted">加载中...</td></tr></tbody></table></div>
+  </div>
 </div>
+<div id="passwordModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
+  <div class="modal">
+    <div class="modal-head"><div><h2 id="passwordModalTitle">修改密码</h2><div id="passwordModalHint" class="muted"></div></div><button class="ghost" type="button" onclick="closePasswordModal()">关闭</button></div>
+    <div class="modal-grid">
+      <label id="currentPasswordWrap"><div class="label">当前密码</div><input id="currentPassword" type="password" autocomplete="current-password" /></label>
+      <label><div class="label">新密码</div><input id="newPassword" type="password" autocomplete="new-password" placeholder="至少 8 位" /></label>
+      <label><div class="label">确认新密码</div><input id="confirmPassword" type="password" autocomplete="new-password" /></label>
+    </div>
+    <div id="passwordMessage" class="status-line"></div>
+    <div class="modal-actions"><button class="ghost" type="button" onclick="closePasswordModal()">取消</button><button id="passwordSubmitBtn" type="button" onclick="submitPasswordModal()">保存密码</button></div>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
 <script>
+let accounts = [];
+let currentUser = null;
+let passwordMode = null;
+let passwordTargetUserId = null;
+const errorText = { invalid_username:'账号格式不正确', password_too_short:'密码至少 8 位', username_taken:'账号已存在', user_not_found:'账号不存在', invalid_current_password:'当前密码不正确', ops_admin_required:'需要管理员权限', ops_auth_required:'请先登录' };
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>\"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[char])); }
-function badgeRole(role) { return `<span class=\"badge ${escapeHtml(role)}\">${role === 'admin' ? '管理员' : '普通运营'}</span>`; }
-function badgeEnabled(enabled) { return enabled ? '<span class=\"badge operator\">启用</span>' : '<span class=\"badge off\">停用</span>'; }
+function detailText(detail, fallback='操作失败') { return errorText[String(detail || '')] || String(detail || fallback); }
+function badgeRole(role) { return `<span class="badge ${escapeHtml(role)}">${role === 'admin' ? '管理员' : '普通运营'}</span>`; }
+function badgeEnabled(enabled) { return enabled ? '<span class="badge operator">启用</span>' : '<span class="badge off">停用</span>'; }
+function showToast(message, type='success') { const toast=document.getElementById('toast'); toast.textContent=message; toast.className=`toast ${type}`; toast.style.display='block'; clearTimeout(window.__accountToastTimer); window.__accountToastTimer=setTimeout(()=>{toast.style.display='none';},2600); }
+function setStatus(id, message, type='') { const el=document.getElementById(id); el.textContent=message || ''; el.className=`status-line ${type}`.trim(); }
+function setBusy(btn, busy, text) { if (!btn) return; if (busy) { btn.dataset.originalText=btn.textContent; btn.textContent=text || '处理中...'; btn.disabled=true; } else { btn.textContent=btn.dataset.originalText || btn.textContent; btn.disabled=false; } }
+async function fetchJson(url, options={}) { const res=await fetch(url, {credentials:'same-origin', ...options}); let data={}; try { data=await res.json(); } catch (_) {} if (!res.ok) { const err=new Error(detailText(data.detail, '请求失败')); err.detail=data.detail; err.status=res.status; throw err; } return data; }
+async function loadCurrentUser() { const data=await fetchJson('/api/ops/auth/status'); currentUser=data.user || null; }
 async function loadAccounts() {
-  const res = await fetch('/api/ops/accounts', { credentials: 'same-origin' });
-  const data = await res.json();
-  if (!res.ok) { document.getElementById('rows').innerHTML = `<tr><td colspan=\"6\">${escapeHtml(data.detail || '加载失败')}</td></tr>`; return; }
-  const rows = Array.isArray(data.rows) ? data.rows : [];
-  if (!rows.length) { document.getElementById('rows').innerHTML = '<tr><td colspan=\"6\" class=\"muted\">暂无账号</td></tr>'; return; }
-  document.getElementById('rows').innerHTML = rows.map((row) => `<tr><td>${escapeHtml(row.username)}</td><td><input value=${JSON.stringify(String(row.display_name || ''))} onchange=\"updateAccount(${JSON.stringify(row.user_id)}, {display_name:this.value})\" /></td><td><select onchange=\"updateAccount(${JSON.stringify(row.user_id)}, {role:this.value})\"><option value=\"operator\" ${row.role === 'operator' ? 'selected' : ''}>普通运营</option><option value=\"admin\" ${row.role === 'admin' ? 'selected' : ''}>管理员</option></select></td><td><label style=\"display:flex; gap:8px; align-items:center;\">${badgeEnabled(!!row.enabled)} <input type=\"checkbox\" ${row.enabled ? 'checked' : ''} onchange=\"updateAccount(${JSON.stringify(row.user_id)}, {enabled:this.checked})\" /></label></td><td>${escapeHtml(row.last_login_at || '-')}</td><td><button type=\"button\" onclick=\"resetPassword(${JSON.stringify(row.user_id)})\">重置密码</button></td></tr>`).join('');
+  setStatus('tableMessage','加载中...');
+  try {
+    await loadCurrentUser();
+    const data = await fetchJson('/api/ops/accounts');
+    accounts = Array.isArray(data.rows) ? data.rows : [];
+    updateSummary(); renderAccounts(); setStatus('tableMessage', `已加载 ${accounts.length} 个账号`, 'success');
+  } catch (err) {
+    document.getElementById('rows').innerHTML = `<tr><td colspan="6" class="status-line error">${escapeHtml(err.message || '加载失败')}</td></tr>`;
+    setStatus('tableMessage', err.message || '加载失败', 'error');
+  }
+}
+function updateSummary() {
+  const admin=accounts.filter(x=>x.role==='admin').length;
+  const disabled=accounts.filter(x=>!x.enabled).length;
+  document.getElementById('totalCount').textContent=accounts.length;
+  document.getElementById('adminCount').textContent=admin;
+  document.getElementById('operatorCount').textContent=accounts.length-admin;
+  document.getElementById('disabledCount').textContent=disabled;
+}
+function renderAccounts() {
+  const q=String(document.getElementById('accountSearch').value || '').trim().toLowerCase();
+  const rows=accounts.filter(row => !q || String(row.username || '').toLowerCase().includes(q) || String(row.display_name || '').toLowerCase().includes(q));
+  if (!rows.length) { document.getElementById('rows').innerHTML = '<tr><td colspan="6" class="muted">暂无匹配账号</td></tr>'; return; }
+  document.getElementById('rows').innerHTML = rows.map((row) => {
+    const userId=JSON.stringify(row.user_id);
+    const isMe=currentUser && currentUser.user_id === row.user_id;
+    return `<tr>
+      <td><div class="account-main">${escapeHtml(row.username)} ${isMe ? '<span class="badge pending">当前登录</span>' : ''}</div><div class="account-sub">${escapeHtml(row.display_name || row.username)}</div></td>
+      <td><select aria-label="修改角色" onchange="updateAccount(${userId}, {role:this.value}, this, '角色已保存')"><option value="operator" ${row.role === 'operator' ? 'selected' : ''}>普通运营</option><option value="admin" ${row.role === 'admin' ? 'selected' : ''}>管理员</option></select><div class="hint">${row.role === 'admin' ? '可管理账号/配置' : '仅运营工作台权限'}</div></td>
+      <td><div style="display:flex;gap:10px;align-items:center;">${badgeEnabled(!!row.enabled)}<select aria-label="修改状态" onchange="updateAccount(${userId}, {enabled:this.value==='enabled'}, this, this.value==='enabled'?'账号已启用':'账号已停用')"><option value="enabled" ${row.enabled ? 'selected' : ''}>启用</option><option value="disabled" ${!row.enabled ? 'selected' : ''}>停用</option></select></div></td>
+      <td>${escapeHtml(row.last_login_at || '-')}</td>
+      <td>${escapeHtml(row.updated_at || '-')}</td>
+      <td><div class="actions"><button class="ghost" type="button" onclick="openDisplayNameEditor(${userId}, ${JSON.stringify(row.display_name || '')}, this)">改显示名</button><button class="secondary" type="button" onclick="openAdminResetPassword(${userId}, ${JSON.stringify(row.username)})">管理员重置密码</button></div></td>
+    </tr>`;
+  }).join('');
 }
 async function createAccount() {
-  const payload = { username: document.getElementById('username').value, display_name: document.getElementById('displayName').value, role: document.getElementById('role').value, password: document.getElementById('password').value, enabled: true };
-  const res = await fetch('/api/ops/accounts', { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify(payload) });
-  const data = await res.json();
-  document.getElementById('createMessage').className = res.ok ? 'success' : 'error';
-  document.getElementById('createMessage').textContent = res.ok ? '创建成功' : (data.detail || '创建失败');
-  if (res.ok) { document.getElementById('username').value = ''; document.getElementById('displayName').value = ''; document.getElementById('password').value = ''; loadAccounts(); }
+  const btn=document.getElementById('createBtn'); setBusy(btn,true,'创建中...'); setStatus('createMessage','创建中...');
+  const payload = { username: document.getElementById('username').value.trim(), display_name: document.getElementById('displayName').value.trim(), role: document.getElementById('role').value, password: document.getElementById('password').value, enabled: true };
+  try {
+    await fetchJson('/api/ops/accounts', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    document.getElementById('username').value=''; document.getElementById('displayName').value=''; document.getElementById('password').value='';
+    setStatus('createMessage','创建成功', 'success'); showToast('账号创建成功'); await loadAccounts();
+  } catch (err) { setStatus('createMessage', err.message || '创建失败', 'error'); showToast(err.message || '创建失败', 'error'); }
+  finally { setBusy(btn,false); }
 }
-async function updateAccount(userId, patch) {
-  const res = await fetch(`/api/ops/accounts/${encodeURIComponent(userId)}`, { method:'PUT', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify(patch) });
-  if (!res.ok) { const data = await res.json(); alert(data.detail || '更新失败'); }
-  await loadAccounts();
+async function updateAccount(userId, patch, control=null, successText='已保存') {
+  if (control) control.disabled=true;
+  setStatus('tableMessage','保存中...');
+  try { await fetchJson(`/api/ops/accounts/${encodeURIComponent(userId)}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(patch) }); showToast(successText); await loadAccounts(); }
+  catch (err) { showToast(err.message || '更新失败', 'error'); setStatus('tableMessage', err.message || '更新失败', 'error'); await loadAccounts(); }
+  finally { if (control) control.disabled=false; }
 }
-async function resetPassword(userId) {
-  const password = window.prompt('输入新密码（至少 8 位）');
-  if (!password) return;
-  const res = await fetch(`/api/ops/accounts/${encodeURIComponent(userId)}`, { method:'PUT', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify({ password }) });
-  const data = await res.json();
-  if (!res.ok) { alert(data.detail || '重置失败'); return; }
-  alert('密码已重置');
-  await loadAccounts();
+function openDisplayNameEditor(userId, currentName, btn) {
+  const next = window.prompt('输入新的显示名', currentName || '');
+  if (next === null) return;
+  updateAccount(userId, {display_name: next}, btn, '显示名已保存');
+}
+function clearPasswordForm() { ['currentPassword','newPassword','confirmPassword'].forEach(id => { const el=document.getElementById(id); if (el) el.value=''; }); setStatus('passwordMessage',''); }
+function openChangeOwnPassword() { passwordMode='self'; passwordTargetUserId=null; clearPasswordForm(); document.getElementById('passwordModalTitle').textContent='修改我的密码'; document.getElementById('passwordModalHint').textContent='需要输入当前密码，保存后下次登录使用新密码。'; document.getElementById('currentPasswordWrap').style.display='block'; document.getElementById('passwordSubmitBtn').textContent='保存新密码'; document.getElementById('passwordModal').style.display='flex'; }
+function openAdminResetPassword(userId, username) { passwordMode='admin-reset'; passwordTargetUserId=userId; clearPasswordForm(); document.getElementById('passwordModalTitle').textContent='管理员重置密码'; document.getElementById('passwordModalHint').textContent=`目标账号：${username}。不需要旧密码，请确认已通知使用人。`; document.getElementById('currentPasswordWrap').style.display='none'; document.getElementById('passwordSubmitBtn').textContent='重置密码'; document.getElementById('passwordModal').style.display='flex'; }
+function closePasswordModal() { document.getElementById('passwordModal').style.display='none'; clearPasswordForm(); }
+function closeModalOnBackdrop(event) { if (event.target && event.target.id === 'passwordModal') closePasswordModal(); }
+async function submitPasswordModal() {
+  const btn=document.getElementById('passwordSubmitBtn');
+  const current=document.getElementById('currentPassword').value;
+  const next=document.getElementById('newPassword').value;
+  const confirm=document.getElementById('confirmPassword').value;
+  if (next.length < 8) { setStatus('passwordMessage','新密码至少 8 位','error'); return; }
+  if (next !== confirm) { setStatus('passwordMessage','两次输入的新密码不一致','error'); return; }
+  if (passwordMode === 'self' && !current) { setStatus('passwordMessage','请输入当前密码','error'); return; }
+  setBusy(btn,true,'保存中...'); setStatus('passwordMessage','保存中...');
+  try {
+    if (passwordMode === 'self') {
+      await fetchJson('/api/ops/auth/password', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({current_password: current, new_password: next}) });
+      showToast('密码修改成功');
+    } else {
+      await fetchJson(`/api/ops/accounts/${encodeURIComponent(passwordTargetUserId)}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: next}) });
+      showToast('密码已重置');
+    }
+    closePasswordModal(); await loadAccounts();
+  } catch (err) { setStatus('passwordMessage', err.message || '保存失败', 'error'); showToast(err.message || '保存失败', 'error'); }
+  finally { setBusy(btn,false); }
 }
 loadAccounts();
 </script></body></html>"""
@@ -18952,6 +19424,7 @@ loadAccounts();
       <a href=\"/ops/production-ops\">群审批控制台</a>
       <a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a>
       <a href=\"/ops/official-group-bridge\">官方群审批桥接台</a>
+      <a href=\"/ops/accounts\" data-admin-only-nav=\"true\">账号管理</a>
     </div>
   <div class=\"page\">
     <div class=\"card\">
@@ -19292,6 +19765,26 @@ loadAccounts();
     def health() -> Dict[str, str]:
         return {"status": "ok"}
 
+    @app.post('/api/ops/group-atmosphere/configs')
+    def group_atmosphere_config_upsert(payload: GroupAtmosphereConfigRequest) -> Dict[str, Any]:
+        return {'ok': True, 'config': service.upsert_group_atmosphere_config(payload)}
+
+    @app.get('/api/ops/group-atmosphere/configs')
+    def group_atmosphere_config_list() -> Dict[str, Any]:
+        return {'rows': service.list_group_atmosphere_configs()}
+
+    @app.post('/api/ops/group-atmosphere/dispatch-once')
+    def group_atmosphere_dispatch_once(payload: GroupAtmosphereDispatchRequest) -> Dict[str, Any]:
+        return service.dispatch_group_atmosphere_once(payload)
+
+    @app.post('/api/ops/group-atmosphere/inbound-message')
+    def group_atmosphere_inbound_message(payload: GroupAtmosphereInboundMessageRequest) -> Dict[str, Any]:
+        return service.handle_group_atmosphere_inbound_message(payload)
+
+    @app.get('/api/ops/group-atmosphere/logs')
+    def group_atmosphere_logs(limit: int = 50) -> Dict[str, Any]:
+        return {'rows': service.list_group_atmosphere_logs(limit)}
+
     @app.get('/login', response_class=HTMLResponse)
     def ops_login_page() -> str:
         if not auth_enabled:
@@ -19349,6 +19842,22 @@ loadAccounts();
         auth_manager.revoke_session(raw_token)
         auth_manager.clear_session_cookie(response)
         return {'ok': True}
+
+    @app.post('/api/ops/auth/password')
+    def ops_auth_change_password(request: Request, payload: OpsPasswordChangeRequest) -> Dict[str, Any]:
+        user = _require_ops_user(request)
+        if str(user.get('role') or '').strip() == OPS_AUTH_ROLE_INTERNAL:
+            raise HTTPException(status_code=403, detail='ops_browser_session_required')
+        try:
+            updated_user = auth_manager.change_user_password(
+                str(user.get('user_id') or ''),
+                current_password=payload.current_password,
+                new_password=payload.new_password,
+            )
+        except ValueError as exc:
+            status_code = 401 if str(exc) == 'invalid_current_password' else 400
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        return {'ok': True, 'user': updated_user}
 
     def _ops_page_html(role: str) -> str:
         html = OPS_PAGE_HTML

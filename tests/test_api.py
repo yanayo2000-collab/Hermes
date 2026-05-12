@@ -97,10 +97,21 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
 
     ops_page = client.get('/ops')
     assert ops_page.status_code == 200
+    assert '/ops/accounts' in ops_page.text
+    assert '账号管理' in ops_page.text
+
+    production_ops_page = client.get('/ops/production-ops')
+    assert production_ops_page.status_code == 200
+    assert '/ops/accounts' in production_ops_page.text
+    assert '账号管理' in production_ops_page.text
 
     accounts_page = client.get('/ops/accounts')
     assert accounts_page.status_code == 200
     assert '后台账号管理' in accounts_page.text
+    assert '修改我的密码' in accounts_page.text
+    assert '管理员重置密码' in accounts_page.text
+    assert '/api/ops/auth/password' in accounts_page.text
+    assert 'showToast' in accounts_page.text
 
     create_operator = client.post('/api/ops/accounts', json={
         'username': 'ops01',
@@ -121,6 +132,25 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
     update_operator = client.put(f"/api/ops/accounts/{operator_user['user_id']}", json={'enabled': False})
     assert update_operator.status_code == 200
     assert update_operator.json()['user']['enabled'] is False
+
+    bad_password_change = client.post('/api/ops/auth/password', json={
+        'current_password': 'wrong-secret',
+        'new_password': 'newsecret123',
+    })
+    assert bad_password_change.status_code == 401
+    assert bad_password_change.json()['detail'] == 'invalid_current_password'
+
+    password_change = client.post('/api/ops/auth/password', json={
+        'current_password': 'secret123',
+        'new_password': 'newsecret123',
+    })
+    assert password_change.status_code == 200
+
+    client.post('/api/ops/auth/logout')
+    old_login = client.post('/api/ops/auth/login', json={'username': 'admin01', 'password': 'secret123'})
+    assert old_login.status_code == 401
+    new_login = client.post('/api/ops/auth/login', json={'username': 'admin01', 'password': 'newsecret123'})
+    assert new_login.status_code == 200
 
 
 def test_operator_cannot_access_admin_account_management():
@@ -207,6 +237,7 @@ def test_operator_can_access_ops_runtime_health_but_not_admin_only_ops_api():
     assert '/ops/production-ops' not in ops_page_body
     assert '/ops/registration-group-approval-batch-members' not in ops_page_body
     assert '/ops/official-group-bridge' not in ops_page_body
+    assert '/ops/accounts' not in ops_page_body
 
     account_runtime = client.get('/api/ops/whatsapp-approval-accounts/wa-admin-demo/runtime')
     assert account_runtime.status_code == 403
