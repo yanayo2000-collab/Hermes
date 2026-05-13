@@ -607,18 +607,18 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
     .hero .eyebrow { color:#6366f1; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
     .hero .subtitle { color:#4b5563; font-size:14px; margin-top:8px; }
     .config-workspace { display:grid; gap:16px; margin-top:16px; }
+    body[data-ops-role="operator"] .admin-only { display: none !important; }
   </style>
 </head>
-<body>
+<body data-ops-role="__OPS_USER_ROLE__">
   <div class="page-shell">
     <div class="shell-nav">
       <a href="/ops">运营工作台</a>
       <a href="/ops/intake-bot-presets">收口配置中心</a>
       <a href="/ops/production-ops">群审批控制台</a>
-      <a href="/ops/group-atmosphere">群活跃助手</a>
+      <a href="/ops/group-atmosphere" data-admin-only-nav="true">群活跃助手</a>
       <a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a>
-      <a href="/ops/official-group-bridge">官方群审批桥接台</a>
-      <a href="/ops/accounts" data-admin-only-nav="true">账号管理</a>
+      <a href="/ops/accounts">账号设置</a>
     </div>
     <div class="hero">
       <h1>收口配置中心</h1>
@@ -649,7 +649,7 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
           <th>app_id</th>
           <th>default_app</th>
           <th>default_guild</th>
-          <th>操作</th>
+          <th class="admin-only">操作</th>
         </tr>
       </thead>
       <tbody id=\"presetRows\"></tbody>
@@ -657,7 +657,7 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
     </div>
   </div>
 
-  <div class=\"card\" style=\"margin-top:16px;\">
+  <div class=\"card admin-only\" style=\"margin-top:16px;\">
     <h2 style=\"margin-top:0;\">新增收口机器人</h2>
     <div class=\"field-stack\" style=\"max-width:520px; gap:12px;\">
       <label class=\"field-hint\">profile_name</label>
@@ -683,8 +683,9 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
     <div id=\"guildExecutorRows\" class=\"executor-card-grid\"></div>
   </div>
 
-  <div class=\"card\" style=\"margin-top:16px;\">
+  <div class=\"card admin-only\" style=\"margin-top:16px;\">
     <h2 style=\"margin-top:0;\">新增 / 更新公会执行器</h2>
+    <div class=\"muted\">代理地区先按 15 个大型城市预置；历史值会保留为“历史值（待改）”。</div>
     <div class=\"executor-form-grid\">
       <div class=\"field-stack\">
         <label class=\"field-hint\">公会名</label>
@@ -707,7 +708,7 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
         <input id=\"new_executor_proxy_url\" placeholder=\"http://user:pass@host:port\" />
       </div>
       <div class=\"field-stack\">
-        <label class=\"field-hint\">代理地区</label>
+        <label class=\"field-hint\">代理地区（proxy_region）</label>
         <select id=\"new_executor_proxy_region\"></select>
       </div>
       <div class=\"field-stack\">
@@ -744,6 +745,8 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
   <div id=\"presetToast\" class=\"toast\"></div>
 
 <script>
+window.__opsUserRole = '__OPS_USER_ROLE__';
+function isOpsAdmin() { return ['admin', 'super_admin'].includes(String(window.__opsUserRole || '').trim()); }
 async function loadJson(url, options) {
   const res = await fetch(url, options || {});
   if (!res.ok) {
@@ -807,6 +810,10 @@ function renderExecutorProxyRegionOptions(selectedValue) {
 }
 function presetFieldHtml(kind, row, options, source, currentValue) {
   const fieldId = `${kind}_${row.profile_name}`;
+  if (!isOpsAdmin()) {
+    const text = String(currentValue || '');
+    return `<div class="field-stack"><div>${text || '-'}</div></div>`;
+  }
   const rows = Array.isArray(options) ? options : [];
   const hasOptions = rows.length > 0;
   const unavailable = !hasOptions || source === 'unavailable';
@@ -819,18 +826,22 @@ function presetFieldHtml(kind, row, options, source, currentValue) {
 function robotNameFieldHtml(row) {
   const inputId = `robot_name_${row.profile_name}`;
   const value = String(row.robot_name || row.profile_name || '');
+  if (!isOpsAdmin()) {
+    return `<div class="field-stack preset-robot-name-cell"><div>${value || '-'}</div></div>`;
+  }
   return `<div class="field-stack preset-robot-name-cell"><input id="${inputId}" value="${value}" disabled /></div>`;
 }
 function presetRowHtml(row, appOptions, guildOptions, appSource, guildSource) {
   const saveDisabled = appSource === 'unavailable' || guildSource === 'unavailable' || !appOptions.length || !guildOptions.length;
   const buttonId = `edit_robot_name_${row.profile_name}`;
+  const actionCell = isOpsAdmin() ? `<td class="admin-only"><div class="preset-row-actions"><button type="button" id="${buttonId}" class="secondary" onclick="enableRobotNameEdit('${row.profile_name}')">编辑名称</button><button onclick="savePreset('${row.profile_name}')" ${saveDisabled ? 'disabled' : ''}>保存</button></div></td>` : '';
   return `<tr>
     <td>${row.profile_name}</td>
     <td>${robotNameFieldHtml(row)}</td>
     <td>${row.app_id || ''}</td>
     <td>${presetFieldHtml('default_app', row, appOptions, appSource, row.default_app)}</td>
     <td>${presetFieldHtml('default_guild', row, guildOptions, guildSource, row.default_guild)}</td>
-    <td><div class="preset-row-actions"><button type="button" id="${buttonId}" class="secondary" onclick="enableRobotNameEdit('${row.profile_name}')">编辑名称</button><button onclick="savePreset('${row.profile_name}')" ${saveDisabled ? 'disabled' : ''}>保存</button></div></td>
+    ${actionCell}
   </tr>`;
 }
 function enableRobotNameEdit(profileName) {
@@ -842,12 +853,39 @@ function enableRobotNameEdit(profileName) {
   }
 }
 function renderCreatePresetForm(data) {
+  if (!isOpsAdmin()) return;
   const appOptions = data.app_options || [];
   const guildOptions = data.guild_options || [];
   const appSource = data.app_options_source || 'unavailable';
   const guildSource = data.guild_options_source || 'unavailable';
-  document.getElementById('new_default_app_hint').textContent = '';
-  document.getElementById('new_default_guild_hint').textContent = '';onst passwordState = row.password_configured ? '已配置' : '未配置';
+  const appSelect = document.getElementById('new_default_app');
+  const guildSelect = document.getElementById('new_default_guild');
+  const createButton = document.getElementById('createPresetButton');
+  appSelect.innerHTML = renderSelectOptions(appOptions, '', 'No CRM app options available');
+  guildSelect.innerHTML = renderSelectOptions(guildOptions, '', 'No CRM guild options available');
+  document.getElementById('new_default_app_hint').textContent = appSource === 'live'
+    ? 'Using live CRM dropdown options only.'
+    : appSource === 'cache'
+      ? 'Using cached CRM dropdown options only.'
+      : 'CRM dropdown options are currently unavailable. Saving is disabled.';
+  document.getElementById('new_default_guild_hint').textContent = guildSource === 'live'
+    ? 'Using live CRM dropdown options only.'
+    : guildSource === 'cache'
+      ? 'Using cached CRM dropdown options only.'
+      : 'CRM dropdown options are currently unavailable. Saving is disabled.';
+  const disabled = appSource === 'unavailable' || guildSource === 'unavailable' || !appOptions.length || !guildOptions.length;
+  appSelect.disabled = disabled;
+  guildSelect.disabled = disabled;
+  createButton.disabled = disabled;
+}
+function refreshExecutorProxyRegionSelect(selectedValue) {
+  const field = document.getElementById('new_executor_proxy_region');
+  if (!field) return;
+  field.innerHTML = renderExecutorProxyRegionOptions(selectedValue || '');
+  field.value = selectedValue || '';
+}
+function guildExecutorRowHtml(row) {
+  const passwordState = row.password_configured ? '已配置' : '未配置';
   const enabledText = row.enabled ? '启用' : '停用';
   return `<div class="executor-card">
     <h3>${row.guild_name || ''}</h3>
@@ -864,10 +902,10 @@ function renderCreatePresetForm(data) {
       <div class="k">状态</div><div>${enabledText}</div>
       <div class="k">备注</div><div>${row.notes || '-'}</div>
     </div>
-    <div class="executor-actions">
+    ${isOpsAdmin() ? `<div class="executor-actions admin-only">
       <button class="secondary" onclick="fillExecutorForm('${String(row.guild_name || '').replace(/'/g, "&#39;")}')">回填编辑</button>
       <button class="secondary" onclick="deleteExecutor('${String(row.guild_name || '').replace(/'/g, "&#39;")}')">删除执行器</button>
-    </div>
+    </div>` : ''}
   </div>`;
 }
 async function reloadGuildExecutors() {
@@ -879,7 +917,10 @@ async function reloadGuildExecutors() {
   document.getElementById('executorCount').textContent = String(rows.length);
   document.getElementById('executorProxyCount').textContent = String(rows.filter(row => String(row.proxy_url || '').trim()).length);
   document.getElementById('executorSecretCount').textContent = String(rows.filter(row => row.password_configured).length);
-  refreshExecutorProxyRegionSelect(document.getElementById('new_executor_proxy_region').value || '');
+  if (isOpsAdmin()) {
+    const proxyRegionField = document.getElementById('new_executor_proxy_region');
+    refreshExecutorProxyRegionSelect(proxyRegionField ? proxyRegionField.value || '' : '');
+  }
 }
 function applyProductionOpsDaemonConfig(data) {
   const config = data.config || {};
@@ -904,7 +945,8 @@ function applyProductionOpsDaemonConfig(data) {
   const runtime = data.runtime || {};
   const checkedAt = runtime.status && runtime.status.checked_at ? runtime.status.checked_at : '暂无';
   const pendingIncidents = Array.isArray((runtime.status || {}).incidents) ? runtime.status.incidents.length : 0;
-  const runtimeText = `launchd=${runtime.launch_agent_installed ? 'installed' : 'not_installed'} · 启用=${config.enabled ? 'on' : 'off'} · 最近检查=${checkedAt} · incidents=${pendingIncidents}`;
+  const observationWarnings = Array.isArray((runtime.status || {}).observation_warnings) ? runtime.status.observation_warnings.length : 0;
+  const runtimeText = `launchd=${runtime.launch_agent_installed ? 'installed' : 'not_installed'} · 启用=${config.enabled ? 'on' : 'off'} · 最近检查=${checkedAt} · 异常=${pendingIncidents} · 待核验=${observationWarnings}`;
   const runtimeHint = document.getElementById('productionOpsRuntimeHint');
   const daemonEnabledState = document.getElementById('daemonEnabledState');
   if (runtimeHint) runtimeHint.textContent = runtimeText;
@@ -1074,7 +1116,7 @@ setInterval(() => {
 GROUP_ATMOSPHERE_PAGE_HTML = """<!doctype html>
 <html lang=\"zh-CN\"><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/><title>群活跃助手</title>
 <style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:24px;background:#f3f6fb;color:#142033}.page-shell{max-width:1320px;margin:0 auto}.shell-nav{position:sticky;top:0;z-index:20;display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px;padding:12px 0 14px;background:rgba(243,246,251,.94);backdrop-filter:blur(10px)}.shell-nav a{color:#2563eb;text-decoration:none;font-size:13px;padding:8px 12px;border-radius:999px;background:#eef4ff;border:1px solid #d8e5ff}.card,.hero{background:#fff;border:1px solid #dbe4f0;border-radius:20px;padding:20px;box-shadow:0 10px 30px rgba(15,23,42,.06);margin-top:16px}.hero{margin-top:0}.muted{color:#5d6b82;font-size:13px;line-height:1.7}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}input,textarea{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #c7d4e3;border-radius:10px;margin:6px 0}textarea{min-height:88px}button{padding:9px 14px;border-radius:10px;border:0;background:#2563eb;color:#fff}table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-bottom:1px solid #dbe4f0;padding:8px;text-align:left}@media(max-width:900px){.grid{grid-template-columns:1fr}}</style></head>
-<body><div class=\"page-shell\"><div class=\"shell-nav\"><a href=\"/ops\">运营工作台</a><a href=\"/ops/intake-bot-presets\">收口配置中心</a><a href=\"/ops/production-ops\">群审批控制台</a><a href=\"/ops/group-atmosphere\">群活跃助手</a><a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a><a href=\"/ops/official-group-bridge\">官方群审批桥接台</a><a href=\"/ops/accounts\" data-admin-only-nav=\"true\">账号管理</a></div>
+<body><div class=\"page-shell\"><div class=\"shell-nav\"><a href=\"/ops\">运营工作台</a><a href=\"/ops/intake-bot-presets\">收口配置中心</a><a href=\"/ops/production-ops\">群审批控制台</a><a href=\"/ops/group-atmosphere\">群活跃助手</a><a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a><a href=\"/ops/accounts\">账号设置</a></div>
 <div class=\"hero\"><h1>群活跃助手</h1></div>
 <div class=\"grid\"><div class=\"card\"><h2>新增 / 更新配置</h2><input id=\"ga_config_name\" placeholder=\"配置名\"/><input id=\"ga_account_key\" placeholder=\"WhatsApp 账号 key\"/><input id=\"ga_target_group\" placeholder=\"目标群 ID / 群名\"/><input id=\"ga_worker_base_url\" placeholder=\"worker base url，可留空 dry-run\"/><textarea id=\"ga_templates\" placeholder=\"话术池：每行一条\"></textarea><textarea id=\"ga_faq\" placeholder=\"FAQ：keyword => reply\"></textarea><button onclick=\"saveConfig()\">保存配置</button> <button onclick=\"dispatchOnce()\">手动发送一次</button></div><div class=\"card\"><h2>配置列表</h2><div id=\"group-atmosphere-configs\"></div></div></div><div class=\"card\"><h2>发送 / @ 回复日志</h2><div id=\"group-atmosphere-logs\"></div></div></div>
 <script>async function loadJson(url,options={}){const res=await fetch(url,options);const text=await res.text();const data=text?JSON.parse(text):{};if(!res.ok)throw new Error(data.detail||text||`HTTP ${res.status}`);return data}function templates(){return document.getElementById('ga_templates').value.split(/\n+/).map((text,i)=>text.trim()).filter(Boolean).map((text,i)=>({template_id:`t${i+1}`,text}))}function faq(){return document.getElementById('ga_faq').value.split(/\n+/).map(x=>x.trim()).filter(Boolean).map(line=>{const p=line.split('=>');return {keyword:(p[0]||'').trim(),reply:(p.slice(1).join('=>')||'').trim()}}).filter(x=>x.keyword&&x.reply)}async function saveConfig(){await loadJson('/api/ops/group-atmosphere/configs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:ga_config_name.value.trim(),enabled:true,account_key:ga_account_key.value.trim(),target_group:ga_target_group.value.trim(),worker_base_url:ga_worker_base_url.value.trim(),template_pool:templates(),faq_rules:faq(),mention_reply_enabled:true})});await reloadAll()}async function dispatchOnce(){await loadJson('/api/ops/group-atmosphere/dispatch-once',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:ga_config_name.value.trim(),trigger_type:'manual_ops_page'})});await reloadAll()}function renderConfigs(rows){document.getElementById('group-atmosphere-configs').innerHTML=`<table><tbody>${rows.map(r=>`<tr><td>${r.config_name}</td><td>${r.account_key}</td><td>${r.target_group}</td><td>${r.status}</td></tr>`).join('')}</tbody></table>`}function renderLogs(rows){document.getElementById('group-atmosphere-logs').innerHTML=`<table><tbody>${rows.map(r=>`<tr><td>${r.created_at}</td><td>${r.config_name||''}</td><td>${r.direction}</td><td>${r.status}</td><td>${r.message_text}</td></tr>`).join('')}</tbody></table>`}async function reloadAll(){const c=await loadJson('/api/ops/group-atmosphere/configs');const l=await loadJson('/api/ops/group-atmosphere/logs');renderConfigs(c.rows||[]);renderLogs(l.rows||[])}reloadAll();</script></body></html>"""
@@ -1200,6 +1242,8 @@ PRODUCTION_OPS_PAGE_HTML = """
     .qr-modal-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
     .qr-shell { margin-top:12px; border-radius:16px; background:#0f172a; color:#e2e8f0; padding:16px; overflow:auto; }
     .qr-shell pre { margin:0; font-size:10px; line-height:1.05; }
+    .qr-image-shell { margin-top:12px; display:flex; justify-content:center; padding:18px; border-radius:16px; background:#fff; border:1px solid #e2e8f0; }
+    .qr-image { display:block; width:min(420px, 80vw); max-width:100%; height:auto; aspect-ratio:1 / 1; image-rendering:pixelated; }
     .qr-loading { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px; }
     .qr-loading::before { content:''; width:16px; height:16px; border-radius:999px; border:2px solid #c7d2fe; border-top-color: var(--brand); animation: qr-spin .9s linear infinite; }
     .button-loading { opacity:.8; cursor:wait; }
@@ -1218,10 +1262,9 @@ PRODUCTION_OPS_PAGE_HTML = """
       <a href=\"/ops\">运营工作台</a>
       <a href=\"/ops/intake-bot-presets\">收口配置中心</a>
       <a href=\"/ops/production-ops\">群审批控制台</a>
-      <a href=\"/ops/group-atmosphere\">群活跃助手</a>
+      <a href=\"/ops/group-atmosphere\" data-admin-only-nav=\"true\">群活跃助手</a>
       <a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a>
-      <a href=\"/ops/official-group-bridge\">官方群审批桥接台</a>
-      <a href=\"/ops/accounts\" data-admin-only-nav=\"true\">账号管理</a>
+      <a href=\"/ops/accounts\">账号设置</a>
     </div>
     <div class=\"hero\">
       <h1>群审批控制台</h1>
@@ -1245,11 +1288,6 @@ PRODUCTION_OPS_PAGE_HTML = """
           <div class=\"status-meta\" id=\"officialBridgeSummaryMeta\"></div>
         </div>
       </div>
-    </div>
-
-    <div class=\"card\" id=\"groupAtmosphereEntryCard\">
-      <h2 style=\"margin-top:0;\">群活跃助手</h2>
-      <div class=\"link-actions\"><a href=\"/ops/group-atmosphere\">进入群活跃助手</a></div>
     </div>
 
     <div class=\"card\">
@@ -1280,7 +1318,11 @@ PRODUCTION_OPS_PAGE_HTML = """
           </div>
 
           <div class="field-stack" style="margin-top:14px;">
-            <label class="field-hint">逐群绑定配置（最多3组）</label>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+              <label class="field-hint">逐群绑定配置</label>
+              <button type="button" class="secondary icon-add" onclick="addApprovalBindingCard()" title="新增群组">＋</button>
+              <span style="display:none;">新增群组</span>
+            </div>
             <div class="binding-list">
               <div class="binding-card" id="wa_binding_card_1">
                 <div class="binding-card-head">
@@ -1348,10 +1390,10 @@ PRODUCTION_OPS_PAGE_HTML = """
                 </div>
               </div>
 
-              <div class="binding-card" id="wa_binding_card_2">
+              <div class="binding-card" id="wa_binding_card_2" style="display:none;">
                 <div class="binding-card-head">
                   <div class="binding-title">第 2 组群绑定</div>
-                  <span class="binding-badge">逐群独立配置</span>
+                  <div style="display:flex; gap:8px; align-items:center;"><span class="binding-badge">逐群独立配置</span><button type="button" class="secondary" onclick="removeApprovalBindingCard(2)">删除群组</button></div>
                 </div>
                 <div class="binding-config-grid">
                   <div class="field-stack">
@@ -1414,10 +1456,10 @@ PRODUCTION_OPS_PAGE_HTML = """
                 </div>
               </div>
 
-              <div class="binding-card" id="wa_binding_card_3">
+              <div class="binding-card" id="wa_binding_card_3" style="display:none;">
                 <div class="binding-card-head">
                   <div class="binding-title">第 3 组群绑定</div>
-                  <span class="binding-badge">逐群独立配置</span>
+                  <div style="display:flex; gap:8px; align-items:center;"><span class="binding-badge">逐群独立配置</span><button type="button" class="secondary" onclick="removeApprovalBindingCard(3)">删除群组</button></div>
                 </div>
                 <div class="binding-config-grid">
                   <div class="field-stack">
@@ -1558,6 +1600,7 @@ function mergeApprovalSessionState(previousState, nextState) {
   const previous = previousState && typeof previousState === 'object' ? previousState : {};
   const next = nextState && typeof nextState === 'object' ? nextState : {};
   const merged = {...previous, ...next};
+  if (!next.qr_image_data_url && previous.qr_image_data_url) merged.qr_image_data_url = previous.qr_image_data_url;
   if (!next.qr_ascii && previous.qr_ascii) merged.qr_ascii = previous.qr_ascii;
   if (!next.qr_text && previous.qr_text) merged.qr_text = previous.qr_text;
   if (!next.last_qr_at && previous.last_qr_at) merged.last_qr_at = previous.last_qr_at;
@@ -1637,7 +1680,10 @@ function renderApprovalQrModal() {
   } else {
     statusEl.textContent = '正在等待二维码返回…';
   }
-  if (sessionState.qr_ascii) {
+  if (sessionState.qr_image_data_url) {
+    const safeQrUrl = String(sessionState.qr_image_data_url || '').replace(/"/g, '&quot;');
+    contentEl.innerHTML = `<div class="field-hint">绑定二维码</div><div class="qr-image-shell"><img class="qr-image" src="${safeQrUrl}" alt="WhatsApp 绑定二维码" /></div><div class="mini-note">如扫码困难，请将浏览器缩放恢复到 100%，并关闭浏览器菜单后再扫。</div>`;
+  } else if (sessionState.qr_ascii) {
     const safeQr = String(sessionState.qr_ascii || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     contentEl.innerHTML = `<div class="field-hint">绑定二维码</div><div class="qr-shell"><pre>${safeQr}</pre></div>`;
   } else if (loading) {
@@ -1758,6 +1804,52 @@ function ensureApprovalAccountKey() {
   if (keyField) keyField.value = generated;
   return generated;
 }
+const APPROVAL_BINDING_MAX_COUNT = 3;
+window.__approvalBindingFormVisibleCount = window.__approvalBindingFormVisibleCount || 1;
+function setApprovalBindingFormVisibleCount(count) {
+  const normalized = Math.max(1, Math.min(APPROVAL_BINDING_MAX_COUNT, Number(count) || 1));
+  window.__approvalBindingFormVisibleCount = normalized;
+  for (let i = 1; i <= APPROVAL_BINDING_MAX_COUNT; i += 1) {
+    const card = document.getElementById(`wa_binding_card_${i}`);
+    if (!card) continue;
+    card.style.display = i <= normalized ? '' : 'none';
+  }
+}
+function resetApprovalBindingCard(index) {
+  document.getElementById(`wa_group_link_${index}`).value = '';
+  document.getElementById(`wa_group_name_${index}`).value = '';
+  document.getElementById(`wa_group_area_${index}`).value = '';
+  document.getElementById(`wa_group_notify_profile_name_${index}`).value = '';
+  document.getElementById(`wa_group_enabled_${index}`).value = 'true';
+  document.getElementById(`wa_group_registration_group_${index}`).value = '';
+  document.getElementById(`wa_group_group_id_${index}`).value = '';
+  document.getElementById(`wa_group_approval_count_threshold_${index}`).value = '30';
+  document.getElementById(`wa_group_approval_timeout_minutes_${index}`).value = '30';
+  document.getElementById(`wa_group_auto_recover_worker_${index}`).value = 'true';
+  fillGroupScheduleWindows(index, []);
+  renderBindingCardState(index, {});
+}
+function addApprovalBindingCard() {
+  const current = Number(window.__approvalBindingFormVisibleCount || 1);
+  if (current >= APPROVAL_BINDING_MAX_COUNT) {
+    showToast('最多配置3个群组', 'error');
+    return;
+  }
+  setApprovalBindingFormVisibleCount(current + 1);
+  const nextInput = document.getElementById(`wa_group_link_${current + 1}`);
+  if (nextInput) nextInput.focus();
+}
+function removeApprovalBindingCard(index) {
+  const normalized = Number(index);
+  if (!Number.isInteger(normalized) || normalized <= 1 || normalized > APPROVAL_BINDING_MAX_COUNT) return;
+  resetApprovalBindingCard(normalized);
+  const current = Number(window.__approvalBindingFormVisibleCount || 1);
+  setApprovalBindingFormVisibleCount(Math.max(1, current - 1));
+}
+function renderVisibleApprovalBindingCardsFromValues(values) {
+  const count = Math.max(1, Math.min(APPROVAL_BINDING_MAX_COUNT, Array.isArray(values) ? values.length || 1 : 1));
+  setApprovalBindingFormVisibleCount(count);
+}
 function renderNotifyRobotSelect(options, currentValue='', elementId='wa_group_notify_profile_name_1') {
   const select = document.getElementById(elementId);
   if (!select) return;
@@ -1843,6 +1935,8 @@ function fillGroupScheduleWindows(groupIndex, values) {
 function collectGroupBindings(count) {
   const rows = [];
   for (let i = 1; i <= count; i += 1) {
+    const card = document.getElementById(`wa_binding_card_${i}`);
+    if (card && card.style.display === 'none') continue;
     const link = String(document.getElementById(`wa_group_link_${i}`)?.value || '').trim();
     const groupName = String(document.getElementById(`wa_group_name_${i}`)?.value || '').trim();
     const area = String(document.getElementById(`wa_group_area_${i}`)?.value || '').trim();
@@ -2011,6 +2105,9 @@ function startApprovalCountdownTicker() {
   refreshApprovalCountdownNodes();
   window.setInterval(refreshApprovalCountdownNodes, 1000);
 }
+function approvalRoleCanManage(role) {
+  return ['admin', 'super_admin'].includes(String(role || '').trim());
+}
 function bindingSummaryHtml(binding, row, bindingIndex) {
   const scheduleText = Array.isArray(binding.schedule_windows) && binding.schedule_windows.length
     ? binding.schedule_windows.map(item => `${item.start}-${item.end}`).join(' / ')
@@ -2040,6 +2137,9 @@ function bindingSummaryHtml(binding, row, bindingIndex) {
   const manualApproveButtonHtml = row?.responsible_type === 'registration_group'
     ? `<div style="margin-top:6px;"><button type="button" class="secondary ${manualApprovePending ? 'button-loading' : ''}" onclick="manualApproveBinding('${accountKeyEscaped}', ${bindingIndex})" ${manualApprovePending ? 'disabled' : ''}>${manualApprovePending ? '审批中…' : '一键通过审批'}</button></div>`
     : '';
+  const deleteBindingButtonHtml = approvalRoleCanManage(String(window.__opsUserRole || '').trim())
+    ? `<button type="button" class="secondary" onclick="deleteApprovalBinding('${accountKeyEscaped}', ${bindingIndex})">删除群组</button>`
+    : '';
   return `<div class="binding-card ${binding.link ? '' : 'is-empty'}">
     <div class="binding-card-head">
       <div>
@@ -2047,6 +2147,7 @@ function bindingSummaryHtml(binding, row, bindingIndex) {
         <div class="muted" style="margin-top:4px;">${binding.link || '-'} · ${binding.area || '-'} · ${binding.notify_robot_name || binding.notify_profile_name || '-'}</div>
       </div>
       <span class="binding-badge">${bindingBadgeText}</span>
+      ${deleteBindingButtonHtml}
     </div>
     <div class="binding-meta-grid">
       <div class="binding-meta-item"><div class="field-hint">本群监控</div><div><button type="button" class="card-monitor-toggle ${monitorButtonClass}" onclick="setApprovalBindingEnabled('${accountKeyEscaped}', ${bindingIndex}, ${monitoringEnabled ? 'false' : 'true'})" ${pendingAction ? 'disabled' : ''}>${monitorButtonText}</button></div></div>
@@ -2061,7 +2162,7 @@ function bindingSummaryHtml(binding, row, bindingIndex) {
 }
 function accountCardHtml(row) {
   const currentRole = String(window.__opsUserRole || '').trim();
-  const isAdminUser = currentRole === 'admin';
+  const isAdminUser = approvalRoleCanManage(currentRole);
   const groupBindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
     ? row.group_binding_runtimes
     : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
@@ -2161,7 +2262,7 @@ function applyApprovalAccountRoleView(role) {
   const normalizedRole = String(role || '').trim();
   const adminEditorCard = document.getElementById('approvalAccountAdminEditorCard');
   if (adminEditorCard) {
-    adminEditorCard.style.display = normalizedRole === 'admin' ? '' : 'none';
+    adminEditorCard.style.display = approvalRoleCanManage(normalizedRole) ? '' : 'none';
   }
 }
 async function refreshApprovalBindingProbe(accountKey, bindingIndex) {
@@ -2279,7 +2380,8 @@ async function reloadApprovalAccounts() {
   const currentRole = String(authStatus?.user?.role || '').trim();
   window.__opsUserRole = currentRole;
   applyApprovalAccountRoleView(currentRole);
-  const accountsApiPath = currentRole === 'admin'
+  const canManageApprovalAccounts = approvalRoleCanManage(currentRole);
+  const accountsApiPath = canManageApprovalAccounts
     ? '/api/ops/whatsapp-approval-accounts'
     : '/api/ops/whatsapp-approval-accounts/overview';
   const data = await loadJson(accountsApiPath);
@@ -2291,10 +2393,10 @@ async function reloadApprovalAccounts() {
   }).filter(item => item[0]));
   const notifyRobotOptions = Array.isArray(data.notify_robot_options) ? data.notify_robot_options : [];
   const approvalAreaOptions = Array.isArray(data.area_options) ? data.area_options : [];
-  window.__notifyRobotOptions = currentRole === 'admin'
+  window.__notifyRobotOptions = canManageApprovalAccounts
     ? notifyRobotOptions
     : (Array.isArray(window.__notifyRobotOptions) ? window.__notifyRobotOptions : []);
-  window.__approvalAreaOptions = currentRole === 'admin'
+  window.__approvalAreaOptions = canManageApprovalAccounts
     ? approvalAreaOptions
     : (Array.isArray(window.__approvalAreaOptions) ? window.__approvalAreaOptions : []);
   renderAllGroupNotifyRobotSelects(
@@ -2346,6 +2448,7 @@ function fillApprovalAccountForm(accountKey) {
   const groupBindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
     ? row.group_binding_runtimes
     : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
+  renderVisibleApprovalBindingCardsFromValues(groupBindings);
   fillIndexedValues('wa_group_link_', groupBindings.map(item => item.link || ''), 3);
   fillIndexedValues('wa_group_name_', groupBindings.map(item => item.group_name || ''), 3);
   renderAllGroupAreaSelects(window.__approvalAreaOptions, groupBindings.map(item => item.area || ''));
@@ -2369,6 +2472,7 @@ function clearApprovalAccountForm() {
   document.getElementById('wa_account_name').value = '';
   document.getElementById('wa_responsible_type').value = 'registration_group';
   document.getElementById('wa_enabled').value = 'true';
+  setApprovalBindingFormVisibleCount(1);
   fillIndexedValues('wa_group_link_', [], 3);
   fillIndexedValues('wa_group_name_', [], 3);
   renderAllGroupAreaSelects(window.__approvalAreaOptions, []);
@@ -2540,6 +2644,55 @@ async function setApprovalBindingEnabled(accountKey, bindingIndex, enabled) {
     renderApprovalAccountRows();
   }
 }
+async function deleteApprovalBinding(accountKey, bindingIndex) {
+  const normalized = String(accountKey || '').trim();
+  const index = Number(bindingIndex);
+  if (!normalized) throw new Error('account_key is required.');
+  if (!Number.isInteger(index) || index < 0) throw new Error('binding_index is invalid.');
+  const rows = Array.isArray(window.__approvalAccounts) ? window.__approvalAccounts : [];
+  const row = rows.find(item => String(item.account_key || '') === normalized);
+  if (!row) throw new Error(`account not found: ${normalized}`);
+  const bindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
+    ? row.group_binding_runtimes
+    : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
+  const binding = bindings[index] || {};
+  const bindingTitle = String(binding.group_name || binding.link || `第${index + 1}组群配置`).trim();
+  if (!window.confirm(`确认删除这个群组配置吗？\n账号: ${normalized}\n群组: ${bindingTitle || '-'}`)) return;
+  const nextBindings = bindings.filter((_, itemIndex) => itemIndex !== index);
+  const nextPrimary = nextBindings[0] || {};
+  const payload = buildApprovalAccountPayloadFromRow(row, {
+    group_link_bindings: nextBindings.map(item => ({
+      link: String(item.link || '').trim(),
+      group_name: String(item.group_name || '').trim(),
+      area: String(item.area || '').trim(),
+      notify_profile_name: String(item.notify_profile_name || '').trim(),
+      enabled: item.enabled !== false,
+      registration_group: String(item.registration_group || '').trim(),
+      group_id: String(item.group_id || '').trim(),
+      approval_count_threshold: Number(item.approval_count_threshold || 0),
+      approval_timeout_minutes: Number(item.approval_timeout_minutes || 0),
+      auto_recover_worker: item.auto_recover_worker !== false,
+      schedule_windows: Array.isArray(item.schedule_windows) ? item.schedule_windows.map(win => ({
+        start: String(win.start || '').trim(),
+        end: String(win.end || '').trim(),
+      })) : [],
+    })),
+    group_links: nextBindings.map(item => String(item.link || '').trim()).filter(Boolean),
+    area: String(nextPrimary.area || '').trim(),
+    notify_profile_name: String(nextPrimary.notify_profile_name || '').trim(),
+    approval_count_threshold: Number(nextPrimary.approval_count_threshold || 0),
+    approval_timeout_minutes: Number(nextPrimary.approval_timeout_minutes || 0),
+    auto_recover_worker: nextPrimary.auto_recover_worker !== false,
+    schedule_windows: Array.isArray(nextPrimary.schedule_windows) ? nextPrimary.schedule_windows : [],
+  });
+  await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(normalized)}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+  showToast(`删除群组成功：${bindingTitle || normalized}`, 'success');
+  await reloadApprovalAccounts();
+}
 async function deleteApprovalAccount(accountKey) {
   const normalized = String(accountKey || '').trim();
   if (!normalized) return;
@@ -2605,11 +2758,15 @@ function applyProductionOpsDaemonConfig(data) {
   const releasePayload = releaseEvaluation.payload || {};
   const checkedAt = status.checked_at || '暂无';
   const pendingIncidents = Array.isArray(status.incidents) ? status.incidents.length : 0;
+  const observationWarnings = Array.isArray(status.observation_warnings) ? status.observation_warnings.length : 0;
   const notificationCount = Array.isArray(status.notifications) ? status.notifications.length : 0;
   const launchdState = runtime.launch_agent_installed ? '已安装' : '未安装';
-  document.getElementById('daemonEnabledState').textContent = config.enabled ? '开启' : '关闭';
-  document.getElementById('productionOpsRuntimeHint').textContent = `守护进程=${launchdState} · 最近检查=${checkedAt} · 异常=${pendingIncidents} · 通知=${notificationCount}`;
-  document.getElementById('productionOpsPathsHint').textContent = `状态文件：${runtime.status_path || '-'} · 运行时配置：${runtime.env_path || '-'}${pendingIncidents ? ` · 当前异常数：${pendingIncidents}` : ''}`;
+  const daemonEnabledState = document.getElementById('daemonEnabledState');
+  const runtimeHint = document.getElementById('productionOpsRuntimeHint');
+  const pathsHint = document.getElementById('productionOpsPathsHint');
+  if (daemonEnabledState) daemonEnabledState.textContent = config.enabled ? '开启' : '关闭';
+  if (runtimeHint) runtimeHint.textContent = `守护进程=${launchdState} · 最近检查=${checkedAt} · 异常=${pendingIncidents} · 待核验=${observationWarnings} · 通知=${notificationCount}`;
+  if (pathsHint) pathsHint.textContent = `状态文件：${runtime.status_path || '-'} · 运行时配置：${runtime.env_path || '-'}${pendingIncidents ? ` · 当前异常数：${pendingIncidents}` : ''}${observationWarnings ? ` · 待核验数：${observationWarnings}` : ''}`;
   renderRegistrationGroupOverview();
 }
 async function reloadProductionOpsDaemonConfig() {
@@ -2674,10 +2831,9 @@ OPS_PAGE_HTML = """
       <a href="/ops">运营工作台</a>
       <a href="/ops/intake-bot-presets">收口配置中心</a>
       <a href="/ops/production-ops">群审批控制台</a>
-      <a href="/ops/group-atmosphere">群活跃助手</a>
+      <a href="/ops/group-atmosphere" data-admin-only-nav="true">群活跃助手</a>
       <a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a>
-      <a href="/ops/official-group-bridge">官方群审批桥接台</a>
-      <a href="/ops/accounts" data-admin-only-nav="true">账号管理</a>
+      <a href="/ops/accounts">账号设置</a>
     </div>
     <div class="hero">
       <h1>运营工作台</h1>
@@ -2782,7 +2938,7 @@ async function loadJson(url, options) {
 function applyOpsNavRoleView(authStatus) {
   const authEnabled = Boolean(authStatus?.auth_enabled);
   const currentRole = String(authStatus?.user?.role || '').trim();
-  const hideAdminOnly = authEnabled && currentRole !== 'admin';
+  const hideAdminOnly = authEnabled && !['admin', 'super_admin'].includes(currentRole);
   document.querySelectorAll('[data-admin-only-nav="true"]').forEach(node => {
     node.style.display = hideAdminOnly ? 'none' : '';
   });
@@ -4255,10 +4411,11 @@ def create_id(prefix: str) -> str:
 
 OPS_AUTH_SESSION_COOKIE = 'mcn_ops_session'
 OPS_AUTH_INTERNAL_HEADER = 'x-ops-internal-token'
-OPS_AUTH_ROLE_ADMIN = 'admin'
-OPS_AUTH_ROLE_OPERATOR = 'operator'
-OPS_AUTH_ROLE_INTERNAL = 'internal'
-OPS_AUTH_ALLOWED_ROLES = {OPS_AUTH_ROLE_ADMIN, OPS_AUTH_ROLE_OPERATOR}
+OPS_AUTH_ROLE_SUPER_ADMIN='super_admin'
+OPS_AUTH_ROLE_ADMIN='admin'
+OPS_AUTH_ROLE_OPERATOR='operator'
+OPS_AUTH_ROLE_INTERNAL='internal'
+OPS_AUTH_ALLOWED_ROLES={OPS_AUTH_ROLE_SUPER_ADMIN, OPS_AUTH_ROLE_ADMIN, OPS_AUTH_ROLE_OPERATOR}
 
 
 def normalize_ops_role(value: Optional[str]) -> str:
@@ -4385,7 +4542,7 @@ class OpsAuthManager:
         return self.create_user(
             username=username,
             password=password,
-            role=OPS_AUTH_ROLE_ADMIN,
+            role=OPS_AUTH_ROLE_SUPER_ADMIN,
             display_name=display_name,
             enabled=True,
         )
@@ -4467,6 +4624,19 @@ class OpsAuthManager:
         with conn:
             conn.execute(f"UPDATE ops_users SET {', '.join(updates)}, updated_at = ? WHERE user_id = ?", tuple(params))
         return self.get_user_by_id(normalized_user_id) or {}
+
+    def delete_user(self, user_id: str) -> bool:
+        normalized_user_id = str(user_id or '').strip()
+        if not normalized_user_id:
+            raise ValueError('user_not_found')
+        conn = self.db.connect()
+        row = conn.execute('SELECT user_id FROM ops_users WHERE user_id = ?', (normalized_user_id,)).fetchone()
+        if row is None:
+            raise ValueError('user_not_found')
+        with conn:
+            conn.execute('DELETE FROM ops_sessions WHERE user_id = ?', (normalized_user_id,))
+            conn.execute('DELETE FROM ops_users WHERE user_id = ?', (normalized_user_id,))
+        return True
 
     def change_user_password(self, user_id: str, *, current_password: str, new_password: str) -> Dict[str, Any]:
         normalized_user_id = str(user_id or '').strip()
@@ -14383,12 +14553,38 @@ class Service:
         return rows
 
     def _list_notify_robot_options(self) -> list[Dict[str, Any]]:
-        profile_name = 'wa-approval-broadcast'
-        robot_name = '审批bot01'
+        profiles_dir = Path(os.getenv('HERMES_HOME') or (Path.home() / '.hermes')) / 'profiles'
+        discovered: list[Dict[str, Any]] = []
+        if profiles_dir.exists():
+            for profile_dir in sorted(profiles_dir.glob('wa-approval-broadcast*')):
+                if not profile_dir.is_dir():
+                    continue
+                profile_name = profile_dir.name
+                env_path = profile_dir / '.env'
+                app_id = ''
+                if env_path.exists():
+                    try:
+                        for line in env_path.read_text(errors='ignore').splitlines():
+                            if line.startswith('FEISHU_APP_ID='):
+                                app_id = line.split('=', 1)[1].strip().strip('"\'')
+                                break
+                    except Exception:
+                        app_id = ''
+                suffix_match = re.search(r'-(\d+)$', profile_name)
+                bot_number = int(suffix_match.group(1)) if suffix_match else 1
+                robot_name = f'审批bot{bot_number:02d}'
+                discovered.append({
+                    'profile_name': profile_name,
+                    'robot_name': robot_name,
+                    'label': robot_name,
+                    'app_id': app_id,
+                })
+        if discovered:
+            return discovered
         return [{
-            'profile_name': profile_name,
-            'robot_name': robot_name,
-            'label': robot_name,
+            'profile_name': 'wa-approval-broadcast',
+            'robot_name': '审批bot01',
+            'label': '审批bot01',
             'app_id': 'cli_a97b238cefb89e18',
         }]
 
@@ -14764,11 +14960,16 @@ class Service:
             'executor': executor,
         }
 
-    def _render_whatsapp_approval_qr_ascii(self, qr_text: str) -> str:
+    def _render_whatsapp_approval_qr_image_data_url(self, qr_text: str) -> str:
         normalized_qr = str(qr_text or '').strip()
         if not normalized_qr:
             return ''
-        script = "const qrcode=require('qrcode-terminal'); qrcode.generate(process.argv[1], {small:true});"
+        script = """
+const QRCode = require('qrcode');
+QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png', margin: 4, scale: 8 })
+  .then((url) => { process.stdout.write(url); })
+  .catch((err) => { console.error(err && err.stack ? err.stack : String(err)); process.exit(1); });
+""".strip()
         completed = subprocess.run(
             ['node', '-e', script, normalized_qr],
             cwd=str(WHATSAPP_APPROVAL_WORKER_ROOT),
@@ -14861,6 +15062,7 @@ class Service:
             'qr_available': bool(qr_text),
             'qr_text': qr_text if qr_text else None,
             'qr_ascii': None,
+            'qr_image_data_url': None,
             'last_qr_at': selected_payload.get('last_qr_at') or payload.get('last_qr_at'),
             'bound': authenticated and session_target_match,
             'mode': 'dedicated_localauth',
@@ -14869,7 +15071,7 @@ class Service:
             'login_check_message': login_check_message,
         }
         if include_qr_ascii and qr_text:
-            session['qr_ascii'] = self._render_whatsapp_approval_qr_ascii(qr_text)
+            session['qr_image_data_url'] = self._render_whatsapp_approval_qr_image_data_url(qr_text)
         return session
 
     def _get_whatsapp_approval_account_row(self, account_key: str) -> Optional[Dict[str, Any]]:
@@ -18818,7 +19020,9 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             return user
         if current_role == OPS_AUTH_ROLE_INTERNAL:
             return user
-        if role == OPS_AUTH_ROLE_ADMIN and current_role != OPS_AUTH_ROLE_ADMIN:
+        if role == OPS_AUTH_ROLE_SUPER_ADMIN and current_role != OPS_AUTH_ROLE_SUPER_ADMIN:
+            raise HTTPException(status_code=403, detail='ops_super_admin_required')
+        if role == OPS_AUTH_ROLE_ADMIN and current_role not in {OPS_AUTH_ROLE_SUPER_ADMIN, OPS_AUTH_ROLE_ADMIN}:
             raise HTTPException(status_code=403, detail='ops_admin_required')
         return user
 
@@ -18896,9 +19100,11 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         if path.startswith('/api/ops/guild-executors/') and normalized_method == 'GET':
             return OPS_AUTH_ROLE_OPERATOR
         if path.startswith('/api/ops/accounts'):
+            if normalized_method == 'DELETE':
+                return OPS_AUTH_ROLE_SUPER_ADMIN
             return OPS_AUTH_ROLE_ADMIN
         if path.startswith('/api/ops/intake-bot-presets/') and normalized_method == 'POST':
-            return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_ADMIN
         if path in {
             '/api/ops/registration-group-approval-executor-warmup',
             '/api/ops/group-approvals/executor/warmup',
@@ -18927,7 +19133,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         if path.startswith('/api/ops/manual-review/') and normalized_method == 'POST':
             return OPS_AUTH_ROLE_OPERATOR
         if path.startswith('/api/ops/guild-executors/') and normalized_method in {'POST', 'DELETE'}:
-            return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_ADMIN
         if path.startswith('/api/ops/whatsapp-approval-accounts/') and normalized_method in {'POST', 'DELETE'}:
             return OPS_AUTH_ROLE_OPERATOR
         if path.startswith('/api/ops/submissions/') and normalized_method == 'POST':
@@ -18966,7 +19172,11 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         if (not auth_enabled) or path in public_paths:
             return await call_next(request)
         if path.startswith('/api/ops/'):
-            should_enforce_ops_api_auth = bool(auth_internal_token) or path.startswith('/api/ops/accounts')
+            is_sensitive_config_mutation = (
+                (path.startswith('/api/ops/intake-bot-presets/') and request.method.upper() == 'POST')
+                or (path.startswith('/api/ops/guild-executors/') and request.method.upper() in {'POST', 'DELETE'})
+            )
+            should_enforce_ops_api_auth = bool(auth_internal_token) or path.startswith('/api/ops/accounts') or is_sensitive_config_mutation
             if should_enforce_ops_api_auth:
                 required_role = _ops_api_required_role(path, request.method)
                 if required_role is not None:
@@ -19028,13 +19238,11 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
   </div>
   <script>
     const nextUrl = new URLSearchParams(window.location.search).get('next') || '/ops';
-    const adminOnlyNextTargets = [
-      '/ops/accounts',
-    ];
+    const adminOnlyNextTargets = [];
     function safeNextUrlForRole(role) {
       const normalizedRole = String(role || '').trim().toLowerCase();
       const target = String(nextUrl || '/ops');
-      if (normalizedRole !== 'admin' && adminOnlyNextTargets.some((path) => target === path || target.startsWith(`${path}?`))) {
+      if (!['admin', 'super_admin'].includes(normalizedRole) && adminOnlyNextTargets.some((path) => target === path || target.startsWith(`${path}?`))) {
         return '/ops';
       }
       return target || '/ops';
@@ -19107,9 +19315,66 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
 </body>
 </html>"""
 
-    def _ops_accounts_page_html() -> str:
-        return """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>后台账号管理</title>
+    def _ops_accounts_page_html(role: str) -> str:
+        if str(role or '').strip() not in {OPS_AUTH_ROLE_SUPER_ADMIN, OPS_AUTH_ROLE_ADMIN}:
+            return """<!doctype html>
+<html lang=\"zh-CN\"><head><meta charset=\"utf-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><title>账号设置</title>
+<style>
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; margin:0; padding:24px; background:#f4f7fb; color:#142033; }
+.page { max-width:1280px; margin:0 auto; }
+.nav { position:sticky; top:0; z-index:20; display:flex; gap:10px; flex-wrap:wrap; margin:0 0 18px 0; padding:12px 0 14px; background:rgba(244,247,251,.96); backdrop-filter:blur(10px); }
+.nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:8px 12px; border-radius:999px; background:#eef4ff; border:1px solid #d8e5ff; }
+.card { background:#fff; border:1px solid #dbe4f0; border-radius:18px; padding:18px; box-shadow:0 10px 28px rgba(15,23,42,.06); margin-bottom:16px; }
+h1 { margin:0 0 8px 0; font-size:30px; letter-spacing:-.02em; }
+label { display:block; margin-top:12px; }
+.label { color:#475569; font-size:12px; font-weight:700; margin-bottom:6px; }
+input { width:100%; min-height:42px; padding:10px 12px; box-sizing:border-box; border:1px solid #cbd5e1; border-radius:10px; font-size:14px; background:#fff; }
+button { min-height:40px; padding:10px 14px; border:none; border-radius:10px; background:#2563eb; color:#fff; font-weight:700; cursor:pointer; margin-top:14px; }
+.password-visibility-toggle { display:flex; align-items:center; gap:8px; margin-top:12px; color:#475569; font-size:13px; font-weight:700; }
+.password-visibility-toggle input { width:auto; min-height:auto; }
+.toast { position:fixed; right:24px; bottom:24px; min-width:240px; max-width:420px; background:#065f46; color:#fff; padding:12px 14px; border-radius:12px; display:none; box-shadow:0 18px 45px rgba(15,23,42,.24); z-index:50; font-size:14px; }
+.toast.error { background:#991b1b; }
+.status-line { min-height:20px; color:#64748b; font-size:13px; margin-top:10px; }
+.status-line.success { color:#166534; }
+.status-line.error { color:#b91c1c; }
+</style></head>
+<body><div class=\"page\">
+  <div class=\"nav\"><a href=\"/ops\">运营工作台</a><a href=\"/ops/intake-bot-presets\">收口配置中心</a><a href=\"/ops/production-ops\">群审批控制台</a><a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a><a href=\"/ops/accounts\">账号设置</a></div>
+  <div class=\"card\"><h1>账号设置</h1><button type=\"button\" onclick=\"openChangeOwnPassword()\">修改我的密码</button></div>
+  <div class=\"card\" id=\"passwordPanel\">
+    <h2>修改我的密码</h2>
+    <label><div class=\"label\">当前密码</div><input id=\"currentPassword\" type=\"password\" autocomplete=\"current-password\" /></label>
+    <label><div class=\"label\">新密码</div><input id=\"newPassword\" type=\"password\" autocomplete=\"new-password\" /></label>
+    <label><div class=\"label\">确认新密码</div><input id=\"confirmPassword\" type=\"password\" autocomplete=\"new-password\" /></label>
+    <label class=\"password-visibility-toggle\"><input id=\"passwordVisibleToggle\" type=\"checkbox\" onchange=\"togglePasswordVisibility(this.checked)\" />显示密码</label>
+    <button id=\"passwordSubmitBtn\" type=\"button\" onclick=\"submitPasswordChange()\">保存新密码</button>
+    <div id=\"passwordMessage\" class=\"status-line\"></div>
+  </div>
+</div>
+<div id=\"toast\" class=\"toast\"></div>
+<script>
+const errorText = { invalid_current_password:'当前密码不正确', password_too_short:'密码至少 8 位', ops_auth_required:'请先登录' };
+function detailText(detail, fallback='操作失败') { return errorText[String(detail || '')] || String(detail || fallback); }
+function showToast(message, type='success') { const toast=document.getElementById('toast'); toast.textContent=message; toast.className=`toast ${type}`; toast.style.display='block'; clearTimeout(window.__accountToastTimer); window.__accountToastTimer=setTimeout(()=>{toast.style.display='none';},2600); }
+function togglePasswordVisibility(visible) { ['currentPassword','newPassword','confirmPassword'].forEach(id => { const el=document.getElementById(id); if (el) el.type = visible ? 'text' : 'password'; }); }
+function setStatus(message, type='') { const el=document.getElementById('passwordMessage'); el.textContent=message || ''; el.className=`status-line ${type}`.trim(); }
+function openChangeOwnPassword() { document.getElementById('passwordPanel').scrollIntoView({behavior:'smooth', block:'start'}); }
+async function submitPasswordChange() {
+  const current=document.getElementById('currentPassword').value;
+  const next=document.getElementById('newPassword').value;
+  const confirm=document.getElementById('confirmPassword').value;
+  if (next.length < 8) { setStatus('新密码至少 8 位','error'); return; }
+  if (next !== confirm) { setStatus('两次输入的新密码不一致','error'); return; }
+  if (!current) { setStatus('请输入当前密码','error'); return; }
+  setStatus('保存中...');
+  const res=await fetch('/api/ops/auth/password', { method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify({current_password: current, new_password: next}) });
+  let data={}; try { data=await res.json(); } catch (_) {}
+  if (!res.ok) { setStatus(detailText(data.detail, '保存失败'), 'error'); showToast(detailText(data.detail, '保存失败'), 'error'); return; }
+  document.getElementById('currentPassword').value=''; document.getElementById('newPassword').value=''; document.getElementById('confirmPassword').value=''; const toggle=document.getElementById('passwordVisibleToggle'); if (toggle) { toggle.checked=false; togglePasswordVisibility(false); } setStatus('密码修改成功', 'success'); showToast('密码修改成功');
+}
+</script></body></html>"""
+        html = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>后台账号设置</title>
 <style>
 :root { --bg:#f4f7fb; --card:#fff; --line:#dbe4f0; --text:#142033; --muted:#64748b; --blue:#2563eb; --green:#166534; --red:#b91c1c; --amber:#92400e; }
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; margin:0; padding:24px; background:var(--bg); color:var(--text); }
@@ -19140,18 +19405,23 @@ button:disabled { opacity:.58; cursor:not-allowed; }
 .toolbar-left { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 .search { width:260px; }
 .table-wrap { overflow-x:auto; }
-table { width:100%; min-width:1040px; border-collapse:collapse; font-size:13px; }
-th, td { padding:12px; border-bottom:1px solid #e5edf6; text-align:left; vertical-align:middle; }
+table { width:100%; min-width:920px; border-collapse:collapse; font-size:13px; table-layout:auto; }
+th, td { padding:9px 10px; border-bottom:1px solid #e5edf6; text-align:left; vertical-align:middle; white-space:nowrap; }
 th { color:#475569; background:#f8fbff; font-weight:800; white-space:nowrap; }
 tr:hover td { background:#fbfdff; }
+.account-line { display:flex; align-items:center; gap:8px; min-width:0; }
 .account-main { font-weight:800; font-size:14px; }
-.account-sub { color:#64748b; font-size:12px; margin-top:3px; }
+.account-sub { color:#64748b; font-size:12px; }
+.role-cell, .status-cell { display:flex; align-items:center; gap:8px; }
+.role-cell select, .status-cell select { width:auto; min-width:108px; min-height:34px; padding:6px 8px; }
+.actions { display:flex; gap:6px; flex-wrap:nowrap; align-items:center; }
+.actions button { min-height:32px; padding:7px 10px; margin-top:0; }
 .badge { display:inline-flex; align-items:center; gap:5px; padding:4px 9px; border-radius:999px; font-size:12px; font-weight:800; }
+.badge.super_admin { background:#fde68a; color:#92400e; }
 .badge.admin { background:#dbeafe; color:#1d4ed8; }
 .badge.operator { background:#dcfce7; color:#166534; }
 .badge.off { background:#fee2e2; color:#991b1b; }
 .badge.pending { background:#fef3c7; color:#92400e; }
-.actions { display:flex; gap:8px; flex-wrap:wrap; }
 .inline-edit { display:flex; gap:8px; align-items:center; }
 .inline-edit input { min-width:180px; }
 .status-line { min-height:20px; color:#64748b; font-size:13px; margin-top:10px; }
@@ -19165,19 +19435,23 @@ tr:hover td { background:#fbfdff; }
 .modal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:14px; }
 .modal h2 { margin:0 0 6px 0; }
 .modal-grid { display:grid; gap:12px; }
+.generated-password-panel { display:none; border:1px solid #bfdbfe; background:#eff6ff; color:#1e3a8a; border-radius:12px; padding:10px 12px; font-size:13px; line-height:1.5; }
+.generated-password-panel code { display:block; margin-top:6px; font-size:18px; color:#111827; user-select:all; word-break:break-all; }
+.password-visibility-toggle { display:flex; align-items:center; gap:8px; margin-top:2px; color:#475569; font-size:13px; font-weight:700; }
+.password-visibility-toggle input { width:auto; min-height:auto; }
 .modal-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:16px; }
 @media (max-width: 900px) { .summary { grid-template-columns:repeat(2,minmax(0,1fr)); } .grid { grid-template-columns:1fr; } .hero { flex-direction:column; } .search { width:100%; } }
 </style></head>
 <body><div class="page">
-  <div class="nav"><a href="/ops">运营工作台</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/group-atmosphere">群活跃助手</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/official-group-bridge">官方群审批桥接台</a><a href="/ops/accounts">账号管理</a></div>
+  <div class="nav"><a href="/ops">运营工作台</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/group-atmosphere" data-admin-only-nav="true">群活跃助手</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/accounts">账号设置</a></div>
   <div class="card hero">
-    <div><h1>后台账号管理</h1></div>
+    <div><h1>后台账号设置</h1></div>
     <button class="secondary" type="button" onclick="openChangeOwnPassword()">修改我的密码</button>
   </div>
   <div class="summary" id="summaryCards">
     <div class="summary-item"><div class="label">总账号</div><div class="value" id="totalCount">-</div></div>
-    <div class="summary-item"><div class="label">管理员</div><div class="value" id="adminCount">-</div></div>
-    <div class="summary-item"><div class="label">普通运营</div><div class="value" id="operatorCount">-</div></div>
+    <div class="summary-item"><div class="label">超级管理员</div><div class="value" id="superAdminCount">-</div></div>
+    <div class="summary-item"><div class="label">管理员/运营</div><div class="value" id="adminCount">-</div></div>
     <div class="summary-item"><div class="label">停用</div><div class="value" id="disabledCount">-</div></div>
   </div>
   <div class="card">
@@ -19185,7 +19459,7 @@ tr:hover td { background:#fbfdff; }
     <div class="grid">
       <label><div class="label">账号</div><input id="username" autocomplete="off" placeholder="例如 ops01" /></label>
       <label><div class="label">显示名</div><input id="displayName" autocomplete="off" placeholder="例如 印尼运营A" /></label>
-      <label><div class="label">角色</div><select id="role"><option value="operator">普通运营</option><option value="admin">管理员</option></select></label>
+      <label><div class="label">角色</div><select id="role"><option value="operator">普通运营</option><option value="admin">管理员</option><option value="super_admin">超级管理员</option></select></label>
       <label><div class="label">初始密码</div><input id="password" type="password" autocomplete="new-password" placeholder="至少 8 位" /></label>
       <div><button id="createBtn" type="button" onclick="createAccount()">创建账号</button></div>
     </div>
@@ -19197,7 +19471,7 @@ tr:hover td { background:#fbfdff; }
       <div class="toolbar-left"><input id="accountSearch" class="search" placeholder="搜索账号/显示名" oninput="renderAccounts()" /><button class="ghost" type="button" onclick="loadAccounts()">刷新</button></div>
     </div>
     <div id="tableMessage" class="status-line">加载中...</div>
-    <div class="table-wrap"><table><thead><tr><th>账号</th><th>角色</th><th>状态</th><th>最近登录</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="rows"><tr><td colspan="6" class="muted">加载中...</td></tr></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>账号</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead><tbody id="rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody></table></div>
   </div>
 </div>
 <div id="passwordModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
@@ -19207,9 +19481,11 @@ tr:hover td { background:#fbfdff; }
       <label id="currentPasswordWrap"><div class="label">当前密码</div><input id="currentPassword" type="password" autocomplete="current-password" /></label>
       <label><div class="label">新密码</div><input id="newPassword" type="password" autocomplete="new-password" placeholder="至少 8 位" /></label>
       <label><div class="label">确认新密码</div><input id="confirmPassword" type="password" autocomplete="new-password" /></label>
+      <div id="generatedPasswordPanel" class="generated-password-panel">已生成新密码<code id="generatedPasswordText"></code><button class="ghost" type="button" onclick="copyGeneratedPassword()">复制密码</button></div>
+      <label class="password-visibility-toggle"><input id="passwordVisibleToggle" type="checkbox" onchange="togglePasswordVisibility(this.checked)" />显示密码</label>
     </div>
     <div id="passwordMessage" class="status-line"></div>
-    <div class="modal-actions"><button class="ghost" type="button" onclick="closePasswordModal()">取消</button><button id="passwordSubmitBtn" type="button" onclick="submitPasswordModal()">保存密码</button></div>
+    <div class="modal-actions"><button class="ghost" type="button" onclick="closePasswordModal()">取消</button><button class="ghost" id="generatePasswordBtn" type="button" onclick="generateTemporaryPassword()">生成临时密码</button><button id="passwordSubmitBtn" type="button" onclick="submitPasswordModal()">保存密码</button></div>
   </div>
 </div>
 <div id="toast" class="toast"></div>
@@ -19218,14 +19494,21 @@ let accounts = [];
 let currentUser = null;
 let passwordMode = null;
 let passwordTargetUserId = null;
-const errorText = { invalid_username:'账号格式不正确', password_too_short:'密码至少 8 位', username_taken:'账号已存在', user_not_found:'账号不存在', invalid_current_password:'当前密码不正确', ops_admin_required:'需要管理员权限', ops_auth_required:'请先登录' };
+const errorText = { invalid_username:'账号格式不正确', password_too_short:'密码至少 8 位', username_taken:'账号已存在', user_not_found:'账号不存在', invalid_current_password:'当前密码不正确', ops_admin_required:'需要管理员权限', ops_super_admin_required:'需要超级管理员权限', super_admin_password_protected:'管理员不能重置超级管理员密码', cannot_delete_self:'不能删除当前登录账号', ops_auth_required:'请先登录' };
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>\"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[char])); }
 function detailText(detail, fallback='操作失败') { return errorText[String(detail || '')] || String(detail || fallback); }
-function badgeRole(role) { return `<span class="badge ${escapeHtml(role)}">${role === 'admin' ? '管理员' : '普通运营'}</span>`; }
+function isSuperAdmin() { return currentUser && currentUser.role === 'super_admin'; }
+function roleText(role) { if (role === 'super_admin') return '超级管理员'; if (role === 'admin') return '管理员'; return '普通运营'; }
+function badgeRole(role) { return `<span class="badge ${escapeHtml(role)}">${roleText(role)}</span>`; }
 function badgeEnabled(enabled) { return enabled ? '<span class="badge operator">启用</span>' : '<span class="badge off">停用</span>'; }
 function showToast(message, type='success') { const toast=document.getElementById('toast'); toast.textContent=message; toast.className=`toast ${type}`; toast.style.display='block'; clearTimeout(window.__accountToastTimer); window.__accountToastTimer=setTimeout(()=>{toast.style.display='none';},2600); }
 function setStatus(id, message, type='') { const el=document.getElementById(id); el.textContent=message || ''; el.className=`status-line ${type}`.trim(); }
 function setBusy(btn, busy, text) { if (!btn) return; if (busy) { btn.dataset.originalText=btn.textContent; btn.textContent=text || '处理中...'; btn.disabled=true; } else { btn.textContent=btn.dataset.originalText || btn.textContent; btn.disabled=false; } }
+function togglePasswordVisibility(visible) { ['currentPassword','newPassword','confirmPassword'].forEach(id => { const el=document.getElementById(id); if (el) el.type = visible ? 'text' : 'password'; }); }
+function makeTemporaryPassword() { const chars='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'; const array=new Uint32Array(14); window.crypto.getRandomValues(array); return Array.from(array, value => chars[value % chars.length]).join(''); }
+function showGeneratedPassword(value) { const panel=document.getElementById('generatedPasswordPanel'); const text=document.getElementById('generatedPasswordText'); if (!panel || !text) return; text.textContent=value || ''; panel.style.display=value ? 'block' : 'none'; }
+function generateTemporaryPassword() { const value=makeTemporaryPassword(); document.getElementById('newPassword').value=value; document.getElementById('confirmPassword').value=value; const toggle=document.getElementById('passwordVisibleToggle'); if (toggle) toggle.checked=true; togglePasswordVisibility(true); showGeneratedPassword(value); setStatus('passwordMessage','已生成新密码，请复制后再保存。','success'); }
+async function copyGeneratedPassword() { const text=document.getElementById('generatedPasswordText'); const value=String(text && text.textContent || ''); if (!value) return; try { await navigator.clipboard.writeText(value); showToast('密码已复制'); } catch (_) { showToast('复制失败，请手动选择复制', 'error'); } }
 async function fetchJson(url, options={}) { const res=await fetch(url, {credentials:'same-origin', ...options}); let data={}; try { data=await res.json(); } catch (_) {} if (!res.ok) { const err=new Error(detailText(data.detail, '请求失败')); err.detail=data.detail; err.status=res.status; throw err; } return data; }
 async function loadCurrentUser() { const data=await fetchJson('/api/ops/auth/status'); currentUser=data.user || null; }
 async function loadAccounts() {
@@ -19236,32 +19519,37 @@ async function loadAccounts() {
     accounts = Array.isArray(data.rows) ? data.rows : [];
     updateSummary(); renderAccounts(); setStatus('tableMessage', `已加载 ${accounts.length} 个账号`, 'success');
   } catch (err) {
-    document.getElementById('rows').innerHTML = `<tr><td colspan="6" class="status-line error">${escapeHtml(err.message || '加载失败')}</td></tr>`;
+    document.getElementById('rows').innerHTML = `<tr><td colspan="5" class="status-line error">${escapeHtml(err.message || '加载失败')}</td></tr>`;
     setStatus('tableMessage', err.message || '加载失败', 'error');
   }
 }
 function updateSummary() {
+  const superAdmin=accounts.filter(x=>x.role==='super_admin').length;
   const admin=accounts.filter(x=>x.role==='admin').length;
+  const operator=accounts.filter(x=>x.role==='operator').length;
   const disabled=accounts.filter(x=>!x.enabled).length;
   document.getElementById('totalCount').textContent=accounts.length;
-  document.getElementById('adminCount').textContent=admin;
-  document.getElementById('operatorCount').textContent=accounts.length-admin;
+  document.getElementById('superAdminCount').textContent=superAdmin;
+  document.getElementById('adminCount').textContent=`${admin}/${operator}`;
   document.getElementById('disabledCount').textContent=disabled;
 }
 function renderAccounts() {
   const q=String(document.getElementById('accountSearch').value || '').trim().toLowerCase();
   const rows=accounts.filter(row => !q || String(row.username || '').toLowerCase().includes(q) || String(row.display_name || '').toLowerCase().includes(q));
-  if (!rows.length) { document.getElementById('rows').innerHTML = '<tr><td colspan="6" class="muted">暂无匹配账号</td></tr>'; return; }
+  if (!rows.length) { document.getElementById('rows').innerHTML = '<tr><td colspan="5" class="muted">暂无匹配账号</td></tr>'; return; }
   document.getElementById('rows').innerHTML = rows.map((row) => {
     const userId=JSON.stringify(row.user_id);
     const isMe=currentUser && currentUser.user_id === row.user_id;
+    const roleOptions = `<option value="operator" ${row.role === 'operator' ? 'selected' : ''}>普通运营</option><option value="admin" ${row.role === 'admin' ? 'selected' : ''}>管理员</option><option value="super_admin" ${row.role === 'super_admin' ? 'selected' : ''}>超级管理员</option>`;
+    const actions = [`<button class="ghost" type="button" onclick="openDisplayNameEditor(${userId}, ${JSON.stringify(row.display_name || '')}, this)">改显示名</button>`];
+    if (!(row.role === 'super_admin' && !isSuperAdmin())) actions.push(`<button class="secondary" type="button" onclick="openAdminResetPassword(${userId}, ${JSON.stringify(row.username)})">管理员重置密码</button>`);
+    if (isSuperAdmin() && !isMe) actions.push(`<button class="danger" type="button" onclick="deleteAccount(${userId}, ${JSON.stringify(row.username)}, this)">删除账号</button>`);
     return `<tr>
-      <td><div class="account-main">${escapeHtml(row.username)} ${isMe ? '<span class="badge pending">当前登录</span>' : ''}</div><div class="account-sub">${escapeHtml(row.display_name || row.username)}</div></td>
-      <td><select aria-label="修改角色" onchange="updateAccount(${userId}, {role:this.value}, this, '角色已保存')"><option value="operator" ${row.role === 'operator' ? 'selected' : ''}>普通运营</option><option value="admin" ${row.role === 'admin' ? 'selected' : ''}>管理员</option></select><div class="hint">${row.role === 'admin' ? '可管理账号/配置' : '仅运营工作台权限'}</div></td>
-      <td><div style="display:flex;gap:10px;align-items:center;">${badgeEnabled(!!row.enabled)}<select aria-label="修改状态" onchange="updateAccount(${userId}, {enabled:this.value==='enabled'}, this, this.value==='enabled'?'账号已启用':'账号已停用')"><option value="enabled" ${row.enabled ? 'selected' : ''}>启用</option><option value="disabled" ${!row.enabled ? 'selected' : ''}>停用</option></select></div></td>
+      <td><div class="account-line"><span class="account-main">${escapeHtml(row.username)}</span><span class="account-sub">${escapeHtml(row.display_name || row.username)}</span>${isMe ? '<span class="badge pending">当前登录</span>' : ''}</div></td>
+      <td><div class="role-cell">${badgeRole(row.role)}<select aria-label="修改角色" onchange="updateAccount(${userId}, {role:this.value}, this, '角色已保存')">${roleOptions}</select></div></td>
+      <td><div class="status-cell">${badgeEnabled(!!row.enabled)}<select aria-label="修改状态" onchange="updateAccount(${userId}, {enabled:this.value==='enabled'}, this, this.value==='enabled'?'账号已启用':'账号已停用')"><option value="enabled" ${row.enabled ? 'selected' : ''}>启用</option><option value="disabled" ${!row.enabled ? 'selected' : ''}>停用</option></select></div></td>
       <td>${escapeHtml(row.last_login_at || '-')}</td>
-      <td>${escapeHtml(row.updated_at || '-')}</td>
-      <td><div class="actions"><button class="ghost" type="button" onclick="openDisplayNameEditor(${userId}, ${JSON.stringify(row.display_name || '')}, this)">改显示名</button><button class="secondary" type="button" onclick="openAdminResetPassword(${userId}, ${JSON.stringify(row.username)})">管理员重置密码</button></div></td>
+      <td><div class="actions">${actions.join('')}</div></td>
     </tr>`;
   }).join('');
 }
@@ -19282,14 +19570,22 @@ async function updateAccount(userId, patch, control=null, successText='已保存
   catch (err) { showToast(err.message || '更新失败', 'error'); setStatus('tableMessage', err.message || '更新失败', 'error'); await loadAccounts(); }
   finally { if (control) control.disabled=false; }
 }
+async function deleteAccount(userId, username, control=null) {
+  if (!window.confirm(`确认删除账号 ${username}？该操作不可恢复。`)) return;
+  if (control) control.disabled=true;
+  setStatus('tableMessage','删除中...');
+  try { await fetchJson(`/api/ops/accounts/${encodeURIComponent(userId)}`, { method:'DELETE' }); showToast('账号已删除'); await loadAccounts(); }
+  catch (err) { showToast(err.message || '删除失败', 'error'); setStatus('tableMessage', err.message || '删除失败', 'error'); await loadAccounts(); }
+  finally { if (control) control.disabled=false; }
+}
 function openDisplayNameEditor(userId, currentName, btn) {
   const next = window.prompt('输入新的显示名', currentName || '');
   if (next === null) return;
   updateAccount(userId, {display_name: next}, btn, '显示名已保存');
 }
-function clearPasswordForm() { ['currentPassword','newPassword','confirmPassword'].forEach(id => { const el=document.getElementById(id); if (el) el.value=''; }); setStatus('passwordMessage',''); }
-function openChangeOwnPassword() { passwordMode='self'; passwordTargetUserId=null; clearPasswordForm(); document.getElementById('passwordModalTitle').textContent='修改我的密码'; document.getElementById('passwordModalHint').textContent='需要输入当前密码，保存后下次登录使用新密码。'; document.getElementById('currentPasswordWrap').style.display='block'; document.getElementById('passwordSubmitBtn').textContent='保存新密码'; document.getElementById('passwordModal').style.display='flex'; }
-function openAdminResetPassword(userId, username) { passwordMode='admin-reset'; passwordTargetUserId=userId; clearPasswordForm(); document.getElementById('passwordModalTitle').textContent='管理员重置密码'; document.getElementById('passwordModalHint').textContent=`目标账号：${username}。不需要旧密码，请确认已通知使用人。`; document.getElementById('currentPasswordWrap').style.display='none'; document.getElementById('passwordSubmitBtn').textContent='重置密码'; document.getElementById('passwordModal').style.display='flex'; }
+function clearPasswordForm() { ['currentPassword','newPassword','confirmPassword'].forEach(id => { const el=document.getElementById(id); if (el) { el.value=''; el.type='password'; } }); const toggle=document.getElementById('passwordVisibleToggle'); if (toggle) toggle.checked=false; showGeneratedPassword(''); setStatus('passwordMessage',''); }
+function openChangeOwnPassword() { passwordMode='self'; passwordTargetUserId=null; clearPasswordForm(); document.getElementById('passwordModalTitle').textContent='修改我的密码'; document.getElementById('passwordModalHint').textContent='需要输入当前密码，保存后下次登录使用新密码。'; document.getElementById('currentPasswordWrap').style.display='block'; document.getElementById('generatePasswordBtn').style.display='none'; document.getElementById('passwordSubmitBtn').textContent='保存新密码'; document.getElementById('passwordModal').style.display='flex'; }
+function openAdminResetPassword(userId, username) { passwordMode='admin-reset'; passwordTargetUserId=userId; clearPasswordForm(); document.getElementById('passwordModalTitle').textContent='管理员重置密码'; document.getElementById('passwordModalHint').textContent=`目标账号：${username}。弹窗会直接生成新密码，请复制给使用人后保存。`; document.getElementById('currentPasswordWrap').style.display='none'; document.getElementById('generatePasswordBtn').style.display='inline-flex'; document.getElementById('passwordSubmitBtn').textContent='重置密码'; document.getElementById('passwordModal').style.display='flex'; generateTemporaryPassword(); }
 function closePasswordModal() { document.getElementById('passwordModal').style.display='none'; clearPasswordForm(); }
 function closeModalOnBackdrop(event) { if (event.target && event.target.id === 'passwordModal') closePasswordModal(); }
 async function submitPasswordModal() {
@@ -19315,6 +19611,12 @@ async function submitPasswordModal() {
 }
 loadAccounts();
 </script></body></html>"""
+        if str(role or '').strip() != OPS_AUTH_ROLE_SUPER_ADMIN:
+            html = html.replace('<option value="super_admin">超级管理员</option>', '')
+            html = re.sub(r"<option value=\\\"super_admin\\\"[^`]*?超级管理员</option>", "", html)
+            html = re.sub(r"\n    if \(isSuperAdmin\(\) && !isMe\).*?deleteAccount.*?;", "", html)
+            html = re.sub(r"\nasync function deleteAccount\(userId, username, control=null\) \{.*?\n\}\nfunction openDisplayNameEditor", "\nfunction openDisplayNameEditor", html, flags=re.S)
+        return html
 
     def _official_group_bridge_console_base_url() -> Optional[str]:
         webhook_url = str(official_group_approval_webhook_url or '').strip()
@@ -19407,10 +19709,9 @@ loadAccounts();
       <a href=\"/ops\">运营工作台</a>
       <a href=\"/ops/intake-bot-presets\">收口配置中心</a>
       <a href=\"/ops/production-ops\">群审批控制台</a>
-      <a href=\"/ops/group-atmosphere\">群活跃助手</a>
+      <a href=\"/ops/group-atmosphere\" data-admin-only-nav=\"true\">群活跃助手</a>
       <a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a>
-      <a href=\"/ops/official-group-bridge\">官方群审批桥接台</a>
-      <a href=\"/ops/accounts\" data-admin-only-nav=\"true\">账号管理</a>
+      <a href=\"/ops/accounts\">账号设置</a>
     </div>
   <div class=\"page\">
     <div class=\"card\">
@@ -19866,10 +20167,10 @@ h1 { letter-spacing: -0.02em; }
 
     def _ops_page_html(role: str) -> str:
         html = OPS_PAGE_HTML
-        if str(role or '').strip() == OPS_AUTH_ROLE_ADMIN:
+        if str(role or '').strip() in {OPS_AUTH_ROLE_SUPER_ADMIN, OPS_AUTH_ROLE_ADMIN}:
             return html
         return re.sub(
-            r'\s*<a[^>]*href="/ops/accounts"[^>]*data-admin-only-nav="true"[^>]*>.*?</a>',
+            r'\s*<a[^>]*href="/ops/group-atmosphere"[^>]*data-admin-only-nav="true"[^>]*>.*?</a>',
             '',
             html,
             flags=re.S,
@@ -19889,8 +20190,8 @@ h1 { letter-spacing: -0.02em; }
 
     @app.get('/ops/accounts', response_class=HTMLResponse)
     def ops_accounts_page(request: Request) -> str:
-        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
-        return _with_ops_shell_style(_ops_accounts_page_html())
+        user = _require_ops_user(request)
+        return _with_ops_shell_style(_ops_accounts_page_html(str(user.get('role') or '').strip()))
 
     @app.get('/api/ops/accounts')
     def ops_accounts_list(request: Request) -> Dict[str, Any]:
@@ -19899,7 +20200,9 @@ h1 { letter-spacing: -0.02em; }
 
     @app.post('/api/ops/accounts')
     def ops_accounts_create(request: Request, payload: OpsAccountCreateRequest) -> Dict[str, Any]:
-        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        current_user = _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        if payload.role == OPS_AUTH_ROLE_SUPER_ADMIN and str(current_user.get('role') or '').strip() != OPS_AUTH_ROLE_SUPER_ADMIN:
+            raise HTTPException(status_code=403, detail='ops_super_admin_required')
         try:
             user = auth_manager.create_user(
                 username=payload.username,
@@ -19914,7 +20217,16 @@ h1 { letter-spacing: -0.02em; }
 
     @app.put('/api/ops/accounts/{user_id}')
     def ops_accounts_update(request: Request, user_id: str, payload: OpsAccountUpdateRequest) -> Dict[str, Any]:
-        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        current_user = _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        target_user = auth_manager.get_user_by_id(user_id)
+        if target_user is None:
+            raise HTTPException(status_code=404, detail='user_not_found')
+        current_role = str(current_user.get('role') or '').strip()
+        target_role = str(target_user.get('role') or '').strip()
+        if payload.password is not None and target_role == OPS_AUTH_ROLE_SUPER_ADMIN and current_role != OPS_AUTH_ROLE_SUPER_ADMIN:
+            raise HTTPException(status_code=403, detail='super_admin_password_protected')
+        if payload.role == OPS_AUTH_ROLE_SUPER_ADMIN and current_role != OPS_AUTH_ROLE_SUPER_ADMIN:
+            raise HTTPException(status_code=403, detail='ops_super_admin_required')
         try:
             user = auth_manager.update_user(
                 user_id,
@@ -19928,10 +20240,29 @@ h1 { letter-spacing: -0.02em; }
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         return {'ok': True, 'user': user}
 
+    @app.delete('/api/ops/accounts/{user_id}')
+    def ops_accounts_delete(request: Request, user_id: str) -> Dict[str, Any]:
+        current_user = _require_ops_user(request, role=OPS_AUTH_ROLE_SUPER_ADMIN)
+        normalized_user_id = str(user_id or '').strip()
+        if normalized_user_id == str(current_user.get('user_id') or '').strip():
+            raise HTTPException(status_code=400, detail='cannot_delete_self')
+        try:
+            deleted = auth_manager.delete_user(normalized_user_id)
+        except ValueError as exc:
+            status_code = 404 if str(exc) == 'user_not_found' else 400
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        return {'ok': True, 'deleted': bool(deleted)}
+
     @app.get('/ops/intake-bot-presets', response_class=HTMLResponse)
     def intake_bot_presets_page(request: Request) -> str:
-        _require_ops_user(request)
-        return _with_ops_shell_style(INTAKE_BOT_PRESETS_PAGE_HTML)
+        user = _require_ops_user(request) if auth_enabled else {'role': OPS_AUTH_ROLE_ADMIN}
+        role = str((user or {}).get('role') or OPS_AUTH_ROLE_OPERATOR).strip()
+        if role == OPS_AUTH_ROLE_SUPER_ADMIN:
+            role = OPS_AUTH_ROLE_ADMIN
+        if role not in {OPS_AUTH_ROLE_ADMIN, OPS_AUTH_ROLE_OPERATOR}:
+            role = OPS_AUTH_ROLE_OPERATOR
+        html = INTAKE_BOT_PRESETS_PAGE_HTML.replace('__OPS_USER_ROLE__', role)
+        return _with_ops_shell_style(html)
 
     @app.get('/ops/production-ops', response_class=HTMLResponse)
     def production_ops_page(request: Request) -> str:
@@ -19984,7 +20315,11 @@ h1 { letter-spacing: -0.02em; }
         # so browser refresh/navigation stays on the public 7819 backend and uses the same shell sizing.
         html = html.replace('http://127.0.0.1:8011', public_base)
         html = html.replace('http://127.0.0.1:55801', public_base)
-        return html
+        if '官方群审批桥接台' not in html:
+            html = """<!doctype html>
+<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/><title>官方群审批桥接台</title></head>
+<body><div class=\"page\"><div class=\"nav\"><a href=\"/ops\">运营工作台</a><a href=\"/ops/production-ops\">群审批控制台</a><a href=\"/ops/accounts\">账号设置</a></div><div class=\"card hero\"><h1>官方群审批桥接台</h1></div></div></body></html>"""
+        return _with_ops_shell_style(html)
 
     @app.get('/ops/official-group-bridge/health')
     def official_group_bridge_health_proxy(request: Request) -> Dict[str, Any]:

@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from app.production_ops import build_success_notifications
-from scripts.production_ops_daemon import SUCCESS_NOTIFICATION_CODES, _evaluate_release, _notification_delivery_summary, _notify_incidents, _run_registration_group_cycle, _session_state, _target_session_key, run_cycle
+from app.production_ops import build_success_notifications, format_lark_alert
+from scripts.production_ops_daemon import SUCCESS_NOTIFICATION_CODES, _build_formal_approval_command, _build_recovery_notifications, _evaluate_release, _notification_delivery_summary, _notify_incidents, _run_registration_group_cycle, _session_state, _target_session_key, run_cycle
 
 
 class Args:
@@ -30,6 +30,62 @@ class Args:
     command_timeout_seconds = 60.0
     auto_recover_worker = True
     monitoring_session_id = ''
+
+
+def test_formal_approval_command_uses_dynamic_poll_timeout_for_large_batch():
+    args = Args()
+    command = _build_formal_approval_command(args, approved_count=13)
+
+    timeout_index = command.index('--poll-timeout-seconds') + 1
+
+    assert float(command[timeout_index]) >= 164.0
+
+
+
+def test_build_recovery_notifications_closes_prior_formal_failure_with_display_batch_id():
+    state = {
+        'notifications': {
+            'formal_approval_failed:fp-1': {
+                'last_sent_at': '2026-05-13T01:00:17+00:00',
+                'last_status': 'sent',
+                'incident': {
+                    'details': {
+                        'reason_text': '审批脚本执行失败',
+                    },
+                },
+            }
+        }
+    }
+    cycle = {
+        'checked_at': '2026-05-13T01:01:32+00:00',
+        'monitor_target': {'group_name': '🇮🇩2️⃣4️⃣Grup Registrasi Resmi  ✘ Linky 💎'},
+    }
+    success_notifications = [{
+        'code': 'formal_approval_succeeded',
+        'severity': 'info',
+        'summary': '注册群审批成功',
+        'details': {
+            'fingerprint': 'fp-1',
+            'group_name': '🇮🇩2️⃣4️⃣Grup Registrasi Resmi  ✘ Linky 💎',
+            'approved_count': 13,
+            'approval_batch_display_id': '2026051301',
+            'approval_run_id': 'registration_group_approval_xxx',
+        },
+        'dedupe_key': 'formal_approval_succeeded:registration_group_approval_xxx',
+    }]
+
+    recovered = _build_recovery_notifications(state, cycle, success_notifications)
+
+    assert len(recovered) == 1
+    assert recovered[0]['code'] == 'formal_approval_recovered'
+    assert recovered[0]['details']['approval_batch_display_id'] == '2026051301'
+    text = format_lark_alert('mcn-production-ops', recovered[0], cycle)
+    assert '✅ 生产守护恢复｜正式审批已闭环' in text
+    assert '原告警: 2026-05-13 09:00:17 UTC+8' in text
+    assert '批次人数: 13' in text
+    assert '批次ID: 2026051301' in text
+    assert 'registration_group_approval_xxx' not in text
+
 
 
 def test_target_session_key_rotates_with_new_active_schedule_window():
@@ -258,6 +314,7 @@ def test_notification_delivery_summary_keeps_target_and_status_fields():
 def test_success_notification_codes_exact_match_guardrail():
     assert SUCCESS_NOTIFICATION_CODES == {
         'formal_approval_succeeded',
+        'formal_approval_recovered',
         'registration_cycle_noop',
         'startup_initial_batch_succeeded',
         'official_group_approval_succeeded',
@@ -886,6 +943,232 @@ def test_run_cycle_account_binding_ignores_suspected_review_surface_positive_res
     assert cycle_row['review_surface_probe']['skipped'] is True
     assert cycle_row['decision_group_state']['source'] == 'group_state'
     assert cycle_row['decision_group_state']['payload']['pending_count'] == 0
+
+
+def test_run_cycle_account_binding_false_zero_restarts_runtime_and_uses_recovered_pending(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.monitoring_session_id = 'session-false-zero-recover'
+    args.worker_recovery_rebuild_threshold = 1
+    args.worker_recovery_rebuild_cooldown_seconds = 0
+    args.false_zero_recovery_threshold = 1
+    args.false_zero_recovery_cooldown_seconds = 0
+    invite_link = 'RG'
+    calls = {'worker_zero': 0, 'stop': 0, 'start': 0, 'session': 0, 'recovered': 0, 'formal': 0}
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
+            return {
+                'rows': [
+                    {
+                        'account_key': 'wa-admin-demo-1',
+                        'account_name': 'WA Admin',
+                        'responsible_type': 'registration_group',
+                        'enabled': True,
+                        'area': 'Indonesia',
+                        'runtime_state': {
+                            'active': True,
+                            'ready': True,
+                            'authenticated': True,
+                            'base_url': 'http://worker-1',
+                        },
+                        'session_state': {
+                            'login_verified': True,
+                            'session_target_match': True,
+                        },
+                        'group_link_bindings': [
+                            {
+                                'link': invite_link,
+                                'group_name': 'RG',
+                                'enabled': True,
+                                'area': 'Indonesia',
+                                'auto_recover_worker': True,
+                                'schedule_runtime': {'configured': True, 'active_now': True},
+                            }
+                        ],
+                    }
+                ]
+            }
+        if url == 'http://worker-1/group-state':
+            calls['worker_zero'] += 1
+            return {
+                'group_id': 'g',
+                'group_name': 'RG',
+                'pending_count': 0,
+                'member_count': 100,
+                'requesters': [],
+                'requester_ids': [],
+                'zero_pending_unverified': True,
+                'zero_pending_unverified_reason': 'same_runtime_family_zero_pending',
+            }
+        if url == 'http://worker-1/review-surface-state':
+            return {
+                'group_id': 'g',
+                'group_name': 'RG',
+                'pending_count': 0,
+                'review_surface_ready': False,
+                'empty_queue_visible': False,
+                'requesters': [],
+                'requester_ids': [],
+            }
+        if url.endswith('/runtime/internal/stop'):
+            calls['stop'] += 1
+            return {'ok': True}
+        if url.endswith('/runtime/internal/start'):
+            calls['start'] += 1
+            return {'ok': True, 'runtime': {'base_url': 'http://worker-2'}}
+        if url.endswith('/session/internal/start'):
+            calls['session'] += 1
+            return {
+                'ok': True,
+                'runtime': {'base_url': 'http://worker-2'},
+                'session': {'login_verified': True, 'session_target_match': True},
+            }
+        if url == 'http://worker-2/group-state':
+            calls['recovered'] += 1
+            return {
+                'group_id': 'g',
+                'group_name': 'RG',
+                'pending_count': 4,
+                'member_count': 104,
+                'requesters': [{'requesterId': f'r{i}', 'requestedAtUnix': 100 + i} for i in range(4)],
+                'requester_ids': [f'r{i}' for i in range(4)],
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon.time.sleep', lambda *_args, **_kwargs: None)
+
+    def fake_run_formal_approval_command(command, timeout):
+        calls['formal'] += 1
+        return {'returncode': 0, 'result': {'formal_run': {'approval_run_id': 'approval-false-zero-1', 'result': {'verified': True, 'crm_recorded': True, 'pending_after': 0}}}}
+
+    monkeypatch.setattr('scripts.production_ops_daemon.run_formal_approval_command', fake_run_formal_approval_command)
+
+    cycle = run_cycle(args, {})
+    cycle_row = cycle['registration_group_cycles'][0]
+
+    assert calls['worker_zero'] >= 2
+    assert calls['stop'] == 1
+    assert calls['start'] == 1
+    assert calls['session'] == 1
+    assert calls['recovered'] >= 1
+    assert cycle_row['worker_state']['recovered_after_restart'] is True
+    assert cycle_row['worker_state']['recovery']['mode'] == 'account_runtime_rebuild'
+    assert cycle_row['worker_state']['recovery']['trigger_reason'] == 'healthy_false_zero_stale_session'
+    assert cycle_row['decision_group_state']['payload']['pending_count'] == 4
+    assert cycle_row['truth_state']['status'] == 'confirmed_pending'
+    assert calls['formal'] == 1
+
+
+
+def test_run_cycle_account_binding_false_zero_waits_for_ten_consecutive_signals(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.monitoring_session_id = 'session-false-zero-threshold-10'
+    invite_link = 'RG'
+    state = {}
+    calls = {'stop': 0, 'start': 0, 'session': 0, 'recovered': 0}
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        if url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory'):
+            return {
+                'rows': [
+                    {
+                        'account_key': 'wa-admin-demo-1',
+                        'account_name': 'WA Admin',
+                        'responsible_type': 'registration_group',
+                        'enabled': True,
+                        'area': 'Indonesia',
+                        'runtime_state': {
+                            'active': True,
+                            'ready': True,
+                            'authenticated': True,
+                            'base_url': 'http://worker-1',
+                        },
+                        'session_state': {
+                            'login_verified': True,
+                            'session_target_match': True,
+                        },
+                        'group_link_bindings': [
+                            {
+                                'link': invite_link,
+                                'group_name': 'RG',
+                                'enabled': True,
+                                'area': 'Indonesia',
+                                'auto_recover_worker': True,
+                                'schedule_runtime': {'configured': True, 'active_now': True},
+                            }
+                        ],
+                    }
+                ]
+            }
+        if url == 'http://worker-1/group-state':
+            return {
+                'group_id': 'g',
+                'group_name': 'RG',
+                'pending_count': 0,
+                'member_count': 100,
+                'requesters': [],
+                'requester_ids': [],
+                'zero_pending_unverified': True,
+                'zero_pending_unverified_reason': 'same_runtime_family_zero_pending',
+            }
+        if url == 'http://worker-1/review-surface-state':
+            return {
+                'group_id': 'g',
+                'group_name': 'RG',
+                'pending_count': 0,
+                'review_surface_ready': False,
+                'empty_queue_visible': False,
+                'requesters': [],
+                'requester_ids': [],
+            }
+        if url.endswith('/runtime/internal/stop'):
+            calls['stop'] += 1
+            return {'ok': True}
+        if url.endswith('/runtime/internal/start'):
+            calls['start'] += 1
+            return {'ok': True, 'runtime': {'base_url': 'http://worker-2'}}
+        if url.endswith('/session/internal/start'):
+            calls['session'] += 1
+            return {
+                'ok': True,
+                'runtime': {'base_url': 'http://worker-2'},
+                'session': {'login_verified': True, 'session_target_match': True},
+            }
+        if url == 'http://worker-2/group-state':
+            calls['recovered'] += 1
+            return {
+                'group_id': 'g',
+                'group_name': 'RG',
+                'pending_count': 0,
+                'member_count': 100,
+                'requesters': [],
+                'requester_ids': [],
+                'zero_pending_unverified': True,
+                'zero_pending_unverified_reason': 'same_runtime_family_zero_pending',
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr('scripts.production_ops_daemon.check_backend_health', lambda *args, **kwargs: {'ok': True, 'payload': {'status': 'ok'}})
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon.time.sleep', lambda *_args, **_kwargs: None)
+
+    for _ in range(9):
+        run_cycle(args, state)
+    assert calls['stop'] == 0
+    assert calls['start'] == 0
+    assert calls['session'] == 0
+
+    tenth_cycle = run_cycle(args, state)
+    cycle_row = tenth_cycle['registration_group_cycles'][0]
+
+    assert calls['stop'] == 1
+    assert calls['start'] == 1
+    assert calls['session'] == 1
+    assert cycle_row['worker_state']['recovery']['trigger_reason'] == 'healthy_false_zero_stale_session'
+    assert cycle_row['worker_state']['recovery']['mode'] == 'account_runtime_rebuild'
+
 
 
 def test_run_cycle_account_binding_zero_pending_fresh_probe_failure_marks_unverified(monkeypatch):
@@ -1724,7 +2007,7 @@ def test_notify_incidents_retries_success_notification_after_all_deliveries_fail
     class FailingThenHealthyNotifier:
         def send_text(self, text):
             calls['count'] += 1
-            if calls['count'] <= 2:
+            if calls['count'] <= 1:
                 raise RuntimeError('temporary send failure')
             return {'code': 0}
 
@@ -1782,8 +2065,8 @@ def test_notify_incidents_retries_success_notification_after_failed_delivery(mon
     first = _notify_incidents(args, state, cycle, incidents)
 
     assert len(first) == 1
-    assert first[0]['status'] == 'partial_sent'
-    assert state['notifications']['formal_approval_succeeded:test-retry']['last_status'] == 'partial_sent'
+    assert first[0]['status'] == 'failed'
+    assert state['notifications']['formal_approval_succeeded:test-retry']['last_status'] == 'failed'
     assert 'last_sent_at' not in state['notifications']['formal_approval_succeeded:test-retry']
 
     second = _notify_incidents(args, state, cycle, incidents)
@@ -1878,8 +2161,8 @@ def test_notify_incidents_sends_official_group_manual_review_required_only_once(
 
     assert len(first) == 1
     assert first[0]['status'] == 'sent'
-    assert len(first[0]['deliveries']) == 2
-    assert len(sent_texts) == 2
+    assert len(first[0]['deliveries']) == 1
+    assert len(sent_texts) == 1
     assert second == []
 
 
@@ -1933,7 +2216,7 @@ def test_notify_incidents_sends_distinct_official_group_manual_review_notificati
     assert len(second) == 1
     assert first[0]['status'] == 'sent'
     assert second[0]['status'] == 'sent'
-    assert len(sent_texts) == 4
+    assert len(sent_texts) == 2
 
 
 
@@ -2072,16 +2355,12 @@ def test_notify_incidents_prefers_incident_notify_profile_credentials(monkeypatc
     assert len(sent) == 1
     assert sent[0]['status'] == 'sent'
     assert sent[0]['notify_profile_name'] == 'wa-approval-broadcast'
-    assert len(sent[0]['deliveries']) == 2
+    assert len(sent[0]['deliveries']) == 1
     assert sent[0]['deliveries'][0]['notify_profile_name'] == 'wa-approval-broadcast'
-    assert sent[0]['deliveries'][1]['notify_profile_name'] == 'wa-approval-broadcast-02'
-    assert len(captured['inits']) == 2
+    assert len(captured['inits']) == 1
     assert captured['inits'][0]['app_id'] == 'cli_bot01'
     assert captured['inits'][0]['chat_id'] == 'oc_bot01'
     assert captured['inits'][0]['app_secret'] == 'bot01-secret'
-    assert captured['inits'][1]['app_id'] == 'cli_bot02'
-    assert captured['inits'][1]['chat_id'] == 'oc_bot02'
-    assert captured['inits'][1]['app_secret'] == 'bot02-secret'
     assert all('官方群审批成功' in text for text in captured['texts'])
     assert all('本次通过人数: 1' in text for text in captured['texts'])
     assert all('剩余待审批人数: 0' in text for text in captured['texts'])
@@ -2156,16 +2435,12 @@ def test_notify_incidents_backend_unhealthy_fanouts_to_bot01_and_bot02(monkeypat
     assert sent[0]['code'] == 'backend_unhealthy'
     assert sent[0]['status'] == 'sent'
     assert sent[0]['notify_profile_name'] == 'wa-approval-broadcast'
-    assert len(sent[0]['deliveries']) == 2
+    assert len(sent[0]['deliveries']) == 1
     assert sent[0]['deliveries'][0]['notify_profile_name'] == 'wa-approval-broadcast'
     assert sent[0]['deliveries'][0]['status'] == 'sent'
-    assert sent[0]['deliveries'][1]['notify_profile_name'] == 'wa-approval-broadcast-02'
-    assert sent[0]['deliveries'][1]['status'] == 'sent'
-    assert len(captured['inits']) == 2
+    assert len(captured['inits']) == 1
     assert captured['inits'][0]['app_id'] == 'cli_bot01'
     assert captured['inits'][0]['chat_id'] == 'oc_bot01'
-    assert captured['inits'][1]['app_id'] == 'cli_bot02'
-    assert captured['inits'][1]['chat_id'] == 'oc_bot02'
     assert all('后端健康检查失败' in text for text in captured['texts'])
     assert all('Connection refused' in text for text in captured['texts'])
 

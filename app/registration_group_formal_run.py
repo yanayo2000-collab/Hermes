@@ -24,6 +24,31 @@ def _normalized_expected_requesters(expected_group_state: Optional[Dict[str, Any
     return normalized
 
 
+def _resolve_approval_batch_display_id(
+    api_root: str,
+    approval_run_id: str,
+    fetch_json: Callable[..., Dict[str, Any]],
+) -> Optional[str]:
+    normalized_run_id = str(approval_run_id or '').strip()
+    if not normalized_run_id:
+        return None
+    try:
+        payload = fetch_json(
+            f'{api_root}/api/ops/registration-group-approval-batch-members?approval_run_id={normalized_run_id}&limit=1',
+            method='GET',
+            timeout=15.0,
+        )
+    except Exception:
+        return None
+    members = payload.get('rows') or payload.get('members') or payload.get('items') or []
+    if not isinstance(members, list) or not members:
+        return None
+    first = members[0] if isinstance(members[0], dict) else {}
+    value = str(first.get('approval_batch_display_id') or '').strip()
+    return value or None
+
+
+
 def execute_formal_registration_group_approval(
     *,
     api_base_url: str,
@@ -100,6 +125,7 @@ def execute_formal_registration_group_approval(
         'request_payload': payload,
         'accepted_response': accepted_response,
         'approval_run_id': approval_run_id,
+        'approval_batch_display_id': _resolve_approval_batch_display_id(api_root, approval_run_id, fetch_json),
         'polls': polls,
         'final_status': final_status,
     }

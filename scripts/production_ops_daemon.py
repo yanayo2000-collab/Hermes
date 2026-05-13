@@ -24,6 +24,7 @@ from app.production_ops import (
     FeishuNotifier,
     NOTIFICATION_POLICY_BY_CODE,
     build_incidents,
+    build_observation_warnings,
     build_success_notifications,
     check_backend_health,
     env_default,
@@ -402,6 +403,22 @@ def _schedule_end_flush_release(target: Dict[str, Any], registration_group: str,
     }
 
 
+def _dynamic_approval_poll_timeout_seconds(args: argparse.Namespace, approved_count: int) -> float:
+    configured = max(1.0, float(getattr(args, 'approval_poll_timeout_seconds', 60.0) or 60.0))
+    try:
+        count = max(1, int(approved_count or 1))
+    except (TypeError, ValueError):
+        count = 1
+    dynamic = 60.0 + (count * 8.0)
+    return max(configured, dynamic)
+
+
+def _dynamic_formal_command_timeout_seconds(args: argparse.Namespace, approved_count: int) -> float:
+    configured = max(1.0, float(getattr(args, 'command_timeout_seconds', 240.0) or 240.0))
+    return max(configured, _dynamic_approval_poll_timeout_seconds(args, approved_count) + 90.0)
+
+
+
 def _build_formal_approval_command(
     args: argparse.Namespace,
     approved_count: int,
@@ -417,6 +434,7 @@ def _build_formal_approval_command(
     target_fresh_probe_cmd = str(fresh_probe_cmd or args.fresh_probe_cmd or '').strip()
     target_area = str(area or args.area or '').strip() or 'Indonesia'
     target_remark = str(remark or args.remark or '').strip() or 'production auto approval daemon'
+    poll_timeout_seconds = _dynamic_approval_poll_timeout_seconds(args, approved_count)
     cmd = [
         sys.executable,
         str(ROOT_DIR / 'scripts' / 'run_registration_group_formal_approval.py'),
@@ -431,7 +449,7 @@ def _build_formal_approval_command(
         '--remark', target_remark,
         '--approved-count', str(max(1, int(approved_count))),
         '--poll-interval-seconds', str(args.approval_poll_interval_seconds),
-        '--poll-timeout-seconds', str(args.approval_poll_timeout_seconds),
+        '--poll-timeout-seconds', str(poll_timeout_seconds),
         '--decided-by', args.decided_by,
         '--decided-by-name', args.decided_by_name,
     ]
@@ -645,7 +663,7 @@ def _recover_worker_for_target(
 
     normalized_trigger_reason = str(trigger_reason or '').strip()
     if source == 'account_binding' and account_key:
-        if normalized_trigger_reason in {'session_mismatch', 'runtime_unhealthy'}:
+        if normalized_trigger_reason in {'session_mismatch', 'runtime_unhealthy', 'healthy_false_zero_stale_session'}:
             recovery['attempted'] = True
             recovery['mode'] = 'account_runtime_rebuild'
             recovery['account_key'] = account_key
@@ -891,8 +909,53 @@ def _binding_rebuild_gate_decision(
     trigger_reason: str,
     now: datetime,
 ) -> Dict[str, Any]:
-    threshold = max(int(getattr(args, 'worker_recovery_rebuild_threshold', 2) or 2), 1)
-    cooldown_seconds = max(float(getattr(args, 'worker_recovery_rebuild_cooldown_seconds', 120.0) or 120.0), 0.0)
+    return _recovery_gate_decision(
+        args,
+        monitoring_session,
+        trigger_reason=trigger_reason,
+        now=now,
+        gate_name='binding_rebuild_gate',
+        threshold_attr='worker_recovery_rebuild_threshold',
+        threshold_default=2,
+        cooldown_attr='worker_recovery_rebuild_cooldown_seconds',
+        cooldown_default=120.0,
+    )
+
+
+def _false_zero_recovery_gate_decision(
+    args: argparse.Namespace,
+    monitoring_session: Optional[Dict[str, Any]],
+    *,
+    trigger_reason: str,
+    now: datetime,
+) -> Dict[str, Any]:
+    return _recovery_gate_decision(
+        args,
+        monitoring_session,
+        trigger_reason=trigger_reason,
+        now=now,
+        gate_name='false_zero_recovery_gate',
+        threshold_attr='false_zero_recovery_threshold',
+        threshold_default=10,
+        cooldown_attr='false_zero_recovery_cooldown_seconds',
+        cooldown_default=120.0,
+    )
+
+
+def _recovery_gate_decision(
+    args: argparse.Namespace,
+    monitoring_session: Optional[Dict[str, Any]],
+    *,
+    trigger_reason: str,
+    now: datetime,
+    gate_name: str,
+    threshold_attr: str,
+    threshold_default: int,
+    cooldown_attr: str,
+    cooldown_default: float,
+) -> Dict[str, Any]:
+    threshold = max(int(getattr(args, threshold_attr, threshold_default) or threshold_default), 1)
+    cooldown_seconds = max(float(getattr(args, cooldown_attr, cooldown_default) or cooldown_default), 0.0)
     normalized_reason = str(trigger_reason or '').strip() or 'runtime_unavailable'
     if not isinstance(monitoring_session, dict):
         return {
@@ -903,10 +966,10 @@ def _binding_rebuild_gate_decision(
             'threshold': threshold,
             'cooldown_seconds': cooldown_seconds,
         }
-    gate = monitoring_session.get('binding_rebuild_gate')
+    gate = monitoring_session.get(gate_name)
     if not isinstance(gate, dict):
         gate = {}
-        monitoring_session['binding_rebuild_gate'] = gate
+        monitoring_session[gate_name] = gate
 
     previous_reason = str(gate.get('trigger_reason') or '').strip()
     previous_count = int(gate.get('streak_count') or 0) if previous_reason == normalized_reason else 0
@@ -1676,6 +1739,130 @@ def _run_registration_group_cycle(
                 'zero_pending_recheck': True,
                 'recheck_source': 'group_state',
             }
+    if (
+        zero_pending_recheck
+        and str(target.get('source') or '').strip() == 'account_binding'
+        and bool(decision_group.get('zero_pending_unverified'))
+        and bool(worker_payload.get('zero_pending_unverified'))
+        and bool(target.get('auto_recover_worker'))
+    ):
+        review_surface_payload: Dict[str, Any] = {}
+        try:
+            review_surface_payload = _fetch_worker_review_surface_state(
+                target_worker_base_url,
+                target_registration_group,
+                timeout_seconds=args.worker_timeout_seconds,
+            )
+            cycle['review_surface_probe'] = {
+                'ok': True,
+                'payload': review_surface_payload,
+                'diagnostics_only': True,
+                'reason': 'false_zero_empty_evidence_check',
+            }
+        except Exception as exc:
+            cycle['review_surface_probe'] = {
+                'ok': False,
+                'error': str(exc),
+                'diagnostics_only': True,
+                'reason': 'false_zero_empty_evidence_check_failed',
+            }
+        try:
+            review_pending_count = max(int(review_surface_payload.get('pending_count') or 0), 0)
+        except (TypeError, ValueError):
+            review_pending_count = 0
+        no_empty_evidence = (
+            review_pending_count <= 0
+            and not bool(review_surface_payload.get('review_surface_ready'))
+            and not bool(review_surface_payload.get('empty_queue_visible'))
+        )
+        if no_empty_evidence:
+            trigger_reason = 'healthy_false_zero_stale_session'
+            false_zero_gate = _false_zero_recovery_gate_decision(
+                args,
+                monitoring_session,
+                trigger_reason=trigger_reason,
+                now=now,
+            )
+            if false_zero_gate.get('allowed'):
+                recovery = _recover_worker_for_target(
+                    args,
+                    target,
+                    failed_worker_base_url=target_worker_base_url,
+                    error=RuntimeError(str(decision_group.get('zero_pending_unverified_reason') or 'zero_pending_unverified')),
+                    trigger_reason=trigger_reason,
+                )
+                cycle['worker_state']['recovery'] = recovery
+                cycle['worker_state']['false_zero_recovery'] = {'gate': false_zero_gate, 'trigger_reason': trigger_reason}
+                recovered_worker_base_url = str(recovery.get('recovered_worker_base_url') or '').strip()
+                if recovery.get('status') == 'ok' and recovered_worker_base_url:
+                    recovery_retry_wait_seconds = max(2.0, min(float(args.restart_wait_seconds or 2.0), 5.0))
+                    recovery_worker_fetch = _fetch_worker_group_state_with_passive_retry(
+                        recovered_worker_base_url,
+                        target_registration_group,
+                        timeout_seconds=args.worker_timeout_seconds,
+                        passive_retry_wait_seconds=recovery_retry_wait_seconds,
+                        passive_retry_count=4,
+                    )
+                    recovery['recovery_probe'] = {
+                        'retry_attempts': recovery_worker_fetch.get('attempts') or [],
+                        'retry_count': int(recovery_worker_fetch.get('retry_count') or 0),
+                        'total_attempts': int(recovery_worker_fetch.get('total_attempts') or 1),
+                        'wait_seconds': recovery_retry_wait_seconds,
+                    }
+                    if recovery_worker_fetch.get('ok'):
+                        recovered_payload = dict(recovery_worker_fetch.get('payload') or {})
+                        try:
+                            recovered_pending_count = max(int(recovered_payload.get('pending_count') or 0), 0)
+                        except (TypeError, ValueError):
+                            recovered_pending_count = 0
+                        target_worker_base_url = recovered_worker_base_url
+                        cycle['monitor_target']['worker_base_url'] = target_worker_base_url
+                        cycle['worker_state'] = {
+                            'ok': True,
+                            'payload': recovered_payload,
+                            'recovered_after_restart': True,
+                            'recovery': recovery,
+                            'false_zero_recovery': {
+                                'gate': false_zero_gate,
+                                'trigger_reason': trigger_reason,
+                                'recovered_pending_count': recovered_pending_count,
+                            },
+                            'recovery_probe': recovery['recovery_probe'],
+                        }
+                        if recovered_pending_count > 0:
+                            _clear_binding_rebuild_gate(monitoring_session)
+                            decision_group = {
+                                'payload': {
+                                    **recovered_payload,
+                                    'source': 'group_state',
+                                    'pending_zero_confidence': None,
+                                    'data_quality': 'fresh',
+                                    'session_health': 'healthy',
+                                },
+                                'source': 'group_state',
+                                'worker_signature': _group_state_signature(recovered_payload),
+                                'fresh_signature': _group_state_signature(recovered_payload),
+                                'mismatch': False,
+                                'mismatch_reasons': [],
+                                'pending_zero_confidence': None,
+                                'data_quality': 'fresh',
+                                'session_health': 'healthy',
+                                'needs_async_reconcile': False,
+                                'zero_pending_unverified': False,
+                                'zero_pending_unverified_reason': None,
+                                'recovered_after_false_zero_runtime_restart': True,
+                            }
+                    else:
+                        recovery['retry_error'] = str(recovery_worker_fetch.get('error') or 'worker_group_state_failed_after_false_zero_recovery')
+            else:
+                cycle['worker_state']['false_zero_recovery'] = {
+                    'attempted': False,
+                    'status': 'skipped',
+                    'reason': str(false_zero_gate.get('reason') or 'rebuild_gate_blocked'),
+                    'trigger_reason': trigger_reason,
+                    'gate': false_zero_gate,
+                }
+
     cycle['decision_group_state'] = decision_group
 
     cycle['truth_state'] = build_truth_state(
@@ -1795,7 +1982,7 @@ def _run_registration_group_cycle(
                 area=target_area,
                 remark=f"production auto approval daemon · {target_group_name}",
             )
-            result = run_formal_approval_command(command, timeout=args.command_timeout_seconds)
+            result = run_formal_approval_command(command, timeout=_dynamic_formal_command_timeout_seconds(args, current_pending_count))
             ok = result.get('returncode') == 0 and _formal_run_verified(result)
             formal_run = formal_run_payload(result.get('result') or {})
             formal_result = formal_run_result(formal_run)
@@ -2049,7 +2236,7 @@ def _run_registration_group_cycle(
             area=target_area,
             remark=f"production auto approval daemon · {target_group_name}",
         )
-        result = run_formal_approval_command(command, timeout=args.command_timeout_seconds)
+        result = run_formal_approval_command(command, timeout=_dynamic_formal_command_timeout_seconds(args, release_count))
         ok = result.get('returncode') == 0 and _formal_run_verified(result)
         formal_result = formal_run_result(result.get('result') or {})
         approved_count = max(int(formal_result.get('approved_count', release_count) or release_count), 0)
@@ -2350,6 +2537,44 @@ SUCCESS_NOTIFICATION_CODES = {
 }
 
 
+def _build_recovery_notifications(
+    state: Dict[str, Any],
+    cycle: Dict[str, Any],
+    success_notifications: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    recovered: List[Dict[str, Any]] = []
+    notifications_state = state.get('notifications') if isinstance(state.get('notifications'), dict) else {}
+    for success in success_notifications:
+        if str(success.get('code') or '').strip() != 'formal_approval_succeeded':
+            continue
+        details = success.get('details') if isinstance(success.get('details'), dict) else {}
+        fingerprint = str(details.get('fingerprint') or '').strip()
+        if not fingerprint:
+            continue
+        previous = notifications_state.get(f'formal_approval_failed:{fingerprint}')
+        if not isinstance(previous, dict) or str(previous.get('last_status') or '').strip() != 'sent':
+            continue
+        previous_incident = previous.get('incident') if isinstance(previous.get('incident'), dict) else {}
+        previous_details = previous_incident.get('details') if isinstance(previous_incident.get('details'), dict) else {}
+        recovered_details = dict(details)
+        recovered_details['original_failed_at'] = previous.get('last_sent_at')
+        recovered_details['failed_reason_text'] = previous_details.get('reason_text')
+        display_id = str(details.get('approval_batch_display_id') or '').strip()
+        if not display_id:
+            continue
+        recovered.append({
+            'code': 'formal_approval_recovered',
+            'severity': 'info',
+            'summary': '生产守护恢复｜正式审批已闭环',
+            'details': recovered_details,
+            'reason_text': '首次审批调用超时，client reset 后重试成功',
+            'notify_profile_name': success.get('notify_profile_name'),
+            'notify_robot_name': success.get('notify_robot_name'),
+            'dedupe_key': f"formal_approval_recovered:{display_id}",
+        })
+    return recovered
+
+
 def _normalize_notification_state(state: Dict[str, Any], *, now_iso: str | None = None) -> bool:
     notification_bucket = state.get('notifications')
     if not isinstance(notification_bucket, dict):
@@ -2531,6 +2756,14 @@ def _notify_incidents(args: argparse.Namespace, state: Dict[str, Any], cycle: Di
             existing_record = notification_bucket.get(dedupe_key) or {}
             updated_record = dict(existing_record)
             updated_record['last_status'] = payload['status']
+            updated_record['incident'] = {
+                'code': incident.get('code'),
+                'dedupe_key': dedupe_key,
+                'summary': incident.get('summary'),
+                'details': incident.get('details') if isinstance(incident.get('details'), dict) else {},
+                'reason_text': str(incident.get('reason_text') or '').strip() or None,
+                'checked_at': cycle.get('checked_at'),
+            }
             notification_bucket[dedupe_key] = updated_record
         sent.append(payload)
     return sent
@@ -2590,6 +2823,8 @@ def main() -> int:
     parser.add_argument('--restart-wait-seconds', type=float, default=8.0)
     parser.add_argument('--worker-recovery-rebuild-threshold', type=int, default=2)
     parser.add_argument('--worker-recovery-rebuild-cooldown-seconds', type=float, default=120.0)
+    parser.add_argument('--false-zero-recovery-threshold', type=int, default=10)
+    parser.add_argument('--false-zero-recovery-cooldown-seconds', type=float, default=120.0)
     parser.add_argument('--area', default='Indonesia')
     parser.add_argument('--remark', default='production auto approval daemon')
     parser.add_argument('--approved-count', type=int, default=1)
@@ -2628,9 +2863,13 @@ def main() -> int:
                 'cycle_error': str(exc),
             }
         incidents = build_incidents(cycle)
+        observation_warnings = build_observation_warnings(cycle)
         success_notifications = build_success_notifications(cycle)
-        notifications = _notify_incidents(args, state, cycle, [*incidents, *success_notifications])
+        recovery_notifications = _build_recovery_notifications(state, cycle, success_notifications)
+        notifications = _notify_incidents(args, state, cycle, [*incidents, *recovery_notifications, *success_notifications])
         cycle['incidents'] = incidents
+        cycle['observation_warnings'] = observation_warnings
+        cycle['recovery_notifications'] = recovery_notifications
         cycle['success_notifications'] = success_notifications
         cycle['notifications'] = notifications
         cycle['notification_delivery_summary'] = _notification_delivery_summary(notifications)
@@ -2639,8 +2878,10 @@ def main() -> int:
         print(json.dumps({
             'checked_at': cycle.get('checked_at'),
             'pending_incidents': [item.get('code') for item in incidents],
+            'observation_warnings': [item.get('code') for item in observation_warnings],
             'success_notifications': [item.get('code') for item in success_notifications],
-            'notified': [item.get('code') for item in [*incidents, *success_notifications] if any(n.get('code') == item.get('code') and n.get('status') == 'sent' for n in notifications)],
+            'recovery_notifications': [item.get('code') for item in recovery_notifications],
+            'notified': [item.get('code') for item in [*incidents, *recovery_notifications, *success_notifications] if any(n.get('code') == item.get('code') and n.get('status') == 'sent' for n in notifications)],
             'notification_delivery_summary': cycle.get('notification_delivery_summary') or [],
             'formal_triggered': bool((cycle.get('formal_approval') or {}).get('triggered')),
             'formal_ok': (cycle.get('formal_approval') or {}).get('ok'),

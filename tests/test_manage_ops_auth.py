@@ -36,7 +36,7 @@ def test_manage_ops_auth_bootstrap_and_create_user(tmp_path):
     )
     assert bootstrap.returncode == 0
     bootstrap_payload = json.loads(bootstrap.stdout)
-    assert bootstrap_payload['user']['role'] == 'admin'
+    assert bootstrap_payload['user']['role'] == 'super_admin'
 
     create_user = run_cli(
         '--db-path', str(db_path),

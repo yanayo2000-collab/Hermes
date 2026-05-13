@@ -52,13 +52,13 @@ NOTIFICATION_POLICY_BY_CODE: Dict[str, Dict[str, str]] = {
         'retry': 'after_cooldown',
         'partial_sent': 'n/a',
     },
-    'registration_zero_pending_unverified': {
-        'family': 'incident',
-        'dedupe': 'cooldown',
-        'retry': 'after_cooldown',
-        'partial_sent': 'n/a',
-    },
     'formal_approval_succeeded': {
+        'family': 'success',
+        'dedupe': 'one_shot_per_dedupe_key',
+        'retry': 'until_all_targets_sent',
+        'partial_sent': 'retry_unsent_targets_only',
+    },
+    'formal_approval_recovered': {
         'family': 'success',
         'dedupe': 'one_shot_per_dedupe_key',
         'retry': 'until_all_targets_sent',
@@ -113,6 +113,7 @@ def _default_alert_templates() -> Dict[str, Any]:
         },
         'reasons': {
             'formal_approval_succeeded': '已审批通过 {approved_count} 人',
+            'formal_approval_recovered': '自动重试成功，审批已完成，CRM 已写入',
             'manual_approval_succeeded': '已人工审批通过 {approved_count} 人',
             'startup_initial_batch_succeeded': '启动首批审批已通过 {approved_count} 人',
             'official_group_approval_succeeded': '已审批通过 {approved_count} 人',
@@ -167,16 +168,10 @@ def expand_notify_profile_targets(profile_name: Optional[str], notify_robot_name
     if not normalized:
         return []
     if normalized == 'wa-approval-broadcast':
-        return [
-            {
-                'profile_name': 'wa-approval-broadcast',
-                'robot_name': normalized_robot_name or '审批bot01',
-            },
-            {
-                'profile_name': 'wa-approval-broadcast-02',
-                'robot_name': '审批Bot02',
-            },
-        ]
+        return [{
+            'profile_name': 'wa-approval-broadcast',
+            'robot_name': normalized_robot_name or '审批bot01',
+        }]
     if normalized == 'wa-approval-broadcast-02':
         return [{
             'profile_name': 'wa-approval-broadcast-02',
@@ -499,6 +494,55 @@ def register_notification(
     return True
 
 
+def build_observation_warnings(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
+    warnings: List[Dict[str, Any]] = []
+    registration_cycles = list(cycle.get('registration_group_cycles') or []) if isinstance(cycle.get('registration_group_cycles'), list) else []
+    for cycle_row in registration_cycles:
+        if not isinstance(cycle_row, dict):
+            continue
+        row_release = cycle_row.get('release_evaluation') or {}
+        row_payload = row_release.get('payload') if isinstance(row_release.get('payload'), dict) else {}
+        if not row_release.get('ok') or str(row_payload.get('reason_code') or '').strip() != 'waiting_next_cycle':
+            continue
+        try:
+            row_pending_count = int(row_payload.get('pending_count') or 0)
+        except (TypeError, ValueError):
+            row_pending_count = 0
+        if row_pending_count != 0:
+            continue
+        decision_group = cycle_row.get('decision_group_state') if isinstance(cycle_row.get('decision_group_state'), dict) else {}
+        if not decision_group.get('zero_pending_unverified'):
+            continue
+        group_label = str(
+            ((cycle_row.get('monitor_target') or {}).get('group_name'))
+            or ((cycle_row.get('monitor_target') or {}).get('binding_group_name'))
+            or ((cycle_row.get('monitor_target') or {}).get('registration_group'))
+            or cycle_row.get('registration_group')
+            or ''
+        ).strip()
+        cycle_started_at = str(row_payload.get('cycle_started_at') or '').strip()
+        cycle_ends_at = str(row_payload.get('cycle_ends_at') or '').strip()
+        dedupe_suffix = '|'.join(part for part in [group_label, cycle_started_at or cycle_ends_at] if part) or 'unknown'
+        warnings.append({
+            'severity': 'warning',
+            'category': 'observation_warning',
+            'code': 'registration_zero_pending_unverified',
+            'summary': '注册群零待审批待核验',
+            'notify_disabled': True,
+            'details': {
+                'group_name': group_label or None,
+                'pending_count': 0,
+                'reason': str(decision_group.get('zero_pending_unverified_reason') or '').strip() or None,
+                'cycle_started_at': cycle_started_at or None,
+                'cycle_ends_at': cycle_ends_at or None,
+            },
+            'notify_profile_name': str(((cycle_row.get('monitor_target') or {}).get('notify_profile_name')) or '').strip() or None,
+            'notify_robot_name': str(((cycle_row.get('monitor_target') or {}).get('notify_robot_name')) or '').strip() or None,
+            'dedupe_key': f'registration_zero_pending_unverified:{dedupe_suffix}',
+        })
+    return warnings
+
+
 def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
     incidents: List[Dict[str, Any]] = []
     backend = cycle.get('backend_health') or {}
@@ -527,49 +571,6 @@ def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
             'summary': '批次放行评估失败',
             'details': release,
             'dedupe_key': 'release_evaluation_failed',
-        })
-    registration_cycles = list(cycle.get('registration_group_cycles') or []) if isinstance(cycle.get('registration_group_cycles'), list) else []
-    for cycle_row in registration_cycles:
-        if not isinstance(cycle_row, dict):
-            continue
-        row_release = cycle_row.get('release_evaluation') or {}
-        row_payload = row_release.get('payload') if isinstance(row_release.get('payload'), dict) else {}
-        if not row_release.get('ok') or str(row_payload.get('reason_code') or '').strip() != 'waiting_next_cycle':
-            continue
-        try:
-            row_pending_count = int(row_payload.get('pending_count') or 0)
-        except (TypeError, ValueError):
-            row_pending_count = 0
-        if row_pending_count != 0:
-            continue
-        decision_group = cycle_row.get('decision_group_state') if isinstance(cycle_row.get('decision_group_state'), dict) else {}
-        if not decision_group.get('zero_pending_unverified'):
-            continue
-        group_label = str(
-            ((cycle_row.get('monitor_target') or {}).get('group_name'))
-            or ((cycle_row.get('monitor_target') or {}).get('binding_group_name'))
-            or ((cycle_row.get('monitor_target') or {}).get('registration_group'))
-            or cycle_row.get('registration_group')
-            or ''
-        ).strip()
-        cycle_started_at = str(row_payload.get('cycle_started_at') or '').strip()
-        cycle_ends_at = str(row_payload.get('cycle_ends_at') or '').strip()
-        dedupe_suffix = '|'.join(part for part in [group_label, cycle_started_at or cycle_ends_at] if part) or 'unknown'
-        incidents.append({
-            'severity': 'critical',
-            'code': 'registration_zero_pending_unverified',
-            'summary': '注册群零待审批未核实',
-            'notify_disabled': True,
-            'details': {
-                'group_name': group_label or None,
-                'pending_count': 0,
-                'reason': str(decision_group.get('zero_pending_unverified_reason') or '').strip() or None,
-                'cycle_started_at': cycle_started_at or None,
-                'cycle_ends_at': cycle_ends_at or None,
-            },
-            'notify_profile_name': str(((cycle_row.get('monitor_target') or {}).get('notify_profile_name')) or '').strip() or None,
-            'notify_robot_name': str(((cycle_row.get('monitor_target') or {}).get('notify_robot_name')) or '').strip() or None,
-            'dedupe_key': f'registration_zero_pending_unverified:{dedupe_suffix}',
         })
     action = cycle.get('formal_approval') or {}
     if action.get('triggered') and not action.get('ok'):
@@ -720,6 +721,11 @@ def build_success_notifications(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
                 formal_run = attempt.get('formal_run') if isinstance(attempt.get('formal_run'), dict) else {}
                 formal_result = attempt.get('formal_result') if isinstance(attempt.get('formal_result'), dict) else {}
                 approval_run_id = str(attempt.get('approval_run_id') or formal_run.get('approval_run_id') or '').strip()
+                approval_batch_display_id = str(
+                    formal_run.get('approval_batch_display_id')
+                    or formal_result.get('approval_batch_display_id')
+                    or ''
+                ).strip()
                 pending_after = _preferred_success_pending_after(
                     action,
                     formal_result,
@@ -732,6 +738,7 @@ def build_success_notifications(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
                     'summary': '注册群审批成功',
                     'details': {
                         'approval_run_id': approval_run_id or None,
+                        'approval_batch_display_id': approval_batch_display_id or None,
                         'approval_run_ids': [approval_run_id] if approval_run_id else [],
                         'fingerprint': fingerprint or None,
                         'group_name': group_name or None,
@@ -1287,6 +1294,41 @@ def format_lark_alert(service_name: str, incident: Dict[str, Any], cycle: Dict[s
         if reason:
             lines.append(f'原因: {reason}')
         return '\n'.join(lines)
+    if code == 'formal_approval_recovered':
+        details = incident.get('details') if isinstance(incident.get('details'), dict) else {}
+        registration_group_label = str(
+            details.get('group_name')
+            or details.get('target_group_label')
+            or ((cycle.get('monitor_target') or {}).get('group_name') if isinstance(cycle.get('monitor_target'), dict) else '')
+            or ((cycle.get('monitor_target') or {}).get('binding_group_name') if isinstance(cycle.get('monitor_target'), dict) else '')
+            or cycle.get('registration_group')
+            or ''
+        ).strip()
+        approved_count = details.get('approved_count')
+        display_batch_id = str(details.get('approval_batch_display_id') or '').strip()
+        original_failed_at = _format_alert_time(str(details.get('original_failed_at') or details.get('failed_at') or ''))
+        reason = str(incident.get('reason_text') or '').strip() or '首次审批调用超时，client reset 后重试成功'
+        lines = [
+            '✅ 生产守护恢复｜正式审批已闭环',
+            f'时间: {checked_at}',
+        ]
+        if registration_group_label:
+            lines.append(f'注册群: {registration_group_label}')
+        if original_failed_at:
+            lines.append(f'原告警: {original_failed_at}')
+        try:
+            approved_value = int(approved_count)
+        except (TypeError, ValueError):
+            approved_value = None
+        if approved_value is not None and approved_value >= 0:
+            lines.append(f'批次人数: {approved_value}')
+        lines.append('结果: 自动重试成功，审批已完成，CRM 已写入')
+        if reason:
+            lines.append(f'原因: {reason}')
+        if display_batch_id:
+            lines.append(f'批次ID: {display_batch_id}')
+        return '\n'.join(line for line in lines if line)
+
     templates = load_alert_templates()
     header_map = templates.get('headers') if isinstance(templates.get('headers'), dict) else {}
     header_entry = header_map.get(severity_key) if isinstance(header_map.get(severity_key), dict) else {}

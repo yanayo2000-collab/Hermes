@@ -93,25 +93,42 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
     assert status_before.json()['bootstrap_open'] is True
 
     bootstrap_user = bootstrap_admin_and_login(client)
-    assert bootstrap_user['role'] == 'admin'
+    assert bootstrap_user['role'] == 'super_admin'
 
     ops_page = client.get('/ops')
     assert ops_page.status_code == 200
     assert '/ops/accounts' in ops_page.text
-    assert '账号管理' in ops_page.text
+    assert '账号设置' in ops_page.text
 
     production_ops_page = client.get('/ops/production-ops')
     assert production_ops_page.status_code == 200
     assert '/ops/accounts' in production_ops_page.text
-    assert '账号管理' in production_ops_page.text
+    assert '账号设置' in production_ops_page.text
+    assert "function approvalRoleCanManage(role)" in production_ops_page.text
+    assert "approvalRoleCanManage(currentRole)" in production_ops_page.text
+    assert "currentRole === 'admin'" not in production_ops_page.text
+    assert "String(window.__opsUserRole || '').trim() === 'admin'" not in production_ops_page.text
 
     accounts_page = client.get('/ops/accounts')
     assert accounts_page.status_code == 200
-    assert '后台账号管理' in accounts_page.text
+    assert '账号设置' in accounts_page.text
+    assert '后台账号管理' not in accounts_page.text
     assert '修改我的密码' in accounts_page.text
     assert '管理员重置密码' in accounts_page.text
+    assert '<th>更新时间</th>' not in accounts_page.text
+    assert 'account-line' in accounts_page.text
+    assert 'role-cell' in accounts_page.text
+    assert 'status-cell' in accounts_page.text
+    assert 'roleHint(' not in accounts_page.text
     assert '/api/ops/auth/password' in accounts_page.text
     assert 'showToast' in accounts_page.text
+    assert '显示密码' in accounts_page.text
+    assert 'togglePasswordVisibility' in accounts_page.text
+    assert '密码修改成功' in accounts_page.text
+    assert '生成临时密码' in accounts_page.text
+    assert 'generateTemporaryPassword' in accounts_page.text
+    assert 'copyGeneratedPassword' in accounts_page.text
+    assert '已生成新密码' in accounts_page.text
 
     for path in [
         '/ops',
@@ -168,6 +185,69 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
     assert new_login.status_code == 200
 
 
+def test_super_admin_can_delete_accounts_and_admin_cannot_manage_super_admin_password():
+    client = make_client({'AUTH_ENABLED': True})
+    super_user = bootstrap_admin_and_login(client)
+    assert super_user['role'] == 'super_admin'
+
+    create_admin = client.post('/api/ops/accounts', json={
+        'username': 'admin02',
+        'password': 'admin12345',
+        'display_name': '管理员2',
+        'role': 'admin',
+        'enabled': True,
+    })
+    assert create_admin.status_code == 200
+    admin_user = create_admin.json()['user']
+    assert admin_user['role'] == 'admin'
+
+    create_operator = client.post('/api/ops/accounts', json={
+        'username': 'ops_delete',
+        'password': 'operator123',
+        'display_name': '待删除运营',
+        'role': 'operator',
+        'enabled': True,
+    })
+    assert create_operator.status_code == 200
+    operator_user = create_operator.json()['user']
+
+    super_page = client.get('/ops/accounts')
+    assert super_page.status_code == 200
+    assert '超级管理员' in super_page.text
+    assert 'deleteAccount' in super_page.text
+    assert '删除账号' in super_page.text
+
+    delete_operator = client.delete(f"/api/ops/accounts/{operator_user['user_id']}")
+    assert delete_operator.status_code == 200
+    assert delete_operator.json()['deleted'] is True
+    remaining_usernames = [row['username'] for row in client.get('/api/ops/accounts').json()['rows']]
+    assert 'ops_delete' not in remaining_usernames
+
+    client.post('/api/ops/auth/logout')
+    admin_login = client.post('/api/ops/auth/login', json={'username': 'admin02', 'password': 'admin12345'})
+    assert admin_login.status_code == 200
+
+    admin_page = client.get('/ops/accounts')
+    assert admin_page.status_code == 200
+    assert '删除账号' not in admin_page.text
+    assert 'deleteAccount' not in admin_page.text
+
+    admin_delete_super = client.delete(f"/api/ops/accounts/{super_user['user_id']}")
+    assert admin_delete_super.status_code == 403
+    assert admin_delete_super.json()['detail'] == 'ops_super_admin_required'
+
+    admin_reset_super = client.put(f"/api/ops/accounts/{super_user['user_id']}", json={'password': 'blocked123'})
+    assert admin_reset_super.status_code == 403
+    assert admin_reset_super.json()['detail'] == 'super_admin_password_protected'
+
+    client.post('/api/ops/auth/logout')
+    super_login = client.post('/api/ops/auth/login', json={'username': 'admin01', 'password': 'secret123'})
+    assert super_login.status_code == 200
+    delete_admin = client.delete(f"/api/ops/accounts/{admin_user['user_id']}")
+    assert delete_admin.status_code == 200
+    assert delete_admin.json()['deleted'] is True
+
+
 def test_operator_cannot_access_admin_account_management():
     client = make_client({'AUTH_ENABLED': True})
     bootstrap_admin_and_login(client)
@@ -186,12 +266,69 @@ def test_operator_cannot_access_admin_account_management():
     login = client.post('/api/ops/auth/login', json={'username': 'ops02', 'password': 'operator123'})
     assert login.status_code == 200
 
-    accounts_page = client.get('/ops/accounts', follow_redirects=False)
-    assert accounts_page.status_code == 303
-    assert accounts_page.headers['location'] == '/ops'
+    accounts_page = client.get('/ops/accounts')
+    assert accounts_page.status_code == 200
+    assert '账号设置' in accounts_page.text
+    assert '修改我的密码' in accounts_page.text
+    assert '新增账号' not in accounts_page.text
+    assert '管理员重置密码' not in accounts_page.text
 
     accounts_api = client.get('/api/ops/accounts')
     assert accounts_api.status_code == 403
+
+
+
+
+def test_operator_intake_config_center_is_read_only_and_mutations_are_admin_only():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    create = client.post('/api/ops/accounts', json={
+        'username': 'ops_config',
+        'password': 'operator123',
+        'display_name': '运营配置只读',
+        'role': 'operator',
+        'enabled': True,
+    })
+    assert create.status_code == 200
+    client.post('/api/ops/auth/logout')
+    login = client.post('/api/ops/auth/login', json={'username': 'ops_config', 'password': 'operator123'})
+    assert login.status_code == 200
+
+    page = client.get('/ops/intake-bot-presets')
+    assert page.status_code == 200
+    body = page.text
+    assert '收口配置中心' in body
+    assert 'data-ops-role="operator"' in body
+    assert 'body[data-ops-role="operator"] .admin-only' in body
+    assert "window.__opsUserRole = 'operator'" in body
+    assert "if (!isOpsAdmin())" in body
+
+    preset_update = client.post('/api/ops/intake-bot-presets/current', json={
+        'default_app': 'Linky',
+        'default_guild': 'Piso',
+    })
+    assert preset_update.status_code == 403
+    assert preset_update.json()['detail'] == 'ops_admin_required'
+
+    executor_update = client.post('/api/ops/guild-executors/Permata', json={
+        'backend_url': 'https://guild.example/addAnchor',
+        'login_username': 'user',
+        'password_secret_ref': 'secret-ref',
+        'proxy_url': '',
+        'proxy_region': '',
+        'proxy_type': 'http',
+        'browser_profile_key': 'profile',
+        'bind_concurrency': 1,
+        'request_timeout_seconds': 30,
+        'enabled': True,
+        'notes': '',
+    })
+    assert executor_update.status_code == 403
+    assert executor_update.json()['detail'] == 'ops_admin_required'
+
+    executor_delete = client.delete('/api/ops/guild-executors/Permata')
+    assert executor_delete.status_code == 403
+    assert executor_delete.json()['detail'] == 'ops_admin_required'
 
 
 def test_operator_can_access_ops_runtime_health_but_not_admin_only_ops_api():
@@ -252,8 +389,10 @@ def test_operator_can_access_ops_runtime_health_but_not_admin_only_ops_api():
     assert '/ops/intake-bot-presets' in ops_page_body
     assert '/ops/production-ops' in ops_page_body
     assert '/ops/registration-group-approval-batch-members' in ops_page_body
-    assert '/ops/official-group-bridge' in ops_page_body
-    assert '/ops/accounts' not in ops_page_body
+    assert '/ops/accounts' in ops_page_body
+    assert '账号设置' in ops_page_body
+    assert '/ops/group-atmosphere' not in ops_page_body
+    assert '/ops/official-group-bridge' not in ops_page_body
 
     account_runtime = client.get('/api/ops/whatsapp-approval-accounts/wa-admin-demo/runtime')
     assert account_runtime.status_code in {200, 404}
@@ -1168,7 +1307,7 @@ def test_intake_bot_presets_page_loads():
     assert '编辑名称' in body
     assert 'preset-row-actions' in body
     assert 'preset-robot-name-cell' in body
-    assert '公会执行器配置' in body
+    assert '新增 / 更新公会执行器' in body
     assert '代理地区（proxy_region）' in body
     assert 'password_secret_ref' in body
     assert '保存公会执行器' in body
@@ -1227,6 +1366,7 @@ def test_production_ops_page_loads():
     assert '生产守护开关' not in body
     assert 'saveProductionOpsDaemonConfig' not in body
     assert 'production_ops_enabled_toggle' not in body
+    assert "const pathsHint = document.getElementById('productionOpsPathsHint');" in body
     assert 'launchd' in body
     assert '实时状态卡片' not in body
     assert '账号名称' in body
@@ -1255,6 +1395,8 @@ def test_production_ops_page_loads():
     assert '需人工补齐' in body
     assert '已接入群状态探针' not in body
     assert '守护进程=' in body
+    assert '待核验=${observationWarnings}' in body
+    assert 'observation_warnings' in body
     assert '已安装' in body
     assert '未安装' in body
     assert '正常' in body
@@ -1280,6 +1422,12 @@ def test_production_ops_page_loads():
     assert 'wa_group_auto_recover_worker_1' in body
     assert '本群监控' in body
     assert 'wa_group_enabled_1' in body
+    assert '新增群组' in body
+    assert 'addApprovalBindingCard' in body
+    assert 'removeApprovalBindingCard' in body
+    assert 'deleteApprovalBinding' in body
+    assert '删除群组' in body
+    assert '确认删除这个群组配置吗' in body
     assert '实时刷新探针' in body
     assert 'refreshApprovalBindingProbe' in body
     assert '距离下次审批' in body
@@ -1302,10 +1450,10 @@ def test_registration_group_approval_batch_members_page_loads():
     assert 'page-shell' in body
     assert 'shell-nav' in body
     assert '注册群审批留存页' in body
-    assert '官方群审批桥接台' in body
+    assert '官方群审批桥接台' not in body
     assert 'Operations' not in body
     assert '/api/ops/registration-group-approval-batch-members' in body
-    assert '审批批次成员查询' in body
+    assert '审批批次成员查询' not in body
     assert '时间周期' in body
     assert 'rangePickerInput' in body
     assert 'rangePickerClearBtn' in body
@@ -1622,7 +1770,9 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
     assert initial.status_code == 200
     initial_body = initial.json()
     assert initial_body['rows'] == []
-    assert any(option['robot_name'] == '审批bot01' for option in initial_body['notify_robot_options'])
+    notify_robot_names = {option['profile_name']: option['robot_name'] for option in initial_body['notify_robot_options']}
+    assert notify_robot_names['wa-approval-broadcast'] == '审批bot01'
+    assert notify_robot_names['wa-approval-broadcast-02'] == '审批bot02'
     assert [item['label'] for item in initial_body['area_options']] == ['Indonesia', 'Brazil', 'Mexico']
 
     updated_area_options = client.post('/api/ops/whatsapp-approval-area-options', json={
@@ -1666,7 +1816,7 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
                 'link': 'https://chat.whatsapp.com/group-b',
                 'group_name': 'PH 审批群 B',
                 'area': 'Philippines',
-                'notify_profile_name': 'wa-approval-broadcast',
+                'notify_profile_name': 'wa-approval-broadcast-02',
                 'enabled': True,
                 'registration_group': 'PH Registrations B',
                 'group_id': '120363425215002842@g.us',
@@ -1730,7 +1880,7 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
     assert bindings[1]['link'] == 'https://chat.whatsapp.com/group-b'
     assert bindings[1]['group_name'] == 'PH 审批群 B'
     assert bindings[1]['area'] == 'Philippines'
-    assert bindings[1]['notify_profile_name'] == 'wa-approval-broadcast'
+    assert bindings[1]['notify_profile_name'] == 'wa-approval-broadcast-02'
     assert bindings[1]['enabled'] is True
     assert bindings[1]['registration_group'] == 'PH Registrations B'
     assert bindings[1]['group_id'] == '120363425215002842@g.us'
@@ -1753,13 +1903,13 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
         {'start': '00:00', 'end': '23:59'},
     ]
     assert body['account']['group_binding_runtimes'][0]['notify_profile_name'] == 'wa-approval-broadcast'
-    assert body['account']['group_binding_runtimes'][1]['notify_profile_name'] == 'wa-approval-broadcast'
+    assert body['account']['group_binding_runtimes'][1]['notify_profile_name'] == 'wa-approval-broadcast-02'
     assert body['account']['group_binding_runtimes'][0]['group_name'] == 'PH 审批群 A'
     assert body['account']['group_binding_runtimes'][1]['group_name'] == 'PH 审批群 B'
     assert body['account']['group_binding_runtimes'][0]['enabled'] is False
     assert body['account']['group_binding_runtimes'][1]['enabled'] is True
-    assert body['account']['notify_profile_name'] == 'wa-approval-broadcast'
-    assert body['account']['notify_robot_name'] == '审批bot01'
+    assert body['account']['notify_profile_name'] == 'wa-approval-broadcast-02'
+    assert body['account']['notify_robot_name'] == '审批bot02'
     assert body['account']['approval_count_threshold'] == 31
     assert body['account']['approval_timeout_minutes'] == 45
     assert body['account']['approval_rule_text'] == '满31人或45分钟'
@@ -2608,7 +2758,7 @@ def test_whatsapp_approval_account_session_start_returns_qr_for_selected_account
         if cmd0 == 'node':
             class Result:
                 returncode = 0
-                stdout = 'ASCII-QR-LINE-1\nASCII-QR-LINE-2\n'
+                stdout = 'data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMzAwIDMwMCI+PC9zdmc+\n'
                 stderr = ''
             return Result()
         raise AssertionError(f'unexpected subprocess command: {command}')
@@ -2623,7 +2773,8 @@ def test_whatsapp_approval_account_session_start_returns_qr_for_selected_account
         assert started_body['session']['account_key'] == 'wa-admin-qr'
         assert started_body['session']['session_target_match'] is True
         assert started_body['session']['qr_available'] is True
-        assert 'ASCII-QR-LINE-1' in started_body['session']['qr_ascii']
+        assert started_body['session']['qr_image_data_url'].startswith('data:image/svg+xml;base64,')
+        assert started_body['session'].get('qr_ascii') in {None, ''}
         assert started_body['session']['auth_strategy'] == 'LocalAuth'
         assert started_body['session']['auth_path'].endswith(expected_auth_path_suffix)
         assert started_body['session']['login_verified'] is False
@@ -6145,6 +6296,7 @@ def test_intake_bot_presets_api_uses_cached_dropdown_options_when_live_crm_is_un
         'LARK_APP_ID': 'cli_test_app',
         'LARK_DEFAULT_APP_NAME': 'Linky',
         'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'AUTH_ENABLED': False,
     })
     service = client.app.state.service
     service.crm_adapter = StubCrmDropdownAdapter(
@@ -6175,7 +6327,7 @@ def test_intake_bot_presets_api_uses_cached_dropdown_options_when_live_crm_is_un
 
 def test_persisted_current_preset_overrides_env_defaults_after_restart(tmp_path):
     db_path = str(tmp_path / 'persisted-presets.db')
-    first = make_client({'DB_PATH': db_path, 'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    first = make_client({'DB_PATH': db_path, 'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso', 'AUTH_ENABLED': False})
     first.app.state.service.crm_adapter = StubCrmDropdownAdapter(
         apps=[{'id': 'app_1', 'name': 'Linky'}, {'id': 'app_2', 'name': 'FUMI'}],
         depts=[{'id': 'dept_1', 'deptName': 'Piso'}, {'id': 'dept_2', 'deptName': 'Permata'}],
@@ -6186,7 +6338,7 @@ def test_persisted_current_preset_overrides_env_defaults_after_restart(tmp_path)
     })
     assert saved.status_code == 200
 
-    restarted = make_client({'DB_PATH': db_path, 'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    restarted = make_client({'DB_PATH': db_path, 'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso', 'AUTH_ENABLED': False})
     runtime = restarted.get('/api/ops/runtime-health')
     assert runtime.status_code == 200
     body = runtime.json()

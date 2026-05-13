@@ -81,9 +81,9 @@ OFFICIAL_GROUP_BRIDGE_PAGE_HTML = """
       <a href="__OPS_BASE_URL__/ops">运营工作台</a>
       <a href="__OPS_BASE_URL__/ops/intake-bot-presets">收口配置中心</a>
       <a href="__OPS_BASE_URL__/ops/production-ops">群审批控制台</a>
-      <a href="__OPS_BASE_URL__/ops/group-atmosphere">群活跃助手</a>
+      <a href="__OPS_BASE_URL__/ops/group-atmosphere" data-admin-only-nav="true">群活跃助手</a>
       <a href="__OPS_BASE_URL__/ops/registration-group-approval-batch-members">注册群审批留存页</a>
-      <a href="__OPS_BASE_URL__/ops/accounts" data-admin-only-nav="true">账号管理</a>
+      <a href="__OPS_BASE_URL__/ops/accounts">账号设置</a>
     </div>
     <div class="hero">
       <h1>官方群审批桥接台</h1>

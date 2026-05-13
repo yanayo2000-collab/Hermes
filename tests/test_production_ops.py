@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from app.production_ops import (
     NOTIFICATION_POLICY_BY_CODE,
     build_incidents,
+    build_observation_warnings,
     build_success_notifications,
     expand_notify_profile_targets,
     format_lark_alert,
@@ -15,15 +16,11 @@ from app.production_ops import (
 )
 
 
-def test_expand_notify_profile_targets_fanouts_broadcast_pair():
+def test_expand_notify_profile_targets_keeps_bot01_single_target():
     assert expand_notify_profile_targets('wa-approval-broadcast', '审批bot01') == [
         {
             'profile_name': 'wa-approval-broadcast',
             'robot_name': '审批bot01',
-        },
-        {
-            'profile_name': 'wa-approval-broadcast-02',
-            'robot_name': '审批Bot02',
         },
     ]
 
@@ -84,13 +81,13 @@ def test_notification_policy_matrix_exact_match_guardrail():
             'retry': 'after_cooldown',
             'partial_sent': 'n/a',
         },
-        'registration_zero_pending_unverified': {
-            'family': 'incident',
-            'dedupe': 'cooldown',
-            'retry': 'after_cooldown',
-            'partial_sent': 'n/a',
-        },
         'formal_approval_succeeded': {
+            'family': 'success',
+            'dedupe': 'one_shot_per_dedupe_key',
+            'retry': 'until_all_targets_sent',
+            'partial_sent': 'retry_unsent_targets_only',
+        },
+        'formal_approval_recovered': {
             'family': 'success',
             'dedupe': 'one_shot_per_dedupe_key',
             'retry': 'until_all_targets_sent',
@@ -143,7 +140,6 @@ def test_notification_policy_matrix_covers_all_production_ops_notification_build
         'formal_approval_failed',
         'startup_initial_batch_failed',
         'daemon_cycle_error',
-        'registration_zero_pending_unverified',
         'formal_approval_succeeded',
         'registration_cycle_noop',
         'startup_initial_batch_succeeded',
@@ -363,7 +359,7 @@ def test_build_incidents_skips_worker_state_failed_after_retry_recovery():
 
 
 
-def test_build_incidents_emits_registration_zero_pending_unverified_for_ambiguous_empty_queue():
+def test_build_observation_warnings_emits_registration_zero_pending_unverified_for_ambiguous_empty_queue():
     cycle = {
         'backend_health': {'ok': True},
         'worker_state': {'ok': True},
@@ -408,11 +404,14 @@ def test_build_incidents_emits_registration_zero_pending_unverified_for_ambiguou
     }
 
     incidents = build_incidents(cycle)
+    warnings = build_observation_warnings(cycle)
 
-    assert [item['code'] for item in incidents] == ['registration_zero_pending_unverified']
-    assert incidents[0]['notify_disabled'] is True
-    assert incidents[0]['details']['group_name'] == 'RG'
-    assert incidents[0]['details']['reason'] == 'same_runtime_family_zero_pending'
+    assert incidents == []
+    assert [item['code'] for item in warnings] == ['registration_zero_pending_unverified']
+    assert warnings[0]['category'] == 'observation_warning'
+    assert warnings[0]['notify_disabled'] is True
+    assert warnings[0]['details']['group_name'] == 'RG'
+    assert warnings[0]['details']['reason'] == 'same_runtime_family_zero_pending'
 
 
 
