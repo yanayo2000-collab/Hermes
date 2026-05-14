@@ -64,6 +64,12 @@ NOTIFICATION_POLICY_BY_CODE: Dict[str, Dict[str, str]] = {
         'retry': 'until_all_targets_sent',
         'partial_sent': 'retry_unsent_targets_only',
     },
+    'worker_probe_recovered': {
+        'family': 'success',
+        'dedupe': 'one_shot_per_dedupe_key',
+        'retry': 'until_all_targets_sent',
+        'partial_sent': 'retry_unsent_targets_only',
+    },
     'registration_cycle_noop': {
         'family': 'success',
         'dedupe': 'one_shot_per_dedupe_key',
@@ -114,6 +120,7 @@ def _default_alert_templates() -> Dict[str, Any]:
         'reasons': {
             'formal_approval_succeeded': '已审批通过 {approved_count} 人',
             'formal_approval_recovered': '自动重试成功，审批已完成，CRM 已写入',
+            'worker_probe_recovered': '探针已自动恢复，群状态读取恢复正常',
             'manual_approval_succeeded': '已人工审批通过 {approved_count} 人',
             'startup_initial_batch_succeeded': '启动首批审批已通过 {approved_count} 人',
             'official_group_approval_succeeded': '已审批通过 {approved_count} 人',
@@ -555,7 +562,7 @@ def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
             'dedupe_key': 'backend_unhealthy',
         })
     worker = cycle.get('worker_state') or {}
-    if worker.get('ok') is False:
+    if worker.get('ok') is False and not bool(worker.get('suppress_incident')):
         incidents.append({
             'severity': 'critical',
             'code': 'worker_state_failed',
@@ -584,10 +591,12 @@ def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
         returncode = action.get('returncode')
         confirmed_failure = returncode not in (None, 0) or verified is False or crm_recorded is False
         if confirmed_failure:
+            result_code = str(formal_result.get('result_code') or '').strip()
+            summary = '正式审批已中止' if result_code == 'requester_fingerprint_changed_before_approval' else '正式审批未闭环'
             incidents.append({
                 'severity': 'critical',
                 'code': 'formal_approval_failed',
-                'summary': '正式审批未闭环',
+                'summary': summary,
                 'details': {
                     'fingerprint': fingerprint,
                     'pending_count': action.get('pending_count'),
@@ -597,7 +606,7 @@ def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
                     'approval_run_id': approval_run_id,
                     'verified': verified,
                     'crm_recorded': crm_recorded,
-                    'result_code': formal_result.get('result_code'),
+                    'result_code': result_code or None,
                 },
                 'dedupe_key': f'formal_approval_failed:{dedupe_suffix}',
             })
@@ -1104,6 +1113,10 @@ def _compact_reason_text(incident: Dict[str, Any], cycle: Dict[str, Any]) -> str
         if crm_recorded is None:
             crm_recorded = details.get('crm_recorded')
 
+        result_code = str(details.get('result_code') or formal_result.get('result_code') or '').strip()
+        if result_code == 'requester_fingerprint_changed_before_approval':
+            return '审批队列指纹不一致，系统已中止本轮审批以避免错批'
+
         if returncode not in (None, 0):
             return '审批脚本执行失败'
         if verified is True and crm_recorded is True:
@@ -1133,9 +1146,15 @@ def _compact_reason_text(incident: Dict[str, Any], cycle: Dict[str, Any]) -> str
 
     if code == 'worker_state_failed':
         recovery = details.get('recovery') if isinstance(details.get('recovery'), dict) else {}
+        error = str(details.get('error') or '').strip()
+        recovery_reason = str(recovery.get('reason') or '').strip()
+        login_status = str(recovery.get('login_check_status') or '').strip()
+        if error == 'whatsapp_account_waiting_for_scan' or recovery_reason == 'whatsapp_account_waiting_for_scan' or login_status == 'waiting_for_scan':
+            return 'WhatsApp账号待登录，无法探测注册群'
         if recovery.get('attempted'):
             return '自动重连失败，已重试后仍不可用'
-        error = str(details.get('error') or '').strip()
+        if error == 'worker_base_url_missing_for_selected_binding':
+            return 'WhatsApp账号运行态未就绪，暂时无法探测该注册群'
         return error or 'worker 群状态探测失败'
 
     if code == 'startup_initial_batch_failed':
@@ -1294,6 +1313,38 @@ def format_lark_alert(service_name: str, incident: Dict[str, Any], cycle: Dict[s
         if reason:
             lines.append(f'原因: {reason}')
         return '\n'.join(lines)
+    if code == 'worker_probe_recovered':
+        details = incident.get('details') if isinstance(incident.get('details'), dict) else {}
+        registration_group_label = str(
+            details.get('group_name')
+            or details.get('target_group_label')
+            or ((cycle.get('monitor_target') or {}).get('group_name') if isinstance(cycle.get('monitor_target'), dict) else '')
+            or ((cycle.get('monitor_target') or {}).get('binding_group_name') if isinstance(cycle.get('monitor_target'), dict) else '')
+            or cycle.get('registration_group')
+            or ''
+        ).strip()
+        original_failed_at = _format_alert_time(str(details.get('original_failed_at') or details.get('failed_at') or ''))
+        streak_count = details.get('streak_count')
+        lines = [
+            '✅ 生产守护恢复｜探针已恢复',
+            f'时间: {checked_at}',
+        ]
+        if registration_group_label:
+            lines.append(f'注册群: {registration_group_label}')
+        if original_failed_at:
+            lines.append(f'原告警: {original_failed_at}')
+        try:
+            streak_value = int(streak_count)
+        except (TypeError, ValueError):
+            streak_value = None
+        if streak_value is not None and streak_value > 0:
+            lines.append(f'异常轮次: {streak_value}')
+        lines.append('结果: 探针已自动恢复，群状态读取恢复正常')
+        reason = str(incident.get('reason_text') or '').strip()
+        if reason:
+            lines.append(f'原因: {reason}')
+        return '\n'.join(line for line in lines if line)
+
     if code == 'formal_approval_recovered':
         details = incident.get('details') if isinstance(incident.get('details'), dict) else {}
         registration_group_label = str(

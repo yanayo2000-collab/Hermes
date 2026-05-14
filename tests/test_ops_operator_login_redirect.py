@@ -12,6 +12,13 @@ def make_client(settings=None):
 
 def test_login_page_preserves_operator_account_settings_next_target():
     client = make_client()
+    admin = client.post('/api/ops/auth/bootstrap', json={
+        'username': 'admin01',
+        'password': 'secret123',
+        'display_name': 'Admin',
+    })
+    assert admin.status_code == 200
+    client.post('/api/ops/auth/logout')
 
     html = client.get('/login?next=/ops/accounts').text
 
@@ -21,6 +28,8 @@ def test_login_page_preserves_operator_account_settings_next_target():
     assert "'/ops/production-ops'" not in html
     assert "'/ops/group-atmosphere'" not in html
     assert 'safeNextUrlForRole(data.user && data.user.role)' in html
+    assert '初始化管理员' not in html
+    assert 'bootstrapTab' not in html
 
 
 def test_operator_login_api_succeeds_and_account_settings_is_self_service_only():

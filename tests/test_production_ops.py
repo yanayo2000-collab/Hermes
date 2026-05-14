@@ -232,6 +232,46 @@ def test_build_incidents_emits_backend_and_formal_approval_failures():
     assert incidents[2]['details']['session_id'] == 'session-1'
 
 
+def test_formal_approval_fingerprint_mismatch_alert_is_actionable():
+    cycle = {
+        'checked_at': '2026-05-13T03:36:46+00:00',
+        'registration_group': '注册测试1',
+        'backend_health': {'ok': True},
+        'worker_state': {'ok': True},
+        'release_evaluation': {'ok': True},
+        'formal_approval': {
+            'triggered': True,
+            'ok': False,
+            'fingerprint': 'fp-mismatch',
+            'release_count': 17,
+            'returncode': 0,
+            'result': {
+                'formal_run': {
+                    'approval_run_id': 'run-fingerprint-mismatch',
+                    'final_status': {
+                        'result': {
+                            'verified': False,
+                            'crm_recorded': False,
+                            'result_code': 'requester_fingerprint_changed_before_approval',
+                        }
+                    },
+                }
+            },
+        },
+    }
+
+    incidents = build_incidents(cycle)
+    text = format_lark_alert('production-ops-daemon', incidents[0], cycle)
+
+    assert incidents[0]['summary'] == '正式审批已中止'
+    assert incidents[0]['details']['result_code'] == 'requester_fingerprint_changed_before_approval'
+    assert '🚨 生产守护告警｜正式审批已中止' in text
+    assert '时间: 2026-05-13 11:36:46 UTC+8' in text
+    assert '注册群: 注册测试1' in text
+    assert '批次人数: 17' in text
+    assert '原因: 审批队列指纹不一致，系统已中止本轮审批以避免错批' in text
+
+
 def test_build_incidents_uses_stable_unknown_dedupe_when_ids_missing():
     cycle = {
         'backend_health': {'ok': True},
@@ -1495,3 +1535,29 @@ def test_format_lark_alert_uses_compact_worker_recovery_failed_reason():
 
     assert '原因: 自动重连失败，已重试后仍不可用' in text
     assert '<urlopen error [Errno 61] Connection refused>' not in text
+
+
+def test_format_lark_alert_uses_waiting_for_scan_worker_reason():
+    cycle = {
+        'checked_at': '2026-05-13T11:14:07+00:00',
+        'registration_group': 'https://chat.whatsapp.com/new',
+    }
+    incident = {
+        'severity': 'critical',
+        'code': 'worker_state_failed',
+        'summary': '群状态探测失败',
+        'details': {
+            'error': 'whatsapp_account_waiting_for_scan',
+            'recovery': {
+                'attempted': False,
+                'reason': 'whatsapp_account_waiting_for_scan',
+                'login_check_status': 'waiting_for_scan',
+                'qr_available': True,
+            },
+        },
+    }
+
+    text = format_lark_alert('production-ops-daemon', incident, cycle)
+
+    assert '原因: WhatsApp账号待登录，无法探测注册群' in text
+    assert 'whatsapp_account_waiting_for_scan' not in text

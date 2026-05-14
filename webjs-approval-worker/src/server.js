@@ -268,6 +268,83 @@ function safeString(value) {
   return String(value);
 }
 
+function participantIdentityKeys(participant) {
+  const keys = new Set();
+  const push = (value) => {
+    const text = safeString(value);
+    if (!text) return;
+    keys.add(text);
+    const digits = String(text).replace(/\D/g, '');
+    if (digits) keys.add(digits);
+  };
+  push(participant);
+  if (participant && typeof participant === 'object') {
+    push(participant.id);
+    push(participant.wid);
+    push(participant.user);
+    push(participant._serialized);
+    push(participant.id && participant.id._serialized);
+    push(participant.id && participant.id.user);
+    push(participant.wid && participant.wid._serialized);
+    push(participant.wid && participant.wid.user);
+  }
+  return Array.from(keys).filter(Boolean);
+}
+
+function buildParticipantIdentitySet(participants) {
+  const identitySet = new Set();
+  (Array.isArray(participants) ? participants : []).forEach((participant) => {
+    participantIdentityKeys(participant).forEach((key) => identitySet.add(key));
+  });
+  return identitySet;
+}
+
+function selectedCandidateIdentityKeys(candidate) {
+  const keys = new Set();
+  const entry = candidate && candidate.entry ? candidate.entry : candidate;
+  const push = (value) => {
+    const text = safeString(value);
+    if (!text) return;
+    keys.add(text);
+    const digits = String(text).replace(/\D/g, '');
+    if (digits) keys.add(digits);
+  };
+  if (entry && typeof entry === 'object') {
+    push(entry.requesterId);
+    push(entry.debugContactNumberRaw);
+    push(entry.debugLidPhoneRaw);
+    push(entry.phoneRaw);
+    push(entry.phoneNormalized);
+  }
+  return Array.from(keys).filter(Boolean);
+}
+
+function selectedCandidatesConfirmedInParticipants(selectedCandidates, participants) {
+  const participantIds = buildParticipantIdentitySet(participants);
+  const candidates = Array.isArray(selectedCandidates) ? selectedCandidates : [];
+  return candidates.filter((candidate) => {
+    const keys = selectedCandidateIdentityKeys(candidate);
+    return keys.some((key) => participantIds.has(key));
+  }).map((candidate) => (candidate && candidate.entry ? candidate.entry : candidate)).filter(Boolean);
+}
+
+function buildRequesterIdentitySet(requests) {
+  const identitySet = new Set();
+  (Array.isArray(requests) ? requests : []).forEach((request) => {
+    selectedCandidateIdentityKeys(request).forEach((key) => identitySet.add(key));
+  });
+  return identitySet;
+}
+
+function selectedCandidatesAbsentFromRequests(selectedCandidates, requestsAfter) {
+  const pendingIds = buildRequesterIdentitySet(requestsAfter);
+  const candidates = Array.isArray(selectedCandidates) ? selectedCandidates : [];
+  return candidates.filter((candidate) => {
+    const keys = selectedCandidateIdentityKeys(candidate);
+    return keys.length > 0 && !keys.some((key) => pendingIds.has(key));
+  }).map((candidate) => (candidate && candidate.entry ? candidate.entry : candidate)).filter(Boolean);
+}
+
 function resolveLocalAuthSessionDir(dataPath, clientId) {
   const basePath = path.resolve(String(dataPath || '').trim() || '.');
   const normalizedClientId = String(clientId || '').trim();
@@ -970,8 +1047,8 @@ async function getRequestEnriched(group) {
   return getRequestEnrichedWithClient(client, group);
 }
 
-async function getApprovalRequestEnriched(group) {
-  return getRequestEnrichedWithClient(approvalClient, group);
+async function getApprovalRequestEnriched(group, activeClient = approvalClient) {
+  return getRequestEnrichedWithClient(activeClient, group);
 }
 
 function scoreRequest(entry, hints) {
@@ -1318,76 +1395,217 @@ async function inspectApprovalReviewSurface(context, options = {}) {
   };
 }
 
-async function buildGroupStateFromGroup(context, group) {
+async function forceRefreshApprovalGroupBeforeRead(context, group, options = {}) {
+  const activeClient = options.client || approvalClient;
+  const page = activeClient && activeClient.pupPage;
+  const groupId = safeString(group && group.id) || safeString(context && context.registration_group);
+  const waitFn = typeof options.waitFn === 'function' ? options.waitFn : sleep;
+  const refreshWaitMs = Math.max(0, Number(options.refreshWaitMs ?? 1500));
+  const settleWaitMs = Math.max(0, Number(options.settleWaitMs ?? 500));
+  const evidence = [];
+
+  if (activeClient && activeClient.interface && typeof activeClient.interface.openChatWindow === 'function' && groupId) {
+    await activeClient.interface.openChatWindow(groupId);
+    evidence.push('open_chat_window');
+    if (refreshWaitMs > 0) await waitFn(refreshWaitMs);
+  }
+  if (activeClient && activeClient.interface && typeof activeClient.interface.openChatDrawer === 'function' && groupId) {
+    try {
+      await activeClient.interface.openChatDrawer(groupId);
+      evidence.push('open_chat_drawer');
+      if (refreshWaitMs > 0) await waitFn(refreshWaitMs);
+    } catch (error) {
+      evidence.push(`open_chat_drawer_failed:${String(error && error.message ? error.message : error)}`);
+    }
+  }
+  if (group && typeof group.syncHistory === 'function') {
+    try {
+      await group.syncHistory();
+      evidence.push('sync_history');
+    } catch (error) {
+      evidence.push(`sync_history_failed:${String(error && error.message ? error.message : error)}`);
+    }
+  }
+  if (page && typeof page.evaluate === 'function' && groupId) {
+    try {
+      await page.evaluate(async (chatId) => {
+        const store = window.Store || {};
+        const chat = store.Chat && typeof store.Chat.get === 'function' ? store.Chat.get(chatId) : null;
+        if (chat && typeof chat.fetchGroupInfo === 'function') {
+          await chat.fetchGroupInfo();
+          return 'fetch_group_info';
+        }
+        const groupMetadata = store.GroupMetadata;
+        if (groupMetadata && typeof groupMetadata.update === 'function') {
+          await groupMetadata.update(chatId);
+          return 'group_metadata_update';
+        }
+        return 'no_internal_group_refresh_method';
+      }, groupId);
+      evidence.push('internal_group_metadata_refresh_attempted');
+    } catch (error) {
+      evidence.push(`internal_group_metadata_refresh_failed:${String(error && error.message ? error.message : error)}`);
+    }
+  }
+  if (settleWaitMs > 0) await waitFn(settleWaitMs);
+  return evidence;
+}
+
+function normalizeGroupStateMode(context = {}, options = {}) {
+  const rawMode = String(
+    (options && options.mode)
+    || (context && context.mode)
+    || (context && context.probe_mode)
+    || ''
+  ).trim().toLowerCase();
+  if (rawMode === 'fast') return 'fast';
+  if (rawMode === 'full_verify' || rawMode === 'full-verify' || rawMode === 'full') return 'full_verify';
+  return 'full_verify';
+}
+
+function buildFastRequesterRows(rawRequests) {
+  return (Array.isArray(rawRequests) ? rawRequests : []).map((item) => {
+    const requesterId = safeString(item && item.id);
+    const requestedAtUnix = item && item.t ? Number(item.t) : null;
+    return {
+      requesterId,
+      requestedAtUnix,
+      requestedAtIso: requestedAtUnix ? new Date(requestedAtUnix * 1000).toISOString() : null,
+      requestMethod: item && item.requestMethod ? item.requestMethod : null,
+    };
+  });
+}
+
+function groupStateFingerprint(groupId, requesterIds, requestedAtValues) {
+  const raw = [groupId || '', ...(requesterIds || []), ...(requestedAtValues || [])].join('|');
+  let hash = 0;
+  for (let index = 0; index < raw.length; index += 1) {
+    hash = ((hash << 5) - hash + raw.charCodeAt(index)) | 0;
+  }
+  return `gs_${Math.abs(hash).toString(16)}`;
+}
+
+async function buildGroupStateFromGroup(context, group, options = {}) {
   const groupId = safeString(group.id);
   const groupName = group.name || context.registration_group;
-  const memberCount = Array.isArray(group.participants) ? group.participants.length : null;
-  const requests = await getApprovalRequestEnriched(group);
+  const mode = normalizeGroupStateMode(context, options);
   const sourceTs = new Date().toISOString();
+  if (mode === 'fast') {
+    const rawRequests = typeof group.getGroupMembershipRequests === 'function'
+      ? await group.getGroupMembershipRequests()
+      : [];
+    const requesterRows = buildFastRequesterRows(rawRequests);
+    const requesterIds = requesterRows.map((row) => row.requesterId).filter(Boolean);
+    const requestedAtValues = requesterRows.map((row) => row.requestedAtUnix).filter(Boolean);
+    return {
+      group_id: groupId,
+      group_name: groupName,
+      pending_count: requesterRows.length,
+      member_count: null,
+      requester_ids: requesterIds,
+      requested_at_unix: requestedAtValues,
+      requesters: [],
+      source: 'group_state',
+      source_ts: sourceTs,
+      data_quality: 'fresh',
+      session_health: 'healthy',
+      pending_zero_confidence: requesterRows.length <= 0 ? 'unverified' : null,
+      zero_pending_unverified: requesterRows.length <= 0,
+      approval_state_status: requesterRows.length > 0 ? 'confirmed_pending' : 'unverified_empty',
+      refresh_attempted: false,
+      refresh_evidence: [],
+      probe_mode: 'fast',
+      source_layer: 'group_object',
+      verification_stage: 'fast',
+      fingerprint: groupStateFingerprint(groupId, requesterIds, requestedAtValues),
+    };
+  }
+  const memberCount = Array.isArray(group.participants) ? group.participants.length : null;
+  const refreshFn = typeof options.refreshFn === 'function' ? options.refreshFn : forceRefreshApprovalGroupBeforeRead;
+  const refreshEvidence = options.skipRefresh ? [] : await refreshFn(context, group, options);
+  const activeClient = options.activeClient || options.client || approvalClient;
+  const requests = await getApprovalRequestEnriched(group, activeClient);
+  const requesterIds = requests.map((row) => row.requesterId).filter(Boolean);
+  const requestedAtValues = requests.map((row) => row.requestedAtUnix).filter(Boolean);
   return {
     group_id: groupId,
     group_name: groupName,
     pending_count: requests.length,
     member_count: memberCount,
-    requester_ids: requests.map((row) => row.requesterId).filter(Boolean),
+    requester_ids: requesterIds,
+    requested_at_unix: requestedAtValues,
     requesters: requests,
     source: 'group_state',
     source_ts: sourceTs,
     data_quality: 'fresh',
     session_health: 'healthy',
     pending_zero_confidence: requests.length <= 0 ? 'unverified' : null,
+    refresh_attempted: !options.skipRefresh,
+    refresh_evidence: refreshEvidence,
+    probe_mode: 'full_verify',
+    source_layer: 'group_object',
+    verification_stage: 'full_verify',
+    fingerprint: groupStateFingerprint(groupId, requesterIds, requestedAtValues),
   };
 }
 
-async function groupState(context) {
+async function groupState(context, options = {}) {
   if (!approvalState.ready) {
     throw new Error(approvalState.last_qr ? 'approval client awaiting qr scan' : 'approval client is not ready');
   }
   const group = await resolveApprovalGroup(context.registration_group);
-  return buildGroupStateFromGroup(context, group);
+  return buildGroupStateFromGroup(context, group, options);
 }
 
-async function probeGroupState(context) {
+async function probeGroupState(context, options = {}) {
   if (!state.ready) {
     throw new Error(state.last_qr ? 'probe client awaiting qr scan' : 'probe client is not ready');
   }
   const group = await resolveGroup(context.registration_group);
-  return buildGroupStateFromGroup(context, group);
+  return buildGroupStateFromGroup(context, group, { ...options, client });
 }
 
-function buildAuthoritativeGroupState(statePayload, reviewSurface) {
+function buildAuthoritativeGroupState(statePayload, options = {}) {
+  const normalizedOptions = options || {};
   const basePayload = {
     ...(statePayload || {}),
     source_layer: 'group_object',
     verification_stage: 'direct',
-    zero_pending_unverified: Boolean(statePayload && statePayload.zero_pending_unverified),
     source: 'group_state',
     source_ts: (statePayload && statePayload.source_ts) || new Date().toISOString(),
     data_quality: (statePayload && statePayload.data_quality) || 'fresh',
     session_health: (statePayload && statePayload.session_health) || 'healthy',
   };
   const basePendingCount = Math.max(0, Number(basePayload.pending_count || 0));
-  const nextPayload = {
-    ...basePayload,
-    pending_zero_confidence: basePendingCount <= 0
-      ? String(basePayload.pending_zero_confidence || 'unverified')
-      : null,
-  };
-  if (reviewSurface && typeof reviewSurface === 'object') {
-    nextPayload.review_surface_diagnostics = {
-      pending_count: Math.max(0, Number(reviewSurface.pending_count || 0)),
-      requesters: Array.isArray(reviewSurface.requesters) ? reviewSurface.requesters : [],
-      requester_ids: Array.isArray(reviewSurface.requester_ids)
-        ? reviewSurface.requester_ids.map((value) => String(value || '').trim()).filter(Boolean)
-        : [],
-      review_surface_ready: Boolean(reviewSurface.review_surface_ready),
-      has_pending_section: Boolean(reviewSurface.has_pending_section),
-      has_pending_request_row: Boolean(reviewSurface.has_pending_request_row),
-      empty_queue_visible: Boolean(reviewSurface.empty_queue_visible),
-      source: 'review_surface_diagnostics',
+  const confirmedEmpty = Boolean(normalizedOptions.confirmedEmpty);
+  if (basePendingCount > 0) {
+    return {
+      ...basePayload,
+      pending_zero_confidence: null,
+      zero_pending_unverified: false,
+      zero_pending_unverified_reason: null,
+      zero_pending_verified_by: null,
+      approval_state_status: 'confirmed_pending',
     };
   }
-  return nextPayload;
+  if (confirmedEmpty) {
+    return {
+      ...basePayload,
+      pending_zero_confidence: 'confirmed',
+      zero_pending_unverified: false,
+      zero_pending_unverified_reason: null,
+      zero_pending_verified_by: 'consecutive_group_state_refresh',
+      approval_state_status: 'confirmed_empty',
+    };
+  }
+  return {
+    ...basePayload,
+    pending_zero_confidence: 'unverified',
+    zero_pending_unverified: true,
+    zero_pending_unverified_reason: normalizedOptions.unverifiedReason || 'group_state_zero_not_stable',
+    zero_pending_verified_by: null,
+    approval_state_status: 'unverified_empty',
+  };
 }
 
 function attachZeroPendingRecheckEvidence(authoritativeState, rechecks) {
@@ -1407,27 +1625,92 @@ function attachZeroPendingRecheckEvidence(authoritativeState, rechecks) {
 async function resolveAuthoritativeGroupState(context, options = {}) {
   const stateLoader = typeof options.stateLoader === 'function'
     ? options.stateLoader
-    : async () => groupState(context);
-  const diagnosticsLoader = typeof options.reviewSurfaceLoader === 'function'
-    ? options.reviewSurfaceLoader
-    : async (reviewOptions = {}) => inspectApprovalReviewSurface(context, reviewOptions);
+    : async (meta = {}) => groupState(context, { refreshReason: meta.reason });
+  const waitFn = typeof options.waitFn === 'function' ? options.waitFn : sleep;
+  const stableReadCount = Math.max(1, Number(options.zeroPendingStableReadCount ?? options.zeroPendingRetryCount ?? 3));
+  const retryWaitMs = Math.max(0, Number(options.zeroPendingRetryWaitMs ?? 2000));
 
-  const initialStatePayload = await stateLoader();
-  const reviewSurface = await diagnosticsLoader({ allowReloadOnUnconfirmedZero: false }).catch(() => null);
-  return buildAuthoritativeGroupState(initialStatePayload, reviewSurface);
+  let initialStatePayload;
+  try {
+    initialStatePayload = await stateLoader({ attempt: 1, reason: 'initial_group_state_read' });
+  } catch (error) {
+    throw error;
+  }
+  const initialPendingCount = Math.max(0, Number(initialStatePayload && initialStatePayload.pending_count || 0));
+  const initialRequesterIds = Array.isArray(initialStatePayload && initialStatePayload.requester_ids)
+    ? initialStatePayload.requester_ids.filter(Boolean)
+    : [];
+  if (initialPendingCount > 0 || initialRequesterIds.length > 0) {
+    return buildAuthoritativeGroupState({
+      ...(initialStatePayload || {}),
+      pending_count: Math.max(initialPendingCount, initialRequesterIds.length),
+    });
+  }
+
+  const rechecks = [];
+  let latestZeroPayload = initialStatePayload;
+  for (let attempt = 2; attempt <= stableReadCount; attempt += 1) {
+    if (retryWaitMs > 0) await waitFn(retryWaitMs);
+    try {
+      const nextPayload = await stateLoader({ attempt, reason: `stable_zero_recheck_${attempt}` });
+      const pendingCount = Math.max(0, Number(nextPayload && nextPayload.pending_count || 0));
+      const requesterIds = Array.isArray(nextPayload && nextPayload.requester_ids)
+        ? nextPayload.requester_ids.filter(Boolean)
+        : [];
+      rechecks.push({
+        attempt: attempt - 1,
+        source: 'group_object',
+        pending_count: Math.max(pendingCount, requesterIds.length),
+        zero_pending_unverified: false,
+        zero_pending_verified_by: null,
+        error: null,
+      });
+      if (pendingCount > 0 || requesterIds.length > 0) {
+        return attachZeroPendingRecheckEvidence(buildAuthoritativeGroupState({
+          ...(nextPayload || {}),
+          pending_count: Math.max(pendingCount, requesterIds.length),
+        }), rechecks);
+      }
+      latestZeroPayload = nextPayload;
+    } catch (error) {
+      rechecks.push({
+        attempt: attempt - 1,
+        source: 'group_object',
+        pending_count: 0,
+        zero_pending_unverified: true,
+        zero_pending_verified_by: null,
+        error: String(error && error.message ? error.message : error),
+      });
+      return attachZeroPendingRecheckEvidence(
+        buildAuthoritativeGroupState(latestZeroPayload || initialStatePayload, { unverifiedReason: 'group_state_zero_recheck_failed' }),
+        rechecks,
+      );
+    }
+  }
+  return attachZeroPendingRecheckEvidence(
+    buildAuthoritativeGroupState(latestZeroPayload || initialStatePayload, { confirmedEmpty: true }),
+    rechecks,
+  );
 }
 
 async function groupStateWithRecovery(context) {
+  const mode = normalizeGroupStateMode(context);
   try {
+    if (mode === 'fast') {
+      return await groupState(context, { mode: 'fast', skipRefresh: true });
+    }
     return await resolveAuthoritativeGroupState(context);
   } catch (error) {
     if (isExecutionContextDestroyedError(error)) {
       await sleep(400);
+      if (mode === 'fast') {
+        return await groupState(context, { mode: 'fast', skipRefresh: true });
+      }
       return await resolveAuthoritativeGroupState(context);
     }
     if (isRecoverableApprovalClientError(error)) {
       const group = await reloadApprovalGroupFromFreshSession(context, error && error.stack ? error.stack : error);
-      return buildAuthoritativeGroupState(await buildGroupStateFromGroup(context, group), null);
+      return buildAuthoritativeGroupState(await buildGroupStateFromGroup(context, group, { mode: 'full_verify' }), null);
     }
     throw error;
   }
@@ -1726,23 +2009,31 @@ async function approveMembershipRequests(context) {
     }
   }
 
+  const approvedSucceeded = Array.isArray(approvalResults) ? approvalResults.filter((item) => !item.error || Number(item.error) === 409).length : 0;
   let requestsAfter = [];
   let memberCountAfter = memberCountBefore;
+  let participantsAfter = Array.isArray(group.participants) ? group.participants : [];
   for (let attempt = 0; attempt < APPROVAL_VERIFY_RETRIES; attempt += 1) {
     await sleep(APPROVAL_VERIFY_WAIT_MS);
     const refreshedGroup = await approvalClient.getChatById(groupId);
     requestsAfter = await refreshedGroup.getGroupMembershipRequests();
+    participantsAfter = Array.isArray(refreshedGroup.participants) ? refreshedGroup.participants : participantsAfter;
     memberCountAfter = Array.isArray(refreshedGroup.participants) ? refreshedGroup.participants.length : memberCountAfter;
-    if (requestsAfter.length < pendingBefore) {
+    const consumedCandidates = selectedCandidatesAbsentFromRequests(selected, requestsAfter);
+    if (requestsAfter.length < pendingBefore || consumedCandidates.length >= Math.min(selected.length, approvedSucceeded || selected.length)) {
       break;
     }
   }
 
   const pendingAfter = Array.isArray(requestsAfter) ? requestsAfter.length : null;
-  const approvedSucceeded = Array.isArray(approvalResults) ? approvalResults.filter((item) => !item.error || Number(item.error) === 409).length : 0;
   const queueDelta = pendingAfter !== null ? pendingAfter < pendingBefore : false;
   const memberCountDelta = memberCountBefore !== null && memberCountAfter !== null ? memberCountAfter - memberCountBefore : null;
-  const verified = Boolean(queueDelta || (memberCountDelta !== null && memberCountDelta >= approvedSucceeded && approvedSucceeded > 0));
+  const consumedSelectedCandidates = selectedCandidatesAbsentFromRequests(selected, requestsAfter);
+  const consumedSelectedCount = consumedSelectedCandidates.length;
+  const expectedConsumedCount = Math.min(selected.length, approvedSucceeded || selected.length);
+  const allSelectedRequestsConsumed = expectedConsumedCount > 0 && consumedSelectedCount >= expectedConsumedCount;
+  const memberConfirmedCandidates = selectedCandidatesConfirmedInParticipants(selected, participantsAfter);
+  const verified = Boolean(queueDelta || allSelectedRequestsConsumed);
 
   return {
     status: verified ? 'success' : 'failed',
@@ -1753,7 +2044,7 @@ async function approveMembershipRequests(context) {
     approved_at: new Date().toISOString(),
     elapsed_seconds: Number(((Date.now() - startedAt) / 1000).toFixed(3)),
     queue_delta: queueDelta,
-    member_confirmed: memberCountDelta !== null ? memberCountDelta >= 1 : false,
+    member_confirmed: memberConfirmedCandidates.length > 0,
     target_member: targetMember,
     raw_result: {
       approval_run_id: context.approval_run_id || null,
@@ -1772,9 +2063,25 @@ async function approveMembershipRequests(context) {
       selected_candidates: selected.map(({ entry, score }) => ({ ...entry, score })),
       approval_results: approvalResults,
       approval_attempt: approvalAttempt,
+      consumed_selected_count: consumedSelectedCount,
+      expected_consumed_count: expectedConsumedCount,
+      consumed_selected_candidates: consumedSelectedCandidates.map((entry) => ({
+        requesterId: entry.requesterId || null,
+        phoneRaw: entry.phoneRaw || null,
+        phoneNormalized: entry.phoneNormalized || null,
+        displayName: entry.displayName || null,
+      })),
+      member_confirmed_count: memberConfirmedCandidates.length,
+      member_confirmed_candidates: memberConfirmedCandidates.map((entry) => ({
+        requesterId: entry.requesterId || null,
+        phoneRaw: entry.phoneRaw || null,
+        phoneNormalized: entry.phoneNormalized || null,
+        displayName: entry.displayName || null,
+      })),
+      pending_after_requester_ids: (requestsAfter || []).map((row) => row.requesterId).filter(Boolean),
       group_id: groupId,
       group_name: groupName,
-      verification_strategy: 'queue_delta_or_member_count_delta',
+      verification_strategy: 'selected_requester_absent_from_pending_queue',
     },
   };
 }
@@ -2043,12 +2350,21 @@ if (require.main === module) {
 
 module.exports = {
   normalizePhone,
+  participantIdentityKeys,
+  buildParticipantIdentitySet,
+  selectedCandidateIdentityKeys,
+  selectedCandidatesConfirmedInParticipants,
+  buildRequesterIdentitySet,
+  buildGroupStateFromGroup,
+  normalizeGroupStateMode,
+  selectedCandidatesAbsentFromRequests,
   scoreRequest,
   selectRequests,
   getRequestEnrichedWithClient,
   parseReviewSurfaceBody,
   inspectApprovalReviewSurface,
   isUnconfirmedZeroSurface,
+  forceRefreshApprovalGroupBeforeRead,
   buildAuthoritativeGroupState,
   resolveAuthoritativeGroupState,
   resolveLocalAuthSessionDir,

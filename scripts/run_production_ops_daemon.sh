@@ -45,6 +45,7 @@ exec python3 "$ROOT_DIR/scripts/production_ops_daemon.py" \
   --state-path "${PRODUCTION_OPS_STATE_PATH:-$ROOT_DIR/data/production_ops_daemon_state.json}" \
   --status-path "${PRODUCTION_OPS_STATUS_PATH:-$ROOT_DIR/data/production_ops_daemon_status.json}" \
   --interval-seconds "${PRODUCTION_OPS_INTERVAL_SECONDS:-20}" \
+  --worker-timeout-seconds "${PRODUCTION_OPS_WORKER_TIMEOUT_SECONDS:-90}" \
   --temp-cleanup-interval-seconds "${PRODUCTION_OPS_TEMP_CLEANUP_INTERVAL_SECONDS:-600}" \
   --temp-cleanup-min-age-hours "${PRODUCTION_OPS_TEMP_CLEANUP_MIN_AGE_HOURS:-1}" \
   --monitoring-session-id "${PRODUCTION_OPS_MONITORING_SESSION_ID:-}" \
