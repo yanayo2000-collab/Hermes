@@ -74,6 +74,10 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert '/api/ops/group-atmosphere/accounts' in html
     assert '/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}/session/' in html
     assert '群审批控制台' in html
+    nav_registration = html.index('/ops/registration-group-approval-batch-members')
+    nav_group_chat = html.index('/ops/group-atmosphere')
+    nav_accounts = html.index('/ops/accounts')
+    assert nav_registration < nav_group_chat < nav_accounts
 
 
 def test_group_atmosphere_account_upsert_and_list_without_approval_requirements(monkeypatch):
