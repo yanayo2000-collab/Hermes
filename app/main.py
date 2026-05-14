@@ -617,8 +617,8 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
       <a href="/ops">运营工作台</a>
       <a href="/ops/intake-bot-presets">收口配置中心</a>
       <a href="/ops/production-ops">群审批控制台</a>
-      <a href="/ops/group-atmosphere" data-admin-only-nav="true">群聊天助手</a>
       <a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a>
+      <a href="/ops/group-atmosphere" data-admin-only-nav="true">群聊天助手</a>
       <a href="/ops/accounts">账号设置</a>
     </div>
     <div class="hero">
@@ -1117,7 +1117,7 @@ setInterval(() => {
 GROUP_ATMOSPHERE_PAGE_HTML = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>群聊天助手</title>
 <style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:24px;background:#f3f6fb;color:#142033}.page-shell{max-width:1320px;margin:0 auto}.shell-nav{position:sticky;top:0;z-index:20;display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px;padding:12px 0 14px;background:rgba(243,246,251,.94);backdrop-filter:blur(10px)}.shell-nav a{color:#2563eb;text-decoration:none;font-size:13px;padding:8px 12px;border-radius:999px;background:#eef4ff;border:1px solid #d8e5ff}.card,.hero{background:#fff;border:1px solid #dbe4f0;border-radius:20px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.06);margin-top:14px}.hero{margin-top:0;display:flex;justify-content:space-between;gap:14px;align-items:center}.hero h1{margin:0;font-size:26px}.muted{color:#64748b;font-size:13px;line-height:1.5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.compact-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.account-card-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.account-card{border:1px solid #dbe4f0;border-radius:18px;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);padding:16px;box-shadow:0 8px 20px rgba(15,23,42,.05)}.account-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}.account-status-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0}.account-status-item{padding:10px;border:1px solid #dbe4f0;border-radius:12px;background:#fff}.account-status-item .label{font-size:12px;color:#64748b}.account-status-item .value{font-size:16px;font-weight:700;margin-top:4px}input,textarea,select{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #c7d4e3;border-radius:10px;margin:6px 0;background:#fff}textarea{min-height:72px}button{padding:9px 14px;border-radius:10px;border:0;background:#2563eb;color:#fff;cursor:pointer}button.secondary{background:#e8f0ff;color:#1d4ed8;border:1px solid #bfdbfe}button.danger{background:#fee2e2;color:#991b1b;border:1px solid #fecaca}button.ghost{background:#fff;color:#334155;border:1px solid #cbd5e1}button.switch-on{background:#dcfce7;color:#166534;border:1px solid #86efac}button.switch-off{background:#fee2e2;color:#991b1b;border:1px solid #fecaca}table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-bottom:1px solid #dbe4f0;padding:10px 8px;text-align:left;vertical-align:top}th{color:#475569;background:#f8fbff}.qr-image-shell{display:flex;align-items:center;justify-content:center;background:#fff;padding:18px;border:1px solid #dbe4f0;border-radius:16px}.qr-image{width:280px;height:280px;object-fit:contain;image-rendering:pixelated}.pill{display:inline-flex;align-items:center;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}.pill.green{background:#dcfce7;color:#166534}.pill.red{background:#fee2e2;color:#991b1b}.pill.amber{background:#fef3c7;color:#92400e}.pill.gray{background:#e2e8f0;color:#334155}.toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.toolbar-actions{display:flex;gap:8px;flex-wrap:wrap}.account-table-wrap{display:block}.account-actions{display:flex;gap:6px;flex-wrap:wrap}.group-switches{display:flex;gap:6px;flex-wrap:wrap}.group-switches button{padding:6px 9px;font-size:12px}.group-card-grid{display:flex;flex-direction:column;gap:10px;margin-top:8px}.group-card{border:1px solid #dbe4f0;border-radius:14px;background:#fff;padding:12px;width:100%;box-sizing:border-box}.group-card-title{display:flex;justify-content:space-between;gap:8px;align-items:flex-start;margin-bottom:8px}.group-card-name{font-weight:700;color:#142033;word-break:break-word}.group-card-link{font-size:12px;color:#64748b;word-break:break-all;line-height:1.45}.group-card-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;flex-wrap:wrap}.health-line{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.section-title{display:flex;align-items:center;justify-content:space-between;gap:10px}.section-title h2{margin:0;font-size:19px}.editor-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}.inline-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.qr-panel{min-height:88px;border:1px dashed #cbd5e1;border-radius:14px;padding:14px;background:#fbfdff}.qr-modal{position:fixed;inset:0;background:rgba(15,23,42,.52);display:none;align-items:center;justify-content:center;padding:24px;z-index:60}.qr-modal.is-open{display:flex}.qr-modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:20px;box-shadow:0 24px 64px rgba(15,23,42,.24);border:1px solid #dbe4f0}.qr-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 20px 14px;border-bottom:1px solid #dbe4f0}.qr-modal-head h3{margin:0;font-size:18px}.qr-modal-body{padding:18px 20px 20px}.qr-modal-status{margin-bottom:14px}.qr-modal-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.qr-shell{margin-top:12px;border-radius:16px;background:#0f172a;color:#e2e8f0;padding:16px;overflow:auto}.qr-shell pre{margin:0;font-size:10px;line-height:1.05}.field-hint{font-size:12px;color:#64748b;margin-bottom:8px}.mini-note{font-size:13px;color:#64748b;line-height:1.6}.mini-tools{display:grid;grid-template-columns:1fr 1fr;gap:14px}.modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(15,23,42,.48);z-index:80;padding:24px}.modal.is-open{display:flex}.modal-card{width:min(960px,100%);max-height:calc(100vh - 48px);overflow:auto;margin-top:0}.modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.modal-head h2{margin:0;font-size:20px}.modal-close{background:#fff;color:#334155;border:1px solid #cbd5e1}@media(max-width:900px){.grid,.editor-grid,.mini-tools,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid{grid-template-columns:1fr}.hero{align-items:flex-start;flex-direction:column}.modal{padding:12px}.modal-card{max-height:calc(100vh - 24px)}}</style>
-</head><body><div class="page-shell"><div class="shell-nav"><a href="/ops">运营工作台</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/group-atmosphere">群聊天助手</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/accounts">账号设置</a></div>
+</head><body><div class="page-shell"><div class="shell-nav"><a href="/ops">运营工作台</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/group-atmosphere">群聊天助手</a><a href="/ops/accounts">账号设置</a></div>
 <div class="hero"><h1>群聊天助手</h1><div class="toolbar-actions"><button type="button" id="ga_new_account_btn">新增账号</button></div></div>
 <input type="hidden" id="ga_account_key_login"/><input type="hidden" id="ga_account_key"/>
 <div class="card" id="ga_accounts_card"><div class="toolbar"><div class="section-title"><h2>账号列表</h2><span class="pill gray" id="ga_accounts_count">0 个账号</span></div><div id="ga_action_feedback" class="muted">就绪</div></div><div id="ga_accounts" class="account-table-wrap"></div></div>
@@ -1326,8 +1326,8 @@ PRODUCTION_OPS_PAGE_HTML = """
       <a href=\"/ops\">运营工作台</a>
       <a href=\"/ops/intake-bot-presets\">收口配置中心</a>
       <a href=\"/ops/production-ops\">群审批控制台</a>
-      <a href=\"/ops/group-atmosphere\" data-admin-only-nav=\"true\">群聊天助手</a>
       <a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a>
+      <a href=\"/ops/group-atmosphere\" data-admin-only-nav=\"true\">群聊天助手</a>
       <a href=\"/ops/accounts\">账号设置</a>
     </div>
     <div class=\"hero\">
@@ -2952,8 +2952,8 @@ OPS_PAGE_HTML = """
       <a href="/ops">运营工作台</a>
       <a href="/ops/intake-bot-presets">收口配置中心</a>
       <a href="/ops/production-ops">群审批控制台</a>
-      <a href="/ops/group-atmosphere" data-admin-only-nav="true">群聊天助手</a>
       <a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a>
+      <a href="/ops/group-atmosphere" data-admin-only-nav="true">群聊天助手</a>
       <a href="/ops/accounts">账号设置</a>
     </div>
     <div class="hero">
@@ -20150,7 +20150,7 @@ tr:hover td { background:#fbfdff; }
 @media (max-width: 900px) { .summary { grid-template-columns:repeat(2,minmax(0,1fr)); } .grid { grid-template-columns:1fr; } .hero { flex-direction:column; } .search { width:100%; } }
 </style></head>
 <body><div class="page">
-  <div class="nav"><a href="/ops">运营工作台</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/group-atmosphere" data-admin-only-nav="true">群聊天助手</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/accounts">账号设置</a></div>
+  <div class="nav"><a href="/ops">运营工作台</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/group-atmosphere" data-admin-only-nav="true">群聊天助手</a><a href="/ops/accounts">账号设置</a></div>
   <div class="card hero">
     <div><h1>后台账号设置</h1></div>
     <button class="secondary" type="button" onclick="openChangeOwnPassword()">修改我的密码</button>
@@ -20421,8 +20421,8 @@ loadAccounts();
       <a href=\"/ops\">运营工作台</a>
       <a href=\"/ops/intake-bot-presets\">收口配置中心</a>
       <a href=\"/ops/production-ops\">群审批控制台</a>
-      <a href=\"/ops/group-atmosphere\" data-admin-only-nav=\"true\">群聊天助手</a>
       <a href=\"/ops/registration-group-approval-batch-members\">注册群审批留存页</a>
+      <a href=\"/ops/group-atmosphere\" data-admin-only-nav=\"true\">群聊天助手</a>
       <a href=\"/ops/accounts\">账号设置</a>
     </div>
   <div class=\"page\">
