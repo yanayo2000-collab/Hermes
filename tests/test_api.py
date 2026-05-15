@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from unittest.mock import patch
 
-from app.main import create_app, parse_manual_cs_message, extract_invalid_group_candidate, LiveLarkReplyAdapter, format_display_phone, validate_fast_intake_fields
+import app.main as main_module
+from app.main import create_app, parse_manual_cs_message, extract_invalid_group_candidate, LiveLarkReplyAdapter, Service, format_display_phone, validate_fast_intake_fields
 
 
 class StubLarkMediaAdapter:
@@ -79,6 +80,41 @@ def bootstrap_admin_and_login(client, *, username='admin01', password='secret123
     return response.json()['user']
 
 
+def test_whatsapp_approval_session_refresh_handles_stale_dedicated_runtime(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    monkeypatch.setattr(service, '_get_whatsapp_approval_account_row', lambda account_key: {
+        'account_key': account_key,
+        'account_name': 'WA demo',
+        'responsible_type': 'registration_group',
+        'enabled': True,
+        'group_links': [],
+        'group_link_bindings': [],
+    })
+    monkeypatch.setattr(service, '_require_whatsapp_approval_account_access', lambda account_key, user: None)
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda account_key, **kwargs: {
+        'active': True,
+        'base_url': 'http://127.0.0.1:59999',
+        'source': 'dedicated',
+        'status': 'running',
+        'ready': True,
+        'authenticated': False,
+    })
+
+    def fail_health(_base_url):
+        raise requests.exceptions.ConnectionError('connection refused')
+
+    monkeypatch.setattr(service, '_request_whatsapp_approval_worker_health', fail_health)
+
+    response = client.get('/api/ops/whatsapp-approval-accounts/wa-demo/session')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['runtime']['status'] == 'unavailable'
+    assert body['session']['login_check_status'] == 'runtime_unavailable'
+    assert '重新生成二维码' in body['session']['login_check_message']
+
+
 def test_ops_page_redirects_to_login_when_auth_enabled_and_no_session():
     client = make_client({'AUTH_ENABLED': True})
     response = client.get('/ops', follow_redirects=False)
@@ -142,6 +178,10 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
     assert 'generateTemporaryPassword' in accounts_page.text
     assert 'copyGeneratedPassword' in accounts_page.text
     assert '已生成新密码' in accounts_page.text
+    assert 'window.prompt' not in accounts_page.text
+    assert 'displayNameModal' in accounts_page.text
+    assert 'submitDisplayNameModal' in accounts_page.text
+    assert '保存显示名' in accounts_page.text
 
     for path in [
         '/ops',
@@ -155,8 +195,9 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
         page = client.get(path)
         assert page.status_code == 200
         assert 'data-ops-shell-normalized="true"' in page.text
-        assert 'width: min(1280px, calc(100vw - 48px))' in page.text
-        assert 'min-height: 54px' in page.text
+        assert 'CRM UI system v2: unified light dashboard tokens, typography, spacing' in page.text
+        assert 'grid-template-columns:248px minmax(0,1fr)' in page.text
+        assert '--ops-font:Inter' in page.text
 
     create_operator = client.post('/api/ops/accounts', json={
         'username': 'ops01',
@@ -229,6 +270,10 @@ def test_super_admin_can_delete_accounts_and_admin_cannot_manage_super_admin_pas
     assert '超级管理员' in super_page.text
     assert 'deleteAccount' in super_page.text
     assert '删除账号' in super_page.text
+    assert 'const userIdJson=escapeHtml(JSON.stringify(row.user_id));' in super_page.text
+    assert 'const usernameJson=escapeHtml(JSON.stringify(row.username || \'\'));' in super_page.text
+    assert 'onclick="deleteAccount(${userIdJson}, ${usernameJson}, this)"' in super_page.text
+    assert 'onclick="deleteAccount(${userId},' not in super_page.text
 
     delete_operator = client.delete(f"/api/ops/accounts/{operator_user['user_id']}")
     assert delete_operator.status_code == 200
@@ -279,12 +324,14 @@ def test_operator_cannot_access_admin_account_management():
     login = client.post('/api/ops/auth/login', json={'username': 'ops02', 'password': 'operator123'})
     assert login.status_code == 200
 
-    accounts_page = client.get('/ops/accounts')
-    assert accounts_page.status_code == 200
-    assert '账号设置' in accounts_page.text
-    assert '修改我的密码' in accounts_page.text
-    assert '新增账号' not in accounts_page.text
-    assert '管理员重置密码' not in accounts_page.text
+    accounts_page = client.get('/ops/accounts', follow_redirects=False)
+    assert accounts_page.status_code == 303
+    assert accounts_page.headers['location'] == '/ops'
+
+    group_page = client.get('/ops/accounts')
+    assert group_page.status_code == 200
+    assert '群聊天助手' in group_page.text
+    assert '账号设置' not in group_page.text
 
     accounts_api = client.get('/api/ops/accounts')
     assert accounts_api.status_code == 403
@@ -292,14 +339,14 @@ def test_operator_cannot_access_admin_account_management():
 
 
 
-def test_operator_intake_config_center_is_read_only_and_mutations_are_admin_only():
+def test_customer_service_intake_config_center_is_read_only_and_mutations_are_admin_only():
     client = make_client({'AUTH_ENABLED': True})
     bootstrap_admin_and_login(client)
     create = client.post('/api/ops/accounts', json={
         'username': 'ops_config',
         'password': 'operator123',
-        'display_name': '运营配置只读',
-        'role': 'operator',
+        'display_name': '客服配置只读',
+        'role': 'customer_service',
         'enabled': True,
     })
     assert create.status_code == 200
@@ -311,9 +358,9 @@ def test_operator_intake_config_center_is_read_only_and_mutations_are_admin_only
     assert page.status_code == 200
     body = page.text
     assert '收口配置中心' in body
-    assert 'data-ops-role="operator"' in body
-    assert 'body[data-ops-role="operator"] .admin-only' in body
-    assert "window.__opsUserRole = 'operator'" in body
+    assert 'data-ops-role="customer_service"' in body
+    assert 'body[data-ops-role="customer_service"] .admin-only' in body
+    assert "window.__opsUserRole = 'customer_service'" in body
     assert "if (!isOpsAdmin())" in body
 
     preset_update = client.post('/api/ops/intake-bot-presets/current', json={
@@ -324,6 +371,8 @@ def test_operator_intake_config_center_is_read_only_and_mutations_are_admin_only
     assert preset_update.json()['detail'] == 'ops_admin_required'
 
     executor_update = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.example/addAnchor',
         'login_username': 'user',
         'password_secret_ref': 'secret-ref',
@@ -344,14 +393,14 @@ def test_operator_intake_config_center_is_read_only_and_mutations_are_admin_only
     assert executor_delete.json()['detail'] == 'ops_admin_required'
 
 
-def test_operator_can_access_ops_runtime_health_but_not_admin_only_ops_api():
+def test_customer_service_can_access_ops_runtime_health_but_not_admin_only_ops_api():
     client = make_client({'AUTH_ENABLED': True, 'AUTH_INTERNAL_TOKEN': 'internal-secret'})
     bootstrap_admin_and_login(client)
     create = client.post('/api/ops/accounts', json={
         'username': 'ops03',
         'password': 'operator123',
-        'display_name': '运营3',
-        'role': 'operator',
+        'display_name': '客服3',
+        'role': 'customer_service',
         'enabled': True,
     })
     assert create.status_code == 200
@@ -590,14 +639,14 @@ def test_ops_api_permission_audit_rejects_unmapped_routes():
 
 
 
-def test_operator_can_access_newly_mapped_late_ops_reads():
+def test_customer_service_can_access_newly_mapped_late_ops_reads():
     client = make_client({'AUTH_ENABLED': True, 'AUTH_INTERNAL_TOKEN': 'internal-secret'})
     bootstrap_admin_and_login(client)
     create = client.post('/api/ops/accounts', json={
         'username': 'ops04',
         'password': 'operator123',
-        'display_name': '运营4',
-        'role': 'operator',
+        'display_name': '客服4',
+        'role': 'customer_service',
         'enabled': True,
     })
     assert create.status_code == 200
@@ -1189,6 +1238,25 @@ def test_ops_approval_batch_queue_returns_ready_and_waiting_groups():
 def test_ops_approval_batch_queue_summary_reports_group_count_and_total_pending():
     client = make_client()
     client.app.state.service._production_ops_daemon_snapshot = lambda: {}
+    client.app.state.service.list_whatsapp_approval_accounts = lambda current_user=None: {
+        'rows': [
+            {
+                'account_key': 'wa-reg-summary',
+                'responsible_type': 'registration_group',
+                'enabled': True,
+                'group_link_bindings': [
+                    {'group_name': 'Reg-A', 'enabled': True},
+                    {'group_name': 'Reg-B', 'enabled': True},
+                ],
+            },
+            {
+                'account_key': 'wa-off-summary',
+                'responsible_type': 'official_group',
+                'enabled': True,
+                'group_link_bindings': [{'group_name': 'Off-A', 'enabled': True}],
+            },
+        ]
+    }
     client.app.state.service.approval_batch_queue = lambda: {
         'registration_groups': [
             {'approval_scope': 'registration_group', 'registration_group': 'Reg-A', 'pending_count': 3, 'release_count': 0},
@@ -1243,9 +1311,59 @@ def test_binding_probe_from_production_ops_status_matches_registration_cycles():
 
 
 
+def test_ops_approval_batch_queue_summary_ignores_stale_daemon_snapshot_when_no_approval_accounts():
+    client = make_client()
+    service = client.app.state.service
+    service.list_whatsapp_approval_accounts = lambda current_user=None: {'rows': []}
+    service._production_ops_daemon_snapshot = lambda: {
+        'runtime': {
+            'status': {
+                'checked_at': '2026-05-14T01:00:00+00:00',
+                'registration_group_cycles': [
+                    {
+                        'monitor_target': {'group_name': 'Deleted Reg', 'registration_group': 'Deleted Reg'},
+                        'decision_group_state': {'payload': {'pending_count': 0}},
+                    }
+                ],
+            }
+        }
+    }
+
+    def fail_live_queue():
+        raise AssertionError('summary endpoint should not probe live queue just to override empty approval accounts')
+
+    service.approval_batch_queue = fail_live_queue
+
+    response = client.get('/api/ops/approval-batch-queue/summary')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['registration_groups'] == []
+    assert body['official_groups'] == []
+    assert body['registration_summary'] == {'monitored_group_count': 0, 'pending_count': 0}
+    assert body['official_summary'] == {'monitored_group_count': 0, 'pending_count': 0}
+
+
+
 def test_ops_approval_batch_queue_summary_uses_daemon_snapshot_without_live_probe():
     client = make_client()
     service = client.app.state.service
+    service.list_whatsapp_approval_accounts = lambda current_user=None: {
+        'rows': [
+                {
+                    'account_key': 'wa-snapshot',
+                    'responsible_type': 'registration_group',
+                    'enabled': True,
+                    'group_link_bindings': [{'group_name': 'Reg Snapshot', 'enabled': True}],
+                },
+                {
+                    'account_key': 'wa-off-snapshot',
+                    'responsible_type': 'official_group',
+                    'enabled': True,
+                    'group_link_bindings': [{'group_name': 'Off Snapshot', 'enabled': True}],
+                },
+        ]
+    }
     service._production_ops_daemon_snapshot = lambda: {
         'runtime': {
             'status': {
@@ -1419,18 +1537,41 @@ def test_intake_bot_presets_page_loads():
     assert 'robot_name' in body
     assert 'default_app' in body
     assert 'default_guild' in body
-    assert '编辑名称' in body
-    assert 'preset-row-actions' in body
-    assert 'preset-robot-name-cell' in body
-    assert '新增 / 更新公会执行器' in body
-    assert '代理地区（proxy_region）' in body
-    assert 'password_secret_ref' in body
-    assert '保存公会执行器' in body
-    assert '回填编辑' in body
-    assert '后台地址' in body
-    assert '登录账号' in body
-    assert 'renderExecutorProxyRegionOptions' in body
-    assert '先按 15 个大型城市预置' in body
+    assert '新增机器人配置' in body
+    assert 'openPresetModal(null)' in body
+    assert 'presetCardGrid' in body
+    assert 'presetConfigModal' in body
+    assert 'savePresetFromModal()' in body
+    assert 'deletePreset(' in body
+    assert 'window.__presetModalDraft' in body
+    assert 'capturePresetModalDraft();' in body
+    assert 'applyPresetModalDraft(row || {})' in body
+    assert 'onchange="capturePresetModalDraft()"' in body
+    assert '编辑名称' not in body
+    assert '<table class="preset-table"' not in body
+    assert '＋ 新增公会执行器' in body
+    assert 'executorConfigModal' in body
+    assert 'openExecutorModal(null)' in body
+    assert '编辑公会执行器' in body
+    assert 'saveExecutorModalButton' in body
+    assert 'setExecutorModalStatus' in body
+
+    assert 'new_executor_oauth_token' in body
+    assert 'new_executor_oauth_token_secret' in body
+    assert 'CMS Token' in body
+    assert 'CMS Refresh Token' in body
+    assert 'new_executor_cms_refresh_token' in body
+    assert '生效状态' in body
+    assert '失效/待处理' in body
+    assert '保存执行器' in body
+    assert '回填编辑' not in body
+    assert 'openExecutorModal(' in body
+    assert '后台地址' not in body
+    assert '登录账号' not in body
+    assert '代理地区' in body
+    assert '代理地址' not in body
+    assert '代理类型' not in body
+    assert '浏览器配置键' not in body
     assert '历史值（待改）' in body
     assert '已分配给' in body
     assert '删除执行器' in body
@@ -1531,6 +1672,11 @@ def test_production_ops_page_loads():
     assert '当前不在监控时段，倒计时仅作下一轮参考' not in body
     assert '当前在监控时段，可按本轮倒计时执行' not in body
     assert 'type=\"hidden\" id=\"wa_account_key\"' in body
+    assert 'wa_assigned_customer_service_user_id' in body
+    assert '对应客服' in body
+    assert '对应客服：${assignedCustomerServiceText}' in body
+    assert 'renderAssignedCustomerServiceSelect' in body
+    assert 'assigned_customer_service_user_id' in body
     assert 'wa_group_notify_profile_name_1' in body
     assert 'wa_group_approval_count_threshold_1' in body
     assert 'wa_group_approval_timeout_minutes_1' in body
@@ -1562,6 +1708,158 @@ def test_production_ops_page_loads():
     assert 'const adjustedRemainingSeconds = paused ? null : (Number.isFinite(remainingSeconds) ? Math.max(remainingSeconds - elapsedSeconds, 0) : null);' in body
     assert '.binding-meta-item { display:flex; flex-direction:column; gap:6px; }' in body
     assert '.status-line { display:inline-flex; align-items:center; gap:6px; }' in body
+
+
+def test_production_ops_daemon_status_ignores_stale_incidents_when_no_approval_accounts(tmp_path, monkeypatch):
+    status_path = tmp_path / 'production_ops_daemon_status.json'
+    state_path = tmp_path / 'production_ops_daemon_state.json'
+    status_path.write_text(json.dumps({
+        'checked_at': '2026-05-14T08:14:44.368298+00:00',
+        'incidents': [{
+            'severity': 'critical',
+            'code': 'worker_state_failed',
+            'summary': '群状态探测失败',
+        }],
+        'observation_warnings': [],
+        'notifications': [],
+        'worker_state': {'ok': False, 'error': 'HTTP Error 500: Internal Server Error'},
+        'registration_group_cycles': [{
+            'group_id': '120363422719530134@g.us',
+            'registration_group': '旧注册群',
+            'pending_count': 8,
+        }],
+        'official_group_cycles': [],
+    }, ensure_ascii=False), encoding='utf-8')
+    state_path.write_text('{}', encoding='utf-8')
+    monkeypatch.setattr(main_module, 'PRODUCTION_OPS_DAEMON_STATUS_PATH', status_path)
+    monkeypatch.setattr(main_module, 'PRODUCTION_OPS_DAEMON_STATE_PATH', state_path)
+
+    client = make_client()
+    response = client.get('/api/ops/production-ops-daemon')
+
+    assert response.status_code == 200
+    status = response.json()['runtime']['status']
+    assert status['checked_at'] == '2026-05-14T08:14:44.368298+00:00'
+    assert status['incidents'] == []
+    assert status['observation_warnings'] == []
+    assert status['notifications'] == []
+    assert status['registration_group_cycles'] == []
+    assert status['official_group_cycles'] == []
+    assert status['worker_state']['ok'] is True
+    assert status['worker_state']['status'] == 'disabled_no_monitored_groups'
+
+
+def test_whatsapp_approval_accounts_are_visible_only_to_assigned_customer_service():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+
+    cs1 = client.post('/api/ops/accounts', json={
+        'username': 'cswa01',
+        'password': 'operator123',
+        'display_name': '客服 A',
+        'role': 'customer_service',
+        'enabled': True,
+    }).json()['user']
+    cs2 = client.post('/api/ops/accounts', json={
+        'username': 'cswa02',
+        'password': 'operator123',
+        'display_name': '客服 B',
+        'role': 'customer_service',
+        'enabled': True,
+    }).json()['user']
+
+    def payload(assigned_user_id, group_suffix):
+        return {
+            'account_name': f'WA {group_suffix}',
+            'responsible_type': 'registration_group',
+            'assigned_customer_service_user_id': assigned_user_id,
+            'group_link_bindings': [{
+                'link': f'https://chat.whatsapp.com/{group_suffix}',
+                'group_name': f'注册群 {group_suffix}',
+                'area': 'Indonesia',
+                'notify_profile_name': 'wa-approval-broadcast',
+                'enabled': True,
+                'approval_count_threshold': 30,
+                'approval_timeout_minutes': 30,
+                'auto_recover_worker': True,
+                'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+            }],
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+        }
+
+    a1 = client.post('/api/ops/whatsapp-approval-accounts/wa-assigned-a', json=payload(cs1['user_id'], 'assigned-a'))
+    assert a1.status_code == 200
+    assert a1.json()['account']['assigned_customer_service_user_id'] == cs1['user_id']
+    assert a1.json()['account']['assigned_customer_service_display_name'] == '客服 A'
+    a2 = client.post('/api/ops/whatsapp-approval-accounts/wa-assigned-b', json=payload(cs2['user_id'], 'assigned-b'))
+    assert a2.status_code == 200
+
+    all_rows = client.get('/api/ops/whatsapp-approval-accounts').json()['rows']
+    assert {row['account_key'] for row in all_rows} == {'wa-assigned-a', 'wa-assigned-b'}
+    assert len(client.get('/api/ops/whatsapp-approval-accounts').json()['customer_service_options']) == 2
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'cswa01', 'password': 'operator123'}).status_code == 200
+    cs1_rows = client.get('/api/ops/whatsapp-approval-accounts').json()['rows']
+    assert [row['account_key'] for row in cs1_rows] == ['wa-assigned-a']
+    cs1_overview_rows = client.get('/api/ops/whatsapp-approval-accounts/overview').json()['rows']
+    assert [row['account_key'] for row in cs1_overview_rows] == ['wa-assigned-a']
+    assert client.get('/api/ops/whatsapp-approval-accounts/wa-assigned-a/session').status_code == 200
+    blocked = client.get('/api/ops/whatsapp-approval-accounts/wa-assigned-b/session')
+    assert blocked.status_code == 403
+    assert blocked.json()['detail'] == 'whatsapp_approval_account_not_assigned'
+    blocked_update = client.post('/api/ops/whatsapp-approval-accounts/wa-assigned-b', json=payload(cs2['user_id'], 'assigned-b'))
+    assert blocked_update.status_code == 403
+    assert blocked_update.json()['detail'] == 'whatsapp_approval_account_not_assigned'
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'cswa02', 'password': 'operator123'}).status_code == 200
+    cs2_rows = client.get('/api/ops/whatsapp-approval-accounts').json()['rows']
+    assert [row['account_key'] for row in cs2_rows] == ['wa-assigned-b']
+
+
+def test_whatsapp_approval_account_save_requires_explicit_customer_service_assignment():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    kefu = client.post('/api/ops/accounts', json={
+        'username': 'kefu0001',
+        'password': 'operator123',
+        'display_name': 'kefu0001',
+        'role': 'customer_service',
+        'enabled': True,
+    }).json()['user']
+
+    payload = {
+        'account_name': 'WA Explicit Kefu',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/default-kefu',
+            'group_name': '默认客服测试群',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 30,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+            'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+        }],
+        'enabled': True,
+    }
+
+    missing = client.post('/api/ops/whatsapp-approval-accounts/wa-explicit-kefu', json=payload)
+    assert missing.status_code == 400
+    assert missing.json()['detail'] == 'assigned_customer_service_required'
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-explicit-kefu', json={
+        **payload,
+        'assigned_customer_service_user_id': kefu['user_id'],
+    })
+    assert saved.status_code == 200
+    account = saved.json()['account']
+    assert account['assigned_customer_service_user_id'] == kefu['user_id']
+    assert account['assigned_customer_service_username'] == 'kefu0001'
+    assert account['assigned_customer_service_display_name'] == 'kefu0001'
 
 
 def test_whatsapp_approval_binding_probe_refresh_returns_live_binding_runtime(monkeypatch):
@@ -1636,8 +1934,10 @@ def test_registration_group_approval_batch_members_page_loads():
     assert 'initBatchMembersRangePicker' in body
     assert 'clearBatchMembersDateRange' in body
     assert 'approved_date_start' in body
-    assert 'range-picker { display:flex; flex-direction:column; gap:0; }' in body
-    assert '.filters { display: grid; grid-template-columns: minmax(220px, 1.3fr) repeat(5, minmax(0, 1fr)) auto; gap: 10px; align-items: end; }' in body
+    assert '.filters { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 14px 16px; align-items: end; }' in body
+    assert '.filters label, .range-picker { min-width: 0; display:flex; flex-direction:column; gap:0; }' in body
+    assert 'class=\"filter-actions\"' in body
+    assert '.filter-actions { grid-column: 3 / 5; display:flex; gap:10px; align-items:flex-end; justify-content:flex-end; flex-wrap:wrap; padding-top:0; align-self:end; }' in body
     assert '.pager-jump input { width:84px; min-height:40px; padding:8px 10px; border:1px solid #cbd5e1; border-radius:10px; font-size:14px; }' in body
     assert '批次ID' in body
     assert '全部注册群' in body
@@ -1853,7 +2153,8 @@ def test_official_group_bridge_page_is_served_through_main_ops_origin():
     assert response.status_code == 200
     assert '官方群审批桥接台' in response.text
     assert 'http://127.0.0.1:55801' not in response.text
-    assert 'width: min(1280px, calc(100vw - 48px))' in response.text
+    assert 'CRM UI system v2: unified light dashboard tokens, typography, spacing' in response.text
+    assert 'grid-template-columns:248px minmax(0,1fr)' in response.text
 
 
 
@@ -2693,6 +2994,40 @@ def test_approval_batch_summary_ignores_disabled_whatsapp_monitoring_accounts():
 
 
 
+def test_approval_batch_summary_does_not_fallback_to_historical_official_leads_when_no_monitored_groups():
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+    })
+    client = TestClient(app)
+    service = app.state.service
+    service._production_ops_daemon_snapshot = lambda: {}
+
+    off_lead = client.post('/api/leads/upsert', json={
+        'trace_id': 'trace-no-monitor-official',
+        'source_platform': 'meta',
+        'source_page_id': 'page-no-monitor-official',
+        'country': 'Indonesia',
+        'area_code': 62,
+        'mobile': '81110001003',
+        'pendaftaran_group': 'Historical-Official-Group',
+    }).json()
+    with service.db.connect() as conn:
+        conn.execute("UPDATE leads SET current_status = 'bind_success' WHERE lead_id = ?", (off_lead['lead_id'],))
+        conn.commit()
+
+    response = client.get('/api/ops/approval-batch-queue/summary')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['registration_summary'] == {'monitored_group_count': 0, 'pending_count': 0}
+    assert body['official_summary'] == {'monitored_group_count': 0, 'pending_count': 0}
+    assert body['registration_groups'] == []
+    assert body['official_groups'] == []
+
+
+
 def test_whatsapp_approval_account_save_skips_registration_group_name_probe(monkeypatch):
     app = create_app({
         'DB_PATH': ':memory:',
@@ -3096,6 +3431,15 @@ def test_registration_group_binding_outside_schedule_is_standby_not_probe_error(
         'LARK_APP_ID': 'cli_test_app',
     })
     service = app.state.service
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ops_users (user_id, username, password_hash, role, display_name, enabled, last_login_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('ops_user_outside_schedule', 'cs_outside_schedule', 'test-hash', 'customer_service', '时段外客服', 1, None, '2026-05-14T00:00:00+00:00', '2026-05-14T00:00:00+00:00'),
+        )
+        conn.commit()
     monkeypatch.setattr(service, '_current_local_minutes', lambda: 10 * 60)
     monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda *args, **kwargs: {
         'active': True,
@@ -3121,6 +3465,7 @@ def test_registration_group_binding_outside_schedule_is_standby_not_probe_error(
     saved = client.post('/api/ops/whatsapp-approval-accounts/wa-registration-outside-schedule', json={
         'account_name': 'WA Registration Outside Schedule',
         'responsible_type': 'registration_group',
+        'assigned_customer_service_user_id': 'ops_user_outside_schedule',
         'group_link_bindings': [{
             'link': 'https://chat.whatsapp.com/registration-outside-schedule',
             'group_name': '注册群时段外',
@@ -3148,6 +3493,23 @@ def test_registration_group_binding_outside_schedule_is_standby_not_probe_error(
     assert '时段外待命' in verifier['detail']
     assert row['membership_verifier']['ready'] is True
     assert row['membership_verifier']['status'] == 'outside_schedule'
+
+
+def test_registration_group_binding_outside_schedule_detail_includes_detected_pending_count():
+    verifier = Service._binding_membership_verifier_state(
+        {
+            'enabled': True,
+            'schedule_runtime': {'configured': True, 'active_now': False},
+            'next_approval_pending_count': 7,
+        },
+        {},
+        responsible_type='registration_group',
+        live_probe={'pending_count': 7, 'source': 'group_state'},
+    )
+
+    assert verifier['ready'] is True
+    assert verifier['status'] == 'outside_schedule'
+    assert verifier['detail'] == '时段外待命；当前审批列表 7 人；配置有效，自动审批暂停。'
 
 
 def test_whatsapp_approval_account_save_autofills_official_group_name_from_link(monkeypatch):
@@ -4896,6 +5258,63 @@ def test_whatsapp_approval_candidates_use_binding_specific_live_probe_for_each_e
 
 
 
+def test_binding_verifier_does_not_apply_monitor_target_empty_truth_to_other_bindings():
+    account_verifier = {
+        'truth_state': {
+            'status': 'empty_unverified',
+            'source': 'group_state',
+            'pending_count': 0,
+            'group_id': 'monitor-group@g.us',
+            'zero_pending_unverified': True,
+            'zero_pending_unverified_reason': 'same_runtime_family_zero_pending',
+            'payload': {
+                'group_id': 'monitor-group@g.us',
+                'group_name': '监控群',
+                'pending_count': 0,
+                'zero_pending_unverified': True,
+            },
+        },
+        'probe': {'group_id': 'monitor-group@g.us', 'pending_count': 0},
+    }
+    verifier = Service._binding_membership_verifier_state(
+        {
+            'enabled': True,
+            'group_id': 'other-group@g.us',
+            'group_name': '另一个注册群',
+            'link': 'https://chat.whatsapp.com/other',
+            'schedule_runtime': {'configured': True, 'active_now': True},
+        },
+        account_verifier,
+        responsible_type='registration_group',
+        production_ops={
+            'runtime': {
+                'status': {
+                    'monitor_target': {
+                        'registration_group': 'monitor-group@g.us',
+                        'binding_link': 'https://chat.whatsapp.com/monitor',
+                        'group_name': '监控群',
+                    },
+                    'decision_group_state': {'payload': {'group_id': 'monitor-group@g.us'}},
+                }
+            }
+        },
+        live_probe={
+            'group_id': 'other-group@g.us',
+            'group_name': '另一个注册群',
+            'pending_count': 2,
+            'member_count': 526,
+            'requester_ids': ['req-1', 'req-2'],
+            'zero_pending_unverified': False,
+            'source': 'group_state',
+        },
+    )
+
+    assert verifier['ready'] is True
+    assert verifier['status'] == 'mapped_live_probe_ready'
+    assert verifier['probe']['pending_count'] == 2
+    assert verifier['truth_state']['status'] == 'confirmed_pending'
+
+
 def test_whatsapp_approval_account_binding_verifier_uses_daemon_truth_state_when_monitor_target_matches():
     executor = StubRegistrationGroupApprovalExecutor(group_state_result={
         'group_name': '注册测试1',
@@ -6517,6 +6936,8 @@ def test_guild_executor_api_returns_proxy_region_dropdown_options_and_validates_
     assert {'value': '福州', 'label': '福州'} in body['proxy_region_options']
 
     invalid = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -6531,6 +6952,8 @@ def test_guild_executor_api_enforces_unique_proxy_region_per_guild():
     client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
 
     first = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -6539,6 +6962,8 @@ def test_guild_executor_api_enforces_unique_proxy_region_per_guild():
     assert first.status_code == 200
 
     duplicate = client.post('/api/ops/guild-executors/Piso', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'piso@example.com',
         'password_secret_ref': 'secret_piso',
@@ -6553,6 +6978,8 @@ def test_guild_executor_api_deletes_executor_and_releases_proxy_region():
     client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
 
     created = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -6568,6 +6995,8 @@ def test_guild_executor_api_deletes_executor_and_releases_proxy_region():
     assert missing.status_code == 404
 
     reused = client.post('/api/ops/guild-executors/Piso', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'piso@example.com',
         'password_secret_ref': 'secret_piso',
@@ -6587,6 +7016,8 @@ def test_guild_executors_api_lists_and_updates_executor_config():
     assert body['rows'] == []
 
     saved = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -6608,6 +7039,8 @@ def test_guild_executors_api_lists_and_updates_executor_config():
     assert 'password_secret_ref' not in saved_body
 
     saved_minimal = client.post('/api/ops/guild-executors/Piso', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'piso@example.com',
         'password_secret_ref': 'secret_piso',
@@ -6627,7 +7060,8 @@ def test_guild_executors_api_lists_and_updates_executor_config():
     assert resolved.status_code == 200
     resolved_body = resolved.json()
     assert resolved_body['guild_name'] == 'Permata'
-    assert resolved_body['backend_url'] == 'https://guild.linke.ai/guild/addAnchor'
+    assert resolved_body['backend_url'] == 'https://guild.linke.ai/guild'
+    assert resolved_body['oauth_configured'] is True
     assert resolved_body['login_username'] == 'permata@example.com'
     assert resolved_body['proxy_url'] == 'http://proxy-xm:8080'
     assert resolved_body['proxy_region'] == '厦门'
@@ -6639,7 +7073,8 @@ def test_guild_executors_api_lists_and_updates_executor_config():
     rows = refreshed.json()['rows']
     assert len(rows) == 2
     assert rows[0]['guild_name'] == 'Permata'
-    assert rows[0]['backend_url'] == 'https://guild.linke.ai/guild/addAnchor'
+    assert rows[0]['backend_url'] == 'https://guild.linke.ai/guild'
+    assert rows[0]['oauth_configured'] is True
     assert rows[0]['login_username'] == 'permata@example.com'
     assert rows[0]['proxy_url'] == 'http://proxy-xm:8080'
     assert rows[0]['proxy_region'] == '厦门'
@@ -6651,10 +7086,223 @@ def test_guild_executors_api_lists_and_updates_executor_config():
 
 
 
+def test_guild_executor_api_uses_fixed_backend_urls_and_oauth_required_without_echoing_secrets():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+
+    missing = client.post('/api/ops/guild-executors/Carote', json={
+        'platform_authorization': 'Bearer cms-carote-token',
+        'cms_refresh_token': 'cms-carote-refresh-token',
+        'enabled': True,
+    })
+    assert missing.status_code == 400
+    assert missing.json()['detail'] == 'oauth_token and oauth_token_secret are required'
+
+    saved = client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'cms_refresh_token': 'cms-carote-refresh-token',
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body['backend_url'] == 'https://guild.linke.ai/guild'
+    assert body['platform_backend_url'] == 'https://cms.linke.ai/'
+    assert body['oauth_configured'] is True
+    assert body['platform_authorization_configured'] is True
+    assert body['cms_refresh_token_configured'] is True
+    assert 'oauth_token' not in body
+    assert 'oauth_token_secret' not in body
+    assert 'platform_authorization' not in body
+    assert 'guild-oauth-token' not in saved.text
+    assert 'guild-oauth-secret' not in saved.text
+    assert 'cms-carote-token' not in saved.text
+    assert 'cms-carote-refresh-token' not in saved.text
+
+    listed = client.get('/api/ops/guild-executors').json()['rows'][0]
+    assert listed['guild_name'] == 'Carote'
+    assert listed['backend_url'] == 'https://guild.linke.ai/guild'
+    assert listed['platform_backend_url'] == 'https://cms.linke.ai/'
+    assert listed['oauth_configured'] is True
+    assert listed['platform_authorization_configured'] is True
+    assert listed['cms_refresh_token_configured'] is True
+    assert 'oauth_token' not in listed
+    assert 'oauth_token_secret' not in listed
+    assert 'platform_authorization' not in listed
+
+    fetched = client.get('/api/ops/guild-executors/Carote').json()
+    assert fetched['oauth_configured'] is True
+    assert fetched['platform_authorization_configured'] is True
+    assert fetched['cms_refresh_token_configured'] is True
+    assert 'oauth_token' not in fetched
+    assert 'oauth_token_secret' not in fetched
+    assert 'platform_authorization' not in fetched
+
+
+
+def test_guild_executor_api_preserves_optional_tokens_without_echoing_or_blank_overwrite():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+
+    created = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-secret-token',
+        'cms_refresh_token': 'cms-secret-refresh-token',
+        'enabled': True,
+    })
+    assert created.status_code == 200
+    body = created.json()
+    assert body['backend_url'] == 'https://guild.linke.ai/guild'
+    assert body['platform_backend_url'] == 'https://cms.linke.ai/'
+    assert body['oauth_configured'] is True
+    assert body['platform_authorization_configured'] is True
+    assert body['cms_refresh_token_configured'] is True
+    assert 'oauth_token' not in body
+    assert 'oauth_token_secret' not in body
+    assert 'platform_authorization' not in body
+    assert 'guild-oauth-token' not in created.text
+    assert 'guild-oauth-secret' not in created.text
+    assert 'cms-secret-token' not in created.text
+    assert 'cms-secret-refresh-token' not in created.text
+
+    updated = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': '',
+        'oauth_token_secret': '',
+        'platform_authorization': '',
+        'cms_refresh_token': '',
+        'enabled': False,
+    })
+    assert updated.status_code == 200
+    updated_body = updated.json()
+    assert updated_body['backend_url'] == 'https://guild.linke.ai/guild'
+    assert updated_body['platform_backend_url'] == 'https://cms.linke.ai/'
+    assert updated_body['oauth_configured'] is True
+    assert updated_body['platform_authorization_configured'] is True
+    assert updated_body['cms_refresh_token_configured'] is True
+    assert 'guild-oauth-token' not in updated.text
+    assert 'guild-oauth-secret' not in updated.text
+    assert 'cms-secret-token' not in updated.text
+    assert 'cms-secret-refresh-token' not in updated.text
+
+    listed = client.get('/api/ops/guild-executors').json()['rows'][0]
+    assert listed['oauth_configured'] is True
+    assert listed['platform_authorization_configured'] is True
+    assert listed['cms_refresh_token_configured'] is True
+    assert 'oauth_token' not in listed
+    assert 'oauth_token_secret' not in listed
+    assert 'platform_authorization' not in listed
+
+    fetched = client.get('/api/ops/guild-executors/Permata').json()
+    assert fetched['oauth_configured'] is True
+    assert fetched['platform_authorization_configured'] is True
+    assert fetched['cms_refresh_token_configured'] is True
+    assert 'oauth_token' not in fetched
+    assert 'oauth_token_secret' not in fetched
+    assert 'platform_authorization' not in fetched
+
+
+
+def test_lark_intake_without_code_can_continue_for_guild_with_cms_authorization_and_routes_bind_by_id():
+    captured = {}
+
+    def real_bind_executor(context):
+        captured.update(context)
+        return {
+            'status': 'success',
+            'result_code': 'bind_success',
+            'result_reason': 'cms bind ok',
+            'raw_result': {'guild_code': context['dept_name'], 'executor_mode': context['bind_route']},
+        }
+
+    client = make_client({
+        'LARK_APP_ID': 'cli_default_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+        'REAL_BIND_EXECUTOR': real_bind_executor,
+    })
+    executor = client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    })
+    assert executor.status_code == 200
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cms_no_code'}},
+            'message': {
+                'message_id': 'om_cms_no_code',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nCarote-25\\n45678901"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed is not None
+    assert captured['dept_name'] == 'Carote'
+    assert captured['account_id'] == '45678901'
+    assert captured['invite_code'] == ''
+    assert captured['bind_route'] == 'cms_id'
+    assert captured['executor_platform_backend_url'] == 'https://cms.linke.ai/'
+    assert captured['executor_platform_authorization'] == 'Bearer cms-carote-token'
+    assert captured['executor_oauth_token'] == 'guild-oauth-token'
+    assert captured['executor_oauth_token_secret'] == 'guild-oauth-secret'
+
+
+
+def test_lark_intake_without_code_still_rejected_when_guild_has_no_cms_authorization():
+    client = make_client({
+        'LARK_APP_ID': 'cli_default_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'REQUIRE_INVITE_CODE': True,
+    })
+    executor = client.post('/api/ops/guild-executors/Piso', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'enabled': True,
+    })
+    assert executor.status_code == 200
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_guild_no_code'}},
+            'message': {
+                'message_id': 'om_guild_no_code',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nPiso-25\\n45678901"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'missing_required_fields'
+    assert body['reply_missing_fields'] == ['Code']
+
+
+
 def test_guild_executor_health_api_returns_latest_bind_status_and_human_action_flag():
     client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
 
     created = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -6699,6 +7347,8 @@ def test_guild_executor_health_api_returns_latest_bind_status_and_human_action_f
     row = health.json()['rows'][0]
     assert row['guild_name'] == 'Permata'
     assert row['bind_concurrency'] == 2
+    assert row['effective_status'] == 'active'
+    assert row['effective_reason'] == '个人 Code 绑定链路已配置'
     assert row['proxy_region'] == '厦门'
     assert row['last_bind_task_id'] == submission['task_id']
     assert row['last_bind_status'] == 'failed'
@@ -6710,6 +7360,8 @@ def test_guild_executor_health_api_returns_latest_bind_status_and_human_action_f
 def test_guild_executor_health_hides_stale_human_action_when_latest_bind_no_longer_requires_it():
     client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
     created = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -6876,6 +7528,191 @@ def test_intake_bot_presets_api_can_create_additional_bot_preset_and_resolve_by_
     assert fallback_body['matched_by'] == 'fallback_current'
 
 
+def test_intake_bot_presets_api_configures_profile_when_app_secret_is_provided(monkeypatch):
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}],
+    )
+    calls = []
+
+    def fake_configure(**kwargs):
+        calls.append(kwargs)
+        return {'configured': True, 'profile_name': kwargs['profile_name'], 'created': True}
+
+    monkeypatch.setattr(client.app.state.service, '_configure_intake_bot_profile', fake_configure)
+    monkeypatch.setattr(client.app.state.service, '_validate_lark_app_credentials', lambda **kwargs: {'ok': True, 'code': 0, 'msg': 'ok'})
+
+    response = client.post('/api/ops/intake-bot-presets/intake-newbot', json={
+        'robot_name': 'New Intake Bot',
+        'app_id': 'cli_newbot12345678',
+        'app_secret': 'secret_should_not_echo',
+        'default_app': 'Linky',
+        'default_guild': 'Piso',
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['saved'] is True
+    assert body['profile_setup']['configured'] is True
+    assert calls == [{
+        'profile_name': 'intake-newbot',
+        'app_id': 'cli_newbot12345678',
+        'app_secret': 'secret_should_not_echo',
+    }]
+    assert 'secret_should_not_echo' not in response.text
+    listing = client.get('/api/ops/intake-bot-presets')
+    assert 'secret_should_not_echo' not in listing.text
+
+
+def test_intake_bot_presets_profile_setup_handles_missing_hermes_cli(tmp_path, monkeypatch):
+    hermes_home = tmp_path / 'hermes-home'
+    source_profile = hermes_home / 'profiles' / 'intake'
+    source_profile.mkdir(parents=True)
+    (source_profile / '.env').write_text('FEISHU_APP_ID=cli_old\nFEISHU_APP_SECRET=old_secret\nFEISHU_ALLOWED_USERS=old_user\n', encoding='utf-8')
+    monkeypatch.setenv('HERMES_HOME', str(hermes_home))
+    monkeypatch.setattr(main_module.shutil, 'which', lambda name: None if name == 'hermes' else None)
+    client = make_client({
+        'DB_PATH': str(tmp_path / 'preset-missing-hermes.db'),
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'AUTH_ENABLED': False,
+    })
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}],
+    )
+    monkeypatch.setattr(client.app.state.service, '_validate_lark_app_credentials', lambda **kwargs: {'ok': True, 'code': 0, 'msg': 'ok'})
+
+    response = client.post('/api/ops/intake-bot-presets/intake-newbot', json={
+        'robot_name': 'New Intake Bot',
+        'app_id': 'cli_newbot12345678',
+        'app_secret': 'secret_should_not_echo',
+        'default_app': 'Linky',
+        'default_guild': 'Piso',
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['saved'] is True
+    assert body['profile_setup']['configured'] is True
+    assert (hermes_home / 'profiles' / 'intake-newbot' / '.env').exists()
+    env_text = (hermes_home / 'profiles' / 'intake-newbot' / '.env').read_text(encoding='utf-8')
+    assert "FEISHU_APP_ID='cli_newbot12345678'" in env_text
+    assert "FEISHU_APP_SECRET='secret_should_not_echo'" in env_text
+    assert 'FEISHU_ALLOWED_USERS' not in env_text
+    assert 'profile_clone_without_hermes_cli' in response.text
+    assert 'secret_should_not_echo' not in response.text
+
+
+def test_intake_bot_presets_rejects_duplicate_app_id_and_invalid_secret(monkeypatch):
+    client = make_client({'LARK_APP_ID': 'cli_current', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso', 'AUTH_ENABLED': False})
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}, {'id': 'dept_2', 'deptName': 'Carote'}],
+    )
+    first = client.post('/api/ops/intake-bot-presets/intake-existing', json={
+        'robot_name': 'Existing Bot',
+        'app_id': 'cli_existing',
+        'default_app': 'Linky',
+        'default_guild': 'Piso',
+    })
+    assert first.status_code == 200
+
+    duplicate = client.post('/api/ops/intake-bot-presets/intake-duplicate', json={
+        'robot_name': 'Duplicate Bot',
+        'app_id': 'cli_existing',
+        'default_app': 'Linky',
+        'default_guild': 'Carote',
+    })
+    assert duplicate.status_code == 400
+    assert duplicate.json()['detail'] == 'app_id_already_used_by_profile:intake-existing'
+
+    monkeypatch.setattr(client.app.state.service, '_validate_lark_app_credentials', lambda **kwargs: {'ok': False, 'code': 10014, 'msg': 'app secret invalid'})
+    invalid_secret = client.post('/api/ops/intake-bot-presets/intake-invalid-secret', json={
+        'robot_name': 'Invalid Secret Bot',
+        'app_id': 'cli_invalid_secret',
+        'app_secret': 'secret_should_not_echo',
+        'default_app': 'Linky',
+        'default_guild': 'Piso',
+    })
+    assert invalid_secret.status_code == 400
+    assert invalid_secret.json()['detail'] == 'lark_app_credentials_invalid:10014:app secret invalid'
+    assert 'secret_should_not_echo' not in invalid_secret.text
+
+
+def test_local_intake_bot_gateway_activation_endpoint(monkeypatch):
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso', 'AUTH_ENABLED': False})
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Carote'}],
+    )
+    calls = []
+
+    def fake_update(profile_name, payload):
+        calls.append({'profile_name': profile_name, 'app_id': payload.app_id, 'app_secret': payload.app_secret})
+        return {
+            'saved': True,
+            'profile_setup': {
+                'configured': True,
+                'commands': [
+                    {'action': 'gateway_install', 'returncode': 0, 'stderr': ''},
+                    {'action': 'gateway_restart', 'returncode': 0, 'stderr': ''},
+                ],
+            },
+        }
+
+    monkeypatch.setattr(client.app.state.service, 'update_intake_bot_preset', fake_update)
+    monkeypatch.setattr(client.app.state.service, 'resolve_intake_bot_preset', lambda **kwargs: {'profile_name': 'intake-carote', 'matched_by': 'app_id'})
+    monkeypatch.setattr(client.app.state.service, '_hermes_profile_root', lambda: Path('/tmp/nonexistent-hermes-test-root'))
+
+    response = client.post('/api/ops/local-intake-bot-gateway/intake-carote/activate', json={
+        'robot_name': 'Lk-Carote',
+        'app_id': 'cli_carote',
+        'app_secret': 'secret_should_not_echo',
+        'default_app': 'Linky',
+        'default_guild': 'Carote',
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['saved'] is True
+    assert body['profile_name'] == 'intake-carote'
+    assert body['reason'] == 'gateway_not_connected_yet'
+    assert calls == [{'profile_name': 'intake-carote', 'app_id': 'cli_carote', 'app_secret': 'secret_should_not_echo'}]
+    assert 'secret_should_not_echo' not in response.text
+
+
+def test_intake_bot_presets_api_can_delete_additional_bot_preset():
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}, {'id': 'app_2', 'name': 'FUMI'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}, {'id': 'dept_2', 'deptName': 'Permata'}],
+    )
+    created = client.post('/api/ops/intake-bot-presets/intake-delete-me', json={
+        'robot_name': 'Delete Me Bot',
+        'app_id': 'cli_delete_me',
+        'default_app': 'FUMI',
+        'default_guild': 'Permata',
+    })
+    assert created.status_code == 200
+
+    deleted = client.delete('/api/ops/intake-bot-presets/intake-delete-me')
+
+    assert deleted.status_code == 200
+    assert deleted.json() == {'ok': True, 'deleted': True}
+    listing = client.get('/api/ops/intake-bot-presets')
+    assert listing.status_code == 200
+    assert all(row['profile_name'] != 'intake-delete-me' for row in listing.json()['rows'])
+    resolved = client.get('/api/ops/intake-bot-presets/resolve?app_id=cli_delete_me')
+    assert resolved.status_code == 200
+    assert resolved.json()['matched_by'] == 'fallback_current'
+
+    delete_current = client.delete('/api/ops/intake-bot-presets/current')
+    assert delete_current.status_code == 400
+    assert delete_current.json()['detail'] == 'cannot_delete_current_preset'
+
 
 def test_intake_bot_presets_api_uses_cached_dropdown_options_when_live_crm_is_unavailable(tmp_path):
     client = make_client({
@@ -6987,6 +7824,272 @@ def test_lark_event_uses_bot_specific_preset_when_gateway_passes_bot_app_id():
     assert body['parsed_payload']['app_name'] == 'FUMI'
     assert body['parsed_payload']['dept_name'] == 'Permata'
 
+
+
+def test_lark_event_without_group_uses_latest_registration_group_membership_by_phone():
+    client = make_client({'LARK_APP_ID': 'cli_default_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Permata'})
+    service = client.app.state.service
+    service._replace_registration_group_approval_batch_members(
+        approval_run_id='registration_group_approval_autofill_01',
+        registration_group='Permata-31',
+        registration_group_name='Permata-31',
+        approved_at='2026-05-14T10:00:00Z',
+        selected_candidates=[{'phoneRaw': '+62 81234562222', 'phoneNormalized': '81234562222', 'displayName': '~A'}],
+    )
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_default_app',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_group_autofill'}},
+            'message': {
+                'message_id': 'om_group_autofill',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234562222\n77889902\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['parsed_payload']['registration_group'] == 'Permata-31'
+    assert body['reply_group'] == 'Permata-31'
+
+
+def test_lark_event_without_group_requires_group_when_phone_has_multiple_memberships():
+    client = make_client({'LARK_APP_ID': 'cli_default_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Permata'})
+    service = client.app.state.service
+    for run_id, group, approved_at in [
+        ('registration_group_approval_multi_01', 'Permata-31', '2026-05-14T10:00:00Z'),
+        ('registration_group_approval_multi_02', 'Piso-22', '2026-05-14T10:05:00Z'),
+    ]:
+        service._replace_registration_group_approval_batch_members(
+            approval_run_id=run_id,
+            registration_group=group,
+            registration_group_name=group,
+            approved_at=approved_at,
+            selected_candidates=[{'phoneRaw': '+62 81234563333', 'phoneNormalized': '81234563333', 'displayName': '~A'}],
+        )
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_default_app',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_group_multi'}},
+            'message': {
+                'message_id': 'om_group_multi',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234563333\n77889903\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'multiple_registration_groups_found'
+    assert body['reply_missing_fields'] == ['Group']
+
+
+def test_lark_event_without_group_and_without_membership_uses_other_channel():
+    client = make_client({'LARK_APP_ID': 'cli_default_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Permata'})
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_default_app',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_other_channel'}},
+            'message': {
+                'message_id': 'om_other_channel',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234564444\\n77889905\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['parsed_payload']['registration_group'] == '其他渠道'
+    assert body['reply_group'] == '其他渠道'
+    assert 'Group' not in body.get('reply_missing_fields', [])
+
+
+def test_lark_event_chinese_line_is_not_treated_as_registration_group():
+    client = make_client({'LARK_APP_ID': 'cli_default_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Permata'})
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_default_app',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_chinese_group_line'}},
+            'message': {
+                'message_id': 'om_chinese_group_line',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234565555\\n77889906\\n这个用户来自私聊渠道不是注册群\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['parsed_payload']['registration_group'] == '其他渠道'
+    assert body['reply_group'] == '其他渠道'
+    assert '这个用户来自私聊渠道不是注册群' not in body['reply_text']
+
+
+def test_parse_manual_cs_message_does_not_infer_chinese_text_as_group():
+    parsed = parse_manual_cs_message(
+        text='+62 81234566666\n77889907\n这是中文备注不是群名\nCode EKVFGQ'
+    )
+    assert parsed['registration_group'] is None
+    assert 'registration_group' not in parsed['missing_fields']
+
+
+def test_lark_event_bare_non_intake_text_does_not_trigger_invalid_group_format():
+    client = make_client({'LARK_APP_ID': 'cli_default_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Permata'})
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_default_app',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_non_intake_text'}},
+            'message': {
+                'message_id': 'om_non_intake_text',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"nihao1"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'irrelevant_message'
+    assert 'Invalid group format' not in body.get('reply_text', '')
+
+
+def test_lark_event_explicit_invalid_group_still_reports_group_format():
+    client = make_client({'LARK_APP_ID': 'cli_default_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Permata'})
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_default_app',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_invalid_group'}},
+            'message': {
+                'message_id': 'om_invalid_group',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"Phone: +62 81234569999\\nID: 77889904\\nGroup: nihao1\\nCode: EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'invalid_group_format'
+    assert body['reply_group'] == 'nihao1'
+
+
+def test_lark_event_chinese_chat_text_is_not_echoed_as_group():
+    client = make_client({'LARK_APP_ID': 'cli_default_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Permata'})
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_default_app',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cn_chat_text'}},
+            'message': {
+                'message_id': 'om_cn_chat_text',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"今天天气好吗"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'irrelevant_message'
+    assert body['reply_group'] == '-'
+    assert '今天天气好吗' not in body.get('reply_text', '')
+
+
+def test_lark_event_explicit_chinese_group_value_is_ignored_not_echoed():
+    client = make_client({'LARK_APP_ID': 'cli_default_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Permata'})
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_default_app',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_cn_group_value'}},
+            'message': {
+                'message_id': 'om_cn_group_value',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"Phone: -\\nID: -\\nGroup: 今天天气好吗\\nCode: -"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'irrelevant_message'
+    assert body['reply_group'] == '-'
+    assert '今天天气好吗' not in body.get('reply_text', '')
+
+
+def test_registration_group_approval_duplicate_phone_does_not_execute_second_group():
+    class DummyApprovalExecutor:
+        def __init__(self):
+            self.calls = []
+        def approve(self, context):
+            self.calls.append(context)
+            return {'status': 'success', 'verified': True, 'approved_count': 1, 'raw_result': {'selected_candidates': []}}
+
+    executor = DummyApprovalExecutor()
+    client = make_client({'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor})
+    service = client.app.state.service
+    service._replace_registration_group_approval_batch_members(
+        approval_run_id='registration_group_approval_existing_active',
+        registration_group='Permata-31',
+        registration_group_name='Permata-31',
+        approved_at='2026-05-14T10:00:00Z',
+        selected_candidates=[{'phoneRaw': '+62 81234564444', 'phoneNormalized': '81234564444', 'displayName': '~A'}],
+    )
+    service.registration_group_approval_executor_group_state = lambda group: {'pending_count': 1, 'member_count': 10, 'requesters': []}
+
+    result = service.registration_group_approval_decision(main_module.RegistrationGroupApprovalDecisionRequest(
+        registration_group='Piso-22',
+        decision='approve',
+        decided_at='2026-05-14T10:10:00Z',
+        target_phone_hint='+62 81234564444',
+        approved_count=1,
+    ))
+    assert result['executed'] is False
+    assert result['verified'] is False
+    assert result['result_code'] == 'duplicate_registration_group_request'
+    assert result['active_registration_group'] == 'Permata-31'
+    assert executor.calls == []
 
 
 def test_bind_check_result_rejects_backend_guild_that_does_not_match_current_bot_preset():
@@ -7240,6 +8343,24 @@ def test_lark_reply_templates_include_code_field_for_success_and_failures():
     })
     assert bind_profile_unconfigured.startswith('**🚫 I do not handle this app/agency.**')
     assert 'Code: EKVFGQ' in bind_profile_unconfigured
+
+    cms_invalid_or_unavailable_id = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'bind_check_failed',
+        'result_code': 'cms_bind_not_verified',
+        'result_reason': '状态码: 400, 错误信息: invalid arguments',
+        'reply_phone': '+62 8989811289819',
+        'reply_id': '42123121',
+        'reply_group': '💎Carote✖️linky999',
+        'reply_code': '-',
+    })
+    assert cms_invalid_or_unavailable_id == (
+        '**❌ Bind failed: Invalid or unavailable Linky ID**\n'
+        'Phone: +62 8989811289819\n'
+        'ID: 42123121\n'
+        'Group: 💎Carote✖️linky999\n'
+        'Code: -'
+    )
 
     invalid_personal_code = service._format_lark_reply_text({
         'accepted': False,
@@ -8669,7 +9790,7 @@ def test_process_next_automation_task_replies_retry_exhausted_crm_message_after_
     assert third['reason'] == 'crm_sync_failed'
     assert third['result_code'] in {'crm_retry_exhausted', 'crm_retry_failed'}
     assert len(reply.calls) == 1
-    assert reply.calls[0]['text'].startswith('**❌ CRM sync failed: Bind succeeded but CRM retried.**')
+    assert reply.calls[0]['text'].startswith('**❌ Bind Success, CRM Failed**')
 
 
 
@@ -8689,6 +9810,8 @@ def test_process_next_automation_task_device_limit_failure_uses_duplicate_regist
         'LARK_REPLY_ADAPTER': reply,
     })
     executor = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -8744,6 +9867,8 @@ def test_process_next_automation_task_uses_bot_specific_reply_adapter_when_app_i
         },
     })
     executor = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -8794,6 +9919,8 @@ def test_process_next_automation_task_flags_auth_required_for_human_action_and_r
         },
     })
     executor = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -8899,6 +10026,8 @@ def test_process_next_automation_task_schedules_bind_retry_for_retryable_failure
         },
     })
     executor = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -9054,6 +10183,8 @@ def test_process_next_automation_task_uses_real_bind_executor_when_configured():
         'REAL_BIND_EXECUTOR': real_bind_executor,
     })
     executor = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -9126,6 +10257,8 @@ def test_process_next_automation_task_prefers_registration_group_executor_when_p
     )
     assert preset['profile_name'] == 'intake'
     executor = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -9175,6 +10308,8 @@ def test_intake_bot_rejects_group_owned_by_other_guild_before_bind_duplicate():
         enabled=1,
     )
     executor = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -9238,6 +10373,8 @@ def test_process_next_automation_task_resolves_matching_guild_executor_config():
     })
     assert created.status_code == 200
     executor = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
         'backend_url': 'https://guild.linke.ai/guild/addAnchor',
         'login_username': 'permata@example.com',
         'password_secret_ref': 'secret_perm',
@@ -9273,7 +10410,9 @@ def test_process_next_automation_task_resolves_matching_guild_executor_config():
     assert processed is not None
     assert captured['dept_name'] == 'Permata'
     assert captured['invite_code'] == 'EKVFGQ'
-    assert captured['executor_backend_url'] == 'https://guild.linke.ai/guild/addAnchor'
+    assert captured['executor_backend_url'] == 'https://guild.linke.ai/guild'
+    assert captured['executor_oauth_token'] == 'guild-oauth-token'
+    assert captured['executor_oauth_token_secret'] == 'guild-oauth-secret'
     assert captured['executor_login_username'] == 'permata@example.com'
     assert captured['executor_proxy_url'] == 'http://proxy-xm:8080'
     assert captured['executor_proxy_region'] == '厦门'
@@ -9623,7 +10762,7 @@ def test_lark_event_does_not_reply_success_when_crm_create_returns_success_but_q
     assert body['accepted'] is False
     assert body['reason'] == 'crm_sync_failed'
     assert body['result_reason'] == 'CRM write could not be verified.'
-    assert reply.calls[0]['text'].startswith('**❌ CRM Failed**')
+    assert reply.calls[0]['text'].startswith('**❌ Bind Success, CRM Failed**')
 
 
 def test_lark_event_does_not_treat_mismatched_query_back_row_as_verified_success():
@@ -9687,7 +10826,7 @@ def test_lark_event_does_not_treat_mismatched_query_back_row_as_verified_success
     assert body['accepted'] is False
     assert body['reason'] == 'crm_sync_failed'
     assert body['result_reason'] == 'CRM write could not be verified.'
-    assert reply.calls[0]['text'].startswith('**❌ CRM Failed**')
+    assert reply.calls[0]['text'].startswith('**❌ Bind Success, CRM Failed**')
 
 
 def test_lark_event_uses_english_duplicate_conflict_message_when_crm_reports_duplicate_without_lookup_hit():
@@ -9745,7 +10884,7 @@ def test_lark_event_uses_english_duplicate_conflict_message_when_crm_reports_dup
     assert body['accepted'] is False
     assert body['reason'] == 'crm_sync_failed'
     assert body['result_reason'] == 'Data duplication.'
-    assert reply.calls[0]['text'].startswith('**❌ CRM Failed**')
+    assert reply.calls[0]['text'].startswith('**❌ Bind Success, CRM Failed**')
 
 
 def test_lark_event_reuses_cached_crm_app_mapping_when_get_apps_temporarily_fails():
@@ -9931,7 +11070,7 @@ def test_lark_event_replies_in_english_retry_once_when_crm_app_mapping_is_tempor
     assert body['accepted'] is False
     assert body['reason'] == 'crm_sync_failed'
     assert body['result_reason'] == 'Please retry once.'
-    assert reply.calls[0]['text'].startswith('**❌ CRM Failed**')
+    assert reply.calls[0]['text'].startswith('**❌ Bind Success, CRM Failed**')
     assert not [name for name, _ in crm.calls if name == 'create_customer']
 
 
@@ -19333,6 +20472,11 @@ def test_ops_page_serves_operational_workbench_html():
     assert '/api/ops/operator-notifications' in body
     assert '/api/ops/approval-batch-queue/summary' in body
     assert '/api/ops/production-ops-daemon' in body
+    assert 'function renderHealth(runtime, batchQueue)' in body
+    assert 'const hasMonitoredApprovalGroups = (registrationMonitored + officialMonitored) > 0;' in body
+    assert "['审批守护', hasMonitoredApprovalGroups ? (incidents ? `异常 ${incidents}` : '正常') : '未启用'" in body
+    assert "['注册群探针', hasMonitoredApprovalGroups ? (worker.ok === false ? '异常' : '正常') : '未启用'" in body
+    assert 'renderHealth(runtime, batchQueue);' in body
     assert '/ops/manual-workbench' not in body
     assert '处理队列' not in body
     assert '待绑定列表' not in body
@@ -21121,6 +22265,43 @@ def test_lark_event_does_not_treat_plain_english_word_as_group_name():
     assert body['reply_group'] == '-'
 
 
+def test_parse_manual_cs_message_accepts_historical_registration_group_name():
+    group_name = '🇮🇩2️⃣4️⃣Grup Registrasi Resmi ✘ Linky 💎'
+    parsed = parse_manual_cs_message(
+        text=f'Phone: +62 899 9999 9999\nGroup: {group_name}\nID: 51858602\nCode: PKUYW9',
+    )
+    assert parsed['registration_group'] == group_name
+    assert 'registration_group' not in parsed['missing_fields']
+
+
+def test_lark_event_accepts_historical_registration_group_name_without_invalid_format():
+    group_name = '🇮🇩2️⃣4️⃣Grup Registrasi Resmi ✘ Linky 💎'
+    client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'message': {
+                'message_id': 'msg_historical_group_name',
+                'chat_id': 'chat_1',
+                'message_type': 'text',
+                'content': json.dumps({'text': f'Phone: +62 899 9999 9999\nGroup: {group_name}\nID: 51858602\nCode: PKUYW9'}),
+            }
+        },
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body.get('reason') != 'invalid_group_format'
+    assert body['reply_group'] == group_name
+
+
+def test_bare_multiline_intake_accepts_historical_registration_group_name():
+    group_name = '🇮🇩2️⃣4️⃣Grup Registrasi Resmi ✘ Linky 💎'
+    candidates = main_module.extract_bare_multiline_candidates(f'+62 899 9999 9999\n51858602\n{group_name}\nPKUYW9')
+    assert candidates['registration_group_line'] == group_name
+
+
 def test_lark_event_replies_with_invalid_group_format_when_group_candidate_misses_dash():
     assert extract_invalid_group_candidate('90965721\n+62 784311989\nPiso12') == 'Piso12'
     app = create_app({
@@ -21137,7 +22318,7 @@ def test_lark_event_replies_with_invalid_group_format_when_group_candidate_misse
         'reply_group': 'Piso12',
     })
     assert result == (
-        '**🚫 Invalid group format. Use English-Number, e.g. Piso-12.**\n'
+        '**🚫 Invalid group format. Please copy the exact registration group name.**\n'
         'Phone: +62 784311989\n'
         'ID: 90965721\n'
         'Group: Piso12\n'
@@ -21370,14 +22551,32 @@ def test_intake_bot_presets_page_uses_dropdown_selects_for_app_and_guild():
     assert '配置概况' in body
     assert '机器人配置列表' in body
     assert '执行器总览' in body
+    assert 'new_executor_oauth_token' in body
+    assert 'new_executor_oauth_token_secret' in body
+    assert 'new_executor_platform_authorization' in body
+    assert 'new_executor_backend_url' not in body
+    assert 'new_executor_platform_backend_url' not in body
+    assert 'new_executor_proxy_url' not in body
+    assert 'new_executor_proxy_type' not in body
+    assert 'new_executor_browser_profile_key' not in body
+    assert 'CMS ID 绑' in body
+    assert '个人 Code 绑' in body
     assert '群审批控制台</h2>' not in body
     assert 'Config Center' not in body
     assert 'config-workspace' in body
-    assert 'presetFieldHtml(' in body
-    assert 'data.app_options' in body
-    assert 'data.guild_options' in body
-    assert 'data.app_options_source' in body
-    assert 'data.guild_options_source' in body
+    assert 'fillPresetModalOptions(' in body
+    assert 'preset_modal_app_secret' in body
+    assert 'preset_modal_activation_status' in body
+    assert 'setPresetActivationStatus' in body
+    assert 'activateLocalIntakeBotGateway' in body
+    assert '机器人配置已保存，正在启用机器人' in body
+    assert '启用中…' in body
+    assert 'suggestedPresetProfileNameFromAppId' in body
+    assert 'Lark App Secret' in body
+    assert 'window.__presetAppOptions' in body
+    assert 'window.__presetGuildOptions' in body
+    assert 'window.__presetAppOptionsSource' in body
+    assert 'window.__presetGuildOptionsSource' in body
     assert 'setInterval(() => {' in body
     assert 'reloadPresets().catch(err => showToast(err.message, \'error\'))' in body
     assert 'Using live CRM dropdown options only.' in body
@@ -21403,8 +22602,8 @@ def test_intake_bot_presets_page_disables_save_when_crm_options_unavailable():
     assert 'placeholder="手动输入"' not in body
     assert 'const manualInput = document.getElementById(`default_app_manual_${profileName}`);' not in body
     assert 'const manualGuildInput = document.getElementById(`default_guild_manual_${profileName}`);' not in body
-    assert 'default_app: appField.value.trim(),' in body
-    assert 'default_guild: guildField.value.trim(),' in body
+    assert 'default_app: defaultApp' in body
+    assert 'default_guild: defaultGuild' in body
 
 
 def test_intake_bot_presets_api_rejects_manual_fallback_values_when_crm_options_unavailable():

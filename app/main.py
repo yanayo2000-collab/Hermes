@@ -31,6 +31,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from fastapi import Body, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
@@ -136,6 +137,42 @@ GLOBAL_PHONE_PATTERN = re.compile(r'^\+(\d{1,3})(?:[ \t\-()]|\d){6,}$')
 PHONE_CANDIDATE_PATTERN = re.compile(r'(\+?\d[\d \t\-().]{8,}\d)')
 GROUP_VALUE_PATTERN = re.compile(r'^[A-Za-z]+-\d+$', flags=re.IGNORECASE)
 GROUP_CANDIDATE_WITHOUT_DASH_PATTERN = re.compile(r'^[A-Za-z]+\d+$', flags=re.IGNORECASE)
+REGISTRATION_GROUP_LABEL_PATTERN = re.compile(r'(?:^|\n|\b)(?:注册群组|注册群|group|registration_group)\s*[:：]\s*([^\n]+)', flags=re.IGNORECASE)
+OTHER_CHANNEL_REGISTRATION_GROUP = '其他渠道'
+CJK_TEXT_PATTERN = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]')
+
+
+def contains_cjk_text(value: Optional[str]) -> bool:
+    return bool(CJK_TEXT_PATTERN.search(str(value or '')))
+
+
+def is_blank_intake_field_value(value: Optional[str]) -> bool:
+    text = str(value or '').strip()
+    return not text or text.lower() in {'-', '—', '无', 'none', 'null', 'n/a', 'na'}
+
+
+def normalize_registration_group_candidate(value: Optional[str]) -> Optional[str]:
+    text = str(value or '').strip()
+    if not text:
+        return None
+    if text == OTHER_CHANNEL_REGISTRATION_GROUP:
+        return text
+    # Do not treat labeled empty/place-holder fields or Chinese customer notes as group names.
+    if re.match(r'^(?:phone|mobile|id|uid|account_id|code|invite\s*code|app|agency|guild|dept|group|registration_group|公会|邀请码|注册群组|注册群)\s*[:：]', text, flags=re.IGNORECASE):
+        return None
+    if is_blank_intake_field_value(text):
+        return None
+    # All real registration-group names are non-Chinese; do not classify Chinese customer notes as group names.
+    if contains_cjk_text(text):
+        return None
+    # Strip common accidental trailing field fragments when a pasted value stays on one line.
+    text = re.split(r'\s+(?:phone|mobile|id|uid|account_id|code|invite\s*code|app|agency|guild|dept|公会|邀请码)\s*[:：]', text, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    text = text.strip(' ,;，；')
+    if not text or text.strip().lower() in {'-', '—', '无', 'none', 'null', 'n/a', 'na'}:
+        return None
+    if contains_cjk_text(text):
+        return None
+    return text or None
 PURE_DIGIT_ID_PATTERN = re.compile(r'^\d{6,12}$')
 BARE_INVITE_CODE_PATTERN = re.compile(r'^(?:[A-Z]{6}|(?=.*[A-Z])[A-Z0-9]{6})$')
 INVITE_CODE_CAPTURE_PATTERN = re.compile(r'(?:^|\b)(?:invite\s*code|personal\s*invite\s*code|code|个人邀请码|邀请码|kode\s+gabung\s+agensi|codigo\s+da\s+pessoa)\s*[:：是]?\s*([^\s"\'{}]{4,16})', flags=re.IGNORECASE)
@@ -221,11 +258,30 @@ def extract_bare_multiline_candidates(text: str) -> Dict[str, Optional[str]]:
             result['account_id_line'] = line
             continue
         if result['invite_code_line'] is None:
-            invite_meta = normalize_invite_code_candidate(line)
+            invite_match = INVITE_CODE_CAPTURE_PATTERN.search(line)
+            invite_meta = normalize_invite_code_candidate(invite_match.group(1) if invite_match else line)
             normalized = str(invite_meta.get('normalized') or '').strip().upper()
             if invite_meta.get('is_valid') and normalized.lower() not in {'linky', 'fumi'}:
                 result['invite_code_line'] = normalized
                 continue
+    if result['registration_group_line'] is None:
+        for line in lines:
+            if line in {result.get('mobile_line'), result.get('account_id_line'), result.get('invite_code_line')}:
+                continue
+            if GLOBAL_PHONE_PATTERN.fullmatch(line) or PURE_DIGIT_ID_PATTERN.fullmatch(line):
+                continue
+            invite_meta = normalize_invite_code_candidate(line)
+            normalized = str(invite_meta.get('normalized') or '').strip().upper()
+            if INVITE_CODE_CAPTURE_PATTERN.search(line):
+                continue
+            if invite_meta.get('is_valid') and normalized.lower() not in {'linky', 'fumi'}:
+                continue
+            if re.fullmatch(r'(Linky|FUMI|Piso|Permata|Sampanye|Carote)', line, flags=re.IGNORECASE):
+                continue
+            candidate = normalize_registration_group_candidate(line)
+            if candidate:
+                result['registration_group_line'] = candidate
+                break
     return result
 
 
@@ -410,15 +466,18 @@ def parse_manual_cs_message(*, text: str, image_ocr_text: Optional[str] = None) 
             account_id = digit_runs[-1]
 
     registration_group = None
+    labeled_group_match = REGISTRATION_GROUP_LABEL_PATTERN.search(text_normalized)
+    if labeled_group_match:
+        registration_group = normalize_registration_group_candidate(labeled_group_match.group(1))
     group_patterns = [
-        r'(?:注册群组|group)\s*[:：]?\s*([A-Za-z]+(?:-\d+)?)',
         r'([A-Za-z]+-\d+)',
-        r'([A-Za-z]+)组',
     ]
     for pattern in group_patterns:
+        if registration_group:
+            break
         match = re.search(pattern, text_normalized, flags=re.IGNORECASE)
         if match:
-            registration_group = match.group(1)
+            registration_group = normalize_registration_group_candidate(match.group(1))
             break
     if not registration_group and bare_candidates.get('registration_group_line'):
         registration_group = str(bare_candidates['registration_group_line']).strip()
@@ -455,14 +514,13 @@ def parse_manual_cs_message(*, text: str, image_ocr_text: Optional[str] = None) 
         conflicts.append('account_id_conflict')
 
     missing_fields = [
-        name for name, value in {
-            'mobile': mobile,
-            'account_id': account_id,
-            'registration_group': registration_group,
-            'app_name': app_name,
-            'dept_name': dept_name,
-            'invite_code': invite_code,
-        }.items() if not value
+            name for name, value in {
+                'mobile': mobile,
+                'account_id': account_id,
+                'app_name': app_name,
+                'dept_name': dept_name,
+                'invite_code': invite_code,
+            }.items() if not value
     ]
 
     score = 0.0
@@ -585,8 +643,27 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
     input:focus, select:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
     .field-stack { display: flex; flex-direction: column; gap: 8px; }
     .preset-robot-name-cell { gap: 6px; }
-    .preset-row-actions { display:flex; flex-direction:column; gap:8px; align-items:flex-start; }
-    .preset-row-actions button { width:100%; }
+    .preset-table { min-width: 0; table-layout: fixed; }
+    .preset-table th:nth-child(1), .preset-table td:nth-child(1) { width: 110px; overflow-wrap: anywhere; }
+    .preset-table th:nth-child(2), .preset-table td:nth-child(2) { width: 190px; }
+    .preset-table th:nth-child(3), .preset-table td:nth-child(3) { width: 180px; overflow-wrap: anywhere; }
+    .preset-table th:nth-child(4), .preset-table td:nth-child(4),
+    .preset-table th:nth-child(5), .preset-table td:nth-child(5) { width: 160px; }
+    .preset-table th:nth-child(6), .preset-table td:nth-child(6) { width: 118px; }
+    .preset-table input,.preset-table select { min-width: 0; margin: 0 0 6px; }
+    .preset-card-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:12px; margin-top:12px; }
+    .preset-card { border:1px solid #e5e7eb; border-radius:14px; padding:14px; background:#fafbff; display:flex; flex-direction:column; gap:10px; }
+    .preset-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+    .preset-card h3 { margin:0; font-size:16px; }
+    .preset-meta { display:grid; grid-template-columns:96px 1fr; gap:6px 10px; font-size:13px; }
+    .preset-meta .k { color:#6b7280; }
+    .preset-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:4px; }
+    .preset-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .preset-modal-backdrop { position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(15,23,42,.48); z-index:90; padding:24px; }
+    .preset-modal-backdrop.is-open { display:flex; }
+    .preset-modal-card { width:min(760px, 100%); max-height:calc(100vh - 48px); overflow-y:auto; background:#fff; border:1px solid #e5e7eb; border-radius:18px; box-shadow:0 24px 64px rgba(15,23,42,.24); padding:18px; }
+    .preset-modal-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; }
+    .preset-modal-head h2 { margin:0; }
     .executor-form-grid { display: grid; grid-template-columns: repeat(2, minmax(240px, 1fr)); gap: 12px; }
     .executor-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 12px; }
     .executor-card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; background: #fafbff; }
@@ -608,8 +685,111 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
     .hero .eyebrow { color:#6366f1; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
     .hero .subtitle { color:#4b5563; font-size:14px; margin-top:8px; }
     .config-workspace { display:grid; gap:16px; margin-top:16px; }
-    body[data-ops-role="operator"] .admin-only { display: none !important; }
-  </style>
+    body[data-ops-role="operator"] .admin-only, body[data-ops-role="customer_service"] .admin-only { display: none !important; }
+  
+/* CRM UI system v2: unified light dashboard tokens, typography, spacing */
+:root{
+  --crm-font:Inter,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --crm-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;
+  --crm-bg:#eef3f9;
+  --crm-bg-2:#f6f8fc;
+  --crm-panel:#ffffff;
+  --crm-surface:#f8fbff;
+  --crm-surface-2:#f2f6fc;
+  --crm-border:#e5ebf3;
+  --crm-border-strong:#d7e0ec;
+  --crm-text:#172033;
+  --crm-text-2:#334155;
+  --crm-muted:#718095;
+  --crm-faint:#9aa7b7;
+  --crm-blue:#2f6bff;
+  --crm-blue-hover:#1f55d9;
+  --crm-blue-soft:#edf4ff;
+  --crm-green:#16a34a;
+  --crm-green-soft:#dcfce7;
+  --crm-amber:#d97706;
+  --crm-amber-soft:#fff7ed;
+  --crm-red:#dc2626;
+  --crm-red-soft:#fff1f2;
+  --crm-r-sm:10px;
+  --crm-r-md:14px;
+  --crm-r-lg:18px;
+  --crm-r-xl:22px;
+  --crm-r-2xl:28px;
+  --crm-space-1:4px;
+  --crm-space-2:8px;
+  --crm-space-3:12px;
+  --crm-space-4:16px;
+  --crm-space-5:20px;
+  --crm-space-6:24px;
+  --crm-space-8:32px;
+  --crm-shadow:0 18px 45px rgba(38,55,91,.08);
+  --crm-shadow-soft:0 8px 24px rgba(38,55,91,.06);
+  --crm-shadow-card:0 1px 0 rgba(15,23,42,.02),0 14px 34px rgba(38,55,91,.055);
+}
+html{scrollbar-gutter:stable;background:var(--crm-bg)!important;font-size:14px!important;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+body{margin:0!important;padding:24px!important;min-height:100vh!important;background:radial-gradient(circle at 12% -8%,rgba(47,107,255,.10),transparent 31%),linear-gradient(180deg,#f7f9fd 0%,#eef3f9 100%)!important;color:var(--crm-text)!important;font-family:var(--crm-font)!important;font-size:14px!important;line-height:1.5!important;letter-spacing:-.006em!important;}
+body *{box-sizing:border-box;}
+.page-shell,body>.page{width:min(1480px,calc(100vw - 48px))!important;max-width:1480px!important;margin:0 auto!important;padding:0 0 32px!important;display:grid!important;grid-template-columns:248px minmax(0,1fr)!important;gap:24px!important;align-items:start!important;}
+.shell-nav,.nav{grid-column:1!important;grid-row:1 / span 160!important;position:sticky!important;top:24px!important;z-index:30!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:6px!important;flex-wrap:nowrap!important;min-height:calc(100vh - 48px)!important;margin:0!important;padding:22px 16px!important;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px) saturate(140%)!important;border:1px solid var(--crm-border)!important;border-radius:var(--crm-r-2xl)!important;box-shadow:var(--crm-shadow)!important;}
+.shell-nav::before,.nav::before{content:'MCN 客服工具';display:block;margin:0 8px 18px;padding:0 0 16px;border-bottom:1px solid var(--crm-border);color:#111827;font-size:18px;line-height:1.12;font-weight:760;letter-spacing:-.035em;}
+.shell-nav a,.nav a{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:10px!important;min-height:40px!important;padding:11px 14px!important;border-radius:15px!important;background:transparent!important;border:0!important;color:var(--crm-muted)!important;text-decoration:none!important;font-size:14px!important;line-height:18px!important;font-weight:620!important;letter-spacing:-.01em!important;white-space:nowrap!important;box-shadow:none!important;transition:background .16s ease,color .16s ease,transform .16s ease;}
+.shell-nav a::before,.nav a::before{content:'';width:8px;height:8px;border-radius:999px;background:#cbd5e1;flex:0 0 auto;transition:background .16s ease;}
+.shell-nav a:hover,.nav a:hover{color:var(--crm-blue-hover)!important;background:var(--crm-blue-soft)!important;transform:translateX(1px);}
+.shell-nav a:hover::before,.nav a:hover::before{background:var(--crm-blue)!important;}
+.shell-nav a.is-active,.nav a.is-active{background:var(--crm-blue)!important;color:#fff!important;box-shadow:0 12px 24px rgba(47,107,255,.22)!important;}
+.shell-nav a.is-active::before,.nav a.is-active::before{background:#fff!important;}
+.page-shell>:not(.shell-nav),body>.page>:not(.nav){grid-column:2!important;min-width:0!important;}
+.hero{padding:24px 26px!important;margin:0 0 16px!important;min-height:84px;border-radius:26px!important;background:linear-gradient(135deg,#fff 0%,#f8fbff 56%,#eef5ff 100%)!important;border:1px solid var(--crm-border)!important;box-shadow:var(--crm-shadow-card)!important;color:var(--crm-text)!important;}
+.card,.summary-item,.executor-card,.account-card,.binding-card,.advanced-fields,.qr-modal-card,.modal-card,.status-card,.group-card,.mini-note,fieldset{background:var(--crm-panel)!important;border:1px solid var(--crm-border)!important;color:var(--crm-text)!important;border-radius:var(--crm-r-xl)!important;box-shadow:var(--crm-shadow-card)!important;}
+.card{padding:20px!important;margin-top:16px!important;}
+.card + .card,.group-card + .group-card,.account-card + .account-card{margin-top:16px!important;}
+.summary-item,.status-card,.account-status-item{padding:16px!important;border-radius:var(--crm-r-lg)!important;background:linear-gradient(180deg,#fff 0%,#fbfdff 100%)!important;}
+.account-card,.binding-card{padding:18px!important;}
+.group-card,.mini-note{padding:14px!important;}
+.grid,.mini-tools,.editor-grid,.field-grid,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid,.toolbar-actions,.inline-actions{gap:14px!important;}
+h1,h2,h3,p{margin-top:0;}
+h1{font-size:28px!important;line-height:1.16!important;letter-spacing:-.045em!important;color:#111827!important;font-weight:780!important;margin-bottom:6px!important;}
+h2{font-size:19px!important;line-height:1.28!important;letter-spacing:-.03em!important;color:var(--crm-text)!important;font-weight:740!important;margin-bottom:12px!important;}
+h3{font-size:16px!important;line-height:1.32!important;letter-spacing:-.02em!important;color:var(--crm-text)!important;font-weight:720!important;margin-bottom:8px!important;}
+.section-title{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin-bottom:14px!important;}
+.section-title h2{margin:0!important;}
+.label,label,.k,.muted,.hint,.account-sub,small,.field-hint,.help{color:var(--crm-muted)!important;font-size:13px!important;line-height:1.45!important;}
+strong,.value{color:var(--crm-text)!important;font-weight:720!important;}
+input,select,textarea{width:100%;min-height:40px!important;padding:10px 12px!important;background:#fff!important;color:var(--crm-text)!important;border:1px solid var(--crm-border-strong)!important;border-radius:var(--crm-r-md)!important;box-shadow:0 1px 0 rgba(17,24,39,.02)!important;font:500 14px/1.45 var(--crm-font)!important;margin:6px 0 12px!important;}
+textarea{min-height:88px!important;resize:vertical;}
+input::placeholder,textarea::placeholder{color:var(--crm-faint)!important;}
+input:focus,select:focus,textarea:focus{border-color:#9bbcff!important;box-shadow:0 0 0 4px rgba(47,107,255,.13)!important;outline:none!important;}
+button,.button{min-height:38px!important;padding:9px 14px!important;background:var(--crm-blue)!important;color:#fff!important;border:1px solid var(--crm-blue)!important;border-radius:var(--crm-r-md)!important;font:700 14px/18px var(--crm-font)!important;letter-spacing:-.01em!important;box-shadow:0 8px 18px rgba(47,107,255,.18)!important;cursor:pointer!important;transition:background .16s ease,border-color .16s ease,transform .16s ease,box-shadow .16s ease;}
+button:hover,.button:hover{background:var(--crm-blue-hover)!important;border-color:var(--crm-blue-hover)!important;transform:translateY(-1px);}
+button.secondary,button.ghost,.button.secondary,.button.ghost{background:#f2f6ff!important;border-color:#d7e5ff!important;color:var(--crm-blue-hover)!important;box-shadow:none!important;}
+button.danger{background:var(--crm-red-soft)!important;border-color:#fecdd3!important;color:#be123c!important;box-shadow:none!important;}
+button.switch-on{background:var(--crm-green-soft)!important;border-color:#bbf7d0!important;color:#166534!important;box-shadow:none!important;}
+button.switch-pending{background:var(--crm-amber-soft)!important;border-color:#fed7aa!important;color:#c2410c!important;box-shadow:none!important;}
+button.switch-off{background:var(--crm-red-soft)!important;border-color:#fecdd3!important;color:#be123c!important;box-shadow:none!important;}
+button:disabled{opacity:.58!important;cursor:not-allowed!important;transform:none!important;}
+table{width:100%!important;background:#fff!important;border-collapse:separate!important;border-spacing:0!important;border-radius:18px!important;overflow:hidden!important;box-shadow:var(--crm-shadow-soft)!important;font-size:13px!important;}
+th{background:#f5f8ff!important;color:#526178!important;border-bottom:1px solid var(--crm-border)!important;font-size:12px!important;line-height:1.35!important;font-weight:720!important;text-align:left!important;padding:11px 12px!important;}
+td{color:var(--crm-text-2)!important;border-bottom:1px solid var(--crm-border-soft)!important;padding:11px 12px!important;vertical-align:top!important;}
+tr:hover td{background:#f8fbff!important;}
+#batchMembersTable th{text-align:left!important;vertical-align:middle!important;}
+#batchMembersTable td{vertical-align:middle!important;}
+#batchMembersTable .select-col{padding-left:0!important;padding-right:0!important;text-align:center!important;vertical-align:middle!important;}
+#batchMembersTable .select-col input{width:18px!important;height:18px!important;min-height:18px!important;margin:0 auto!important;padding:0!important;display:block!important;}
+.badge,.pill,.binding-badge,.card-monitor-toggle{display:inline-flex;align-items:center;gap:6px;min-height:24px;padding:4px 10px!important;border-radius:999px!important;border:1px solid var(--crm-border)!important;background:#f6f8fc!important;color:var(--crm-text-2)!important;font-size:12px!important;font-weight:720!important;line-height:1.2!important;box-shadow:none!important;}
+.badge.operator,.badge.customer_service,.badge.admin,.badge.super_admin{background:var(--crm-blue-soft)!important;color:var(--crm-blue-hover)!important;border-color:#d7e5ff!important;}
+.badge.off,.pill.red{background:var(--crm-red-soft)!important;color:#be123c!important;border-color:#fecdd3!important;}
+.badge.pending,.pill.orange,.pill.yellow,.pill.amber{background:var(--crm-amber-soft)!important;color:#c2410c!important;border-color:#fed7aa!important;}
+.status-line.success,.pill.green,.badge.green{color:#166534!important;background:var(--crm-green-soft)!important;border-color:#bbf7d0!important;}
+.status-line.error{color:#be123c!important;}
+.toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:14px!important;margin-bottom:14px!important;}
+details{border-radius:var(--crm-r-lg)!important;border:1px solid var(--crm-border)!important;background:#fbfdff!important;padding:12px 14px!important;}
+summary{cursor:pointer;color:var(--crm-text)!important;font-weight:700!important;}
+pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-height:1.55!important;}
+.qr-modal,.modal{background:rgba(18,31,54,.46)!important;backdrop-filter:blur(8px)!important;}
+.toast{border:1px solid var(--crm-border)!important;background:#111827!important;color:#fff!important;box-shadow:var(--crm-shadow)!important;border-radius:var(--crm-r-lg)!important;}
+@media (max-width:980px){body{padding:16px!important}.page-shell,body>.page{display:block!important;width:min(100vw - 32px,1480px)!important}.shell-nav,.nav{position:sticky!important;top:0!important;min-height:0!important;flex-direction:row!important;overflow:auto!important;border-radius:0 0 22px 22px!important;margin:-16px -16px 18px!important;padding:14px!important}.shell-nav::before,.nav::before{display:none!important}.shell-nav a,.nav a{white-space:nowrap!important}.page-shell>:not(.shell-nav),body>.page>:not(.nav){grid-column:auto!important}.card{padding:16px!important}.hero{padding:20px!important}.grid,.editor-grid,.mini-tools,.compact-grid,.account-card-grid,.account-status-grid{grid-template-columns:1fr!important}}
+</style>
 </head>
 <body data-ops-role="__OPS_USER_ROLE__">
   <div class="page-shell">
@@ -640,106 +820,108 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
   </div>
 
   <div class="card">
-    <h2 style="margin-top:0;">机器人配置列表</h2>
-    <div class="table-wrap">
-      <table>
-      <thead>
-        <tr>
-          <th>profile</th>
-          <th>robot_name</th>
-          <th>app_id</th>
-          <th>default_app</th>
-          <th>default_guild</th>
-          <th class="admin-only">操作</th>
-        </tr>
-      </thead>
-      <tbody id=\"presetRows\"></tbody>
-      </table>
+    <div class="preset-toolbar">
+      <h2 style="margin-top:0; margin-bottom:0;">机器人配置列表</h2>
+      <button type="button" class="admin-only" onclick="openPresetModal(null)">＋ 新增机器人配置</button>
     </div>
+    <div id="presetCardGrid" class="preset-card-grid"></div>
   </div>
 
-  <div class=\"card admin-only\" style=\"margin-top:16px;\">
-    <h2 style=\"margin-top:0;\">新增收口机器人</h2>
-    <div class=\"field-stack\" style=\"max-width:520px; gap:12px;\">
-      <label class=\"field-hint\">profile_name</label>
-      <input id=\"new_profile_name\" placeholder=\"e.g. intake-a96f1cec\" />
-      <label class=\"field-hint\">robot_name</label>
-      <input id=\"new_robot_name\" placeholder=\"e.g. Permata Intake Bot\" />
-      <label class=\"field-hint\">app_id</label>
-      <input id=\"new_app_id\" placeholder=\"e.g. cli_xxx\" />
-      <label class=\"field-hint\">default_app</label>
-      <select id=\"new_default_app\"></select>
-      <div id=\"new_default_app_hint\" class=\"field-hint\"></div>
-      <label class=\"field-hint\">default_guild</label>
-      <select id=\"new_default_guild\"></select>
-      <div id=\"new_default_guild_hint\" class=\"field-hint\"></div>
-      <div>
-        <button id=\"createPresetButton\" onclick=\"createPreset()\">新增机器人</button>
+  <div id="presetConfigModal" class="preset-modal-backdrop admin-only" onclick="if(event.target===this) closePresetModal()">
+    <div class="preset-modal-card">
+      <div class="preset-modal-head">
+        <h2 id="presetModalTitle">新增机器人配置</h2>
+        <button type="button" class="secondary" onclick="closePresetModal()">关闭</button>
+      </div>
+      <div class="field-stack">
+        <label class="field-hint">机器人配置名（profile_name，可自动生成）</label>
+        <input id="preset_modal_profile_name" oninput="capturePresetModalDraft()" placeholder="不填则按 App ID 自动生成，例如 intake-a96f1cec" />
+        <label class="field-hint">机器人显示名（robot_name）</label>
+        <input id="preset_modal_robot_name" oninput="capturePresetModalDraft()" placeholder="例如 Permata Intake Bot" />
+        <label class="field-hint">Lark App ID</label>
+        <input id="preset_modal_app_id" oninput="capturePresetModalDraft(); autofillPresetProfileName()" placeholder="例如 cli_xxx" />
+        <label class="field-hint">Lark App Secret（仅保存到本机 profile，不回显）</label>
+        <input id="preset_modal_app_secret" type="password" autocomplete="new-password" oninput="capturePresetModalDraft()" placeholder="新增/换密钥时填写；编辑默认留空" />
+        <label class="field-hint">默认 App</label>
+        <select id="preset_modal_default_app" onchange="capturePresetModalDraft()"></select>
+        <div id="preset_modal_default_app_hint" class="field-hint"></div>
+        <label class="field-hint">默认 Agency / Guild</label>
+        <select id="preset_modal_default_guild" onchange="capturePresetModalDraft()"></select>
+        <div id="preset_modal_default_guild_hint" class="field-hint"></div>
+        <div id="preset_modal_activation_status" class="field-hint" style="display:none; margin-top:8px; padding:10px 12px; border-radius:12px; background:#eff6ff; color:#1d4ed8;"></div>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
+        <button type="button" class="secondary" onclick="closePresetModal()">取消</button>
+        <button id="savePresetModalButton" type="button" onclick="savePresetFromModal()">保存配置</button>
       </div>
     </div>
   </div>
 
   <div class=\"card\" style=\"margin-top:16px;\">
-    <h2 style=\"margin-top:0;\">执行器总览</h2>
+    <div class=\"preset-toolbar\">
+      <div>
+        <h2 style=\"margin-top:0; margin-bottom:4px;\">执行器总览</h2>
+        <div class=\"muted\">代理地区先按 15 个大型城市预置；历史值会保留为“历史值（待改）”。</div>
+      </div>
+      <button type=\"button\" class=\"admin-only\" onclick=\"openExecutorModal(null)\">＋ 新增公会执行器</button>
+    </div>
     <div id=\"guildExecutorRows\" class=\"executor-card-grid\"></div>
   </div>
 
-  <div class=\"card admin-only\" style=\"margin-top:16px;\">
-    <h2 style=\"margin-top:0;\">新增 / 更新公会执行器</h2>
-    <div class=\"muted\">代理地区先按 15 个大型城市预置；历史值会保留为“历史值（待改）”。</div>
-    <div class=\"executor-form-grid\">
-      <div class=\"field-stack\">
-        <label class=\"field-hint\">公会名</label>
-        <input id=\"new_executor_guild_name\" placeholder=\"例如 Permata\" />
+  <div id=\"executorConfigModal\" class=\"preset-modal-backdrop admin-only\" onclick=\"if(event.target===this) closeExecutorModal()\">
+    <div class=\"preset-modal-card\">
+      <div class=\"preset-modal-head\">
+        <h2 id=\"executorModalTitle\">新增公会执行器</h2>
+        <button type=\"button\" class=\"secondary\" onclick=\"closeExecutorModal()\">关闭</button>
       </div>
-      <div class=\"field-stack\">
-        <label class=\"field-hint\">后台地址</label>
-        <input id=\"new_executor_backend_url\" placeholder=\"https://guild.linke.ai/guild/addAnchor\" />
+      <div class=\"executor-form-grid\">
+        <div class=\"field-stack\">
+          <label class=\"field-hint\">公会名</label>
+          <input id=\"new_executor_guild_name\" placeholder=\"例如 Permata\" />
+        </div>
+        <div class=\"field-stack\">
+          <label class=\"field-hint\">公会 OAuth Token（必填，编辑留空则保留）</label>
+          <input id=\"new_executor_oauth_token\" type=\"password\" autocomplete=\"new-password\" placeholder=\"oauth_token\" />
+        </div>
+        <div class=\"field-stack\">
+          <label class=\"field-hint\">公会 OAuth Token Secret（必填，编辑留空则保留）</label>
+          <input id=\"new_executor_oauth_token_secret\" type=\"password\" autocomplete=\"new-password\" placeholder=\"oauth_token_secret\" />
+        </div>
+        <div class=\"field-stack\">
+          <label class=\"field-hint\">CMS Token（选填，编辑留空则保留）</label>
+          <input id=\"new_executor_platform_authorization\" type=\"password\" autocomplete=\"new-password\" placeholder=\"粘贴 CMS localStorage token / Authorization\" />
+        </div>
+        <div class=\"field-stack\">
+          <label class=\"field-hint\">CMS Refresh Token（选填，编辑留空则保留）</label>
+          <input id=\"new_executor_cms_refresh_token\" type=\"password\" autocomplete=\"new-password\" placeholder=\"粘贴 CMS localStorage refreshToken，用于长期续期\" />
+        </div>
+        <div class=\"field-stack\">
+          <label class=\"field-hint\">代理地区</label>
+          <select id=\"new_executor_proxy_region\"></select>
+        </div>
+        <div class=\"field-stack\">
+          <label class=\"field-hint\">并发数</label>
+          <input id=\"new_executor_bind_concurrency\" type=\"number\" min=\"1\" value=\"1\" />
+        </div>
+        <div class=\"field-stack\">
+          <label class=\"field-hint\">超时秒数</label>
+          <input id=\"new_executor_request_timeout_seconds\" type=\"number\" min=\"5\" value=\"30\" />
+        </div>
+        <div class=\"field-stack\">
+          <label class=\"field-hint\">状态</label>
+          <select id=\"new_executor_enabled\"><option value=\"true\" selected>启用</option><option value=\"false\">停用</option></select>
+        </div>
+        <div class=\"field-stack\">
+          <label class=\"field-hint\">备注</label>
+          <input id=\"new_executor_notes\" placeholder=\"可填城市、用途、风险备注\" />
+        </div>
       </div>
-      <div class=\"field-stack\">
-        <label class=\"field-hint\">登录账号</label>
-        <input id=\"new_executor_login_username\" placeholder=\"后台登录账号\" />
+      <div id=\"executorModalStatus\" class=\"field-hint\" style=\"display:none; margin-top:8px; padding:10px 12px; border-radius:12px; background:#eff6ff; color:#1d4ed8;\"></div>
+      <div style=\"margin-top:14px; display:flex; gap:8px; justify-content:flex-end;\">
+        <button type=\"button\" class=\"secondary\" onclick=\"clearExecutorForm()\">清空</button>
+        <button type=\"button\" class=\"secondary\" onclick=\"closeExecutorModal()\">取消</button>
+        <button id=\"saveExecutorModalButton\" type=\"button\" onclick=\"createOrUpdateExecutor()\">保存执行器</button>
       </div>
-      <div class=\"field-stack\">
-        <label class=\"field-hint\">密码引用</label>
-        <input id=\"new_executor_password_secret_ref\" placeholder=\"只填密码引用，不回显明文\" />
-      </div>
-      <div class=\"field-stack\">
-        <label class=\"field-hint\">代理地址</label>
-        <input id=\"new_executor_proxy_url\" placeholder=\"http://user:pass@host:port\" />
-      </div>
-      <div class=\"field-stack\">
-        <label class=\"field-hint\">代理地区（proxy_region）</label>
-        <select id=\"new_executor_proxy_region\"></select>
-      </div>
-      <div class=\"field-stack\">
-        <label class=\"field-hint\">代理类型</label>
-        <input id=\"new_executor_proxy_type\" placeholder=\"http / socks5\" value=\"http\" />
-      </div>
-      <div class=\"field-stack\">
-        <label class=\"field-hint\">浏览器配置键</label>
-        <input id=\"new_executor_browser_profile_key\" placeholder=\"例如 permata-profile\" />
-      </div>
-      <div class=\"field-stack\">
-        <label class=\"field-hint\">并发数</label>
-        <input id=\"new_executor_bind_concurrency\" type=\"number\" min=\"1\" value=\"1\" />
-      </div>
-      <div class=\"field-stack\">
-        <label class=\"field-hint\">超时秒数</label>
-        <input id=\"new_executor_request_timeout_seconds\" type=\"number\" min=\"5\" value=\"30\" />
-      </div>
-      <div class=\"field-stack\">
-        <label class=\"field-hint\">状态</label>
-        <select id=\"new_executor_enabled\"><option value=\"true\" selected>启用</option><option value=\"false\">停用</option></select>
-      </div>
-      <div class=\"field-stack\">
-        <label class=\"field-hint\">备注</label>
-        <input id=\"new_executor_notes\" placeholder=\"可填城市、用途、风险备注\" />
-      </div>
-    </div>
-    <div style=\"margin-top:12px; display:flex; gap:8px;\">
-      <button id=\"createExecutorButton\" onclick=\"createOrUpdateExecutor()\">保存公会执行器</button>
-      <button type=\"button\" class=\"secondary\" onclick=\"clearExecutorForm()\">清空表单</button>
     </div>
   </div>
 
@@ -747,6 +929,7 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
 
 <script>
 window.__opsUserRole = '__OPS_USER_ROLE__';
+window.__presetModalDraft = window.__presetModalDraft || null;
 function isOpsAdmin() { return ['admin', 'super_admin'].includes(String(window.__opsUserRole || '').trim()); }
 async function loadJson(url, options) {
   const res = await fetch(url, options || {});
@@ -809,67 +992,60 @@ function renderExecutorProxyRegionOptions(selectedValue) {
   }
   return renderSelectOptions([{value: '', label: '不指定 / 留空'}].concat(decorated), selectedValue || '', '不指定 / 留空');
 }
-function presetFieldHtml(kind, row, options, source, currentValue) {
-  const fieldId = `${kind}_${row.profile_name}`;
-  if (!isOpsAdmin()) {
-    const text = String(currentValue || '');
-    return `<div class="field-stack"><div>${text || '-'}</div></div>`;
-  }
-  const rows = Array.isArray(options) ? options : [];
-  const hasOptions = rows.length > 0;
-  const unavailable = !hasOptions || source === 'unavailable';
-  const placeholder = kind === 'default_app' ? 'No CRM app options available' : 'No CRM guild options available';
-  const disabledAttr = unavailable ? ' disabled data-unavailable="true"' : '';
-  const selectHtml = `<select id="${fieldId}"${disabledAttr}>${renderSelectOptions(rows, currentValue, placeholder)}</select>`;
-  const currentText = currentValue ? `<div class="field-hint">当前值：${currentValue}</div>` : '';
-  return `<div class="field-stack">${selectHtml}${currentText}</div>`;
+function presetCardHtml(row) {
+  const title = String(row.robot_name || row.profile_name || '-');
+  const enabledText = row.enabled === false || row.enabled === 0 ? '停用' : '启用';
+  const actions = isOpsAdmin() ? `<div class="preset-actions"><button type="button" class="secondary" onclick="openPresetModal('${row.profile_name}')">编辑</button><button type="button" class="danger" onclick="deletePreset('${row.profile_name}')">删除</button></div>` : '';
+  return `<div class="preset-card" data-profile-name="${row.profile_name}">
+    <div class="preset-card-head"><h3>${title}</h3><span class="badge">${enabledText}</span></div>
+    <div class="preset-meta">
+      <div class="k">profile</div><div>${row.profile_name || '-'}</div>
+      <div class="k">app_id</div><div>${row.app_id || '-'}</div>
+      <div class="k">默认应用</div><div>${row.default_app || '-'}</div>
+      <div class="k">默认公会</div><div>${row.default_guild || '-'}</div>
+      <div class="k">更新时间</div><div>${row.updated_at || '-'}</div>
+    </div>
+    ${actions}
+  </div>`;
 }
-function robotNameFieldHtml(row) {
-  const inputId = `robot_name_${row.profile_name}`;
-  const value = String(row.robot_name || row.profile_name || '');
-  if (!isOpsAdmin()) {
-    return `<div class="field-stack preset-robot-name-cell"><div>${value || '-'}</div></div>`;
-  }
-  return `<div class="field-stack preset-robot-name-cell"><input id="${inputId}" value="${value}" disabled /></div>`;
+function capturePresetModalDraft() {
+  const modal = document.getElementById('presetConfigModal');
+  if (!modal || !modal.classList.contains('is-open')) return;
+  window.__presetModalDraft = {
+    profile_name: document.getElementById('preset_modal_profile_name').value.trim(),
+    robot_name: document.getElementById('preset_modal_robot_name').value,
+    app_id: document.getElementById('preset_modal_app_id').value,
+    app_secret: document.getElementById('preset_modal_app_secret') ? document.getElementById('preset_modal_app_secret').value : '',
+    default_app: document.getElementById('preset_modal_default_app').value,
+    default_guild: document.getElementById('preset_modal_default_guild').value,
+  };
 }
-function presetRowHtml(row, appOptions, guildOptions, appSource, guildSource) {
-  const saveDisabled = appSource === 'unavailable' || guildSource === 'unavailable' || !appOptions.length || !guildOptions.length;
-  const buttonId = `edit_robot_name_${row.profile_name}`;
-  const actionCell = isOpsAdmin() ? `<td class="admin-only"><div class="preset-row-actions"><button type="button" id="${buttonId}" class="secondary" onclick="enableRobotNameEdit('${row.profile_name}')">编辑名称</button><button onclick="savePreset('${row.profile_name}')" ${saveDisabled ? 'disabled' : ''}>保存</button></div></td>` : '';
-  return `<tr>
-    <td>${row.profile_name}</td>
-    <td>${robotNameFieldHtml(row)}</td>
-    <td>${row.app_id || ''}</td>
-    <td>${presetFieldHtml('default_app', row, appOptions, appSource, row.default_app)}</td>
-    <td>${presetFieldHtml('default_guild', row, guildOptions, guildSource, row.default_guild)}</td>
-    ${actionCell}
-  </tr>`;
+function applyPresetModalDraft(row) {
+  const draft = window.__presetModalDraft || null;
+  if (!draft) return row || {};
+  const editing = String(window.__editingPresetProfileName || '').trim();
+  const draftProfile = String(draft.profile_name || '').trim();
+  const rowProfile = String((row || {}).profile_name || '').trim();
+  if (editing && rowProfile && rowProfile !== editing) return row || {};
+  return {...(row || {}), ...draft, profile_name: draftProfile || rowProfile};
 }
-function enableRobotNameEdit(profileName) {
-  const input = document.getElementById(`robot_name_${profileName}`);
-  if (input) {
-    input.disabled = false;
-    input.focus();
-    input.select();
-  }
-}
-function renderCreatePresetForm(data) {
-  if (!isOpsAdmin()) return;
-  const appOptions = data.app_options || [];
-  const guildOptions = data.guild_options || [];
-  const appSource = data.app_options_source || 'unavailable';
-  const guildSource = data.guild_options_source || 'unavailable';
-  const appSelect = document.getElementById('new_default_app');
-  const guildSelect = document.getElementById('new_default_guild');
-  const createButton = document.getElementById('createPresetButton');
-  appSelect.innerHTML = renderSelectOptions(appOptions, '', 'No CRM app options available');
-  guildSelect.innerHTML = renderSelectOptions(guildOptions, '', 'No CRM guild options available');
-  document.getElementById('new_default_app_hint').textContent = appSource === 'live'
+function fillPresetModalOptions(data, row) {
+  const appOptions = data?.app_options || window.__presetAppOptions || [];
+  const guildOptions = data?.guild_options || window.__presetGuildOptions || [];
+  const appSource = data?.app_options_source || window.__presetAppOptionsSource || 'unavailable';
+  const guildSource = data?.guild_options_source || window.__presetGuildOptionsSource || 'unavailable';
+  const effectiveRow = applyPresetModalDraft(row || {});
+  const appSelect = document.getElementById('preset_modal_default_app');
+  const guildSelect = document.getElementById('preset_modal_default_guild');
+  const saveButton = document.getElementById('savePresetModalButton');
+  appSelect.innerHTML = renderSelectOptions(appOptions, effectiveRow?.default_app || '', 'No CRM app options available');
+  guildSelect.innerHTML = renderSelectOptions(guildOptions, effectiveRow?.default_guild || '', 'No CRM guild options available');
+  document.getElementById('preset_modal_default_app_hint').textContent = appSource === 'live'
     ? 'Using live CRM dropdown options only.'
     : appSource === 'cache'
       ? 'Using cached CRM dropdown options only.'
       : 'CRM dropdown options are currently unavailable. Saving is disabled.';
-  document.getElementById('new_default_guild_hint').textContent = guildSource === 'live'
+  document.getElementById('preset_modal_default_guild_hint').textContent = guildSource === 'live'
     ? 'Using live CRM dropdown options only.'
     : guildSource === 'cache'
       ? 'Using cached CRM dropdown options only.'
@@ -877,7 +1053,132 @@ function renderCreatePresetForm(data) {
   const disabled = appSource === 'unavailable' || guildSource === 'unavailable' || !appOptions.length || !guildOptions.length;
   appSelect.disabled = disabled;
   guildSelect.disabled = disabled;
-  createButton.disabled = disabled;
+  saveButton.disabled = disabled;
+}
+function openPresetModal(profileName) {
+  if (!isOpsAdmin()) return;
+  const normalized = String(profileName || '').trim();
+  const rows = Array.isArray(window.__intakePresetRows) ? window.__intakePresetRows : [];
+  const row = normalized ? rows.find(item => String(item.profile_name || '') === normalized) : null;
+  window.__editingPresetProfileName = normalized;
+  window.__presetModalDraft = null;
+  document.getElementById('presetModalTitle').textContent = normalized ? '编辑机器人配置' : '新增机器人配置';
+  document.getElementById('preset_modal_profile_name').value = row?.profile_name || '';
+  document.getElementById('preset_modal_profile_name').disabled = Boolean(normalized);
+  document.getElementById('preset_modal_robot_name').value = row?.robot_name || '';
+  document.getElementById('preset_modal_app_id').value = row?.app_id || '';
+  fillPresetModalOptions(null, row || {});
+  setPresetActivationStatus('');
+  capturePresetModalDraft();
+  document.getElementById('presetConfigModal').classList.add('is-open');
+  setTimeout(() => document.getElementById(normalized ? 'preset_modal_robot_name' : 'preset_modal_profile_name')?.focus(), 0);
+}
+function closePresetModal() {
+  document.getElementById('presetConfigModal').classList.remove('is-open');
+  setPresetActivationStatus('');
+  window.__presetModalDraft = null;
+  window.__editingPresetProfileName = '';
+}
+function suggestedPresetProfileNameFromAppId(appId) {
+  const raw = String(appId || '').trim();
+  const compact = raw.replace(/^cli_?/,'').replace(/[^a-zA-Z0-9]+/g,'').toLowerCase();
+  const suffix = compact ? compact.slice(-8) : String(Date.now()).slice(-8);
+  return `intake-${suffix}`;
+}
+function autofillPresetProfileName() {
+  if (String(window.__editingPresetProfileName || '').trim()) return;
+  const profileField = document.getElementById('preset_modal_profile_name');
+  if (!profileField || String(profileField.value || '').trim()) return;
+  const appId = document.getElementById('preset_modal_app_id')?.value || '';
+  if (String(appId).trim()) profileField.value = suggestedPresetProfileNameFromAppId(appId);
+}
+function setPresetActivationStatus(message, type='info') {
+  const node = document.getElementById('preset_modal_activation_status');
+  if (!node) return;
+  if (!message) {
+    node.style.display = 'none';
+    node.textContent = '';
+    return;
+  }
+  node.textContent = message;
+  node.style.display = 'block';
+  node.style.background = type === 'error' ? '#fef2f2' : (type === 'success' ? '#ecfdf5' : '#eff6ff');
+  node.style.color = type === 'error' ? '#b91c1c' : (type === 'success' ? '#047857' : '#1d4ed8');
+}
+async function activateLocalIntakeBotGateway(profileName, payload) {
+  const url = `http://127.0.0.1:8011/api/ops/local-intake-bot-gateway/${encodeURIComponent(profileName)}/activate`;
+  const data = await loadJson(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+  if (!data || data.ok !== true) {
+    throw new Error((data && (data.reason || data.detail)) || '本机机器人网关未连接成功');
+  }
+  return data;
+}
+async function savePresetFromModal() {
+  const saveButton = document.getElementById('savePresetModalButton');
+  const originalText = saveButton ? saveButton.textContent : '';
+  try {
+    if (saveButton) {
+      saveButton.disabled = true;
+      saveButton.textContent = '保存中…';
+    }
+    setPresetActivationStatus('正在保存机器人配置…');
+    const editing = String(window.__editingPresetProfileName || '').trim();
+    const appId = document.getElementById('preset_modal_app_id').value.trim();
+    let profileName = (editing || document.getElementById('preset_modal_profile_name').value).trim();
+    if (!profileName && appId) profileName = suggestedPresetProfileNameFromAppId(appId);
+    const robotName = document.getElementById('preset_modal_robot_name').value.trim();
+    const appSecret = document.getElementById('preset_modal_app_secret') ? document.getElementById('preset_modal_app_secret').value.trim() : '';
+    const defaultApp = document.getElementById('preset_modal_default_app').value.trim();
+    const defaultGuild = document.getElementById('preset_modal_default_guild').value.trim();
+    if (document.getElementById('preset_modal_default_app').disabled || document.getElementById('preset_modal_default_guild').disabled) throw new Error('CRM dropdown options are unavailable. Saving is disabled.');
+    if (!profileName) throw new Error('请先填写 Lark App ID，系统会自动生成机器人配置名。');
+    if (profileName !== 'current' && !appId) throw new Error('请填写 Lark App ID。');
+    if (!defaultApp || !defaultGuild) throw new Error('默认 App / Agency 下拉选项不可用，暂不能保存。');
+    const payload = {robot_name: robotName, app_id: appId, app_secret: appSecret, default_app: defaultApp, default_guild: defaultGuild};
+    const result = await loadJson(`/api/ops/intake-bot-presets/${encodeURIComponent(profileName)}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const setup = result && result.profile_setup ? result.profile_setup : {};
+    if (profileName !== 'current' && appSecret) {
+      if (saveButton) saveButton.textContent = '启用中…';
+      setPresetActivationStatus('机器人配置已保存，正在启用机器人…');
+      await activateLocalIntakeBotGateway(profileName, payload);
+      setPresetActivationStatus('机器人启用成功。', 'success');
+    } else if (appSecret && setup && setup.configured === false) {
+      throw new Error('profile 自动配置未完成：' + (setup.reason || '请检查 Hermes 环境'));
+    }
+    closePresetModal();
+    showToast(editing ? '机器人配置已保存并启用' : '新增机器人配置已保存并启用', 'success');
+    await reloadPresets();
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err || '保存失败');
+    setPresetActivationStatus('启用失败：' + message, 'error');
+    showToast('保存/启用失败：' + message, 'error');
+    console.error('savePresetFromModal failed', err);
+  } finally {
+    if (saveButton) {
+      saveButton.disabled = false;
+      saveButton.textContent = originalText || '保存配置';
+    }
+  }
+}
+async function deletePreset(profileName) {
+  const normalized = String(profileName || '').trim();
+  if (!normalized) return;
+  if (normalized === 'current') {
+    showToast('current 默认配置不能删除', 'error');
+    return;
+  }
+  if (!confirm(`确认删除机器人配置：${normalized}？`)) return;
+  await loadJson(`/api/ops/intake-bot-presets/${encodeURIComponent(normalized)}`, {method: 'DELETE'});
+  showToast('机器人配置已删除', 'success');
+  await reloadPresets();
 }
 function refreshExecutorProxyRegionSelect(selectedValue) {
   const field = document.getElementById('new_executor_proxy_region');
@@ -885,153 +1186,166 @@ function refreshExecutorProxyRegionSelect(selectedValue) {
   field.innerHTML = renderExecutorProxyRegionOptions(selectedValue || '');
   field.value = selectedValue || '';
 }
+function setExecutorModalStatus(message, type='info') {
+  const node = document.getElementById('executorModalStatus');
+  if (!node) return;
+  if (!message) {
+    node.style.display = 'none';
+    node.textContent = '';
+    return;
+  }
+  node.textContent = message;
+  node.style.display = 'block';
+  node.style.background = type === 'error' ? '#fef2f2' : (type === 'success' ? '#ecfdf5' : '#eff6ff');
+  node.style.color = type === 'error' ? '#b91c1c' : (type === 'success' ? '#047857' : '#1d4ed8');
+}
 function guildExecutorRowHtml(row) {
-  const passwordState = row.password_configured ? '已配置' : '未配置';
+  const oauthState = row.oauth_configured ? '已配置' : '未配置';
+  const platformState = row.platform_authorization_configured ? '已配置' : '未配置';
+  const routeText = row.platform_authorization_configured ? 'CMS ID 绑' : '个人 Code 绑';
   const enabledText = row.enabled ? '启用' : '停用';
+  const effectiveStatus = String(row.effective_status || row.cms_live_status || '').trim();
+  const effectiveOk = effectiveStatus === 'active';
+  const effectiveText = effectiveOk ? '生效中' : (effectiveStatus === 'disabled' ? '已停用' : '失效/待处理');
+  const effectiveDetail = row.effective_reason || row.cms_live_error || '';
+  const safeGuildName = String(row.guild_name || '').replace(/'/g, "&#39;");
   return `<div class="executor-card">
     <h3>${row.guild_name || ''}</h3>
     <div class="executor-meta">
-      <div class="k">后台地址</div><div>${row.backend_url || '-'}</div>
-      <div class="k">登录账号</div><div>${row.login_username || '-'}</div>
-      <div class="k">密码引用</div><div>${passwordState}</div>
+      <div class="k">生效状态</div><div><span class="badge ${effectiveOk ? 'green' : 'off'}">${effectiveOk ? '🟢' : '🔴'} ${effectiveText}</span>${effectiveDetail ? `<div class="muted">${effectiveDetail}</div>` : ''}</div>
+      <div class="k">公会后台</div><div>https://guild.linke.ai/guild</div>
+      <div class="k">OAuth 凭证</div><div>${oauthState}</div>
+      <div class="k">绑定链路</div><div>${routeText}</div>
+      <div class="k">平台后台</div><div>https://cms.linke.ai/</div>
+      <div class="k">CMS Token</div><div>${platformState}</div>
+      <div class="k">CMS Refresh</div><div>${row.cms_refresh_token_configured ? '已配置' : '未配置'}</div>
       <div class="k">代理地区</div><div>${row.proxy_region || '-'}</div>
-      <div class="k">代理地址</div><div>${row.proxy_url || '-'}</div>
-      <div class="k">代理类型</div><div>${row.proxy_type || '-'}</div>
-      <div class="k">浏览器配置</div><div>${row.browser_profile_key || '-'}</div>
       <div class="k">并发数</div><div>${row.bind_concurrency || '-'}</div>
       <div class="k">超时秒数</div><div>${row.request_timeout_seconds || '-'}</div>
       <div class="k">状态</div><div>${enabledText}</div>
       <div class="k">备注</div><div>${row.notes || '-'}</div>
     </div>
     ${isOpsAdmin() ? `<div class="executor-actions admin-only">
-      <button class="secondary" onclick="fillExecutorForm('${String(row.guild_name || '').replace(/'/g, "&#39;")}')">回填编辑</button>
-      <button class="secondary" onclick="deleteExecutor('${String(row.guild_name || '').replace(/'/g, "&#39;")}')">删除执行器</button>
+      <button type="button" class="secondary" onclick="openExecutorModal('${safeGuildName}')">编辑</button>
+      <button type="button" class="danger" onclick="deleteExecutor('${safeGuildName}')">删除执行器</button>
     </div>` : ''}
   </div>`;
 }
 async function reloadGuildExecutors() {
   const data = await loadJson('/api/ops/guild-executors');
-  const rows = Array.isArray(data.rows) ? data.rows : [];
+  let rows = Array.isArray(data.rows) ? data.rows : [];
+  try {
+    const health = await loadJson('/api/ops/guild-executors/health');
+    const healthByGuild = new Map((Array.isArray(health.rows) ? health.rows : []).map(row => [String(row.guild_name || ''), row]));
+    rows = rows.map(row => ({...row, ...(healthByGuild.get(String(row.guild_name || '')) || {})}));
+  } catch (err) {
+    console.warn('load guild executor health failed', err);
+  }
   window.__guildExecutorProxyRegionOptions = Array.isArray(data.proxy_region_options) ? data.proxy_region_options : [];
   window.__guildExecutors = rows;
-  document.getElementById('guildExecutorRows').innerHTML = rows.map(guildExecutorRowHtml).join('');
+  document.getElementById('guildExecutorRows').innerHTML = rows.length
+    ? rows.map(guildExecutorRowHtml).join('')
+    : '<div class="muted">暂无公会执行器。点击右上角新增。</div>';
   document.getElementById('executorCount').textContent = String(rows.length);
-  document.getElementById('executorProxyCount').textContent = String(rows.filter(row => String(row.proxy_url || '').trim()).length);
-  document.getElementById('executorSecretCount').textContent = String(rows.filter(row => row.password_configured).length);
+  document.getElementById('executorProxyCount').textContent = String(rows.filter(row => String(row.proxy_region || '').trim()).length);
+  document.getElementById('executorSecretCount').textContent = String(rows.filter(row => row.oauth_configured).length);
   if (isOpsAdmin()) {
     const proxyRegionField = document.getElementById('new_executor_proxy_region');
     refreshExecutorProxyRegionSelect(proxyRegionField ? proxyRegionField.value || '' : '');
   }
 }
-function applyProductionOpsDaemonConfig(data) {
-  const config = data.config || {};
-  const enabledField = document.getElementById('production_ops_enabled');
-  const intervalField = document.getElementById('production_ops_interval_seconds');
-  const notifyField = document.getElementById('production_ops_notify_chat_id');
-  const apiBaseUrlField = document.getElementById('production_ops_api_base_url');
-  const workerBaseUrlField = document.getElementById('production_ops_worker_base_url');
-  const areaField = document.getElementById('production_ops_area');
-  const remarkField = document.getElementById('production_ops_remark');
-  const approvedCountField = document.getElementById('production_ops_approved_count');
-  const autoRecoverField = document.getElementById('production_ops_auto_recover_worker');
-  if (enabledField) enabledField.value = config.enabled ? 'true' : 'false';
-  if (intervalField) intervalField.value = Number(config.interval_seconds || 20);
-  if (notifyField) notifyField.value = config.notify_chat_id || '';
-  if (apiBaseUrlField) apiBaseUrlField.value = config.api_base_url || '';
-  if (workerBaseUrlField) workerBaseUrlField.value = config.worker_base_url || '';
-  if (areaField) areaField.value = config.area || 'Indonesia';
-  if (remarkField) remarkField.value = config.remark || '';
-  if (approvedCountField) approvedCountField.value = Number(config.approved_count || 1);
-  if (autoRecoverField) autoRecoverField.value = config.auto_recover_worker ? 'true' : 'false';
-  const runtime = data.runtime || {};
-  const checkedAt = runtime.status && runtime.status.checked_at ? runtime.status.checked_at : '暂无';
-  const pendingIncidents = Array.isArray((runtime.status || {}).incidents) ? runtime.status.incidents.length : 0;
-  const observationWarnings = Array.isArray((runtime.status || {}).observation_warnings) ? runtime.status.observation_warnings.length : 0;
-  const runtimeText = `launchd=${runtime.launch_agent_installed ? 'installed' : 'not_installed'} · 启用=${config.enabled ? 'on' : 'off'} · 最近检查=${checkedAt} · 异常=${pendingIncidents} · 待核验=${observationWarnings}`;
-  const runtimeHint = document.getElementById('productionOpsRuntimeHint');
-  const daemonEnabledState = document.getElementById('daemonEnabledState');
-  if (runtimeHint) runtimeHint.textContent = runtimeText;
-  if (daemonEnabledState) daemonEnabledState.textContent = config.enabled ? 'ON' : 'OFF';
-}
-async function reloadProductionOpsDaemonConfig() {
-  const data = await loadJson('/api/ops/production-ops-daemon');
-  applyProductionOpsDaemonConfig(data);
-}
-async function saveProductionOpsDaemonConfig() {
-  const payload = {
-    enabled: document.getElementById('production_ops_enabled').value === 'true',
-    interval_seconds: Number(document.getElementById('production_ops_interval_seconds').value || 20),
-    notify_chat_id: document.getElementById('production_ops_notify_chat_id').value.trim(),
-    api_base_url: document.getElementById('production_ops_api_base_url').value.trim(),
-    worker_base_url: document.getElementById('production_ops_worker_base_url').value.trim(),
-    area: document.getElementById('production_ops_area').value.trim(),
-    remark: document.getElementById('production_ops_remark').value.trim(),
-    approved_count: Number(document.getElementById('production_ops_approved_count').value || 1),
-    auto_recover_worker: document.getElementById('production_ops_auto_recover_worker').value === 'true',
-  };
-  await loadJson('/api/ops/production-ops-daemon', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload),
-  });
-  showToast(payload.enabled ? '生产守护已开启并应用' : '生产守护已关闭并应用', 'success');
-  await reloadProductionOpsDaemonConfig();
-}
-function fillExecutorForm(guildName) {
+function openExecutorModal(guildName) {
+  if (!isOpsAdmin()) return;
+  const normalized = String(guildName || '').trim();
   const rows = Array.isArray(window.__guildExecutors) ? window.__guildExecutors : [];
-  const row = rows.find(item => String(item.guild_name || '') === String(guildName || ''));
-  if (!row) return;
-  document.getElementById('new_executor_guild_name').value = row.guild_name || '';
-  document.getElementById('new_executor_backend_url').value = row.backend_url || '';
-  document.getElementById('new_executor_login_username').value = row.login_username || '';
-  document.getElementById('new_executor_password_secret_ref').value = '';
-  document.getElementById('new_executor_proxy_url').value = row.proxy_url || '';
-  refreshExecutorProxyRegionSelect(row.proxy_region || '');
-  document.getElementById('new_executor_proxy_type').value = row.proxy_type || 'http';
-  document.getElementById('new_executor_browser_profile_key').value = row.browser_profile_key || '';
-  document.getElementById('new_executor_bind_concurrency').value = row.bind_concurrency || 1;
-  document.getElementById('new_executor_request_timeout_seconds').value = row.request_timeout_seconds || 30;
-  document.getElementById('new_executor_enabled').value = row.enabled ? 'true' : 'false';
-  document.getElementById('new_executor_notes').value = row.notes || '';
-  document.getElementById('new_executor_guild_name').scrollIntoView({behavior: 'smooth', block: 'center'});
+  const row = normalized ? rows.find(item => String(item.guild_name || '') === normalized) : null;
+  window.__editingExecutorGuildName = normalized;
+  document.getElementById('executorModalTitle').textContent = normalized ? '编辑公会执行器' : '新增公会执行器';
+  fillExecutorForm(row || null);
+  const guildField = document.getElementById('new_executor_guild_name');
+  if (guildField) guildField.disabled = Boolean(normalized);
+  setExecutorModalStatus(normalized ? `正在编辑：${normalized}` : '填写后保存即可生效。');
+  document.getElementById('executorConfigModal').classList.add('is-open');
+  setTimeout(() => document.getElementById(normalized ? 'new_executor_backend_url' : 'new_executor_guild_name')?.focus(), 0);
+}
+function closeExecutorModal() {
+  const modal = document.getElementById('executorConfigModal');
+  if (modal) modal.classList.remove('is-open');
+  setExecutorModalStatus('');
+  window.__editingExecutorGuildName = '';
+  const guildField = document.getElementById('new_executor_guild_name');
+  if (guildField) guildField.disabled = false;
+}
+function fillExecutorForm(rowOrGuildName) {
+  let row = null;
+  if (rowOrGuildName && typeof rowOrGuildName === 'object') {
+    row = rowOrGuildName;
+  } else {
+    const rows = Array.isArray(window.__guildExecutors) ? window.__guildExecutors : [];
+    row = rows.find(item => String(item.guild_name || '') === String(rowOrGuildName || '')) || null;
+  }
+  document.getElementById('new_executor_guild_name').value = row?.guild_name || '';
+  document.getElementById('new_executor_oauth_token').value = '';
+  document.getElementById('new_executor_oauth_token_secret').value = '';
+  document.getElementById('new_executor_platform_authorization').value = '';
+  document.getElementById('new_executor_cms_refresh_token').value = '';
+  refreshExecutorProxyRegionSelect(row?.proxy_region || '');
+  document.getElementById('new_executor_bind_concurrency').value = row?.bind_concurrency || 1;
+  document.getElementById('new_executor_request_timeout_seconds').value = row?.request_timeout_seconds || 30;
+  document.getElementById('new_executor_enabled').value = row?.enabled === false ? 'false' : 'true';
+  document.getElementById('new_executor_notes').value = row?.notes || '';
 }
 function clearExecutorForm() {
-  document.getElementById('new_executor_guild_name').value = '';
-  document.getElementById('new_executor_backend_url').value = '';
-  document.getElementById('new_executor_login_username').value = '';
-  document.getElementById('new_executor_password_secret_ref').value = '';
-  document.getElementById('new_executor_proxy_url').value = '';
-  refreshExecutorProxyRegionSelect('');
-  document.getElementById('new_executor_proxy_type').value = 'http';
-  document.getElementById('new_executor_browser_profile_key').value = '';
-  document.getElementById('new_executor_bind_concurrency').value = 1;
-  document.getElementById('new_executor_request_timeout_seconds').value = 30;
-  document.getElementById('new_executor_enabled').value = 'true';
-  document.getElementById('new_executor_notes').value = '';
+  window.__editingExecutorGuildName = '';
+  const guildField = document.getElementById('new_executor_guild_name');
+  if (guildField) guildField.disabled = false;
+  fillExecutorForm(null);
+  setExecutorModalStatus('表单已清空，可新增公会执行器。', 'success');
+  setTimeout(() => document.getElementById('new_executor_guild_name')?.focus(), 0);
 }
 async function createOrUpdateExecutor() {
-  const guildName = document.getElementById('new_executor_guild_name').value.trim();
-  if (!guildName) throw new Error('guild_name is required.');
-  const payload = {
-    backend_url: document.getElementById('new_executor_backend_url').value.trim(),
-    login_username: document.getElementById('new_executor_login_username').value.trim(),
-    password_secret_ref: document.getElementById('new_executor_password_secret_ref').value.trim(),
-    proxy_url: document.getElementById('new_executor_proxy_url').value.trim(),
-    proxy_region: document.getElementById('new_executor_proxy_region').value.trim(),
-    proxy_type: document.getElementById('new_executor_proxy_type').value.trim() || 'http',
-    browser_profile_key: document.getElementById('new_executor_browser_profile_key').value.trim(),
-    bind_concurrency: Number(document.getElementById('new_executor_bind_concurrency').value || 1),
-    request_timeout_seconds: Number(document.getElementById('new_executor_request_timeout_seconds').value || 30),
-    enabled: document.getElementById('new_executor_enabled').value === 'true',
-    notes: document.getElementById('new_executor_notes').value.trim(),
-  };
-  await loadJson(`/api/ops/guild-executors/${encodeURIComponent(guildName)}`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload),
-  });
-  showToast('保存公会执行器成功', 'success');
-  await reloadGuildExecutors();
+  const saveButton = document.getElementById('saveExecutorModalButton');
+  const originalText = saveButton ? saveButton.textContent : '';
+  const editing = String(window.__editingExecutorGuildName || '').trim();
+  try {
+    if (saveButton) {
+      saveButton.disabled = true;
+      saveButton.textContent = '保存中…';
+    }
+    setExecutorModalStatus('正在保存公会执行器…');
+    const guildName = (editing || document.getElementById('new_executor_guild_name').value).trim();
+    if (!guildName) throw new Error('请填写公会名。');
+    const payload = {
+      oauth_token: document.getElementById('new_executor_oauth_token').value.trim(),
+      oauth_token_secret: document.getElementById('new_executor_oauth_token_secret').value.trim(),
+      platform_authorization: document.getElementById('new_executor_platform_authorization').value.trim(),
+      cms_refresh_token: document.getElementById('new_executor_cms_refresh_token').value.trim(),
+      proxy_region: document.getElementById('new_executor_proxy_region').value.trim(),
+      bind_concurrency: Number(document.getElementById('new_executor_bind_concurrency').value || 1),
+      request_timeout_seconds: Number(document.getElementById('new_executor_request_timeout_seconds').value || 30),
+      enabled: document.getElementById('new_executor_enabled').value === 'true',
+      notes: document.getElementById('new_executor_notes').value.trim(),
+    };
+    await loadJson(`/api/ops/guild-executors/${encodeURIComponent(guildName)}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    setExecutorModalStatus('保存成功。', 'success');
+    closeExecutorModal();
+    showToast(editing ? `公会执行器已更新：${guildName}` : `公会执行器已新增：${guildName}`, 'success');
+    await reloadGuildExecutors();
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err || '保存失败');
+    setExecutorModalStatus('保存失败：' + message, 'error');
+    showToast('保存公会执行器失败：' + message, 'error');
+    console.error('createOrUpdateExecutor failed', err);
+  } finally {
+    if (saveButton) {
+      saveButton.disabled = false;
+      saveButton.textContent = originalText || '保存执行器';
+    }
+  }
 }
 async function deleteExecutor(guildName) {
   const normalized = String(guildName || '').trim();
@@ -1046,58 +1360,23 @@ async function deleteExecutor(guildName) {
   await reloadGuildExecutors();
 }
 async function reloadPresets() {
+  capturePresetModalDraft();
   const data = await loadJson('/api/ops/intake-bot-presets');
-  document.getElementById('presetRows').innerHTML = data.rows.map(
-    row => presetRowHtml(row, data.app_options || [], data.guild_options || [], data.app_options_source, data.guild_options_source)
-  ).join('');
-  renderCreatePresetForm(data);
-  document.getElementById('presetCount').textContent = String((data.rows || []).length);
-}
-async function savePreset(profileName) {
-  const robotNameField = document.getElementById(`robot_name_${profileName}`);
-  const appField = document.getElementById(`default_app_${profileName}`);
-  const guildField = document.getElementById(`default_guild_${profileName}`);
-  if (!appField || !guildField || appField.dataset.unavailable === 'true' || guildField.dataset.unavailable === 'true') {
-    throw new Error('CRM dropdown options are unavailable. Saving is disabled.');
+  window.__intakePresetRows = data.rows || [];
+  window.__presetAppOptions = data.app_options || [];
+  window.__presetGuildOptions = data.guild_options || [];
+  window.__presetAppOptionsSource = data.app_options_source || 'unavailable';
+  window.__presetGuildOptionsSource = data.guild_options_source || 'unavailable';
+  const grid = document.getElementById('presetCardGrid');
+  grid.innerHTML = window.__intakePresetRows.length
+    ? window.__intakePresetRows.map(row => presetCardHtml(row)).join('')
+    : '<div class="muted">暂无机器人配置。点击右上角加号新增。</div>';
+  if (document.getElementById('presetConfigModal').classList.contains('is-open')) {
+    const editing = String(window.__editingPresetProfileName || '').trim();
+    const currentRow = editing ? window.__intakePresetRows.find(row => String(row.profile_name || '') === editing) : null;
+    fillPresetModalOptions(data, currentRow || {});
   }
-  const payload = {
-    robot_name: robotNameField ? robotNameField.value.trim() : '',
-    default_app: appField.value.trim(),
-    default_guild: guildField.value.trim(),
-  };
-  await loadJson(`/api/ops/intake-bot-presets/${profileName}`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload),
-  });
-  showToast('保存成功', 'success');
-  await reloadPresets();
-}
-async function createPreset() {
-  const profileName = document.getElementById('new_profile_name').value.trim();
-  const robotName = document.getElementById('new_robot_name').value.trim();
-  const appId = document.getElementById('new_app_id').value.trim();
-  const defaultApp = document.getElementById('new_default_app').value.trim();
-  const defaultGuild = document.getElementById('new_default_guild').value.trim();
-  if (!profileName) {
-    throw new Error('profile_name is required.');
-  }
-  if (!appId) {
-    throw new Error('app_id is required.');
-  }
-  if (!defaultApp || !defaultGuild) {
-    throw new Error('CRM dropdown options are unavailable. Saving is disabled.');
-  }
-  await loadJson(`/api/ops/intake-bot-presets/${encodeURIComponent(profileName)}`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({robot_name: robotName, app_id: appId, default_app: defaultApp, default_guild: defaultGuild}),
-  });
-  document.getElementById('new_profile_name').value = '';
-  document.getElementById('new_robot_name').value = '';
-  document.getElementById('new_app_id').value = '';
-  showToast('新增机器人成功', 'success');
-  await reloadPresets();
+  document.getElementById('presetCount').textContent = String(window.__intakePresetRows.length);
 }
 reloadPresets().catch(err => showToast(err.message, 'error'));
 reloadGuildExecutors().catch(err => showToast(err.message, 'error'));
@@ -1116,18 +1395,128 @@ setInterval(() => {
 
 GROUP_ATMOSPHERE_PAGE_HTML = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>群聊天助手</title>
-<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:24px;background:#f3f6fb;color:#142033}.page-shell{max-width:1320px;margin:0 auto}.shell-nav{position:sticky;top:0;z-index:20;display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px;padding:12px 0 14px;background:rgba(243,246,251,.94);backdrop-filter:blur(10px)}.shell-nav a{color:#2563eb;text-decoration:none;font-size:13px;padding:8px 12px;border-radius:999px;background:#eef4ff;border:1px solid #d8e5ff}.card,.hero{background:#fff;border:1px solid #dbe4f0;border-radius:20px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.06);margin-top:14px}.hero{margin-top:0;display:flex;justify-content:space-between;gap:14px;align-items:center}.hero h1{margin:0;font-size:26px}.muted{color:#64748b;font-size:13px;line-height:1.5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.compact-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.account-card-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.account-card{border:1px solid #dbe4f0;border-radius:18px;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);padding:16px;box-shadow:0 8px 20px rgba(15,23,42,.05)}.account-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}.account-status-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0}.account-status-item{padding:10px;border:1px solid #dbe4f0;border-radius:12px;background:#fff}.account-status-item .label{font-size:12px;color:#64748b}.account-status-item .value{font-size:16px;font-weight:700;margin-top:4px}input,textarea,select{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #c7d4e3;border-radius:10px;margin:6px 0;background:#fff}textarea{min-height:72px}button{padding:9px 14px;border-radius:10px;border:0;background:#2563eb;color:#fff;cursor:pointer}button.secondary{background:#e8f0ff;color:#1d4ed8;border:1px solid #bfdbfe}button.danger{background:#fee2e2;color:#991b1b;border:1px solid #fecaca}button.ghost{background:#fff;color:#334155;border:1px solid #cbd5e1}button.switch-on{background:#dcfce7;color:#166534;border:1px solid #86efac}button.switch-off{background:#fee2e2;color:#991b1b;border:1px solid #fecaca}table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-bottom:1px solid #dbe4f0;padding:10px 8px;text-align:left;vertical-align:top}th{color:#475569;background:#f8fbff}.qr-image-shell{display:flex;align-items:center;justify-content:center;background:#fff;padding:18px;border:1px solid #dbe4f0;border-radius:16px}.qr-image{width:280px;height:280px;object-fit:contain;image-rendering:pixelated}.pill{display:inline-flex;align-items:center;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}.pill.green{background:#dcfce7;color:#166534}.pill.red{background:#fee2e2;color:#991b1b}.pill.amber{background:#fef3c7;color:#92400e}.pill.gray{background:#e2e8f0;color:#334155}.toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.toolbar-actions{display:flex;gap:8px;flex-wrap:wrap}.account-table-wrap{display:block}.account-actions{display:flex;gap:6px;flex-wrap:wrap}.group-switches{display:flex;gap:6px;flex-wrap:wrap}.group-switches button{padding:6px 9px;font-size:12px}.group-card-grid{display:flex;flex-direction:column;gap:10px;margin-top:8px}.group-card{border:1px solid #dbe4f0;border-radius:14px;background:#fff;padding:12px;width:100%;box-sizing:border-box}.group-card-title{display:flex;justify-content:space-between;gap:8px;align-items:flex-start;margin-bottom:8px}.group-card-name{font-weight:700;color:#142033;word-break:break-word}.group-card-link{font-size:12px;color:#64748b;word-break:break-all;line-height:1.45}.group-card-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;flex-wrap:wrap}.health-line{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.section-title{display:flex;align-items:center;justify-content:space-between;gap:10px}.section-title h2{margin:0;font-size:19px}.editor-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}.inline-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.qr-panel{min-height:88px;border:1px dashed #cbd5e1;border-radius:14px;padding:14px;background:#fbfdff}.qr-modal{position:fixed;inset:0;background:rgba(15,23,42,.52);display:none;align-items:center;justify-content:center;padding:24px;z-index:60}.qr-modal.is-open{display:flex}.qr-modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:20px;box-shadow:0 24px 64px rgba(15,23,42,.24);border:1px solid #dbe4f0}.qr-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 20px 14px;border-bottom:1px solid #dbe4f0}.qr-modal-head h3{margin:0;font-size:18px}.qr-modal-body{padding:18px 20px 20px}.qr-modal-status{margin-bottom:14px}.qr-modal-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.qr-shell{margin-top:12px;border-radius:16px;background:#0f172a;color:#e2e8f0;padding:16px;overflow:auto}.qr-shell pre{margin:0;font-size:10px;line-height:1.05}.field-hint{font-size:12px;color:#64748b;margin-bottom:8px}.mini-note{font-size:13px;color:#64748b;line-height:1.6}.mini-tools{display:grid;grid-template-columns:1fr 1fr;gap:14px}.modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(15,23,42,.48);z-index:80;padding:24px}.modal.is-open{display:flex}.modal-card{width:min(960px,100%);max-height:calc(100vh - 48px);overflow:auto;margin-top:0}.modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.modal-head h2{margin:0;font-size:20px}.modal-close{background:#fff;color:#334155;border:1px solid #cbd5e1}@media(max-width:900px){.grid,.editor-grid,.mini-tools,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid{grid-template-columns:1fr}.hero{align-items:flex-start;flex-direction:column}.modal{padding:12px}.modal-card{max-height:calc(100vh - 24px)}}</style>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:24px;background:#f3f6fb;color:#142033}.page-shell{max-width:1320px;margin:0 auto}.shell-nav{position:sticky;top:0;z-index:20;display:flex;gap:10px;flex-wrap:wrap;margin:0 0 18px;padding:12px 0 14px;background:rgba(243,246,251,.94);backdrop-filter:blur(10px)}.shell-nav a{color:#2563eb;text-decoration:none;font-size:13px;padding:8px 12px;border-radius:999px;background:#eef4ff;border:1px solid #d8e5ff}.card,.hero{background:#fff;border:1px solid #dbe4f0;border-radius:20px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.06);margin-top:14px}.hero{margin-top:0;display:flex;justify-content:space-between;gap:14px;align-items:center}.hero h1{margin:0;font-size:26px}.muted{color:#64748b;font-size:13px;line-height:1.5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.compact-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.account-card-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.account-card{border:1px solid #dbe4f0;border-radius:18px;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);padding:16px;box-shadow:0 8px 20px rgba(15,23,42,.05)}.account-card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}.account-status-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0}.account-status-item{padding:10px;border:1px solid #dbe4f0;border-radius:12px;background:#fff}.account-status-item .label{font-size:12px;color:#64748b}.account-status-item .value{font-size:16px;font-weight:700;margin-top:4px}input,textarea,select{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #c7d4e3;border-radius:10px;margin:6px 0;background:#fff}textarea{min-height:72px}button{padding:9px 14px;border-radius:10px;border:0;background:#2563eb;color:#fff;cursor:pointer}button.secondary{background:#e8f0ff;color:#1d4ed8;border:1px solid #bfdbfe}button.danger{background:#fee2e2;color:#991b1b;border:1px solid #fecaca}button.ghost{background:#fff;color:#334155;border:1px solid #cbd5e1}button.switch-on{background:#dcfce7;color:#166534;border:1px solid #86efac}button.switch-off{background:#fee2e2;color:#991b1b;border:1px solid #fecaca}table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-bottom:1px solid #dbe4f0;padding:10px 8px;text-align:left;vertical-align:top}th{color:#475569;background:#f8fbff}.qr-image-shell{display:flex;align-items:center;justify-content:center;background:#fff;padding:18px;border:1px solid #dbe4f0;border-radius:16px}.qr-image{width:280px;height:280px;object-fit:contain;image-rendering:pixelated}.pill{display:inline-flex;align-items:center;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}.pill.green{background:#dcfce7;color:#166534}.pill.red{background:#fee2e2;color:#991b1b}.pill.amber{background:#fef3c7;color:#92400e}.pill.gray{background:#e2e8f0;color:#334155}.toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.toolbar-actions{display:flex;gap:8px;flex-wrap:wrap}.account-table-wrap{display:block}.account-actions{display:flex;gap:6px;flex-wrap:wrap}.group-switches{display:flex;gap:6px;flex-wrap:wrap}.group-switches button{padding:6px 9px;font-size:12px}.group-card-grid{display:flex;flex-direction:column;gap:10px;margin-top:8px}.group-card{border:1px solid #dbe4f0;border-radius:14px;background:#fff;padding:12px;width:100%;box-sizing:border-box}.group-card-title{display:flex;justify-content:space-between;gap:8px;align-items:flex-start;margin-bottom:8px}.group-card-name{font-weight:700;color:#142033;word-break:break-word}.group-card-link{font-size:12px;color:#64748b;word-break:break-all;line-height:1.45}.group-card-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;flex-wrap:wrap}.health-line{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.section-title{display:flex;align-items:center;justify-content:space-between;gap:10px}.section-title h2{margin:0;font-size:19px}.editor-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}.inline-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.qr-panel{min-height:88px;border:1px dashed #cbd5e1;border-radius:14px;padding:14px;background:#fbfdff}.qr-modal{position:fixed;inset:0;background:rgba(15,23,42,.52);display:none;align-items:center;justify-content:center;padding:24px;z-index:60}.qr-modal.is-open{display:flex}.qr-modal-card{width:min(760px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:20px;box-shadow:0 24px 64px rgba(15,23,42,.24);border:1px solid #dbe4f0}.qr-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 20px 14px;border-bottom:1px solid #dbe4f0}.qr-modal-head h3{margin:0;font-size:18px}.qr-modal-body{padding:18px 20px 20px}.qr-modal-status{margin-bottom:14px}.qr-modal-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.qr-shell{margin-top:12px;border-radius:16px;background:#0f172a;color:#e2e8f0;padding:16px;overflow:auto}.qr-shell pre{margin:0;font-size:10px;line-height:1.05}.field-hint{font-size:12px;color:#64748b;margin-bottom:8px}.mini-note{font-size:13px;color:#64748b;line-height:1.6}.mini-tools{display:grid;grid-template-columns:1fr 1fr;gap:14px}.modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(15,23,42,.48);z-index:80;padding:24px}.modal.is-open{display:flex}.modal-card{width:min(960px,100%);max-height:calc(100vh - 48px);overflow:auto;margin-top:0}.modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.modal-head h2{margin:0;font-size:20px}.modal-close{background:#fff;color:#334155;border:1px solid #cbd5e1}@media(max-width:900px){.grid,.editor-grid,.mini-tools,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid{grid-template-columns:1fr}.hero{align-items:flex-start;flex-direction:column}.modal{padding:12px}.modal-card{max-height:calc(100vh - 24px)}}
+/* CRM UI system v2: unified light dashboard tokens, typography, spacing */
+:root{
+  --crm-font:Inter,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --crm-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;
+  --crm-bg:#eef3f9;
+  --crm-bg-2:#f6f8fc;
+  --crm-panel:#ffffff;
+  --crm-surface:#f8fbff;
+  --crm-surface-2:#f2f6fc;
+  --crm-border:#e5ebf3;
+  --crm-border-strong:#d7e0ec;
+  --crm-text:#172033;
+  --crm-text-2:#334155;
+  --crm-muted:#718095;
+  --crm-faint:#9aa7b7;
+  --crm-blue:#2f6bff;
+  --crm-blue-hover:#1f55d9;
+  --crm-blue-soft:#edf4ff;
+  --crm-green:#16a34a;
+  --crm-green-soft:#dcfce7;
+  --crm-amber:#d97706;
+  --crm-amber-soft:#fff7ed;
+  --crm-red:#dc2626;
+  --crm-red-soft:#fff1f2;
+  --crm-r-sm:10px;
+  --crm-r-md:14px;
+  --crm-r-lg:18px;
+  --crm-r-xl:22px;
+  --crm-r-2xl:28px;
+  --crm-space-1:4px;
+  --crm-space-2:8px;
+  --crm-space-3:12px;
+  --crm-space-4:16px;
+  --crm-space-5:20px;
+  --crm-space-6:24px;
+  --crm-space-8:32px;
+  --crm-shadow:0 18px 45px rgba(38,55,91,.08);
+  --crm-shadow-soft:0 8px 24px rgba(38,55,91,.06);
+  --crm-shadow-card:0 1px 0 rgba(15,23,42,.02),0 14px 34px rgba(38,55,91,.055);
+}
+html{scrollbar-gutter:stable;background:var(--crm-bg)!important;font-size:14px!important;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+body{margin:0!important;padding:24px!important;min-height:100vh!important;background:radial-gradient(circle at 12% -8%,rgba(47,107,255,.10),transparent 31%),linear-gradient(180deg,#f7f9fd 0%,#eef3f9 100%)!important;color:var(--crm-text)!important;font-family:var(--crm-font)!important;font-size:14px!important;line-height:1.5!important;letter-spacing:-.006em!important;}
+body *{box-sizing:border-box;}
+.page-shell,body>.page{width:min(1480px,calc(100vw - 48px))!important;max-width:1480px!important;margin:0 auto!important;padding:0 0 32px!important;display:grid!important;grid-template-columns:248px minmax(0,1fr)!important;gap:24px!important;align-items:start!important;}
+.shell-nav,.nav{grid-column:1!important;grid-row:1 / span 160!important;position:sticky!important;top:24px!important;z-index:30!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:6px!important;flex-wrap:nowrap!important;min-height:calc(100vh - 48px)!important;margin:0!important;padding:22px 16px!important;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px) saturate(140%)!important;border:1px solid var(--crm-border)!important;border-radius:var(--crm-r-2xl)!important;box-shadow:var(--crm-shadow)!important;}
+.shell-nav::before,.nav::before{content:'MCN 客服工具';display:block;margin:0 8px 18px;padding:0 0 16px;border-bottom:1px solid var(--crm-border);color:#111827;font-size:18px;line-height:1.12;font-weight:760;letter-spacing:-.035em;}
+.shell-nav a,.nav a{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:10px!important;min-height:40px!important;padding:11px 14px!important;border-radius:15px!important;background:transparent!important;border:0!important;color:var(--crm-muted)!important;text-decoration:none!important;font-size:14px!important;line-height:18px!important;font-weight:620!important;letter-spacing:-.01em!important;white-space:nowrap!important;box-shadow:none!important;transition:background .16s ease,color .16s ease,transform .16s ease;}
+.shell-nav a::before,.nav a::before{content:'';width:8px;height:8px;border-radius:999px;background:#cbd5e1;flex:0 0 auto;transition:background .16s ease;}
+.shell-nav a:hover,.nav a:hover{color:var(--crm-blue-hover)!important;background:var(--crm-blue-soft)!important;transform:translateX(1px);}
+.shell-nav a:hover::before,.nav a:hover::before{background:var(--crm-blue)!important;}
+.shell-nav a.is-active,.nav a.is-active{background:var(--crm-blue)!important;color:#fff!important;box-shadow:0 12px 24px rgba(47,107,255,.22)!important;}
+.shell-nav a.is-active::before,.nav a.is-active::before{background:#fff!important;}
+.page-shell>:not(.shell-nav),body>.page>:not(.nav){grid-column:2!important;min-width:0!important;}
+.hero{padding:24px 26px!important;margin:0 0 16px!important;min-height:84px;border-radius:26px!important;background:linear-gradient(135deg,#fff 0%,#f8fbff 56%,#eef5ff 100%)!important;border:1px solid var(--crm-border)!important;box-shadow:var(--crm-shadow-card)!important;color:var(--crm-text)!important;}
+.card,.summary-item,.executor-card,.account-card,.binding-card,.advanced-fields,.qr-modal-card,.modal-card,.status-card,.group-card,.mini-note,fieldset{background:var(--crm-panel)!important;border:1px solid var(--crm-border)!important;color:var(--crm-text)!important;border-radius:var(--crm-r-xl)!important;box-shadow:var(--crm-shadow-card)!important;}
+.card{padding:20px!important;margin-top:16px!important;}
+.card + .card,.group-card + .group-card,.account-card + .account-card{margin-top:16px!important;}
+.summary-item,.status-card,.account-status-item{padding:16px!important;border-radius:var(--crm-r-lg)!important;background:linear-gradient(180deg,#fff 0%,#fbfdff 100%)!important;}
+.account-card,.binding-card{padding:18px!important;}
+.group-card,.mini-note{padding:14px!important;}
+.grid,.mini-tools,.editor-grid,.field-grid,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid,.toolbar-actions,.inline-actions{gap:14px!important;}
+h1,h2,h3,p{margin-top:0;}
+h1{font-size:28px!important;line-height:1.16!important;letter-spacing:-.045em!important;color:#111827!important;font-weight:780!important;margin-bottom:6px!important;}
+h2{font-size:19px!important;line-height:1.28!important;letter-spacing:-.03em!important;color:var(--crm-text)!important;font-weight:740!important;margin-bottom:12px!important;}
+h3{font-size:16px!important;line-height:1.32!important;letter-spacing:-.02em!important;color:var(--crm-text)!important;font-weight:720!important;margin-bottom:8px!important;}
+.section-title{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin-bottom:14px!important;}
+.section-title h2{margin:0!important;}
+.label,label,.k,.muted,.hint,.account-sub,small,.field-hint,.help{color:var(--crm-muted)!important;font-size:13px!important;line-height:1.45!important;}
+strong,.value{color:var(--crm-text)!important;font-weight:720!important;}
+input,select,textarea{width:100%;min-height:40px!important;padding:10px 12px!important;background:#fff!important;color:var(--crm-text)!important;border:1px solid var(--crm-border-strong)!important;border-radius:var(--crm-r-md)!important;box-shadow:0 1px 0 rgba(17,24,39,.02)!important;font:500 14px/1.45 var(--crm-font)!important;margin:6px 0 12px!important;}
+textarea{min-height:88px!important;resize:vertical;}
+input::placeholder,textarea::placeholder{color:var(--crm-faint)!important;}
+input:focus,select:focus,textarea:focus{border-color:#9bbcff!important;box-shadow:0 0 0 4px rgba(47,107,255,.13)!important;outline:none!important;}
+button,.button{min-height:38px!important;padding:9px 14px!important;background:var(--crm-blue)!important;color:#fff!important;border:1px solid var(--crm-blue)!important;border-radius:var(--crm-r-md)!important;font:700 14px/18px var(--crm-font)!important;letter-spacing:-.01em!important;box-shadow:0 8px 18px rgba(47,107,255,.18)!important;cursor:pointer!important;transition:background .16s ease,border-color .16s ease,transform .16s ease,box-shadow .16s ease;}
+button:hover,.button:hover{background:var(--crm-blue-hover)!important;border-color:var(--crm-blue-hover)!important;transform:translateY(-1px);}
+button.secondary,button.ghost,.button.secondary,.button.ghost{background:#f2f6ff!important;border-color:#d7e5ff!important;color:var(--crm-blue-hover)!important;box-shadow:none!important;}
+button.danger{background:var(--crm-red-soft)!important;border-color:#fecdd3!important;color:#be123c!important;box-shadow:none!important;}
+button.switch-on{background:var(--crm-green-soft)!important;border-color:#bbf7d0!important;color:#166534!important;box-shadow:none!important;}
+button.switch-pending{background:var(--crm-amber-soft)!important;border-color:#fed7aa!important;color:#c2410c!important;box-shadow:none!important;}
+button.switch-off{background:var(--crm-red-soft)!important;border-color:#fecdd3!important;color:#be123c!important;box-shadow:none!important;}
+button:disabled{opacity:.58!important;cursor:not-allowed!important;transform:none!important;}
+table{width:100%!important;background:#fff!important;border-collapse:separate!important;border-spacing:0!important;border-radius:18px!important;overflow:hidden!important;box-shadow:var(--crm-shadow-soft)!important;font-size:13px!important;}
+th{background:#f5f8ff!important;color:#526178!important;border-bottom:1px solid var(--crm-border)!important;font-size:12px!important;line-height:1.35!important;font-weight:720!important;text-align:left!important;padding:11px 12px!important;}
+td{color:var(--crm-text-2)!important;border-bottom:1px solid var(--crm-border-soft)!important;padding:11px 12px!important;vertical-align:top!important;}
+tr:hover td{background:#f8fbff!important;}
+#batchMembersTable th{text-align:left!important;vertical-align:middle!important;}
+#batchMembersTable td{vertical-align:middle!important;}
+#batchMembersTable .select-col{padding-left:0!important;padding-right:0!important;text-align:center!important;vertical-align:middle!important;}
+#batchMembersTable .select-col input{width:18px!important;height:18px!important;min-height:18px!important;margin:0 auto!important;padding:0!important;display:block!important;}
+.badge,.pill,.binding-badge,.card-monitor-toggle{display:inline-flex;align-items:center;gap:6px;min-height:24px;padding:4px 10px!important;border-radius:999px!important;border:1px solid var(--crm-border)!important;background:#f6f8fc!important;color:var(--crm-text-2)!important;font-size:12px!important;font-weight:720!important;line-height:1.2!important;box-shadow:none!important;}
+.badge.operator,.badge.customer_service,.badge.admin,.badge.super_admin{background:var(--crm-blue-soft)!important;color:var(--crm-blue-hover)!important;border-color:#d7e5ff!important;}
+.badge.off,.pill.red{background:var(--crm-red-soft)!important;color:#be123c!important;border-color:#fecdd3!important;}
+.badge.pending,.pill.orange,.pill.yellow,.pill.amber{background:var(--crm-amber-soft)!important;color:#c2410c!important;border-color:#fed7aa!important;}
+.status-line.success,.pill.green,.badge.green{color:#166534!important;background:var(--crm-green-soft)!important;border-color:#bbf7d0!important;}
+.status-line.error{color:#be123c!important;}
+.toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:14px!important;margin-bottom:14px!important;}
+details{border-radius:var(--crm-r-lg)!important;border:1px solid var(--crm-border)!important;background:#fbfdff!important;padding:12px 14px!important;}
+summary{cursor:pointer;color:var(--crm-text)!important;font-weight:700!important;}
+pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-height:1.55!important;}
+.qr-modal,.modal{background:rgba(18,31,54,.46)!important;backdrop-filter:blur(8px)!important;}
+.toast{border:1px solid var(--crm-border)!important;background:#111827!important;color:#fff!important;box-shadow:var(--crm-shadow)!important;border-radius:var(--crm-r-lg)!important;}
+@media (max-width:980px){body{padding:16px!important}.page-shell,body>.page{display:block!important;width:min(100vw - 32px,1480px)!important}.shell-nav,.nav{position:sticky!important;top:0!important;min-height:0!important;flex-direction:row!important;overflow:auto!important;border-radius:0 0 22px 22px!important;margin:-16px -16px 18px!important;padding:14px!important}.shell-nav::before,.nav::before{display:none!important}.shell-nav a,.nav a{white-space:nowrap!important}.page-shell>:not(.shell-nav),body>.page>:not(.nav){grid-column:auto!important}.card{padding:16px!important}.hero{padding:20px!important}.grid,.editor-grid,.mini-tools,.compact-grid,.account-card-grid,.account-status-grid{grid-template-columns:1fr!important}}
+
+.page-shell>.shell-nav a:nth-child(5),body>.page>.nav a:nth-child(5){background:var(--crm-blue)!important;color:#fff!important;box-shadow:0 12px 24px rgba(47,107,255,.22)!important}
+.page-shell>.shell-nav a:nth-child(5)::before,body>.page>.nav a:nth-child(5)::before{background:#fff!important}
+</style>
 </head><body><div class="page-shell"><div class="shell-nav"><a href="/ops">运营工作台</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/group-atmosphere">群聊天助手</a><a href="/ops/accounts">账号设置</a></div>
 <div class="hero"><h1>群聊天助手</h1><div class="toolbar-actions"><button type="button" id="ga_new_account_btn">新增账号</button></div></div>
 <input type="hidden" id="ga_account_key_login"/><input type="hidden" id="ga_account_key"/>
-<div class="card" id="ga_accounts_card"><div class="toolbar"><div class="section-title"><h2>账号列表</h2><span class="pill gray" id="ga_accounts_count">0 个账号</span></div><div id="ga_action_feedback" class="muted">就绪</div></div><div id="ga_accounts" class="account-table-wrap"></div></div>
-<div class="modal" id="ga_editor_modal" aria-hidden="true"><div class="card modal-card" id="ga_editor_card"><div class="modal-head"><h2 id="ga_editor_title">账号配置</h2><div class="toolbar-actions"><span class="muted" id="ga_session_status">未选择</span><button type="button" class="modal-close" id="ga_close_editor_btn">关闭</button></div></div><div><div><div class="compact-grid"><input id="ga_account_name_login" placeholder="账号备注"/><select id="ga_region"><option value="印尼">印尼</option><option value="墨西哥">墨西哥</option><option value="巴西">巴西</option></select><select id="ga_role_positioning"><option value="community_seed">活跃气氛号</option><option value="newcomer_guide">新人引导号</option><option value="faq_helper">FAQ答疑号</option><option value="motivation_admin">激励运营号</option></select><select id="ga_randomness_level"><option value="low">随机性低</option><option value="medium" selected>随机性中</option><option value="high">随机性高</option></select></div><div class="compact-grid"><select id="ga_account_enabled"><option value="true">账号发言：开</option><option value="false">账号发言：关</option></select><input id="ga_daily_max_messages" placeholder="每日上限"/><input id="ga_min_interval_minutes" placeholder="最小间隔分钟"/><button type="button" class="ghost" id="ga_clear_form_btn">清空</button></div><div class="card" style="box-shadow:none;margin-top:8px;padding:12px;"><div class="section-title"><h3 style="margin:0;font-size:15px;">发言群</h3><button type="button" class="secondary" id="ga_add_group_btn">+ 增加发言群</button></div><div id="ga_group_rows"><div data-ga-group-row="1" style="display:block"><input id="ga_group_1_target" placeholder="群1：链接 / 群名 / group_id"/><select id="ga_group_1_enabled"><option value="true">群1：开</option><option value="false">群1：关</option></select></div><div data-ga-group-row="2" style="display:none"><input id="ga_group_2_target" placeholder="群2：链接 / 群名 / group_id"/><select id="ga_group_2_enabled"><option value="true">群2：开</option><option value="false">群2：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(2)">删除群组</button></div><div data-ga-group-row="3" style="display:none"><input id="ga_group_3_target" placeholder="群3：链接 / 群名 / group_id"/><select id="ga_group_3_enabled"><option value="true">群3：开</option><option value="false">群3：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(3)">删除群组</button></div></div></div><div class="inline-actions"><button type="button" id="ga_save_account_btn">保存</button></div></div></div></div></div>
-<div class="mini-tools"><div class="card"><div class="section-title"><h2>聊天记录</h2></div><input type="file" id="ga_chat_file" accept=".txt,.csv,.log,text/plain"/><button type="button" id="ga_upload_chat_btn">上传 WhatsApp 聊天记录</button><pre id="ga_upload_result" class="muted"></pre></div><div class="card"><div class="section-title"><h2>模拟测试</h2></div><textarea id="ga_sim_inbound" placeholder="每行一条模拟群消息"></textarea><button type="button" id="ga_simulate_btn">运行模拟</button><pre id="ga_sim_result" class="muted"></pre></div></div>
+<div class="card" id="ga_accounts_card"><div class="toolbar"><div class="section-title"><h2>账号列表</h2><span class="pill gray" id="ga_accounts_count">0 个账号</span></div><div id="ga_action_feedback" class="muted">就绪</div></div><div id="ga_accounts" class="account-table-wrap"></div></div><div class="card" id="ga_scheduler_card"><div class="toolbar"><div class="section-title"><h2>自动发言</h2><span class="pill gray">全部已启用账号</span></div><div id="ga_scheduler_status" class="muted">就绪</div></div><div class="inline-actions"><button type="button" id="ga_run_scheduler_btn">立即检查可发送话术</button><span class="muted">开启账号和群后，后台会按每日上限与间隔自动随机发送。</span></div><pre id="ga_scheduler_result" class="muted"></pre></div>
+<div class="modal" id="ga_editor_modal" aria-hidden="true"><div class="card modal-card" id="ga_editor_card"><div class="modal-head"><h2 id="ga_editor_title">账号配置</h2><div class="toolbar-actions"><span class="muted" id="ga_session_status">未选择</span><button type="button" class="modal-close" id="ga_close_editor_btn">关闭</button></div></div><div><div><div class="compact-grid"><input id="ga_account_name_login" placeholder="账号备注"/><select id="ga_region"><option value="印尼">印尼</option><option value="墨西哥">墨西哥</option><option value="巴西">巴西</option></select><select id="ga_role_positioning"><option value="community_seed">活跃气氛号</option><option value="newcomer_guide">新人引导号</option><option value="faq_helper">FAQ答疑号</option><option value="motivation_admin">激励运营号</option></select><select id="ga_randomness_level"><option value="low">随机性低</option><option value="medium" selected>随机性中</option><option value="high">随机性高</option></select></div><div class="compact-grid"><select id="ga_account_enabled"><option value="true">账号发言：开</option><option value="false">账号发言：关</option></select><input id="ga_daily_max_messages" placeholder="每日上限"/><input id="ga_min_interval_minutes" placeholder="最小间隔分钟"/><input id="ga_max_interval_minutes" placeholder="最大间隔分钟"/><button type="button" class="ghost" id="ga_clear_form_btn">清空</button></div><div class="card" style="box-shadow:none;margin-top:8px;padding:12px;"><div class="section-title"><h3 style="margin:0;font-size:15px;">发言群</h3><button type="button" class="secondary" id="ga_add_group_btn">+ 增加发言群</button></div><div id="ga_group_rows"><div data-ga-group-row="1" style="display:block"><input id="ga_group_1_target" placeholder="群1：链接 / 群名 / group_id"/><select id="ga_group_1_enabled"><option value="true">群1：开</option><option value="false">群1：关</option></select><select id="ga_group_1_plan"><option value="">请选择话术方案</option></select></div><div data-ga-group-row="2" style="display:none"><input id="ga_group_2_target" placeholder="群2：链接 / 群名 / group_id"/><select id="ga_group_2_enabled"><option value="true">群2：开</option><option value="false">群2：关</option></select><select id="ga_group_2_plan"><option value="">请选择话术方案</option></select><button type="button" class="ghost" onclick="removeGroupRow(2)">删除群组</button></div><div data-ga-group-row="3" style="display:none"><input id="ga_group_3_target" placeholder="群3：链接 / 群名 / group_id"/><select id="ga_group_3_enabled"><option value="true">群3：开</option><option value="false">群3：关</option></select><select id="ga_group_3_plan"><option value="">请选择话术方案</option></select><button type="button" class="ghost" onclick="removeGroupRow(3)">删除群组</button></div></div></div><div class="inline-actions"><button type="button" id="ga_save_account_btn">保存</button></div></div></div></div></div>
+<div class="mini-tools"><div class="card"><div class="section-title"><h2>话术学习</h2></div><select id="ga_tool_account_select"><option value="">自动分配到话术库</option></select><input type="file" id="ga_chat_file" accept=".txt,.csv,.log,text/plain" multiple/><div class="inline-actions"><button type="button" id="ga_upload_chat_btn">上传并学习</button><button type="button" class="ghost" id="ga_clear_chat_files_btn">清空文件</button></div><pre id="ga_upload_result" class="muted"></pre></div><div class="card"><div class="section-title"><h2>发送前预览</h2></div><select id="ga_sim_account_select"><option value="">请选择账号</option></select><textarea id="ga_sim_inbound" placeholder="输入群里可能出现的消息，每行一条"></textarea><button type="button" id="ga_simulate_btn">生成预览</button><pre id="ga_sim_result" class="muted"></pre></div></div>
+<div class="card" id="ga_speech_plan_library_card"><div class="toolbar"><div class="section-title"><h2>话术方案库</h2><span class="pill gray" id="ga_speech_plan_count">0 个方案</span></div><div class="muted">逐群装载：每个发言群可以选择不同的话术方案包</div></div><div id="ga_speech_plan_library" class="muted">暂无可装载话术方案</div></div>
+<div class="card"><div class="toolbar"><div class="section-title"><h2>候选话术池</h2><span class="pill gray" id="ga_candidate_count">0 条</span></div><div class="toolbar-actions"><select id="ga_candidate_language_filter"><option value="">选择语言/地区</option><option value="id">印尼 / id</option><option value="es">墨西哥 / es</option><option value="pt">巴西 / pt</option></select><select id="ga_candidate_role_filter"><option value="">选择角色</option><option value="community_seed">活跃气氛号</option><option value="newcomer_guide">新人引导号</option><option value="faq_helper">FAQ答疑号</option><option value="motivation_admin">激励运营号</option></select><button type="button" class="secondary" id="ga_refresh_candidates_btn">刷新话术池</button></div></div><div id="ga_candidate_pool" class="muted">暂无候选话术</div><pre id="ga_candidate_result" class="muted"></pre></div>
 <div class="card"><div class="section-title"><h2>发送 / @ 回复日志</h2></div><div id="group-atmosphere-logs"></div></div><div id="gaQrModal" class="qr-modal" onclick="dismissAtmosphereQrModal(event)"><div class="qr-modal-card" role="dialog" aria-modal="true" aria-labelledby="gaQrModalTitle" onclick="event.stopPropagation()"><div class="qr-modal-head"><div><h3 id="gaQrModalTitle">账号登录二维码</h3></div><button type="button" class="secondary" onclick="closeAtmosphereQrModal()">关闭</button></div><div class="qr-modal-body"><div id="gaQrModalStatus" class="qr-modal-status muted">正在准备二维码…</div><div id="gaQrModalContent"></div><div class="qr-modal-actions"><button type="button" onclick="retryAtmosphereQrModal()">重新生成二维码</button><button type="button" class="secondary" onclick="refreshAtmosphereQrModal()">刷新状态</button></div></div></div></div></div>
+<div id="gaSendModal" class="modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="gaSendModalTitle"><div class="modal-head"><div><h2 id="gaSendModalTitle">手动发言</h2><div class="muted" id="gaSendModalSubTitle">选择群后发送</div></div><button type="button" class="modal-close" id="ga_close_send_modal_btn">关闭</button></div><textarea id="ga_manual_message_text" placeholder="输入临时发送到群里的消息"></textarea><div class="inline-actions"><button type="button" id="ga_send_message_btn">确认发送</button><button type="button" class="ghost" onclick="fillManualMessage('Halo kak, selamat datang ya 😊')">欢迎语</button><button type="button" class="ghost" onclick="fillManualMessage('Kalau ada pertanyaan, boleh tanya di grup ya kak.')">答疑提醒</button></div><pre id="ga_send_result" class="muted"></pre></div></div>
 <script>
 async function loadJson(url,options={}){const res=await fetch(url,options);const text=await res.text();const data=text?JSON.parse(text):{};if(!res.ok)throw new Error(data.detail||text||`HTTP ${res.status}`);return data}
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-function selectedAccountKey(){return document.getElementById('ga_account_key_login').value.trim()||document.getElementById('ga_account_key').value.trim()}
+function selectedOperationalAccountKey(){return document.getElementById('ga_account_key_login').value.trim()||document.getElementById('ga_account_key').value.trim()}
+function selectedAccountKey(){return selectedOperationalAccountKey()||document.getElementById('ga_tool_account_select')?.value.trim()||document.getElementById('ga_sim_account_select')?.value.trim()}
 function setFeedback(text,type='info'){const el=document.getElementById('ga_action_feedback');if(el){el.textContent=text;el.style.color=type==='error'?'#991b1b':(type==='success'?'#166534':'#5d6b82')}}
 function runAction(label,fn){setFeedback(`${label}中…`);return Promise.resolve().then(fn).then(res=>{setFeedback(`${label}成功`,'success');return res}).catch(err=>{setFeedback(`${label}失败：${err.message||err}`,'error');throw err})}
 function regionLanguage(region){return region==='印尼'?'id':(region==='墨西哥'?'es':(region==='巴西'?'pt':''))}
@@ -1137,12 +1526,12 @@ function ensureGroupRows(){updateGroupAddButton()}
 function addGroupRow(){ensureGroupRows();for(const row of document.querySelectorAll('[data-ga-group-row]')){if(row.style.display==='none'){row.style.display='block';setFeedback(`已增加群${row.dataset.gaGroupRow}`,'success');break}}updateGroupAddButton()}
 function removeGroupRow(n){const row=document.querySelector(`[data-ga-group-row="${n}"]`);if(row&&n>1){row.style.display='none';const target=document.getElementById(`ga_group_${n}_target`);if(target)target.value='';setFeedback(`已删除群${n}`,'success')}updateGroupAddButton()}
 function showGroupRows(count){ensureGroupRows();document.querySelectorAll('[data-ga-group-row]').forEach((row,idx)=>{row.style.display=idx<count?'block':'none'});updateGroupAddButton()}
-function formGroups(){ensureGroupRows();return [1,2,3].map(i=>{const row=document.querySelector(`[data-ga-group-row="${i}"]`);if(!row||row.style.display==='none')return null;const target=document.getElementById(`ga_group_${i}_target`).value.trim();const enabled=document.getElementById(`ga_group_${i}_enabled`).value==='true';return {target_group:target,group_name:target,enabled}}).filter(g=>g&&g.target_group)}
-function payloadFromAccount(r){return {account_key:r.account_key,account_name:r.account_name,region:r.region,language:r.language||regionLanguage(r.region),role_positioning:r.role_positioning,randomness_level:r.randomness_level,daily_max_messages:r.daily_max_messages,min_interval_minutes:r.min_interval_minutes,groups:(r.groups||[]).map(g=>({target_group:g.target_group,group_name:g.group_name||g.target_group,enabled:g.enabled!==false})),enabled:r.enabled!==false}}
-async function saveAtmosphereAccount(){return runAction('保存',async()=>{const groups=formGroups();if(!groups.length)throw new Error('至少填写1个发言群');const payload={account_key:selectedAccountKey()||null,account_name:ga_account_name_login.value.trim(),region:ga_region.value,language:regionLanguage(ga_region.value),role_positioning:ga_role_positioning.value,randomness_level:ga_randomness_level.value,daily_max_messages:Number(ga_daily_max_messages.value||0)||null,min_interval_minutes:Number(ga_min_interval_minutes.value||0)||null,groups,enabled:ga_account_enabled.value==='true'};const data=await loadJson('/api/ops/group-atmosphere/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const key=data.account_key||(data.account||{}).account_key;ga_account_key_login.value=key;ga_account_key.value=key;renderSession(data);await reloadAll();closeAccountEditor();return data})}
-async function startAtmosphereQr(reset){const key=selectedAccountKey();if(key)openAtmosphereQrModal(key,{loading:true,resetSuccessAnnounced:true});return runAction('生成二维码',async()=>{if(!key)throw new Error('请先保存账号');try{const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}/session/${reset?'reset':'start'}`,{method:'POST'});renderSession(data);await reloadAll();return data}catch(err){openAtmosphereQrModal(key,{loading:false,error:err.message||'生成失败'});throw err}})}
+function formGroups(){ensureGroupRows();return [1,2,3].map(i=>{const row=document.querySelector(`[data-ga-group-row="${i}"]`);if(!row||row.style.display==='none')return null;const target=document.getElementById(`ga_group_${i}_target`).value.trim();const enabled=document.getElementById(`ga_group_${i}_enabled`).value==='true';const plan=document.getElementById(`ga_group_${i}_plan`)?.value.trim()||'';return {target_group:target,group_name:target,enabled,speech_plan_config_name:plan}}).filter(g=>g&&g.target_group)}
+function payloadFromAccount(r){return {account_key:r.account_key,account_name:r.account_name,region:r.region,language:r.language||regionLanguage(r.region),role_positioning:r.role_positioning,randomness_level:r.randomness_level,daily_max_messages:r.daily_max_messages,min_interval_minutes:r.min_interval_minutes,max_interval_minutes:r.max_interval_minutes,groups:(r.groups||[]).map(g=>({target_group:g.target_group,group_name:g.group_name||g.target_group,enabled:g.enabled!==false,speech_plan_config_name:g.speech_plan_config_name||'',daily_max_messages:g.daily_max_messages,min_interval_minutes:g.min_interval_minutes,max_interval_minutes:g.max_interval_minutes})),enabled:r.enabled!==false}}
+async function saveAtmosphereAccount(){return runAction('保存',async()=>{const groups=formGroups();if(!groups.length)throw new Error('至少填写1个发言群');const payload={account_key:selectedOperationalAccountKey()||null,account_name:ga_account_name_login.value.trim(),region:ga_region.value,language:regionLanguage(ga_region.value),role_positioning:ga_role_positioning.value,randomness_level:ga_randomness_level.value,daily_max_messages:Number(ga_daily_max_messages.value||0)||null,min_interval_minutes:Number(ga_min_interval_minutes.value||0)||null,max_interval_minutes:Number(ga_max_interval_minutes.value||0)||null,groups,enabled:ga_account_enabled.value==='true'};const data=await loadJson('/api/ops/group-atmosphere/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const key=data.account_key||(data.account||{}).account_key;ga_account_key_login.value=key;ga_account_key.value=key;renderSession(data);await reloadAll();closeAccountEditor();return data})}
+async function startAtmosphereQr(reset){const key=selectedOperationalAccountKey();if(key)openAtmosphereQrModal(key,{loading:true,resetSuccessAnnounced:true});return runAction('生成二维码',async()=>{if(!key)throw new Error('请先保存账号');try{const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}/session/${reset?'reset':'start'}`,{method:'POST'});renderSession(data);await reloadAll();return data}catch(err){openAtmosphereQrModal(key,{loading:false,error:err.message||'生成失败'});throw err}})}
 function startAtmosphereQrForAccount(key){ga_account_key_login.value=key;ga_account_key.value=key;return startAtmosphereQr(false)}
-async function refreshAtmosphereSession(){return runAction('刷新登录态',async()=>{const key=selectedAccountKey();if(!key)throw new Error('请先选择账号');const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}/session`);renderSession(data);await reloadAll();return data})}
+async function refreshAtmosphereSession(){return runAction('刷新登录态',async()=>{const key=selectedOperationalAccountKey();if(!key)throw new Error('请先选择账号');const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}/session`);renderSession(data);await reloadAll();return data})}
 function accountDomId(key){return 'ga_account_'+String(key||'').replace(/[^a-zA-Z0-9_-]/g,'_')}
 function accountDisplayName(key){const row=(window.__gaAccounts||[]).find(x=>String(x.account_key||'')===String(key||''));return row?.account_name||key||'该账号'}
 function mergeQrSession(previous,next){const p=previous&&typeof previous==='object'?previous:{};const n=next&&typeof next==='object'?next:{};const merged={...p,...n};if(!n.qr_image_data_url&&p.qr_image_data_url)merged.qr_image_data_url=p.qr_image_data_url;if(!n.qr_ascii&&p.qr_ascii)merged.qr_ascii=p.qr_ascii;if(!n.last_qr_at&&p.last_qr_at)merged.last_qr_at=p.last_qr_at;return merged}
@@ -1157,29 +1546,59 @@ function renderSession(data){const session=data.session||{};const runtime=data.r
 function openAccountEditor(){const modal=document.getElementById('ga_editor_modal');if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false')}}
 function closeAccountEditor(){const modal=document.getElementById('ga_editor_modal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
 function openNewAccountEditor(){clearAccountForm();openAccountEditor()}
-function clearAccountForm(){ga_account_key_login.value='';ga_account_key.value='';ga_account_name_login.value='';ga_region.value='印尼';ga_role_positioning.value='community_seed';ga_randomness_level.value='medium';ga_account_enabled.value='true';ga_daily_max_messages.value='';ga_min_interval_minutes.value='';showGroupRows(1);[1,2,3].forEach(i=>{document.getElementById(`ga_group_${i}_target`).value='';document.getElementById(`ga_group_${i}_enabled`).value='true'});ga_session_status.textContent='新账号';setFeedback('新账号','success')}
+function clearAccountForm(){ga_account_key_login.value='';ga_account_key.value='';ga_account_name_login.value='';ga_region.value='印尼';ga_role_positioning.value='community_seed';ga_randomness_level.value='medium';ga_account_enabled.value='true';ga_daily_max_messages.value='';ga_min_interval_minutes.value='';ga_max_interval_minutes.value='';showGroupRows(1);[1,2,3].forEach(i=>{document.getElementById(`ga_group_${i}_target`).value='';document.getElementById(`ga_group_${i}_enabled`).value='true';const plan=document.getElementById(`ga_group_${i}_plan`);if(plan)plan.value=''});ga_session_status.textContent='新账号';setFeedback('新账号','success')}
 function setSelectedAtmosphereAccountKey(key){ga_account_key_login.value=key||'';ga_account_key.value=key||''}
 function selectAtmosphereAccount(key){const r=(window.__gaAccounts||[]).find(x=>x.account_key===key);if(r){fillAccountForm(r);openAccountEditor()}}
-function fillAccountForm(r){ensureGroupRows();ga_account_key_login.value=r.account_key||'';ga_account_key.value=r.account_key||'';ga_account_name_login.value=r.account_name||'';ga_region.value=r.region||'印尼';ga_role_positioning.value=r.role_positioning||'community_seed';ga_randomness_level.value=r.randomness_level||'medium';ga_account_enabled.value=r.enabled===false?'false':'true';ga_daily_max_messages.value=r.daily_max_messages||'';ga_min_interval_minutes.value=r.min_interval_minutes||'';const groups=r.groups||[];showGroupRows(Math.max(1,Math.min(3,groups.length||1)));[1,2,3].forEach(i=>{const g=groups[i-1]||{};document.getElementById(`ga_group_${i}_target`).value=g.target_group||'';document.getElementById(`ga_group_${i}_enabled`).value=g.enabled===false?'false':'true'});ga_session_status.textContent='已选择账号';setFeedback('已选择账号','success')}
-async function deleteAtmosphereAccount(key){if(!confirm('确认删除这个 WhatsApp 账号配置？'))return;return runAction('删除',async()=>{await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}`,{method:'DELETE'});if(selectedAccountKey()===key)clearAccountForm();await reloadAll()})}
+function fillAccountForm(r){ensureGroupRows();ga_account_key_login.value=r.account_key||'';ga_account_key.value=r.account_key||'';ga_account_name_login.value=r.account_name||'';ga_region.value=r.region||'印尼';ga_role_positioning.value=r.role_positioning||'community_seed';ga_randomness_level.value=r.randomness_level||'medium';ga_account_enabled.value=r.enabled===false?'false':'true';ga_daily_max_messages.value=r.daily_max_messages||'';ga_min_interval_minutes.value=r.min_interval_minutes||'';ga_max_interval_minutes.value=r.max_interval_minutes||'';const groups=r.groups||[];showGroupRows(Math.max(1,Math.min(3,groups.length||1)));[1,2,3].forEach(i=>{const g=groups[i-1]||{};document.getElementById(`ga_group_${i}_target`).value=g.target_group||'';document.getElementById(`ga_group_${i}_enabled`).value=g.enabled===false?'false':'true';const plan=document.getElementById(`ga_group_${i}_plan`);if(plan)setGroupPlanSelectValue(plan,g.speech_plan_config_name||'')});ga_session_status.textContent='已选择账号';setFeedback('已选择账号','success')}
+async function deleteAtmosphereAccount(key){if(!confirm('确认删除这个 WhatsApp 账号配置？'))return;return runAction('删除',async()=>{await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}`,{method:'DELETE'});if(selectedOperationalAccountKey()===key)clearAccountForm();await reloadAll()})}
 async function toggleAtmosphereAccountEnabled(key){const r=(window.__gaAccounts||[]).find(x=>x.account_key===key);if(!r)return;return runAction('切换账号开关',async()=>{const payload=payloadFromAccount(r);payload.enabled=!payload.enabled;if(!payload.enabled)payload.groups=(payload.groups||[]).map(g=>({...g,enabled:false}));await loadJson('/api/ops/group-atmosphere/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await reloadAll()})}
 async function toggleAtmosphereGroupEnabled(key,idx){const r=(window.__gaAccounts||[]).find(x=>x.account_key===key);if(!r||!r.groups||!r.groups[idx])return;return runAction('切换群开关',async()=>{const payload=payloadFromAccount(r);payload.groups[idx].enabled=!payload.groups[idx].enabled;await loadJson('/api/ops/group-atmosphere/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await reloadAll()})}
 function roleLabel(value){const map={community_seed:'活跃气氛号',newcomer_guide:'新人引导号',faq_helper:'答疑号',motivation_admin:'激励运营号'};return map[value]||value||'-'}
 function runtimeLabel(runtime){const status=String((runtime||{}).status||'').trim();const text=String((runtime||{}).status_text||'').trim();if(status==='running')return text&&text!=='warm'?text:'运行中';if(status==='starting')return '启动中';if(status==='stopped')return '已停止';if(status==='not_started'||!status)return '未启动';return text||status}
 function loginLabel(session,runtime){const s=session||{};if(s.login_verified)return '已登录';const status=String(s.login_check_status||'').trim();if(status==='authenticated'||status==='ready')return '已登录';if(status==='qr_pending'||status==='needs_scan')return '待扫码';if((runtime||{}).status==='running')return '待扫码';return '未登录'}
 function readableStateText(text){const raw=String(text||'').trim();if(!raw)return '';const rtWord=String.fromCharCode(82,117,110,116,105,109,101);return raw.replace(new RegExp(rtWord,'g'),'运行服务').replace(/runtime/g,'运行服务').replace(/warm/g,'运行中').replace(/not_started/g,'未启动').replace(/running/g,'运行中').replace(/stopped/g,'已停止').replace(/独立\\s+运行服务\\s+/g,'独立运行服务').replace(/独立运行服务运行中/g,'运行中')}
-function groupReadiness(account,group,session,runtime){if(account.enabled===false)return {label:'未开启',cls:'red'};if(!group||group.enabled===false)return {label:'未开启',cls:'red'};if(!(group.target_group||'').trim())return {label:'缺链接',cls:'red'};if(session&&session.login_verified)return {label:'可投产',cls:'green'};if(runtime&&runtime.status==='running')return {label:'待扫码',cls:'amber'};return {label:'待登录',cls:'amber'}}
+function groupAutoSpeakState(account,group,session,runtime){if(account.enabled===false)return {enabled:false,effective:false,label:'账号已停用',cls:'red'};if(!group||group.enabled===false)return {enabled:false,effective:false,label:'开启自动发言',cls:'gray'};if(!(group.target_group||'').trim())return {enabled:true,effective:false,label:'缺少群链接',cls:'red'};if(session&&session.login_verified)return {enabled:true,effective:true,label:'自动发言已开启',cls:'green'};if(runtime&&runtime.status==='running')return {enabled:true,effective:false,label:'待扫码后生效',cls:'amber'};return {enabled:true,effective:false,label:'待登录后生效',cls:'amber'}}
 function detectedGroupName(g){const name=String(g.group_name||'').trim();const target=String(g.target_group||'').trim();return name&&name!==target?name:'待探测'}
-function renderAccounts(rows){window.__gaAccounts=rows;ga_accounts_count.textContent=`${rows.length} 个账号`;if(!rows.length){ga_accounts.innerHTML='<div class="muted">暂无账号</div>';return}ga_accounts.innerHTML=`<div class="account-card-grid">${rows.map((r,i)=>{const rt=r.runtime||{};const sess=r.session||r.session_state||{};const regionText=r.region||'-';const roleText=roleLabel(r.role_positioning);const runtimeText=readableStateText(runtimeLabel(rt));const loginText=loginLabel(sess,rt);const health=sess.login_verified?'<span class="pill green">已登录</span>':(rt.status==='running'?'<span class="pill amber">待扫码</span>':'<span class="pill red">未登录</span>');const stateText=readableStateText(sess.login_check_message||rt.status_text)||((rt.status==='running')?'独立运行中':'扫码后可用');const dailyLimit=r.daily_max_messages?`每日最多 ${esc(r.daily_max_messages)} 条`:'未设每日上限';const intervalLimit=r.min_interval_minutes?`最小间隔 ${esc(r.min_interval_minutes)} 分钟`:'未设间隔';const groupCards=(r.groups||[]).map((g,idx)=>{const ready=groupReadiness(r,g,sess,rt);return `<div class="group-card"><div class="group-card-title"><div><div class="muted">群名称</div><div class="group-card-name">${esc(detectedGroupName(g))}</div></div><button type="button" class="${g.enabled===false?'switch-off':'switch-on'}" onclick="toggleAtmosphereGroupEnabled('${esc(r.account_key)}',${idx})">${g.enabled===false?'暂停发言':'允许发言'}</button></div><div class="muted">入群链接</div><div class="group-card-link">${esc(g.target_group||'-')}</div><div class="group-card-meta"><span class="muted">状态</span><span class="pill ${ready.cls}">${ready.label}</span></div></div>`}).join('');return `<div class="account-card" id="${accountDomId(r.account_key)}"><div class="account-card-head"><div><h3 style="margin:0 0 4px 0;">${esc(r.account_name||'未命名账号')}</h3><div class="muted">${esc(regionText)} · ${esc(roleText)}</div></div><button type="button" class="${r.enabled===false?'switch-off':'switch-on'}" onclick="toggleAtmosphereAccountEnabled('${esc(r.account_key)}')">${r.enabled===false?'账号已停用':'账号启用中'}</button></div><div class="account-status-grid"><div class="account-status-item"><div class="label">账号用途</div><div class="value">${esc(roleText)}</div></div><div class="account-status-item"><div class="label">运行状态</div><div class="value">${esc(runtimeText)}</div></div><div class="account-status-item"><div class="label">登录状态</div><div class="value">${esc(loginText)}</div></div></div><div class="health-line">${health}<span class="pill gray">${esc(stateText)}</span></div><div style="margin-top:12px;"><div class="muted">发言群</div><div class="group-card-grid">${groupCards||'<div class="muted">暂无发言群</div>'}</div></div><div style="margin-top:10px;"><span class="pill gray">${dailyLimit}</span> <span class="pill gray">${intervalLimit}</span></div><div class="account-actions" style="margin-top:12px;"><button type="button" class="secondary" onclick="selectAtmosphereAccount('${esc(r.account_key)}')">编辑</button><button type="button" onclick="setSelectedAtmosphereAccountKey('${esc(r.account_key)}');startAtmosphereQr(false)">生成二维码</button><button type="button" class="ghost" onclick="setSelectedAtmosphereAccountKey('${esc(r.account_key)}');refreshAtmosphereSession()">刷新登录状态</button><button type="button" class="danger" onclick="deleteAtmosphereAccount('${esc(r.account_key)}')">删除</button></div></div>`}).join('')}</div>`}
+function candidateAccountMatches(row){const language=document.getElementById('ga_candidate_language_filter')?.value||'';const role=document.getElementById('ga_candidate_role_filter')?.value||'';return (!language||String(row.language||'')===language)&&(!role||String(row.role_positioning||'')===role)}
+function refreshCandidateGroupSelect(){refreshGroupPlanSelects()}
+function renderAccounts(rows){window.__gaAccounts=rows;const accountKeys=rows.map(r=>String(r.account_key||''));const accountOptions=['<option value=\"\">请选择账号</option>'].concat(rows.map(r=>`<option value=\"${esc(r.account_key)}\">${esc(r.account_name||r.account_key||'未命名账号')}</option>`)).join('');const uploadAccountOptions=['<option value=\"\">自动分配到话术库</option>'].concat(rows.map(r=>`<option value=\"${esc(r.account_key)}\">指定账号：${esc(r.account_name||r.account_key||'未命名账号')}</option>`)).join('');const uploadSelect=document.getElementById('ga_tool_account_select');const uploadCurrent=uploadSelect?uploadSelect.value:'';if(uploadSelect){uploadSelect.innerHTML=uploadAccountOptions;uploadSelect.value=accountKeys.includes(String(uploadCurrent||''))?uploadCurrent:'';}const simSelect=document.getElementById('ga_sim_account_select');const simCurrent=simSelect?simSelect.value:'';if(simSelect){simSelect.innerHTML=accountOptions;simSelect.value=accountKeys.includes(String(simCurrent||''))?simCurrent:'';}refreshGroupPlanSelects();ga_accounts_count.textContent=`${rows.length} 个账号`;if(!rows.length){ga_accounts.innerHTML='<div class="muted">暂无账号</div>';return}ga_accounts.innerHTML=`<div class="account-card-grid">${rows.map((r,i)=>{const rt=r.runtime||{};const sess=r.session||r.session_state||{};const regionText=r.region||'-';const roleText=roleLabel(r.role_positioning);const runtimeText=readableStateText(runtimeLabel(rt));const loginText=loginLabel(sess,rt);const health=sess.login_verified?'<span class="pill green">已登录</span>':(rt.status==='running'?'<span class="pill amber">待扫码</span>':'<span class="pill red">未登录</span>');const stateText=readableStateText(sess.login_check_message||rt.status_text)||((rt.status==='running')?'独立运行中':'扫码后可用');const dailyLimit=r.daily_max_messages?`每日最多 ${esc(r.daily_max_messages)} 条`:'未设每日上限';const intervalLimit=r.min_interval_minutes?`最小间隔 ${esc(r.min_interval_minutes)} 分钟`:'未设间隔';const groupCards=(r.groups||[]).map((g,idx)=>{const autoState=groupAutoSpeakState(r,g,sess,rt);const switchClass=autoState.effective?'switch-on':(autoState.enabled?'switch-pending':'switch-off');const planName=String(g.speech_plan_config_name||'').trim();const planText=groupPlanLabel(planName);const planPill=planName?`<span class="pill green">已装载方案</span>`:`<span class="pill amber">未装载方案</span>`;return `<div class="group-card"><div class="group-card-title"><div><div class="muted">群名称</div><div class="group-card-name">${esc(detectedGroupName(g))}</div></div><button type="button" class="${switchClass}" onclick="toggleAtmosphereGroupEnabled('${esc(r.account_key)}',${idx})">${esc(autoState.label)}</button></div><div class="muted">入群链接</div><div class="group-card-link">${esc(g.target_group||'-')}</div><div class="muted" style="margin-top:8px;">话术方案包</div><div class="group-card-link">${planPill} <span>${esc(planText)}</span></div><div class="inline-actions" style="margin-top:10px;"><button type="button" class="secondary" onclick="openGroupPlanLoader('${esc(r.account_key)}',${idx})">装载话术方案</button><button type="button" class="secondary" onclick="openManualSendModal('${esc(r.account_key)}',${idx})">手动发言</button></div></div>`}).join('');return `<div class="account-card" id="${accountDomId(r.account_key)}"><div class="account-card-head"><div><h3 style="margin:0 0 4px 0;">${esc(r.account_name||'未命名账号')}</h3><div class="muted">${esc(regionText)} · ${esc(roleText)}</div></div><button type="button" class="${r.enabled===false?'switch-off':'switch-on'}" onclick="toggleAtmosphereAccountEnabled('${esc(r.account_key)}')">${r.enabled===false?'账号已停用':'账号启用中'}</button></div><div class="account-status-grid"><div class="account-status-item"><div class="label">账号用途</div><div class="value">${esc(roleText)}</div></div><div class="account-status-item"><div class="label">运行状态</div><div class="value">${esc(runtimeText)}</div></div><div class="account-status-item"><div class="label">登录状态</div><div class="value">${esc(loginText)}</div></div></div><div class="health-line">${health}<span class="pill gray">${esc(stateText)}</span></div><div style="margin-top:12px;"><div class="muted">发言群</div><div class="group-card-grid">${groupCards||'<div class="muted">暂无发言群</div>'}</div></div><div style="margin-top:10px;"><span class="pill gray">${dailyLimit}</span> <span class="pill gray">${intervalLimit}</span></div><div class="account-actions" style="margin-top:12px;"><button type="button" class="secondary" onclick="selectAtmosphereAccount('${esc(r.account_key)}')">编辑</button><button type="button" onclick="setSelectedAtmosphereAccountKey('${esc(r.account_key)}');startAtmosphereQr(false)">生成二维码</button><button type="button" class="ghost" onclick="setSelectedAtmosphereAccountKey('${esc(r.account_key)}');refreshAtmosphereSession()">刷新登录状态</button><button type="button" class="danger" onclick="deleteAtmosphereAccount('${esc(r.account_key)}')">删除</button></div></div>`}).join('')}</div>`}
 
+function openManualSendModal(accountKey,idx){const account=(window.__gaAccounts||[]).find(x=>String(x.account_key||'')===String(accountKey||''));const group=account&&account.groups?account.groups[idx]:null;if(!account||!group){setFeedback('未找到发言群','error');return}window.__gaSendContext={accountKey:account.account_key,groupIndex:idx,groupName:group.group_name||group.target_group||''};const modal=document.getElementById('gaSendModal');const title=document.getElementById('gaSendModalTitle');const sub=document.getElementById('gaSendModalSubTitle');const text=document.getElementById('ga_manual_message_text');const result=document.getElementById('ga_send_result');if(title)title.textContent=`发送到：${group.group_name||'该群'}`;if(sub)sub.textContent=`${account.account_name||'账号'} · ${group.target_group||''}`;if(text)text.value='';if(result)result.textContent='';if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false');setTimeout(()=>text&&text.focus(),50)}}
+function closeManualSendModal(){const modal=document.getElementById('gaSendModal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
+function fillManualMessage(text){const el=document.getElementById('ga_manual_message_text');if(el)el.value=text||''}
+async function sendManualGroupMessage(){return runAction('发送群消息',async()=>{const ctx=window.__gaSendContext||{};if(!ctx.accountKey&&ctx.groupIndex!==0)throw new Error('请先选择发言群');const text=String(document.getElementById('ga_manual_message_text')?.value||'').trim();if(!text)throw new Error('请输入要发送的内容');const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(ctx.accountKey)}/groups/${ctx.groupIndex}/send`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message_text:text,trigger_type:'manual_ops_page'})});const result=document.getElementById('ga_send_result');if(result)result.textContent=data.sent?'发送成功':`发送失败：${data.result_reason||data.result_code||''}`;await reloadAll();if(data.sent)setTimeout(closeManualSendModal,500);return data})}
 function renderLogs(rows){const el=document.getElementById('group-atmosphere-logs');el.innerHTML=`<table><tbody>${rows.map(r=>`<tr><td>${esc(r.created_at)}</td><td>${esc(r.config_name||'')}</td><td>${esc(r.direction)}</td><td>${esc(r.status)}</td><td>${esc(r.message_text)}</td></tr>`).join('')}</tbody></table>`}
-async function uploadChatRecordFile(){return runAction('上传聊天记录',async()=>{const key=selectedAccountKey();if(!key)throw new Error('请先选择账号');const file=ga_chat_file.files&&ga_chat_file.files[0];if(!file)throw new Error('请选择文件');const content=await file.text();const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}/chat-records/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:file.name,content})});ga_upload_result.textContent=JSON.stringify(data.language_profile,null,2);await reloadAll();return data})}
-async function simulateAtmosphere(){return runAction('模拟测试',async()=>{const key=selectedAccountKey();if(!key)throw new Error('请先选择账号');const inbound_messages=ga_sim_inbound.value.split(/\\n+/).map(text=>text.trim()).filter(Boolean).map((text,i)=>({sender_id:`sim-${i+1}`,text,mentioned:true}));const data=await loadJson('/api/ops/group-atmosphere/simulate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:key,scenario:'ops_page_simulation',inbound_messages})});ga_sim_result.textContent=JSON.stringify(data,null,2);await reloadAll();return data})}
-async function reloadAll(){ensureGroupRows();const [l,a]=await Promise.all([loadJson('/api/ops/group-atmosphere/logs'),loadJson('/api/ops/group-atmosphere/accounts')]);renderLogs(l.rows||[]);renderAccounts(a.rows||[])}
-const gaButtonHandlers={ga_new_account_btn:openNewAccountEditor,ga_close_editor_btn:closeAccountEditor,ga_clear_form_btn:clearAccountForm,ga_add_group_btn:addGroupRow,ga_save_account_btn:saveAtmosphereAccount,ga_upload_chat_btn:uploadChatRecordFile,ga_simulate_btn:simulateAtmosphere};
+function renderAutoLearnResult(data){const roles=(data.role_assignments||[]).map(item=>`${roleLabel(item.role_positioning)}：${item.imported_count} 条 · 候选 ${((item.candidates||[]).length)} 条`).join('\\n');return `识别地区：${data.detected_region||'-'}\n识别语言：${data.detected_language||'-'}\n导入样本：${data.imported_count||0} 条\n${roles}`}
+function filterCandidateRows(rows){const language=document.getElementById('ga_candidate_language_filter')?.value||'';const role=document.getElementById('ga_candidate_role_filter')?.value||'';return (rows||[]).filter(r=>(!language||String(r.language||'')===language)&&(!role||String(r.role_positioning||'')===role))}
+function speechPlanRows(){return (window.__gaCandidateRows||[]).filter(r=>(r.enabled_candidate_count||0)>0)}
+function speechPlanLabel(r){return `${r.plan_display_name||roleLabel(r.role_positioning||r.config_name)} · ${r.enabled_candidate_count||0}条`}
+function groupPlanLabel(configName){const name=String(configName||'').trim();if(!name)return '未装载话术方案';const row=speechPlanRows().find(r=>String(r.config_name||'')===name);return row?speechPlanLabel(row):name}
+function setGroupPlanSelectValue(el,value){if(!el)return;const selected=String(value||'').trim();if(selected&&![...el.options].some(o=>String(o.value)===selected)){el.insertAdjacentHTML('beforeend',`<option value="${esc(selected)}">当前方案：${esc(groupPlanLabel(selected))}</option>`)}el.value=selected}
+function refreshGroupPlanSelects(){const options='<option value="">请选择话术方案</option>'+speechPlanRows().map(r=>`<option value="${esc(r.config_name)}">${esc(speechPlanLabel(r))}</option>`).join('');[1,2,3].forEach(i=>{const el=document.getElementById(`ga_group_${i}_plan`);if(!el)return;const current=el.value||'';el.innerHTML=options;setGroupPlanSelectValue(el,current)})}
+function planUsageText(row){const usage=row.usage||[];if(!usage.length)return '暂未装载到任何群';return usage.map(u=>`${u.account_name||'账号'} / 群${u.group_index||'-'}：${u.group_name||u.target_group||'-'}`).join('；')}
+function renderSpeechPlanLibrary(){const rows=speechPlanRows();const box=document.getElementById('ga_speech_plan_library');const count=document.getElementById('ga_speech_plan_count');if(count)count.textContent=`${rows.length} 个话术包`;if(!box)return;if(!rows.length){box.innerHTML='<div class="muted">暂无可装载话术包。先在候选话术池点击“加入方案”。</div>';return}box.innerHTML=rows.map(r=>`<div class="mini-note" data-plan-name="${esc(r.config_name)}"><div class="toolbar" style="margin-bottom:8px;"><div><strong>${esc(speechPlanLabel(r))}</strong><div class="muted">用途：${esc(roleLabel(r.role_positioning||''))} · 内部名：${esc(r.config_name)}</div><div class="muted">使用位置：${esc(planUsageText(r))}</div></div><div class="toolbar-actions"><input id="ga_plan_name_${esc(r.config_name)}" value="${esc(r.plan_display_name||'')}" placeholder="话术包名称" style="min-width:180px;"/><button type="button" class="secondary" onclick="renameSpeechPlan('${esc(r.config_name)}')">保存名称</button><button type="button" class="danger" onclick="deleteSpeechPlan('${esc(r.config_name)}')">删除话术包</button></div></div></div>`).join('')}
+function openGroupPlanLoader(accountKey,groupIndex){selectAtmosphereAccount(accountKey);setTimeout(()=>{const row=document.querySelector(`[data-ga-group-row="${Number(groupIndex)+1}"]`);if(row)row.style.display='block';const el=document.getElementById(`ga_group_${Number(groupIndex)+1}_plan`);if(el){el.focus();el.scrollIntoView({block:'center',behavior:'smooth'});}setFeedback('请选择该群要装载的话术方案','success')},80)}
+function loadPlanIntoGroup(groupIndex,configName){const idx=Number(groupIndex)+1;const el=document.getElementById(`ga_group_${idx}_plan`);if(!el)return;el.value=String(configName||'');setFeedback(`群${idx}已选择话术方案：${groupPlanLabel(configName)}`,'success')}
+
+function renderCandidatePool(rows){window.__gaCandidateRows=rows||[];renderSpeechPlanLibrary();const pool=document.getElementById('ga_candidate_pool');const count=document.getElementById('ga_candidate_count');const visibleRows=filterCandidateRows(rows||[]);const total=visibleRows.reduce((n,r)=>n+(r.candidate_count||0),0);if(count)count.textContent=`${total} 条`;if(!pool)return;if(!visibleRows.length){pool.innerHTML='<div class="muted">暂无候选话术</div>';return}pool.innerHTML=visibleRows.map(r=>`<div class="group-card" data-language="${esc(r.language||'')}" data-role="${esc(r.role_positioning||'')}"><div class="group-card-title"><div><strong>${esc(roleLabel(r.role_positioning||r.config_name))}</strong><div class="muted">${esc(r.region||'-')} / ${esc(r.language||'-')} · ${esc(r.config_name)} · 已启用 ${esc(r.enabled_candidate_count||0)}/${esc(r.candidate_count||0)}</div><div class="muted">话术方案：${esc(speechPlanLabel(r))}</div></div></div>${(r.candidates||[]).slice(0,8).map(c=>`<div class="mini-note" style="margin-top:8px;"><span class="pill ${c.enabled?'green':'gray'}">${c.enabled?'已启用':'候选'}</span> <span class="pill gray">${esc(c.region||r.region||'-')} / ${esc(c.language||r.language||'-')}</span> <span class="pill gray">${esc(roleLabel(c.role_positioning||r.role_positioning))}</span> ${esc(c.text)} <button type="button" class="secondary" data-ga-enable-candidate="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}">加入方案</button></div>`).join('')}</div>`).join('')}
+async function loadCandidatePool(){const data=await loadJson('/api/ops/group-atmosphere/candidate-pool');renderCandidatePool(data.rows||[]);return data}
+async function renameSpeechPlan(configName){return runAction('保存话术包名称',async()=>{const input=document.getElementById(`ga_plan_name_${configName}`);const name=String(input?.value||'').trim();if(!name)throw new Error('请填写话术包名称');const data=await loadJson(`/api/ops/group-atmosphere/speech-plans/${encodeURIComponent(configName)}/rename`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan_display_name:name})});await loadCandidatePool();refreshGroupPlanSelects();await reloadAll();return data})}
+async function deleteSpeechPlan(configName){return runAction('删除话术包',async()=>{await loadJson(`/api/ops/group-atmosphere/speech-plans/${encodeURIComponent(configName)}`,{method:'DELETE'});await loadCandidatePool();refreshGroupPlanSelects();await reloadAll();return {ok:true}})}
+async function enableCandidate(configName,candidateId){return runAction('加入话术方案',async()=>{const result=document.getElementById('ga_candidate_result');if(result)result.textContent='正在加入话术方案…';const payload={config_name:configName,candidate_ids:[candidateId]};const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/enable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(result)result.textContent=`已加入话术方案：${configName}。请到 WhatsApp 账号配置里选择这个话术方案，再开启自动发言。`;await loadCandidatePool();refreshGroupPlanSelects();return data})}
+
+function formatSchedulerResults(data){const results=data.results||[];if(!results.length)return '没有可运行的自动发言配置。请先在账号配置里给发言群选择话术方案，并开启自动发言。';const details=results.map(r=>`${r.config_name||'-'}：${r.sent?'已发送':(r.dry_run?'未真正发送':'未发送')} · ${r.result_reason||r.result_code||''}`).join('\\n');return `检查 ${data.attempted_count||0} 个配置，实际发送 ${data.sent_count||0} 条\\n${details}`}
+async function runAtmosphereScheduler(){return runAction('自动发言检查',async()=>{const status=document.getElementById('ga_scheduler_status');if(status)status.textContent='检查中…';const data=await loadJson('/api/ops/group-atmosphere/scheduler/run-due',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const el=document.getElementById('ga_scheduler_result');if(el)el.textContent=formatSchedulerResults(data);if(status)status.textContent=`已检查 ${data.attempted_count||0} 个配置，发送 ${data.sent_count||0} 条`;await reloadAll();return data})}
+async function uploadChatRecordFile(){return runAction('自动学习',async()=>{const files=Array.from(ga_chat_file.files||[]);if(!files.length)throw new Error('请选择文件');const key=document.getElementById('ga_tool_account_select')?.value.trim()||'';let data;if(key){const content=(await Promise.all(files.map(async file=>'# '+file.name+'\\n'+await file.text()))).join('\\n');data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}/chat-records/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:files.map(f=>f.name).join(', '),content})});ga_upload_result.textContent=JSON.stringify(data.language_profile,null,2)}else{const payload={files:await Promise.all(files.map(async file=>({filename:file.name,content:await file.text()})))};data=await loadJson('/api/ops/group-atmosphere/chat-records/auto-learn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});ga_upload_result.textContent=renderAutoLearnResult(data)}await reloadAll();return data})}
+function clearChatFiles(){const input=document.getElementById('ga_chat_file');if(input)input.value='';const result=document.getElementById('ga_upload_result');if(result)result.textContent='';setFeedback('已清空上传文件','success')}
+async function simulateAtmosphere(){return runAction('生成预览',async()=>{const key=document.getElementById('ga_sim_account_select')?.value.trim()||'';if(!key)throw new Error('请先在发送前预览区域选择账号');const inbound_messages=ga_sim_inbound.value.split(/\\n+/).map(text=>text.trim()).filter(Boolean).map((text,i)=>({sender_id:`sim-${i+1}`,text,mentioned:true}));const data=await loadJson('/api/ops/group-atmosphere/simulate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:key,scenario:'ops_page_simulation',inbound_messages})});ga_sim_result.textContent=JSON.stringify(data,null,2);await reloadAll();return data})}
+async function reloadAll(){ensureGroupRows();const [l,a,c]=await Promise.all([loadJson('/api/ops/group-atmosphere/logs'),loadJson('/api/ops/group-atmosphere/accounts'),loadJson('/api/ops/group-atmosphere/candidate-pool')]);renderLogs(l.rows||[]);renderCandidatePool(c.rows||[]);renderAccounts(a.rows||[])}
+const gaButtonHandlers={ga_new_account_btn:openNewAccountEditor,ga_close_editor_btn:closeAccountEditor,ga_close_send_modal_btn:closeManualSendModal,ga_send_message_btn:sendManualGroupMessage,ga_clear_form_btn:clearAccountForm,ga_add_group_btn:addGroupRow,ga_save_account_btn:saveAtmosphereAccount,ga_upload_chat_btn:uploadChatRecordFile,ga_clear_chat_files_btn:clearChatFiles,ga_simulate_btn:simulateAtmosphere,ga_refresh_candidates_btn:loadCandidatePool,ga_run_scheduler_btn:runAtmosphereScheduler};
+function syncToolAccountSelects(sourceId){const source=document.getElementById(sourceId);const key=source?.value||'';setSelectedAtmosphereAccountKey(key)}
 function runGaButtonHandler(id,ev){const handler=gaButtonHandlers[id];if(!handler)return false;if(ev){ev.preventDefault();ev.stopPropagation()}const now=Date.now();const last=Number(window.__gaLastButtonAt||0);if(window.__gaLastButtonId===id&&now-last<350)return true;window.__gaLastButtonId=id;window.__gaLastButtonAt=now;handler();return true}
-function bindGroupAtmosphereButtons(){for(const id of Object.keys(gaButtonHandlers)){const el=document.getElementById(id);if(el&&el.dataset.bound!=='1'){el.type='button';el.addEventListener('click',ev=>runGaButtonHandler(id,ev));el.addEventListener('pointerup',ev=>runGaButtonHandler(id,ev));el.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){runGaButtonHandler(id,ev)}});el.dataset.bound='1'}}if(!document.body.dataset.gaModalBound){document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closeAccountEditor()});document.body.dataset.gaModalBound='1'}if(!document.body.dataset.gaDelegated){for(const eventName of ['click','pointerup','mousedown']){document.addEventListener(eventName,ev=>{const target=ev.target&&ev.target.closest?ev.target.closest('button'):null;if(target&&runGaButtonHandler(target.id||'',ev))return},true)}document.body.dataset.gaDelegated='1'}window.addGroupRow=addGroupRow;window.removeGroupRow=removeGroupRow;window.saveAtmosphereAccount=saveAtmosphereAccount;window.startAtmosphereQr=startAtmosphereQr;window.refreshAtmosphereSession=refreshAtmosphereSession;window.openAtmosphereQrModal=openAtmosphereQrModal;window.startAtmosphereQrForAccount=startAtmosphereQrForAccount;window.closeAtmosphereQrModal=closeAtmosphereQrModal;window.dismissAtmosphereQrModal=dismissAtmosphereQrModal;window.retryAtmosphereQrModal=retryAtmosphereQrModal;window.refreshAtmosphereQrModal=refreshAtmosphereQrModal;window.uploadChatRecordFile=uploadChatRecordFile;window.simulateAtmosphere=simulateAtmosphere;window.deleteAtmosphereAccount=deleteAtmosphereAccount;window.fillAccountForm=fillAccountForm;window.selectAtmosphereAccount=selectAtmosphereAccount;window.toggleAtmosphereAccountEnabled=toggleAtmosphereAccountEnabled;window.toggleAtmosphereGroupEnabled=toggleAtmosphereGroupEnabled;window.setSelectedAtmosphereAccountKey=setSelectedAtmosphereAccountKey;window.openAccountEditor=openAccountEditor;window.closeAccountEditor=closeAccountEditor;window.openNewAccountEditor=openNewAccountEditor}
+function bindGroupAtmosphereButtons(){for(const id of Object.keys(gaButtonHandlers)){const el=document.getElementById(id);if(el&&el.dataset.bound!=='1'){el.type='button';el.addEventListener('click',ev=>runGaButtonHandler(id,ev));el.addEventListener('pointerup',ev=>runGaButtonHandler(id,ev));el.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){runGaButtonHandler(id,ev)}});el.dataset.bound='1'}}if(!document.body.dataset.gaModalBound){document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closeAccountEditor()});document.body.dataset.gaModalBound='1'}if(!document.body.dataset.gaDelegated){for(const eventName of ['click','pointerup','mousedown']){document.addEventListener(eventName,ev=>{const candidateButton=ev.target&&ev.target.closest?ev.target.closest('[data-ga-enable-candidate]'):null;if(candidateButton){ev.preventDefault();ev.stopPropagation();enableCandidate(candidateButton.dataset.configName||'',candidateButton.dataset.candidateId||'');return}const target=ev.target&&ev.target.closest?ev.target.closest('button'):null;if(target&&runGaButtonHandler(target.id||'',ev))return},true)}document.body.dataset.gaDelegated='1'}window.addGroupRow=addGroupRow;window.removeGroupRow=removeGroupRow;window.saveAtmosphereAccount=saveAtmosphereAccount;window.startAtmosphereQr=startAtmosphereQr;window.refreshAtmosphereSession=refreshAtmosphereSession;window.openAtmosphereQrModal=openAtmosphereQrModal;window.startAtmosphereQrForAccount=startAtmosphereQrForAccount;window.closeAtmosphereQrModal=closeAtmosphereQrModal;window.dismissAtmosphereQrModal=dismissAtmosphereQrModal;window.retryAtmosphereQrModal=retryAtmosphereQrModal;window.refreshAtmosphereQrModal=refreshAtmosphereQrModal;window.uploadChatRecordFile=uploadChatRecordFile;window.clearChatFiles=clearChatFiles;window.simulateAtmosphere=simulateAtmosphere;window.deleteAtmosphereAccount=deleteAtmosphereAccount;window.fillAccountForm=fillAccountForm;window.selectAtmosphereAccount=selectAtmosphereAccount;window.toggleAtmosphereAccountEnabled=toggleAtmosphereAccountEnabled;window.toggleAtmosphereGroupEnabled=toggleAtmosphereGroupEnabled;window.setSelectedAtmosphereAccountKey=setSelectedAtmosphereAccountKey;window.openAccountEditor=openAccountEditor;window.closeAccountEditor=closeAccountEditor;window.openNewAccountEditor=openNewAccountEditor;window.openManualSendModal=openManualSendModal;window.closeManualSendModal=closeManualSendModal;window.fillManualMessage=fillManualMessage;window.sendManualGroupMessage=sendManualGroupMessage;window.loadCandidatePool=loadCandidatePool;window.enableCandidate=enableCandidate;window.runAtmosphereScheduler=runAtmosphereScheduler;}
 bindGroupAtmosphereButtons();
+['ga_tool_account_select','ga_sim_account_select'].forEach(id=>{const el=document.getElementById(id);if(el&&el.dataset.boundSelect!=='1'){el.addEventListener('change',()=>syncToolAccountSelects(id));el.dataset.boundSelect='1';}});
+['ga_candidate_language_filter','ga_candidate_role_filter'].forEach(id=>{const el=document.getElementById(id);if(el&&el.dataset.boundCandidateFilter!=='1'){el.addEventListener('change',()=>{renderAccounts(window.__gaAccounts||[]);renderCandidatePool(window.__gaCandidateRows||[])});el.dataset.boundCandidateFilter='1';}});
 reloadAll().catch(err=>{ga_session_status.textContent=err.message||String(err)});
 </script></body></html>"""
 
@@ -1318,7 +1737,113 @@ PRODUCTION_OPS_PAGE_HTML = """
       .binding-row { grid-template-columns: 1fr; }
       .account-meta, .status-meta { grid-template-columns: 96px 1fr; }
     }
-  </style>
+  
+/* CRM UI system v2: unified light dashboard tokens, typography, spacing */
+:root{
+  --crm-font:Inter,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --crm-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;
+  --crm-bg:#eef3f9;
+  --crm-bg-2:#f6f8fc;
+  --crm-panel:#ffffff;
+  --crm-surface:#f8fbff;
+  --crm-surface-2:#f2f6fc;
+  --crm-border:#e5ebf3;
+  --crm-border-strong:#d7e0ec;
+  --crm-text:#172033;
+  --crm-text-2:#334155;
+  --crm-muted:#718095;
+  --crm-faint:#9aa7b7;
+  --crm-blue:#2f6bff;
+  --crm-blue-hover:#1f55d9;
+  --crm-blue-soft:#edf4ff;
+  --crm-green:#16a34a;
+  --crm-green-soft:#dcfce7;
+  --crm-amber:#d97706;
+  --crm-amber-soft:#fff7ed;
+  --crm-red:#dc2626;
+  --crm-red-soft:#fff1f2;
+  --crm-r-sm:10px;
+  --crm-r-md:14px;
+  --crm-r-lg:18px;
+  --crm-r-xl:22px;
+  --crm-r-2xl:28px;
+  --crm-space-1:4px;
+  --crm-space-2:8px;
+  --crm-space-3:12px;
+  --crm-space-4:16px;
+  --crm-space-5:20px;
+  --crm-space-6:24px;
+  --crm-space-8:32px;
+  --crm-shadow:0 18px 45px rgba(38,55,91,.08);
+  --crm-shadow-soft:0 8px 24px rgba(38,55,91,.06);
+  --crm-shadow-card:0 1px 0 rgba(15,23,42,.02),0 14px 34px rgba(38,55,91,.055);
+}
+html{scrollbar-gutter:stable;background:var(--crm-bg)!important;font-size:14px!important;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+body{margin:0!important;padding:24px!important;min-height:100vh!important;background:radial-gradient(circle at 12% -8%,rgba(47,107,255,.10),transparent 31%),linear-gradient(180deg,#f7f9fd 0%,#eef3f9 100%)!important;color:var(--crm-text)!important;font-family:var(--crm-font)!important;font-size:14px!important;line-height:1.5!important;letter-spacing:-.006em!important;}
+body *{box-sizing:border-box;}
+.page-shell,body>.page{width:min(1480px,calc(100vw - 48px))!important;max-width:1480px!important;margin:0 auto!important;padding:0 0 32px!important;display:grid!important;grid-template-columns:248px minmax(0,1fr)!important;gap:24px!important;align-items:start!important;}
+.shell-nav,.nav{grid-column:1!important;grid-row:1 / span 160!important;position:sticky!important;top:24px!important;z-index:30!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:6px!important;flex-wrap:nowrap!important;min-height:calc(100vh - 48px)!important;margin:0!important;padding:22px 16px!important;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px) saturate(140%)!important;border:1px solid var(--crm-border)!important;border-radius:var(--crm-r-2xl)!important;box-shadow:var(--crm-shadow)!important;}
+.shell-nav::before,.nav::before{content:'MCN 客服工具';display:block;margin:0 8px 18px;padding:0 0 16px;border-bottom:1px solid var(--crm-border);color:#111827;font-size:18px;line-height:1.12;font-weight:760;letter-spacing:-.035em;}
+.shell-nav a,.nav a{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:10px!important;min-height:40px!important;padding:11px 14px!important;border-radius:15px!important;background:transparent!important;border:0!important;color:var(--crm-muted)!important;text-decoration:none!important;font-size:14px!important;line-height:18px!important;font-weight:620!important;letter-spacing:-.01em!important;white-space:nowrap!important;box-shadow:none!important;transition:background .16s ease,color .16s ease,transform .16s ease;}
+.shell-nav a::before,.nav a::before{content:'';width:8px;height:8px;border-radius:999px;background:#cbd5e1;flex:0 0 auto;transition:background .16s ease;}
+.shell-nav a:hover,.nav a:hover{color:var(--crm-blue-hover)!important;background:var(--crm-blue-soft)!important;transform:translateX(1px);}
+.shell-nav a:hover::before,.nav a:hover::before{background:var(--crm-blue)!important;}
+.shell-nav a.is-active,.nav a.is-active{background:var(--crm-blue)!important;color:#fff!important;box-shadow:0 12px 24px rgba(47,107,255,.22)!important;}
+.shell-nav a.is-active::before,.nav a.is-active::before{background:#fff!important;}
+.page-shell>:not(.shell-nav),body>.page>:not(.nav){grid-column:2!important;min-width:0!important;}
+.hero{padding:24px 26px!important;margin:0 0 16px!important;min-height:84px;border-radius:26px!important;background:linear-gradient(135deg,#fff 0%,#f8fbff 56%,#eef5ff 100%)!important;border:1px solid var(--crm-border)!important;box-shadow:var(--crm-shadow-card)!important;color:var(--crm-text)!important;}
+.card,.summary-item,.executor-card,.account-card,.binding-card,.advanced-fields,.qr-modal-card,.modal-card,.status-card,.group-card,.mini-note,fieldset{background:var(--crm-panel)!important;border:1px solid var(--crm-border)!important;color:var(--crm-text)!important;border-radius:var(--crm-r-xl)!important;box-shadow:var(--crm-shadow-card)!important;}
+.card{padding:20px!important;margin-top:16px!important;}
+.card + .card,.group-card + .group-card,.account-card + .account-card{margin-top:16px!important;}
+.summary-item,.status-card,.account-status-item{padding:16px!important;border-radius:var(--crm-r-lg)!important;background:linear-gradient(180deg,#fff 0%,#fbfdff 100%)!important;}
+.account-card,.binding-card{padding:18px!important;}
+.group-card,.mini-note{padding:14px!important;}
+.grid,.mini-tools,.editor-grid,.field-grid,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid,.toolbar-actions,.inline-actions{gap:14px!important;}
+h1,h2,h3,p{margin-top:0;}
+h1{font-size:28px!important;line-height:1.16!important;letter-spacing:-.045em!important;color:#111827!important;font-weight:780!important;margin-bottom:6px!important;}
+h2{font-size:19px!important;line-height:1.28!important;letter-spacing:-.03em!important;color:var(--crm-text)!important;font-weight:740!important;margin-bottom:12px!important;}
+h3{font-size:16px!important;line-height:1.32!important;letter-spacing:-.02em!important;color:var(--crm-text)!important;font-weight:720!important;margin-bottom:8px!important;}
+.section-title{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin-bottom:14px!important;}
+.section-title h2{margin:0!important;}
+.label,label,.k,.muted,.hint,.account-sub,small,.field-hint,.help{color:var(--crm-muted)!important;font-size:13px!important;line-height:1.45!important;}
+strong,.value{color:var(--crm-text)!important;font-weight:720!important;}
+input,select,textarea{width:100%;min-height:40px!important;padding:10px 12px!important;background:#fff!important;color:var(--crm-text)!important;border:1px solid var(--crm-border-strong)!important;border-radius:var(--crm-r-md)!important;box-shadow:0 1px 0 rgba(17,24,39,.02)!important;font:500 14px/1.45 var(--crm-font)!important;margin:6px 0 12px!important;}
+textarea{min-height:88px!important;resize:vertical;}
+input::placeholder,textarea::placeholder{color:var(--crm-faint)!important;}
+input:focus,select:focus,textarea:focus{border-color:#9bbcff!important;box-shadow:0 0 0 4px rgba(47,107,255,.13)!important;outline:none!important;}
+button,.button{min-height:38px!important;padding:9px 14px!important;background:var(--crm-blue)!important;color:#fff!important;border:1px solid var(--crm-blue)!important;border-radius:var(--crm-r-md)!important;font:700 14px/18px var(--crm-font)!important;letter-spacing:-.01em!important;box-shadow:0 8px 18px rgba(47,107,255,.18)!important;cursor:pointer!important;transition:background .16s ease,border-color .16s ease,transform .16s ease,box-shadow .16s ease;}
+button:hover,.button:hover{background:var(--crm-blue-hover)!important;border-color:var(--crm-blue-hover)!important;transform:translateY(-1px);}
+button.secondary,button.ghost,.button.secondary,.button.ghost{background:#f2f6ff!important;border-color:#d7e5ff!important;color:var(--crm-blue-hover)!important;box-shadow:none!important;}
+button.danger{background:var(--crm-red-soft)!important;border-color:#fecdd3!important;color:#be123c!important;box-shadow:none!important;}
+button.switch-on{background:var(--crm-green-soft)!important;border-color:#bbf7d0!important;color:#166534!important;box-shadow:none!important;}
+button.switch-pending{background:var(--crm-amber-soft)!important;border-color:#fed7aa!important;color:#c2410c!important;box-shadow:none!important;}
+button.switch-off{background:var(--crm-red-soft)!important;border-color:#fecdd3!important;color:#be123c!important;box-shadow:none!important;}
+button:disabled{opacity:.58!important;cursor:not-allowed!important;transform:none!important;}
+table{width:100%!important;background:#fff!important;border-collapse:separate!important;border-spacing:0!important;border-radius:18px!important;overflow:hidden!important;box-shadow:var(--crm-shadow-soft)!important;font-size:13px!important;}
+th{background:#f5f8ff!important;color:#526178!important;border-bottom:1px solid var(--crm-border)!important;font-size:12px!important;line-height:1.35!important;font-weight:720!important;text-align:left!important;padding:11px 12px!important;}
+td{color:var(--crm-text-2)!important;border-bottom:1px solid var(--crm-border-soft)!important;padding:11px 12px!important;vertical-align:top!important;}
+tr:hover td{background:#f8fbff!important;}
+#batchMembersTable th{text-align:left!important;vertical-align:middle!important;}
+#batchMembersTable td{vertical-align:middle!important;}
+#batchMembersTable .select-col{padding-left:0!important;padding-right:0!important;text-align:center!important;vertical-align:middle!important;}
+#batchMembersTable .select-col input{width:18px!important;height:18px!important;min-height:18px!important;margin:0 auto!important;padding:0!important;display:block!important;}
+.badge,.pill,.binding-badge,.card-monitor-toggle{display:inline-flex;align-items:center;gap:6px;min-height:24px;padding:4px 10px!important;border-radius:999px!important;border:1px solid var(--crm-border)!important;background:#f6f8fc!important;color:var(--crm-text-2)!important;font-size:12px!important;font-weight:720!important;line-height:1.2!important;box-shadow:none!important;}
+.badge.operator,.badge.customer_service,.badge.admin,.badge.super_admin{background:var(--crm-blue-soft)!important;color:var(--crm-blue-hover)!important;border-color:#d7e5ff!important;}
+.badge.off,.pill.red{background:var(--crm-red-soft)!important;color:#be123c!important;border-color:#fecdd3!important;}
+.badge.pending,.pill.orange,.pill.yellow,.pill.amber{background:var(--crm-amber-soft)!important;color:#c2410c!important;border-color:#fed7aa!important;}
+.status-line.success,.pill.green,.badge.green{color:#166534!important;background:var(--crm-green-soft)!important;border-color:#bbf7d0!important;}
+.status-line.error{color:#be123c!important;}
+.toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:14px!important;margin-bottom:14px!important;}
+details{border-radius:var(--crm-r-lg)!important;border:1px solid var(--crm-border)!important;background:#fbfdff!important;padding:12px 14px!important;}
+summary{cursor:pointer;color:var(--crm-text)!important;font-weight:700!important;}
+pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-height:1.55!important;}
+.qr-modal,.modal{background:rgba(18,31,54,.46)!important;backdrop-filter:blur(8px)!important;}
+.toast{border:1px solid var(--crm-border)!important;background:#111827!important;color:#fff!important;box-shadow:var(--crm-shadow)!important;border-radius:var(--crm-r-lg)!important;}
+@media (max-width:980px){body{padding:16px!important}.page-shell,body>.page{display:block!important;width:min(100vw - 32px,1480px)!important}.shell-nav,.nav{position:sticky!important;top:0!important;min-height:0!important;flex-direction:row!important;overflow:auto!important;border-radius:0 0 22px 22px!important;margin:-16px -16px 18px!important;padding:14px!important}.shell-nav::before,.nav::before{display:none!important}.shell-nav a,.nav a{white-space:nowrap!important}.page-shell>:not(.shell-nav),body>.page>:not(.nav){grid-column:auto!important}.card{padding:16px!important}.hero{padding:20px!important}.grid,.editor-grid,.mini-tools,.compact-grid,.account-card-grid,.account-status-grid{grid-template-columns:1fr!important}}
+
+.page-shell>.shell-nav a:nth-child(3),body>.page>.nav a:nth-child(3){background:var(--crm-blue)!important;color:#fff!important;box-shadow:0 12px 24px rgba(47,107,255,.22)!important}
+.page-shell>.shell-nav a:nth-child(3)::before,body>.page>.nav a:nth-child(3)::before{background:#fff!important}
+</style>
 </head>
 <body>
   <div class=\"page-shell\">
@@ -1373,6 +1898,10 @@ PRODUCTION_OPS_PAGE_HTML = """
             <div class="field-stack">
               <label class="field-hint">负责类型</label>
               <select id="wa_responsible_type"><option value="registration_group">注册群</option><option value="official_group">官方群</option></select>
+            </div>
+            <div class="field-stack">
+              <label class="field-hint">对应客服</label>
+              <select id="wa_assigned_customer_service_user_id"><option value="">请选择客服</option></select>
             </div>
             <input type="hidden" id="wa_enabled" value="true" />
             <div class="field-stack">
@@ -1968,7 +2497,7 @@ function renderNotifyRobotSelect(options, currentValue='', elementId='wa_group_n
     ? normalizedCurrent
     : fallbackValue;
   select.innerHTML = ['<option value="">请选择通知机器人</option>', ...normalizedRows.map(item => {
-    const selected = item.value === effectiveCurrent ? ' selected' : '';
+    const selected = item.value === normalizedCurrent ? ' selected' : '';
     return `<option value="${item.value}"${selected}>${item.label}</option>`;
   })].join('');
   if (effectiveCurrent) {
@@ -2010,6 +2539,23 @@ function renderAllGroupAreaSelects(options, currentValues=[]) {
   for (let i = 1; i <= 3; i += 1) {
     renderAreaSelect(options, safeValues[i - 1] || '', `wa_group_area_${i}`);
   }
+}
+function renderAssignedCustomerServiceSelect(options, currentValue='') {
+  const select = document.getElementById('wa_assigned_customer_service_user_id');
+  if (!select) return;
+  const rows = Array.isArray(options) ? options : [];
+  const normalizedCurrent = String(currentValue || '').trim();
+  if (!rows.length) {
+    select.innerHTML = '<option value="">暂无可选客服</option>';
+    return;
+  }
+  select.innerHTML = ['<option value="">请选择客服</option>', ...rows.map(item => {
+    const value = String(item.user_id || '').trim();
+    const label = String(item.display_name || item.username || value).trim();
+    const selected = value === normalizedCurrent ? ' selected' : '';
+    return `<option value="${escapeHtmlAttr(value)}"${selected}>${escapeHtmlAttr(label)}</option>`;
+  })].join('');
+  if (normalizedCurrent) select.value = normalizedCurrent;
 }
 function collectGroupScheduleWindows(groupIndex) {
   const rows = [];
@@ -2266,6 +2812,7 @@ function bindingSummaryHtml(binding, row, bindingIndex) {
 function accountCardHtml(row) {
   const currentRole = String(window.__opsUserRole || '').trim();
   const isAdminUser = approvalRoleCanManage(currentRole);
+  const canOperateAccount = isAdminUser || currentRole === 'customer_service';
   const groupBindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
     ? row.group_binding_runtimes
     : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
@@ -2303,12 +2850,16 @@ function accountCardHtml(row) {
     ? `<div style="margin-top:10px;"><div class="field-hint" style="margin-bottom:6px;">绑定二维码</div><pre style="margin:0; padding:12px; overflow:auto; background:#0f172a; color:#e2e8f0; border-radius:12px; font-size:10px; line-height:1.05;">${String(sessionState.qr_ascii || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></div>`
     : '';
   const noteValue = String(row.notes || '').trim();
-  const accountToggleButtonHtml = isAdminUser
+  const assignedCustomerServiceText = String(row.assigned_customer_service_display_name || row.assigned_customer_service_username || '').trim() || '未指定';
+  const accountToggleButtonHtml = canOperateAccount
     ? `<button type="button" class="card-monitor-toggle ${monitorButtonClass}" onclick="setApprovalAccountEnabled('${accountKeyEscaped}', ${row.enabled ? 'false' : 'true'})" ${pendingAction ? 'disabled' : ''}>${monitorButtonText}</button>`
     : `<span class="card-monitor-toggle ${monitorButtonClass}" style="cursor:default;">${monitorButtonText}</span>`;
+  const operatorActionsHtml = canOperateAccount
+    ? `<button type="button" class="${isSessionLoading ? 'button-loading' : ''}" ${isSessionLoading ? 'disabled' : ''} onclick="startApprovalAccountSession('${accountKeyEscaped}')">${isSessionLoading ? '生成中…' : '生成二维码'}</button>
+      <button type="button" class="secondary" onclick="refreshApprovalAccountSession('${accountKeyEscaped}')">刷新状态</button>`
+    : '';
   const adminActionsHtml = isAdminUser
     ? `<button type="button" class="secondary" onclick="fillApprovalAccountForm('${accountKeyEscaped}')">回填编辑</button>
-      <button type="button" class="${isSessionLoading ? 'button-loading' : ''}" ${isSessionLoading ? 'disabled' : ''} onclick="startApprovalAccountSession('${accountKeyEscaped}')">${isSessionLoading ? '生成中…' : '生成二维码'}</button>
       <button type="button" class="secondary" onclick="deleteApprovalAccount('${accountKeyEscaped}')">删除账号</button>`
     : '';
   const adminMoreActionsHtml = isAdminUser
@@ -2328,6 +2879,7 @@ function accountCardHtml(row) {
     <h3>
       <span class="account-head-left">
         <span class="account-head-title">${row.account_name || row.account_key || ''}</span>
+        <span class="pill gray">对应客服：${assignedCustomerServiceText}</span>
         ${accountToggleButtonHtml}
       </span>
       <span class="status-line"><span class="status-dot ${row.status_color || 'gray'}"></span>${row.status_text || '-'}</span>
@@ -2350,7 +2902,7 @@ function accountCardHtml(row) {
       <div class="advanced-fields-body"><div class="muted">${verificationText}</div></div>
     </details>
     ${qrBlock}
-    ${adminActionsHtml ? `<div class="link-actions">${adminActionsHtml}</div>` : ''}
+    ${(operatorActionsHtml || adminActionsHtml) ? `<div class="link-actions">${operatorActionsHtml}${adminActionsHtml}</div>` : ''}
     ${adminMoreActionsHtml}
   </div>`;
 }
@@ -2510,12 +3062,16 @@ async function reloadApprovalAccounts() {
   }).filter(item => item[0]));
   const notifyRobotOptions = Array.isArray(data.notify_robot_options) ? data.notify_robot_options : [];
   const approvalAreaOptions = Array.isArray(data.area_options) ? data.area_options : [];
+  const customerServiceOptions = Array.isArray(data.customer_service_options) ? data.customer_service_options : [];
   window.__notifyRobotOptions = canManageApprovalAccounts
     ? notifyRobotOptions
     : (Array.isArray(window.__notifyRobotOptions) ? window.__notifyRobotOptions : []);
   window.__approvalAreaOptions = canManageApprovalAccounts
     ? approvalAreaOptions
     : (Array.isArray(window.__approvalAreaOptions) ? window.__approvalAreaOptions : []);
+  window.__customerServiceOptions = canManageApprovalAccounts
+    ? customerServiceOptions
+    : (Array.isArray(window.__customerServiceOptions) ? window.__customerServiceOptions : []);
   renderAllGroupNotifyRobotSelects(
     window.__notifyRobotOptions,
     [1, 2, 3].map(index => String(document.getElementById(`wa_group_notify_profile_name_${index}`)?.value || '').trim()),
@@ -2523,6 +3079,10 @@ async function reloadApprovalAccounts() {
   renderAllGroupAreaSelects(
     window.__approvalAreaOptions,
     [1, 2, 3].map(index => String(document.getElementById(`wa_group_area_${index}`)?.value || '').trim()),
+  );
+  renderAssignedCustomerServiceSelect(
+    window.__customerServiceOptions,
+    String(document.getElementById('wa_assigned_customer_service_user_id')?.value || '').trim(),
   );
   renderApprovalAccountRows();
   if (window.__approvalQrModalState?.open && window.__approvalQrModalState.accountKey) {
@@ -2561,6 +3121,7 @@ function fillApprovalAccountForm(accountKey) {
   document.getElementById('wa_account_key').value = row.account_key || '';
   document.getElementById('wa_account_name').value = row.account_name || '';
   document.getElementById('wa_responsible_type').value = row.responsible_type || 'registration_group';
+  renderAssignedCustomerServiceSelect(window.__customerServiceOptions, row.assigned_customer_service_user_id || '');
   document.getElementById('wa_enabled').value = Boolean(row.enabled) ? 'true' : 'false';
   const groupBindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
     ? row.group_binding_runtimes
@@ -2588,6 +3149,7 @@ function clearApprovalAccountForm() {
   document.getElementById('wa_account_key').value = '';
   document.getElementById('wa_account_name').value = '';
   document.getElementById('wa_responsible_type').value = 'registration_group';
+  renderAssignedCustomerServiceSelect(window.__customerServiceOptions, '');
   document.getElementById('wa_enabled').value = 'true';
   setApprovalBindingFormVisibleCount(1);
   fillIndexedValues('wa_group_link_', [], 3);
@@ -2612,9 +3174,14 @@ async function saveApprovalAccount() {
     if (!accountKey) throw new Error('account_key is required.');
     const groupLinkBindings = collectGroupBindings(3);
     const primaryBinding = groupLinkBindings[0] || {};
+    const assignedCustomerServiceUserId = document.getElementById('wa_assigned_customer_service_user_id').value.trim();
+    if (!assignedCustomerServiceUserId) {
+      throw new Error('请选择对应客服');
+    }
     const payload = {
       account_name: document.getElementById('wa_account_name').value.trim(),
       responsible_type: document.getElementById('wa_responsible_type').value,
+      assigned_customer_service_user_id: assignedCustomerServiceUserId,
       enabled: document.getElementById('wa_enabled').value === 'true',
       group_link_bindings: groupLinkBindings,
       group_links: groupLinkBindings.map(item => item.link),
@@ -2661,6 +3228,7 @@ function buildApprovalAccountPayloadFromRow(row, overrides = {}) {
   const payload = {
     account_name: String(row.account_name || '').trim(),
     responsible_type: String(row.responsible_type || 'registration_group').trim() || 'registration_group',
+    assigned_customer_service_user_id: String(row.assigned_customer_service_user_id || '').trim(),
     enabled: row.enabled !== false,
     group_link_bindings: normalizedBindings,
     group_links: normalizedBindings.map(item => String(item.link || '').trim()).filter(Boolean),
@@ -3044,17 +3612,20 @@ function renderBatchSummary(batch) {
   setText('officialMonitoredGroupCount', String(official.monitored));
   setText('officialTotalPendingCount', String(official.pending));
 }
-function renderHealth(runtime) {
+function renderHealth(runtime, batchQueue) {
   const status = runtime?.runtime?.status || {};
   const backend = runtime?.runtime?.backend_health || status.backend_health || {};
   const incidents = Array.isArray(status.incidents) ? status.incidents.length : 0;
   const warnings = Array.isArray(status.observation_warnings) ? status.observation_warnings.length : 0;
   const worker = status.worker_state || {};
+  const registrationMonitored = numericValue(batchQueue?.registration_summary?.monitored_group_count, 0);
+  const officialMonitored = numericValue(batchQueue?.official_summary?.monitored_group_count, 0);
+  const hasMonitoredApprovalGroups = (registrationMonitored + officialMonitored) > 0;
   const lines = [
     ['后端', backend.ok === false ? '异常' : '正常', backend.ok === false ? 'err' : 'ok'],
-    ['审批守护', incidents ? `异常 ${incidents}` : '正常', incidents ? 'err' : 'ok'],
-    ['待核验', warnings ? `${warnings}` : '0', warnings ? 'warn' : 'ok'],
-    ['注册群探针', worker.ok === false ? '异常' : '正常', worker.ok === false ? 'err' : 'ok'],
+    ['审批守护', hasMonitoredApprovalGroups ? (incidents ? `异常 ${incidents}` : '正常') : '未启用', hasMonitoredApprovalGroups ? (incidents ? 'err' : 'ok') : 'ok'],
+    ['待核验', hasMonitoredApprovalGroups ? (warnings ? `${warnings}` : '0') : '0', hasMonitoredApprovalGroups && warnings ? 'warn' : 'ok'],
+    ['注册群探针', hasMonitoredApprovalGroups ? (worker.ok === false ? '异常' : '正常') : '未启用', hasMonitoredApprovalGroups ? (worker.ok === false ? 'err' : 'ok') : 'ok'],
   ];
   document.getElementById('healthRows').innerHTML = lines.map(row => `<div class="status-line"><span>${row[0]}</span><span class="pill ${row[2]}">${row[1]}</span></div>`).join('');
 }
@@ -3074,7 +3645,7 @@ async function init() {
   setText('unreadNotificationCount', String(unread));
   renderTodoRows(summary, notifications);
   renderBatchSummary(batchQueue);
-  renderHealth(runtime);
+  renderHealth(runtime, batchQueue);
 }
 init().catch(err => {
   console.error(err);
@@ -3406,15 +3977,30 @@ class NotificationReadRequest(BaseModel):
 
 class IntakeBotPresetUpdateRequest(BaseModel):
     app_id: Optional[str] = None
+    app_secret: Optional[str] = None
     robot_name: Optional[str] = None
     default_app: str
     default_guild: str
 
 
+class LocalIntakeBotGatewayActivationRequest(IntakeBotPresetUpdateRequest):
+    pass
+
+
 class GuildExecutorUpdateRequest(BaseModel):
-    backend_url: str
-    login_username: str
+    # Backend URLs are fixed by product policy; legacy fields are accepted but ignored.
+    backend_url: Optional[str] = None
+    guild_backend_url: Optional[str] = None
+    login_username: Optional[str] = None
     password_secret_ref: Optional[str] = None
+    guild_backend_token: Optional[str] = None
+    oauth_token: Optional[str] = None
+    oauth_token_secret: Optional[str] = None
+    platform_backend_url: Optional[str] = None
+    platform_backend_token: Optional[str] = None
+    platform_authorization: Optional[str] = None
+    cms_refresh_token: Optional[str] = None
+    refresh_token: Optional[str] = None
     proxy_url: Optional[str] = None
     proxy_region: Optional[str] = None
     proxy_type: Optional[str] = None
@@ -3460,6 +4046,7 @@ class ApprovalGroupBindingRequest(BaseModel):
 class WhatsAppApprovalAccountUpdateRequest(BaseModel):
     account_name: str
     responsible_type: str
+    assigned_customer_service_user_id: Optional[str] = None
     group_links: list[str] = []
     group_link_bindings: list[ApprovalGroupBindingRequest] = []
     area: Optional[str] = None
@@ -3487,6 +4074,9 @@ class SubmissionResubmitRequest(BaseModel):
     remark: Optional[str] = None
 
 
+GUILD_BACKEND_BASE_URL = 'https://guild.linke.ai/guild'
+PLATFORM_BACKEND_BASE_URL = 'https://cms.linke.ai/'
+
 GUILD_EXECUTOR_PROXY_REGION_OPTIONS: list[dict[str, str]] = [
     {'value': '北京', 'label': '北京'},
     {'value': '上海', 'label': '上海'},
@@ -3511,6 +4101,7 @@ PRODUCTION_OPS_DAEMON_LAUNCH_AGENT_PATH = Path.home() / 'Library' / 'LaunchAgent
 PRODUCTION_OPS_DAEMON_ENV_PATH = PROJECT_ROOT / 'data' / 'production_ops_daemon.env'
 PRODUCTION_OPS_DAEMON_STATUS_PATH = PROJECT_ROOT / 'data' / 'production_ops_daemon_status.json'
 PRODUCTION_OPS_DAEMON_STATE_PATH = PROJECT_ROOT / 'data' / 'production_ops_daemon_state.json'
+CMS_EXECUTOR_KEEPALIVE_STATUS_PATH = PROJECT_ROOT / 'data' / 'cms_executor_keepalive_status.json'
 PRODUCTION_OPS_DAEMON_INSTALL_SCRIPT = PROJECT_ROOT / 'scripts' / 'install_production_ops_daemon_launch_agent.sh'
 PRODUCTION_OPS_DAEMON_UNINSTALL_SCRIPT = PROJECT_ROOT / 'scripts' / 'uninstall_production_ops_daemon_launch_agent.sh'
 WHATSAPP_APPROVAL_DEFAULT_COUNT_THRESHOLD = 30
@@ -3686,7 +4277,7 @@ class OpsAuthLoginRequest(BaseModel):
 class OpsAccountCreateRequest(BaseModel):
     username: str
     password: str
-    role: str = 'operator'
+    role: str = 'customer_service'
     display_name: Optional[str] = None
     enabled: bool = True
 
@@ -3707,6 +4298,10 @@ class GroupAtmosphereTemplate(BaseModel):
     template_id: Optional[str] = None
     category: Optional[str] = None
     text: str
+    candidate_id: Optional[str] = None
+    source_role: Optional[str] = None
+    safe_to_send: bool = True
+    enabled: bool = True
 
 
 class GroupAtmosphereFaqRule(BaseModel):
@@ -3720,8 +4315,10 @@ class GroupAtmosphereAccountGroupRequest(BaseModel):
     enabled: bool = True
     daily_max_messages: Optional[int] = None
     min_interval_minutes: Optional[int] = None
+    max_interval_minutes: Optional[int] = None
     allowed_windows: list[dict[str, Any]] = []
     language: Optional[str] = None
+    speech_plan_config_name: Optional[str] = None
 
 
 class GroupAtmosphereWhatsAppAccountRequest(BaseModel):
@@ -3751,8 +4348,9 @@ class GroupAtmosphereConfigRequest(BaseModel):
     language: str = 'en'
     timezone: str = 'UTC'
     worker_base_url: Optional[str] = None
-    daily_max_messages: int = Field(default=4, ge=0, le=50)
+    daily_max_messages: int = Field(default=4, ge=0, le=5000)
     min_interval_minutes: int = Field(default=60, ge=0, le=1440)
+    max_interval_minutes: int = Field(default=240, ge=0, le=1440)
     allowed_windows: List[Dict[str, Any]] = Field(default_factory=list)
     template_pool: List[GroupAtmosphereTemplate] = Field(default_factory=list)
     mention_reply_enabled: bool = True
@@ -3764,6 +4362,11 @@ class GroupAtmosphereDispatchRequest(BaseModel):
     config_name: str
     message_text: Optional[str] = None
     trigger_type: str = 'manual'
+
+
+class GroupAtmosphereManualSendRequest(BaseModel):
+    message_text: str
+    trigger_type: str = 'manual_ops_page'
 
 
 class GroupAtmosphereInboundMessageRequest(BaseModel):
@@ -3790,6 +4393,22 @@ class GroupAtmosphereAiCandidateRequest(BaseModel):
     config_name: str
     topic: str = 'general'
     count: int = Field(default=3, ge=1, le=10)
+
+
+class GroupAtmosphereCandidateEnableRequest(BaseModel):
+    config_name: str
+    candidate_ids: List[str] = Field(default_factory=list)
+    account_key: Optional[str] = None
+    target_group: Optional[str] = None
+    group_name: Optional[str] = None
+    worker_base_url: Optional[str] = None
+    daily_max_messages: Optional[int] = Field(default=None, ge=0, le=5000)
+    min_interval_minutes: Optional[int] = Field(default=None, ge=0, le=1440)
+    max_interval_minutes: Optional[int] = Field(default=None, ge=0, le=1440)
+
+
+class GroupAtmosphereSchedulerRunRequest(BaseModel):
+    limit: int = Field(default=20, ge=1, le=100)
 
 
 class GroupAtmosphereSimulatedInboundMessage(BaseModel):
@@ -4002,6 +4621,11 @@ class Database:
                     backend_url TEXT NOT NULL,
                     login_username TEXT NOT NULL,
                     password_secret_ref TEXT,
+                    guild_backend_token TEXT,
+                    oauth_token TEXT,
+                    oauth_token_secret TEXT,
+                    platform_backend_url TEXT,
+                    platform_authorization TEXT,
                     proxy_url TEXT,
                     proxy_region TEXT,
                     proxy_type TEXT,
@@ -4011,6 +4635,16 @@ class Database:
                     request_timeout_seconds INTEGER NOT NULL DEFAULT 30,
                     notes TEXT,
                     updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS cms_executor_tokens (
+                    guild_name TEXT PRIMARY KEY,
+                    refresh_token TEXT,
+                    refresh_token_deadtime INTEGER,
+                    access_token_exp INTEGER,
+                    last_refresh_at INTEGER,
+                    last_refresh_error TEXT,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
 
                 CREATE TABLE IF NOT EXISTS production_ops_daemon_configs (
@@ -4042,6 +4676,9 @@ class Database:
                     schedule_windows TEXT NOT NULL DEFAULT '[]',
                     enabled INTEGER NOT NULL DEFAULT 1,
                     verification_status TEXT NOT NULL DEFAULT 'pending_verification',
+                    assigned_customer_service_user_id TEXT,
+                    assigned_customer_service_username TEXT,
+                    assigned_customer_service_display_name TEXT,
                     notes TEXT,
                     updated_at TEXT NOT NULL
                 );
@@ -4197,6 +4834,8 @@ class Database:
                     worker_base_url TEXT,
                     daily_max_messages INTEGER NOT NULL DEFAULT 4,
                     min_interval_minutes INTEGER NOT NULL DEFAULT 60,
+                    max_interval_minutes INTEGER NOT NULL DEFAULT 240,
+                    next_due_at TEXT,
                     allowed_windows TEXT NOT NULL DEFAULT '[]',
                     template_pool TEXT NOT NULL DEFAULT '[]',
                     mention_reply_enabled INTEGER NOT NULL DEFAULT 1,
@@ -4296,18 +4935,28 @@ class Database:
             "ALTER TABLE automation_tasks ADD COLUMN requires_human_action INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE automation_tasks ADD COLUMN human_action_type TEXT",
             "ALTER TABLE automation_tasks ADD COLUMN human_action_payload TEXT",
+            "ALTER TABLE guild_executors ADD COLUMN guild_backend_token TEXT",
+            "ALTER TABLE guild_executors ADD COLUMN oauth_token TEXT",
+            "ALTER TABLE guild_executors ADD COLUMN oauth_token_secret TEXT",
+            "ALTER TABLE guild_executors ADD COLUMN platform_backend_url TEXT",
+            "ALTER TABLE guild_executors ADD COLUMN platform_authorization TEXT",
             "ALTER TABLE whatsapp_approval_accounts ADD COLUMN area TEXT",
             "ALTER TABLE whatsapp_approval_accounts ADD COLUMN notify_profile_name TEXT",
             "ALTER TABLE whatsapp_approval_accounts ADD COLUMN approval_rule TEXT NOT NULL DEFAULT 'count_30'",
             "ALTER TABLE whatsapp_approval_accounts ADD COLUMN approval_count_threshold INTEGER NOT NULL DEFAULT 30",
             "ALTER TABLE whatsapp_approval_accounts ADD COLUMN approval_timeout_minutes INTEGER NOT NULL DEFAULT 30",
             "ALTER TABLE whatsapp_approval_accounts ADD COLUMN auto_recover_worker INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE whatsapp_approval_accounts ADD COLUMN assigned_customer_service_user_id TEXT",
+            "ALTER TABLE whatsapp_approval_accounts ADD COLUMN assigned_customer_service_username TEXT",
+            "ALTER TABLE whatsapp_approval_accounts ADD COLUMN assigned_customer_service_display_name TEXT",
             "ALTER TABLE registration_group_approval_batch_members ADD COLUMN repair_last_attempt_at TEXT",
             "ALTER TABLE registration_group_approval_batch_members ADD COLUMN repair_last_result TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE registration_group_approval_batch_members ADD COLUMN repair_next_attempt_at TEXT",
             "ALTER TABLE ops_users ADD COLUMN display_name TEXT",
             "ALTER TABLE ops_users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE ops_users ADD COLUMN last_login_at TEXT",
+            "ALTER TABLE whatsapp_group_atmosphere_configs ADD COLUMN max_interval_minutes INTEGER NOT NULL DEFAULT 240",
+            "ALTER TABLE whatsapp_group_atmosphere_configs ADD COLUMN next_due_at TEXT",
         ]:
             try:
                 conn.execute(statement)
@@ -4753,7 +5402,7 @@ class LiveLarkReplyAdapter:
 
 
 class Service:
-    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, registration_group_approval_executor: Any = None, official_group_approval_executor: Any = None, official_group_target_map: Optional[Dict[str, str]] = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False, crm_retry_delays_seconds: Optional[List[int]] = None, crm_retry_max_attempts: int = 3, bind_retry_max_attempts: int = 2, official_group_approval_webhook_url: Optional[str] = None) -> None:
+    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, registration_group_approval_executor: Any = None, official_group_approval_executor: Any = None, official_group_target_map: Optional[Dict[str, str]] = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False, crm_retry_delays_seconds: Optional[List[int]] = None, crm_retry_max_attempts: int = 3, bind_retry_max_attempts: int = 2, official_group_approval_webhook_url: Optional[str] = None, group_atmosphere_scheduler_enabled: bool = False, group_atmosphere_scheduler_poll_interval_seconds: float = 30.0) -> None:
         self.db = db
         self.crm_adapter = crm_adapter
         self.ocr_adapter = ocr_adapter
@@ -4810,6 +5459,9 @@ class Service:
         self._group_join_pending_stale_seconds = 900.0
         self._crm_task_stale_seconds = 900.0
         self._task_residue_last_reconciled_monotonic = 0.0
+        self.group_atmosphere_scheduler_enabled = bool(group_atmosphere_scheduler_enabled)
+        self.group_atmosphere_scheduler_poll_interval_seconds = max(5.0, float(group_atmosphere_scheduler_poll_interval_seconds or 30.0))
+        self._group_atmosphere_scheduler_thread: Optional[threading.Thread] = None
         self._crm_option_cache: Dict[str, Dict[str, Dict[str, Any]]] = {
             'app': {},
             'guild': {},
@@ -4817,6 +5469,8 @@ class Service:
         self._load_persisted_crm_option_cache()
         if self.ingress_worker_enabled:
             self._start_ingress_worker()
+        if self.group_atmosphere_scheduler_enabled:
+            self._start_group_atmosphere_scheduler_worker()
 
     def _next_group_atmosphere_account_key(self, *, region: str = '', language: str = '') -> str:
         source = str(region or language or 'account').strip().lower()
@@ -4876,6 +5530,9 @@ class Service:
                 raise HTTPException(status_code=400, detail=f'group #{index} target_group is required')
             group_daily_max = _coerce_positive_int(group.daily_max_messages, daily_max_messages)
             group_min_interval = _coerce_positive_int(group.min_interval_minutes, min_interval_minutes)
+            group_max_interval = _coerce_positive_int(group.max_interval_minutes, max(max_interval_minutes, group_min_interval))
+            if group_max_interval < group_min_interval:
+                group_max_interval = group_min_interval
             group_language = str(group.language or language or '').strip()
             group_name = str(group.group_name or '').strip() or target_group
             bindings.append({
@@ -4885,8 +5542,10 @@ class Service:
                 'group_id': target_group if target_group.endswith('@g.us') else '',
                 'enabled': False if payload.enabled is False or group.enabled is False else True,
                 'language': group_language,
+                'speech_plan_config_name': str(group.speech_plan_config_name or '').strip(),
                 'daily_max_messages': group_daily_max,
                 'min_interval_minutes': group_min_interval,
+                'max_interval_minutes': group_max_interval,
                 'allowed_windows': group.allowed_windows if isinstance(group.allowed_windows, list) else [],
                 'registration_group': '',
                 'area': region,
@@ -4979,6 +5638,7 @@ class Service:
                     'group_name': str(item.get('group_name') or '').strip() or target_group,
                     'enabled': False if item.get('enabled') is False else True,
                     'language': str(item.get('language') or metadata.get('language') or '').strip(),
+                    'speech_plan_config_name': str(item.get('speech_plan_config_name') or '').strip(),
                     'daily_max_messages': _coerce_positive_int(item.get('daily_max_messages'), _coerce_positive_int(metadata.get('daily_max_messages'), 3)),
                     'min_interval_minutes': _coerce_positive_int(item.get('min_interval_minutes'), _coerce_positive_int(metadata.get('min_interval_minutes'), 120)),
                     'allowed_windows': item.get('allowed_windows') if isinstance(item.get('allowed_windows'), list) else [],
@@ -5073,10 +5733,30 @@ class Service:
             account_key = str(row.get('account_key') or '').strip()
             # 列表先用本地快照保证响应快；若独立 runtime 正在运行，再做一次真实 health 同步登录态。
             # 否则“生成二维码”发现已登录后，账号卡片会被 reloadAll 的空 session 覆盖成待扫码。
+            existing_meta = self._read_whatsapp_approval_runtime_meta(account_key)
             runtime_state = self._build_whatsapp_approval_runtime_state(account_key, allow_shared_fallback=False, skip_health_check=True)
             session_state: Dict[str, Any] = {}
             base_url = str(runtime_state.get('base_url') or '').strip()
-            if bool(row.get('enabled')) and runtime_state.get('active') and base_url:
+            should_auto_recover = bool(row.get('enabled')) and bool(existing_meta) and (not runtime_state.get('active') or not base_url)
+            if should_auto_recover:
+                try:
+                    recovered = self.start_group_atmosphere_whatsapp_account_session(account_key, reset=False)
+                    runtime_state = dict(recovered.get('runtime') or runtime_state or {})
+                    session_state = dict(recovered.get('session') or {})
+                    base_url = str(runtime_state.get('base_url') or '').strip()
+                except Exception as exc:
+                    runtime_state['health_error'] = str(exc)
+                    runtime_state['status'] = 'unavailable'
+                    runtime_state['ready'] = False
+                    runtime_state['authenticated'] = False
+                    runtime_state['status_text'] = '自动恢复失败，请重新生成二维码'
+                    session_state = {
+                        'account_key': account_key,
+                        'login_verified': False,
+                        'login_check_status': 'runtime_auto_recover_failed',
+                        'login_check_message': '自动恢复失败，请重新生成二维码。',
+                    }
+            if bool(row.get('enabled')) and runtime_state.get('active') and base_url and not session_state.get('login_verified'):
                 try:
                     worker_health = self._request_whatsapp_approval_worker_health(base_url)
                     runtime_state = self._build_whatsapp_approval_runtime_state(
@@ -5090,17 +5770,35 @@ class Service:
                         include_qr_ascii=False,
                     )
                 except Exception as exc:
-                    runtime_state['health_error'] = str(exc)
-                    runtime_state['status'] = 'unavailable'
-                    runtime_state['ready'] = False
-                    runtime_state['authenticated'] = False
-                    runtime_state['status_text'] = '独立 Runtime 未稳定，请重新生成二维码'
-                    session_state = {
-                        'account_key': account_key,
-                        'login_verified': False,
-                        'login_check_status': 'runtime_unstable',
-                        'login_check_message': '扫码服务未稳定，请重新生成二维码。',
-                    }
+                    if existing_meta:
+                        try:
+                            recovered = self.start_group_atmosphere_whatsapp_account_session(account_key, reset=False)
+                            runtime_state = dict(recovered.get('runtime') or runtime_state or {})
+                            session_state = dict(recovered.get('session') or {})
+                        except Exception:
+                            runtime_state['health_error'] = str(exc)
+                            runtime_state['status'] = 'unavailable'
+                            runtime_state['ready'] = False
+                            runtime_state['authenticated'] = False
+                            runtime_state['status_text'] = '自动恢复失败，请重新生成二维码'
+                            session_state = {
+                                'account_key': account_key,
+                                'login_verified': False,
+                                'login_check_status': 'runtime_auto_recover_failed',
+                                'login_check_message': '自动恢复失败，请重新生成二维码。',
+                            }
+                    else:
+                        runtime_state['health_error'] = str(exc)
+                        runtime_state['status'] = 'unavailable'
+                        runtime_state['ready'] = False
+                        runtime_state['authenticated'] = False
+                        runtime_state['status_text'] = '独立 Runtime 未稳定，请重新生成二维码'
+                        session_state = {
+                            'account_key': account_key,
+                            'login_verified': False,
+                            'login_check_status': 'runtime_unstable',
+                            'login_check_message': '扫码服务未稳定，请重新生成二维码。',
+                        }
             output.append(self._serialize_group_atmosphere_account_row(row, runtime_state=runtime_state, session_state=session_state))
         return {'rows': output, 'count': len(output)}
 
@@ -5137,14 +5835,15 @@ class Service:
             """
             INSERT INTO whatsapp_group_atmosphere_configs (
                 config_name, enabled, account_key, target_group, group_name, language, timezone,
-                worker_base_url, daily_max_messages, min_interval_minutes, allowed_windows,
+                worker_base_url, daily_max_messages, min_interval_minutes, max_interval_minutes, allowed_windows,
                 template_pool, mention_reply_enabled, faq_rules, status, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(config_name) DO UPDATE SET
                 enabled=excluded.enabled, account_key=excluded.account_key, target_group=excluded.target_group,
                 group_name=excluded.group_name, language=excluded.language, timezone=excluded.timezone,
                 worker_base_url=excluded.worker_base_url, daily_max_messages=excluded.daily_max_messages,
-                min_interval_minutes=excluded.min_interval_minutes, allowed_windows=excluded.allowed_windows,
+                min_interval_minutes=excluded.min_interval_minutes, max_interval_minutes=excluded.max_interval_minutes,
+                allowed_windows=excluded.allowed_windows,
                 template_pool=excluded.template_pool, mention_reply_enabled=excluded.mention_reply_enabled,
                 faq_rules=excluded.faq_rules, status=excluded.status, updated_at=excluded.updated_at
             """,
@@ -5153,6 +5852,7 @@ class Service:
                 payload.target_group.strip(), str(payload.group_name or '').strip() or None,
                 str(payload.language or 'en').strip() or 'en', str(payload.timezone or 'UTC').strip() or 'UTC',
                 str(payload.worker_base_url or '').strip(), int(payload.daily_max_messages), int(payload.min_interval_minutes),
+                max(int(payload.max_interval_minutes or 0), int(payload.min_interval_minutes or 0)),
                 json.dumps(payload.allowed_windows, ensure_ascii=False), json.dumps(template_pool, ensure_ascii=False),
                 1 if payload.mention_reply_enabled else 0, json.dumps(faq_rules, ensure_ascii=False), status, now,
             ),
@@ -5221,6 +5921,16 @@ class Service:
             result.append(item)
         return result
 
+    @staticmethod
+    def _enabled_group_atmosphere_templates(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        templates = [dict(item or {}) for item in list((config or {}).get('template_pool') or [])]
+        if not templates:
+            return []
+        has_review_fields = any(('safe_to_send' in item) or ('enabled' in item) for item in templates)
+        if not has_review_fields:
+            return templates
+        return [item for item in templates if item.get('enabled') is not False and item.get('safe_to_send') is True]
+
     def dispatch_group_atmosphere_once(self, payload: GroupAtmosphereDispatchRequest) -> Dict[str, Any]:
         config = self._get_group_atmosphere_config(payload.config_name)
         if not config:
@@ -5243,10 +5953,10 @@ class Service:
                 pass
         message_text = str(payload.message_text or '').strip()
         if not message_text:
-            templates = list(config.get('template_pool') or [])
+            templates = self._enabled_group_atmosphere_templates(config)
             if not templates:
-                return {'sent': False, 'result_code': 'template_pool_empty', 'result_reason': 'no message template configured'}
-            message_text = str(templates[sent_count_today % len(templates)].get('text') or '').strip()
+                return {'sent': False, 'result_code': 'template_pool_empty', 'result_reason': 'no enabled message template configured'}
+            message_text = str(random.choice(templates).get('text') or '').strip()
         if not message_text:
             return {'sent': False, 'result_code': 'message_text_empty', 'result_reason': 'selected template has empty text'}
         worker_base_url = str(config.get('worker_base_url') or '').strip().rstrip('/')
@@ -5259,25 +5969,46 @@ class Service:
         result_code = 'dry_run'
         result_reason = 'worker_base_url not configured; logged as dry run'
         if worker_base_url:
-            try:
+            send_payload = {
+                'target_group': config['target_group'],
+                'message_text': message_text,
+                'metadata': {'config_name': config['config_name'], 'trigger_type': payload.trigger_type},
+            }
+
+            def _send_once() -> tuple[str, str, str, Dict[str, Any]]:
                 resp = requests.post(
                     f"{worker_base_url}/send-group-message",
-                    json={
-                        'target_group': config['target_group'],
-                        'message_text': message_text,
-                        'metadata': {'config_name': config['config_name'], 'trigger_type': payload.trigger_type},
-                    },
+                    json=send_payload,
                     timeout=30,
                 )
-                raw_result = resp.json() if hasattr(resp, 'json') else {'text': getattr(resp, 'text', '')}
+                body = resp.json() if hasattr(resp, 'json') else {'text': getattr(resp, 'text', '')}
                 if int(getattr(resp, 'status_code', 500)) >= 400:
-                    status = 'failed'
-                    result_code = str(raw_result.get('result_code') or 'worker_send_failed')
-                    result_reason = str(raw_result.get('result_reason') or getattr(resp, 'text', ''))
-                else:
-                    status = 'success'
-                    result_code = str(raw_result.get('result_code') or raw_result.get('status') or 'sent')
-                    result_reason = str(raw_result.get('result_reason') or 'message sent via whatsapp web worker')
+                    return (
+                        'failed',
+                        str(body.get('result_code') or 'worker_send_failed'),
+                        str(body.get('result_reason') or getattr(resp, 'text', '')),
+                        body,
+                    )
+                return (
+                    'success',
+                    str(body.get('result_code') or body.get('status') or 'sent'),
+                    str(body.get('result_reason') or 'message sent via whatsapp web worker'),
+                    body,
+                )
+
+            try:
+                status, result_code, result_reason, raw_result = _send_once()
+                recoverable_reason = f'{result_code} {result_reason}'.lower()
+                if status == 'failed' and (
+                    result_code == 'bridge_internal_error'
+                    or 'detached frame' in recoverable_reason
+                    or 'execution context was destroyed' in recoverable_reason
+                ):
+                    first_error = dict(raw_result or {})
+                    status, result_code, result_reason, raw_result = _send_once()
+                    raw_result = dict(raw_result or {})
+                    raw_result['retry_after_recoverable_error'] = True
+                    raw_result['first_error'] = first_error
             except Exception as exc:
                 raw_result = {'error': str(exc)}
                 status = 'failed'
@@ -5290,10 +6021,11 @@ class Service:
         )
         if status == 'success':
             now = utc_now()
+            next_due_at = self._next_group_atmosphere_due_at(config)
             conn = self.db.connect()
             conn.execute(
-                "UPDATE whatsapp_group_atmosphere_configs SET last_sent_at=?, sent_count_today=?, sent_count_date=?, status=?, updated_at=? WHERE config_name=?",
-                (now, sent_count_today + 1, today, 'enabled', now, config['config_name']),
+                "UPDATE whatsapp_group_atmosphere_configs SET last_sent_at=?, sent_count_today=?, sent_count_date=?, status=?, next_due_at=?, updated_at=? WHERE config_name=?",
+                (now, sent_count_today + 1, today, 'enabled', next_due_at, now, config['config_name']),
             )
             conn.commit()
         return {
@@ -5304,6 +6036,99 @@ class Service:
             'result_code': result_code,
             'result_reason': result_reason,
             'raw_result': raw_result,
+        }
+
+    def send_group_atmosphere_account_group_message(self, account_key: str, group_index: int, payload: GroupAtmosphereManualSendRequest) -> Dict[str, Any]:
+        normalized_key = str(account_key or '').strip()
+        if not normalized_key:
+            raise HTTPException(status_code=400, detail='account_key_required')
+        message_text = str(payload.message_text or '').strip()
+        if not message_text:
+            raise HTTPException(status_code=400, detail='message_text_required')
+        row = self._get_whatsapp_approval_account_row(normalized_key)
+        if not row or str(row.get('responsible_type') or '').strip() != 'group_atmosphere':
+            raise HTTPException(status_code=404, detail='group_atmosphere_account_not_found')
+        account = self._serialize_group_atmosphere_account_row(row, runtime_state={}, session_state={})
+        if account.get('enabled') is False:
+            raise HTTPException(status_code=400, detail='account_disabled')
+        groups = list(account.get('groups') or [])
+        idx = int(group_index or 0)
+        if idx < 0 or idx >= len(groups):
+            raise HTTPException(status_code=404, detail='group_not_found')
+        group = groups[idx]
+        if group.get('enabled') is False:
+            raise HTTPException(status_code=400, detail='group_disabled')
+        target_group = str(group.get('target_group') or '').strip()
+        if not target_group:
+            raise HTTPException(status_code=400, detail='target_group_required')
+        runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, allow_shared_fallback=False)
+        base_url = str(runtime_state.get('base_url') or '').strip().rstrip('/')
+        if not runtime_state.get('active') or not base_url:
+            raise HTTPException(status_code=400, detail='runtime_not_running')
+        worker_health = self._request_whatsapp_approval_worker_health(base_url)
+        runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, worker_health=worker_health, allow_shared_fallback=False)
+        session_state = self._build_whatsapp_approval_session_state(normalized_key, worker_health=worker_health, include_qr_ascii=False)
+        if not session_state.get('login_verified'):
+            raise HTTPException(status_code=400, detail='account_not_logged_in')
+        status = 'success'
+        result_code = 'sent'
+        result_reason = 'message sent via whatsapp web worker'
+        raw_result: Dict[str, Any] = {}
+        try:
+            resp = requests.post(
+                f'{base_url}/send-group-message',
+                json={
+                    'target_group': target_group,
+                    'message_text': message_text,
+                    'metadata': {
+                        'account_key': normalized_key,
+                        'group_index': idx,
+                        'group_name': group.get('group_name'),
+                        'trigger_type': payload.trigger_type,
+                    },
+                },
+                timeout=30,
+            )
+            try:
+                raw_result = resp.json()
+            except Exception:
+                raw_result = {'text': getattr(resp, 'text', '')}
+            if int(getattr(resp, 'status_code', 500)) >= 400:
+                status = 'failed'
+                result_code = str(raw_result.get('result_code') or 'worker_send_failed')
+                result_reason = str(raw_result.get('result_reason') or getattr(resp, 'text', ''))
+        except Exception as exc:
+            status = 'failed'
+            result_code = 'worker_send_exception'
+            result_reason = str(exc)
+            raw_result = {'error': str(exc)}
+        config_name = f'{normalized_key}-group-{idx + 1}-manual'
+        self._log_group_atmosphere_event(
+            config_name=config_name,
+            account_key=normalized_key,
+            target_group=target_group,
+            direction='outbound',
+            trigger_type=payload.trigger_type,
+            message_text=message_text,
+            status=status,
+            result_code=result_code,
+            result_reason=result_reason,
+            raw_result=raw_result,
+        )
+        return {
+            'sent': status == 'success',
+            'dry_run': False,
+            'account_key': normalized_key,
+            'group_index': idx,
+            'group_name': group.get('group_name') or target_group,
+            'target_group': target_group,
+            'message_text': message_text,
+            'status': status,
+            'result_code': result_code,
+            'result_reason': result_reason,
+            'raw_result': raw_result,
+            'runtime': runtime_state,
+            'session': session_state,
         }
 
     def handle_group_atmosphere_inbound_message(self, payload: GroupAtmosphereInboundMessageRequest) -> Dict[str, Any]:
@@ -5342,6 +6167,13 @@ class Service:
         words = re.findall(r"[A-Za-zÀ-ÿ0-9_']+", joined.lower())
         stop_words = {'the', 'and', 'for', 'you', 'yang', 'dan', 'atau', 'ini', 'itu', 'dulu', 'kalau', 'sudah', 'para'}
         frequent_terms = [word for word, _ in Counter(word for word in words if len(word) >= 3 and word not in stop_words).most_common(12)]
+        local_abbreviation_seeds = {
+            'jgn', 'krm', 'gmn', 'dmn', 'yg', 'ttp', 'sdh', 'blm', 'utk', 'dr', 'dgn', 'aja', 'ga', 'gak', 'nih', 'dong',
+            'q', 'vc', 'tbm', 'pq', 'td', 'hj', 'msg', 'pix', 'saq', 'cod', 'amg',
+            'xfa', 'xq', 'q', 'k', 'dm', 'info', 'wa', 'ok', 'pls', 'thx'
+        }
+        short_common = {word for word in words if 2 <= len(word) <= 4 and word not in stop_words and not word.isdigit()}
+        local_abbreviations = [word for word, _ in Counter(word for word in words if word in local_abbreviation_seeds or word in short_common).most_common(10)]
         phrase_samples = []
         for text in texts:
             cleaned = re.sub(r'\s+', ' ', str(text or '').strip())
@@ -5356,6 +6188,7 @@ class Service:
             'question_ratio': round(sum(1 for text in texts if '?' in str(text)) / max(len(texts), 1), 3),
             'avg_message_length': round(sum(len(str(text or '')) for text in texts) / max(len(texts), 1), 1),
             'common_cta': 'admin' if 'admin' in lower_joined else ('dm' if 'dm' in lower_joined else ''),
+            'local_abbreviations': local_abbreviations,
         }
         return {
             'language': language or 'en',
@@ -5364,6 +6197,51 @@ class Service:
             'phrase_samples': phrase_samples,
             'tone_markers': tone_markers,
         }
+
+    @staticmethod
+    def _parse_group_atmosphere_chat_export(text: str) -> List[GroupAtmosphereChatRecord]:
+        records: List[GroupAtmosphereChatRecord] = []
+        for raw_line in str(text or '').splitlines():
+            line = str(raw_line or '').strip()
+            if not line:
+                continue
+            sender = 'imported'
+            message_text = line
+            match = re.match(r'^\[[^\]]+\]\s*([^:：]+)[:：]\s*(.+)$', line)
+            if match:
+                sender = match.group(1).strip() or 'imported'
+                message_text = match.group(2).strip()
+            records.append(GroupAtmosphereChatRecord(sender=sender, text=message_text))
+        return records
+
+    @staticmethod
+    def _detect_group_atmosphere_language_and_region(records: List[GroupAtmosphereChatRecord]) -> tuple[str, str]:
+        joined = ' '.join(str(record.text or '') for record in records).lower()
+        id_hits = sum(1 for token in ['kak', 'halo', 'kode', 'gimana', 'dimana', 'kirim', 'undangan', 'selamat'] if token in joined)
+        pt_hits = sum(1 for token in ['você', 'codigo', 'código', 'como', 'ganhar', 'saque', 'obrigada'] if token in joined)
+        es_hits = sum(1 for token in ['código', 'como', 'ganar', 'retiro', 'amiga', 'hola', 'gracias'] if token in joined)
+        if id_hits >= max(pt_hits, es_hits, 1):
+            return 'id', '印尼'
+        if pt_hits > es_hits:
+            return 'pt', '巴西'
+        if es_hits > 0:
+            return 'es', '墨西哥'
+        return 'en', '未知'
+
+    @staticmethod
+    def _classify_group_atmosphere_record_role(text: str) -> str:
+        lower = str(text or '').lower()
+        if '?' in lower or any(token in lower for token in ['dimana', 'gimana', 'apa ', 'como', 'faq']):
+            return 'faq_helper'
+        if re.search(r'\b(id|data|kirim|krm|submit|screenshot|nomor|phone)\b', lower):
+            return 'newcomer_guide'
+        if any(token in lower for token in ['kode', 'code', 'código', 'codigo']):
+            return 'faq_helper'
+        if any(token in lower for token in ['semangat', 'pelan-pelan', 'mulai', 'income', 'earning', 'ganhar', 'bonus', 'motiva']):
+            return 'motivation_admin'
+        if any(token in lower for token in ['halo', 'selamat', 'welcome', 'join', 'gabung', 'grup', 'ramai']):
+            return 'community_seed'
+        return 'community_seed'
 
     def import_group_atmosphere_chat_records_for_account(self, account_key: str, records: List[GroupAtmosphereChatRecord]) -> Dict[str, Any]:
         normalized_key = str(account_key or '').strip()
@@ -5390,6 +6268,489 @@ class Service:
                 worker_base_url='',
             ))
         return self.import_group_atmosphere_chat_records(GroupAtmosphereImportChatRecordsRequest(config_name=config_name, records=records))
+
+    def auto_learn_group_atmosphere_chat_records(self, *, filename: str = '', content: str = '', files: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        normalized_files = [item for item in list(files or []) if isinstance(item, dict) and str(item.get('content') or '').strip()]
+        if normalized_files:
+            filename = ', '.join(str(item.get('filename') or '').strip() or f'file-{idx + 1}' for idx, item in enumerate(normalized_files))
+            content = '\n'.join(str(item.get('content') or '') for item in normalized_files)
+        records = self._parse_group_atmosphere_chat_export(content)
+        if not records:
+            raise HTTPException(status_code=400, detail='chat_record_content_is_empty')
+        language, region = self._detect_group_atmosphere_language_and_region(records)
+        role_buckets: Dict[str, List[GroupAtmosphereChatRecord]] = {
+            'community_seed': [],
+            'newcomer_guide': [],
+            'faq_helper': [],
+            'motivation_admin': [],
+        }
+        for record in records:
+            role = self._classify_group_atmosphere_record_role(record.text)
+            role_buckets.setdefault(role, []).append(record)
+        default_group_name = f'自动学习素材库-{region if region != "未知" else language}'
+        role_assignments = []
+        for role, role_records in role_buckets.items():
+            if not role_records:
+                continue
+            config_name = f'auto-{language}-{role}'
+            if not self._get_group_atmosphere_config(config_name):
+                self.upsert_group_atmosphere_config(GroupAtmosphereConfigRequest(
+                    config_name=config_name,
+                    enabled=False,
+                    account_key=config_name,
+                    target_group=config_name,
+                    group_name=default_group_name,
+                    language=language,
+                    daily_max_messages=0,
+                    min_interval_minutes=120,
+                    template_pool=[],
+                    faq_rules=[],
+                    worker_base_url='',
+                    status='library_only',
+                ))
+            imported = self.import_group_atmosphere_chat_records(GroupAtmosphereImportChatRecordsRequest(config_name=config_name, records=role_records))
+            candidates = self.generate_group_atmosphere_ai_candidates(GroupAtmosphereAiCandidateRequest(config_name=config_name, topic=role, count=5))['candidates']
+            candidate_templates = [
+                {
+                    'template_id': candidate['candidate_id'],
+                    'candidate_id': candidate['candidate_id'],
+                    'category': role,
+                    'source_role': role,
+                    'text': candidate['text'],
+                    'safe_to_send': False,
+                    'enabled': False,
+                }
+                for candidate in candidates
+            ]
+            conn = self.db.connect()
+            conn.execute(
+                "UPDATE whatsapp_group_atmosphere_configs SET template_pool=?, updated_at=? WHERE config_name=?",
+                (json.dumps(candidate_templates, ensure_ascii=False), utc_now(), config_name),
+            )
+            conn.commit()
+            role_assignments.append({
+                'role_positioning': role,
+                'config_name': config_name,
+                'imported_count': imported['imported_count'],
+                'profile': imported['language_profile'],
+                'candidates': candidates,
+            })
+        return {
+            'ok': True,
+            'filename': str(filename or '').strip(),
+            'file_count': len(normalized_files) if normalized_files else (1 if str(filename or '').strip() or str(content or '').strip() else 0),
+            'detected_language': language,
+            'detected_region': region,
+            'imported_count': len(records),
+            'role_assignments': role_assignments,
+        }
+
+    @staticmethod
+    def _group_atmosphere_region_from_language(language: str) -> str:
+        return {'id': '印尼', 'es': '墨西哥', 'pt': '巴西'}.get(str(language or '').strip(), '未知')
+
+    @staticmethod
+    def _default_group_atmosphere_plan_display_name(role_positioning: str, region: str) -> str:
+        role_map = {
+            'community_seed': '活跃气氛话术包',
+            'newcomer_guide': '新人引导话术包',
+            'faq_helper': 'FAQ答疑话术包',
+            'motivation_admin': '激励运营话术包',
+        }
+        role_name = role_map.get(str(role_positioning or '').strip(), '话术包')
+        region_name = str(region or '').strip()
+        return f'{region_name} · {role_name}' if region_name and region_name != '未知' else role_name
+
+    def _group_atmosphere_plan_usage_map(self) -> Dict[str, List[Dict[str, Any]]]:
+        usage: Dict[str, List[Dict[str, Any]]] = {}
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT account_key, account_name, group_links FROM whatsapp_approval_accounts WHERE responsible_type='group_atmosphere'"
+            ).fetchall()
+        for row in rows:
+            account_key = str(row['account_key'] or '').strip()
+            account_name = str(row['account_name'] or '').strip() or account_key
+            try:
+                groups = json.loads(row['group_links'] or '[]')
+            except Exception:
+                groups = []
+            if not isinstance(groups, list):
+                continue
+            for idx, group in enumerate(groups, start=1):
+                if not isinstance(group, dict):
+                    continue
+                plan_name = str(group.get('speech_plan_config_name') or '').strip()
+                if not plan_name:
+                    continue
+                usage.setdefault(plan_name, []).append({
+                    'account_key': account_key,
+                    'account_name': account_name,
+                    'group_index': idx,
+                    'group_name': str(group.get('group_name') or '').strip() or str(group.get('target_group') or '').strip(),
+                    'target_group': str(group.get('target_group') or '').strip(),
+                })
+        return usage
+
+    def list_group_atmosphere_candidate_pool(self) -> Dict[str, Any]:
+        rows = []
+        usage_by_plan = self._group_atmosphere_plan_usage_map()
+        for config in self.list_group_atmosphere_configs():
+            config_name = str(config.get('config_name') or '').strip()
+            if config_name.startswith('deliver-'):
+                continue
+            templates = [dict(item or {}) for item in list(config.get('template_pool') or [])]
+            language = str(config.get('language') or '').strip()
+            region = self._group_atmosphere_region_from_language(language)
+            bound_account_key = str(config.get('account_key') or '').strip()
+            bound_target_group = str(config.get('target_group') or '').strip()
+            if str(config.get('status') or '') in {'library_only', 'plan_ready'} or bound_account_key == config_name:
+                bound_account_key = ''
+                bound_target_group = ''
+            candidates = []
+            for item in templates:
+                if not item.get('candidate_id'):
+                    continue
+                role = str(item.get('source_role') or item.get('category') or '').strip()
+                candidates.append({
+                    'candidate_id': item.get('candidate_id') or item.get('template_id'),
+                    'text': item.get('text') or '',
+                    'language': language,
+                    'region': region,
+                    'role_positioning': role,
+                    'safe_to_send': item.get('safe_to_send') is True,
+                    'enabled': item.get('enabled') is True,
+                    'bound_account_key': bound_account_key,
+                    'bound_target_group': bound_target_group,
+                    'bound_group_name': config.get('group_name') if bound_target_group else '',
+                })
+            if not candidates:
+                continue
+            role_positioning = str(candidates[0].get('role_positioning') or '').strip()
+            plan_display_name = str(config.get('group_name') or '').strip()
+            if not plan_display_name or plan_display_name in {config_name, '方案库'}:
+                plan_display_name = self._default_group_atmosphere_plan_display_name(role_positioning, region)
+            rows.append({
+                'config_name': config_name,
+                'plan_display_name': plan_display_name,
+                'language': language,
+                'region': region,
+                'role_positioning': role_positioning,
+                'status': config.get('status'),
+                'enabled': bool(config.get('enabled')),
+                'bound_account_key': bound_account_key,
+                'bound_target_group': bound_target_group,
+                'bound_group_name': config.get('group_name') if bound_target_group else '',
+                'candidate_count': len(candidates),
+                'enabled_candidate_count': sum(1 for item in candidates if item.get('enabled') and item.get('safe_to_send')),
+                'usage': usage_by_plan.get(config_name, []),
+                'usage_count': len(usage_by_plan.get(config_name, [])),
+                'candidates': candidates,
+            })
+        return {'rows': rows}
+
+    def _group_atmosphere_delivery_config_name(self, source_config_name: str, account_key: str, target_group: str, index: int = 0) -> str:
+        raw = f"{source_config_name}-{account_key}-{target_group}-{index}"
+        suffix = re.sub(r'[^a-zA-Z0-9_-]+', '-', raw).strip('-').lower()
+        if len(suffix) > 96:
+            suffix = suffix[:96].rstrip('-')
+        return f'deliver-{suffix}' or f'deliver-{create_id("gacfg")}'
+
+    def _group_atmosphere_enabled_account_groups(self, account_key: str) -> List[Dict[str, Any]]:
+        row = self._get_whatsapp_approval_account_row(str(account_key or '').strip())
+        if not row or str(row.get('responsible_type') or '').strip() != 'group_atmosphere':
+            raise HTTPException(status_code=404, detail='group_atmosphere_account_not_found')
+        account = self._serialize_group_atmosphere_account_row(row, runtime_state={}, session_state={})
+        if account.get('enabled') is False:
+            return []
+        return [
+            dict(group or {})
+            for group in list(account.get('groups') or [])
+            if (group or {}).get('enabled') is not False and str((group or {}).get('target_group') or '').strip()
+        ]
+
+    def enable_group_atmosphere_candidates(self, payload: GroupAtmosphereCandidateEnableRequest) -> Dict[str, Any]:
+        config = self._get_group_atmosphere_config(payload.config_name)
+        if not config:
+            raise HTTPException(status_code=404, detail='group_atmosphere_config_not_found')
+        selected_ids = {str(item).strip() for item in list(payload.candidate_ids or []) if str(item).strip()}
+        templates = [dict(item or {}) for item in list(config.get('template_pool') or [])]
+        enabled_count = 0
+        for item in templates:
+            candidate_id = str(item.get('candidate_id') or item.get('template_id') or '').strip()
+            if selected_ids and candidate_id not in selected_ids:
+                continue
+            item['safe_to_send'] = True
+            item['enabled'] = True
+            enabled_count += 1
+        if enabled_count <= 0:
+            raise HTTPException(status_code=400, detail='candidate_not_found')
+        now = utc_now()
+        if not str(payload.account_key or '').strip() and not str(payload.target_group or '').strip():
+            conn = self.db.connect()
+            conn.execute(
+                """
+                UPDATE whatsapp_group_atmosphere_configs
+                SET enabled=0, template_pool=?, status='plan_ready', updated_at=?
+                WHERE config_name=?
+                """,
+                (json.dumps(templates, ensure_ascii=False), now, config['config_name']),
+            )
+            conn.commit()
+            updated = self._get_group_atmosphere_config(config['config_name'])
+            return {'ok': True, 'enabled_count': enabled_count, 'config': updated, 'plan_only': True}
+        account_key = str(payload.account_key or config.get('account_key') or '').strip()
+        target_group = str(payload.target_group or config.get('target_group') or '').strip()
+        group_name = str(payload.group_name or config.get('group_name') or '').strip() or None
+        worker_base_url = str(payload.worker_base_url if payload.worker_base_url is not None else config.get('worker_base_url') or '').strip()
+        daily_max = int(payload.daily_max_messages if payload.daily_max_messages is not None else config.get('daily_max_messages') or 4)
+        min_interval = int(payload.min_interval_minutes if payload.min_interval_minutes is not None else config.get('min_interval_minutes') or 60)
+        max_interval = int(payload.max_interval_minutes if payload.max_interval_minutes is not None else config.get('max_interval_minutes') or max(min_interval, 240))
+        if max_interval < min_interval:
+            max_interval = min_interval
+        if target_group == '__all_enabled_groups__':
+            if not account_key:
+                raise HTTPException(status_code=400, detail='account_key_required')
+            groups = self._group_atmosphere_enabled_account_groups(account_key)
+            if not groups:
+                raise HTTPException(status_code=400, detail='no_enabled_target_groups')
+            delivery_configs = []
+            for idx, group in enumerate(groups, start=1):
+                group_target = str(group.get('target_group') or '').strip()
+                group_display_name = str(group.get('group_name') or '').strip() or group_target
+                delivery_name = self._group_atmosphere_delivery_config_name(config['config_name'], account_key, group_target, idx)
+                delivery = self.upsert_group_atmosphere_config(GroupAtmosphereConfigRequest(
+                    config_name=delivery_name,
+                    enabled=True,
+                    account_key=account_key,
+                    target_group=group_target,
+                    group_name=group_display_name,
+                    language=str(config.get('language') or 'en'),
+                    timezone=str(config.get('timezone') or 'UTC'),
+                    worker_base_url=worker_base_url,
+                    daily_max_messages=int(group.get('daily_max_messages') or daily_max),
+                    min_interval_minutes=int(group.get('min_interval_minutes') or min_interval),
+                    max_interval_minutes=int(group.get('max_interval_minutes') or max_interval),
+                    allowed_windows=list(group.get('allowed_windows') or config.get('allowed_windows') or []),
+                    template_pool=[GroupAtmosphereTemplate(**item) for item in templates],
+                    mention_reply_enabled=bool(config.get('mention_reply_enabled')),
+                    faq_rules=[GroupAtmosphereFaqRule(**item) for item in list(config.get('faq_rules') or [])],
+                    status='enabled',
+                ))
+                delivery['source_config_name'] = config['config_name']
+                delivery_configs.append(delivery)
+            return {
+                'ok': True,
+                'enabled_count': enabled_count,
+                'target_group_count': len(delivery_configs),
+                'configs': delivery_configs,
+                'config': delivery_configs[0] if delivery_configs else None,
+            }
+        conn = self.db.connect()
+        conn.execute(
+            """
+            UPDATE whatsapp_group_atmosphere_configs
+            SET enabled=1, account_key=?, target_group=?, group_name=?, worker_base_url=?,
+                daily_max_messages=?, min_interval_minutes=?, max_interval_minutes=?, template_pool=?, status='enabled', updated_at=?
+            WHERE config_name=?
+            """,
+            (
+                account_key,
+                target_group,
+                group_name,
+                worker_base_url,
+                daily_max,
+                min_interval,
+                max_interval,
+                json.dumps(templates, ensure_ascii=False),
+                now,
+                config['config_name'],
+            ),
+        )
+        conn.commit()
+        updated = self._get_group_atmosphere_config(config['config_name'])
+        return {'ok': True, 'enabled_count': enabled_count, 'config': updated}
+
+    def rename_group_atmosphere_speech_plan(self, config_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = str(config_name or '').strip()
+        if not normalized or normalized.startswith('deliver-'):
+            raise HTTPException(status_code=400, detail='invalid_speech_plan')
+        display_name = str((payload or {}).get('plan_display_name') or (payload or {}).get('display_name') or (payload or {}).get('name') or '').strip()
+        if not display_name:
+            raise HTTPException(status_code=400, detail='plan_display_name_required')
+        config = self._get_group_atmosphere_config(normalized)
+        if not config:
+            raise HTTPException(status_code=404, detail='speech_plan_not_found')
+        with self.db.connect() as conn:
+            conn.execute(
+                "UPDATE whatsapp_group_atmosphere_configs SET group_name=?, updated_at=? WHERE config_name=?",
+                (display_name, utc_now(), normalized),
+            )
+            conn.commit()
+        return {'ok': True, 'config': self._get_group_atmosphere_config(normalized)}
+
+    def delete_group_atmosphere_speech_plan(self, config_name: str) -> Dict[str, Any]:
+        normalized = str(config_name or '').strip()
+        if not normalized or normalized.startswith('deliver-'):
+            raise HTTPException(status_code=400, detail='invalid_speech_plan')
+        config = self._get_group_atmosphere_config(normalized)
+        if not config:
+            raise HTTPException(status_code=404, detail='speech_plan_not_found')
+        cleared_refs = 0
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT account_key, group_links FROM whatsapp_approval_accounts WHERE responsible_type='group_atmosphere'"
+            ).fetchall()
+            for row in rows:
+                try:
+                    groups = json.loads(row['group_links'] or '[]')
+                except Exception:
+                    groups = []
+                if not isinstance(groups, list):
+                    continue
+                changed = False
+                for group in groups:
+                    if isinstance(group, dict) and str(group.get('speech_plan_config_name') or '').strip() == normalized:
+                        group['speech_plan_config_name'] = ''
+                        cleared_refs += 1
+                        changed = True
+                if changed:
+                    conn.execute(
+                        "UPDATE whatsapp_approval_accounts SET group_links=?, updated_at=? WHERE account_key=?",
+                        (json.dumps(groups, ensure_ascii=False), utc_now(), row['account_key']),
+                    )
+            cursor = conn.execute(
+                "DELETE FROM whatsapp_group_atmosphere_configs WHERE config_name=? OR config_name LIKE ?",
+                (normalized, f'deliver-{normalized}-%'),
+            )
+            conn.commit()
+        return {'ok': True, 'deleted': True, 'deleted_count': int(cursor.rowcount or 0), 'cleared_reference_count': cleared_refs}
+
+    def sync_group_atmosphere_delivery_configs_from_account_plans(self) -> Dict[str, Any]:
+        synced = []
+        rows = self.db.connect().execute(
+            "SELECT * FROM whatsapp_approval_accounts WHERE responsible_type='group_atmosphere' AND enabled=1"
+        ).fetchall()
+        for row in rows:
+            account = self._serialize_group_atmosphere_account_row(dict(row), runtime_state={}, session_state={})
+            account_key = str(account.get('account_key') or '').strip()
+            for idx, group in enumerate(list(account.get('groups') or []), start=1):
+                if group.get('enabled') is False:
+                    continue
+                plan_name = str(group.get('speech_plan_config_name') or '').strip()
+                target_group = str(group.get('target_group') or '').strip()
+                if not plan_name or not target_group:
+                    continue
+                plan = self._get_group_atmosphere_config(plan_name)
+                if not plan:
+                    continue
+                templates = [dict(item or {}) for item in list(plan.get('template_pool') or [])]
+                enabled_templates = [item for item in templates if item.get('enabled') is True and item.get('safe_to_send') is True]
+                if not enabled_templates:
+                    continue
+                delivery_name = self._group_atmosphere_delivery_config_name(plan_name, account_key, target_group, idx)
+                delivery = self.upsert_group_atmosphere_config(GroupAtmosphereConfigRequest(
+                    config_name=delivery_name,
+                    enabled=True,
+                    account_key=account_key,
+                    target_group=target_group,
+                    group_name=str(group.get('group_name') or '').strip() or target_group,
+                    language=str(plan.get('language') or account.get('language') or 'en'),
+                    timezone=str(plan.get('timezone') or 'UTC'),
+                    worker_base_url='',
+                    daily_max_messages=int(group.get('daily_max_messages') or account.get('daily_max_messages') or plan.get('daily_max_messages') or 4),
+                    min_interval_minutes=int(group.get('min_interval_minutes') or account.get('min_interval_minutes') or plan.get('min_interval_minutes') or 60),
+                    max_interval_minutes=int(group.get('max_interval_minutes') or account.get('max_interval_minutes') or plan.get('max_interval_minutes') or 240),
+                    allowed_windows=list(group.get('allowed_windows') or plan.get('allowed_windows') or []),
+                    template_pool=[GroupAtmosphereTemplate(**item) for item in templates],
+                    mention_reply_enabled=bool(plan.get('mention_reply_enabled')),
+                    faq_rules=[GroupAtmosphereFaqRule(**item) for item in list(plan.get('faq_rules') or [])],
+                    status='enabled',
+                ))
+                delivery['source_plan_config_name'] = plan_name
+                synced.append(delivery)
+        return {'ok': True, 'synced_count': len(synced), 'configs': synced}
+
+    def _next_group_atmosphere_due_at(self, config: Dict[str, Any]) -> str:
+        min_interval = max(0, int((config or {}).get('min_interval_minutes') or 0))
+        max_interval = max(min_interval, int((config or {}).get('max_interval_minutes') or min_interval or 0))
+        delay_minutes = random.randint(min_interval, max_interval) if max_interval > min_interval else min_interval
+        return (datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)).isoformat()
+
+    def _group_atmosphere_config_due_now(self, config: Dict[str, Any]) -> tuple[bool, str]:
+        now = datetime.now(timezone.utc)
+        next_due_at = str((config or {}).get('next_due_at') or '').strip()
+        if next_due_at:
+            try:
+                due_at = parse_iso_datetime(next_due_at)
+                if now < due_at:
+                    minutes = max(1, int((due_at - now).total_seconds() // 60) + 1)
+                    return False, f'next scheduled send in about {minutes} minutes'
+                return True, 'next scheduled send is due'
+            except Exception:
+                pass
+        last_sent_at = str((config or {}).get('last_sent_at') or '').strip()
+        min_interval = max(0, int((config or {}).get('min_interval_minutes') or 0))
+        if last_sent_at and min_interval:
+            try:
+                elapsed = now - parse_iso_datetime(last_sent_at)
+                if elapsed < timedelta(minutes=min_interval):
+                    minutes = max(1, int((timedelta(minutes=min_interval) - elapsed).total_seconds() // 60) + 1)
+                    return False, f'minimum interval not reached; about {minutes} minutes remaining'
+            except Exception:
+                pass
+        return True, 'due now'
+
+    def _start_group_atmosphere_scheduler_worker(self) -> None:
+        if self._group_atmosphere_scheduler_thread and self._group_atmosphere_scheduler_thread.is_alive():
+            return
+        thread = threading.Thread(target=self._group_atmosphere_scheduler_loop, name='group-atmosphere-scheduler', daemon=True)
+        thread.start()
+        self._group_atmosphere_scheduler_thread = thread
+
+    def _group_atmosphere_scheduler_loop(self) -> None:
+        while not self._worker_stop.is_set():
+            try:
+                self.run_due_group_atmosphere_scheduler(GroupAtmosphereSchedulerRunRequest(limit=100))
+            except Exception as exc:
+                print(f'Group atmosphere scheduler degraded: {exc}')
+            self._worker_stop.wait(self.group_atmosphere_scheduler_poll_interval_seconds)
+
+    def run_due_group_atmosphere_scheduler(self, payload: GroupAtmosphereSchedulerRunRequest) -> Dict[str, Any]:
+        self.sync_group_atmosphere_delivery_configs_from_account_plans()
+        results = []
+        for config in self.list_group_atmosphere_configs():
+            if len(results) >= int(payload.limit):
+                break
+            config_name = str(config.get('config_name') or '').strip()
+            if (
+                str(config.get('status') or '') == 'plan_ready'
+                or not str(config.get('account_key') or '').strip()
+                or not str(config.get('target_group') or '').strip()
+            ):
+                continue
+            if not config.get('enabled') or str(config.get('status') or '') != 'enabled':
+                continue
+            if not self._enabled_group_atmosphere_templates(config):
+                continue
+            today = datetime.now(timezone.utc).date().isoformat()
+            sent_count_today = int(config.get('sent_count_today') or 0) if config.get('sent_count_date') == today else 0
+            daily_max = int(config.get('daily_max_messages') or 0)
+            if daily_max and sent_count_today >= daily_max:
+                results.append({'sent': False, 'config_name': config_name, 'result_code': 'daily_limit_reached', 'result_reason': 'daily max messages reached'})
+                continue
+            due, due_reason = self._group_atmosphere_config_due_now(config)
+            if not due:
+                results.append({'sent': False, 'config_name': config_name, 'result_code': 'not_due_yet', 'result_reason': due_reason})
+                continue
+            result = self.dispatch_group_atmosphere_once(GroupAtmosphereDispatchRequest(config_name=config_name, trigger_type='scheduled_auto'))
+            result['config_name'] = config_name
+            results.append(result)
+        return {
+            'ok': True,
+            'attempted_count': len(results),
+            'sent_count': sum(1 for item in results if item.get('sent') is True),
+            'results': results,
+        }
 
     def import_group_atmosphere_chat_records(self, payload: GroupAtmosphereImportChatRecordsRequest) -> Dict[str, Any]:
         config = self._get_group_atmosphere_config(payload.config_name)
@@ -5454,16 +6815,26 @@ class Service:
         profile = self._get_group_atmosphere_language_profile(config['config_name'])
         terms = [str(term) for term in profile.get('frequent_terms') or []]
         tone = dict(profile.get('tone_markers') or {})
+        local_abbreviations = [str(item) for item in tone.get('local_abbreviations') or [] if str(item).strip()]
         greeting = 'Halo kak' if tone.get('uses_kak') or str(config.get('language')) == 'id' else 'Hi'
-        cta = 'kirim data ke admin ya kak' if tone.get('uses_kak') else 'contact admin for help'
+        cta = 'krm data ke admin ya kak' if 'krm' in local_abbreviations else ('kirim data ke admin ya kak' if tone.get('uses_kak') else 'contact admin for help')
         topic = str(payload.topic or 'general').strip() or 'general'
         base_terms = ', '.join(terms[:4]) if terms else 'panduan, ID, kode, admin'
-        patterns = [
-            f"{greeting}, kalau masih bingung tentang {topic}, cek panduan dulu lalu {cta}.",
-            f"{greeting}, reminder singkat: pastikan info kamu benar. Topik hari ini: {topic}. {cta}.",
-            f"{greeting}, buat yang baru gabung, mulai pelan-pelan dulu. Kata kunci grup: {base_terms}.",
-            f"{greeting}, kalau sudah siap mulai, siapkan ID dan kode undangan, lalu {cta}.",
-        ]
+        short_hint = ', '.join(local_abbreviations[:3])
+        if short_hint:
+            patterns = [
+                f"{greeting}, jgn bingung ya. Cek panduan dulu, trus {cta}.",
+                f"{greeting}, yg baru join bisa mulai pelan2. Kalau blm paham, tanya admin ya.",
+                f"{greeting}, reminder singkat: siapin ID + kode. Biasanya anak grup pakai: {short_hint}.",
+                f"{greeting}, kalau kode dmn / gmn mulai, langsung cek pin grup lalu {cta}.",
+            ]
+        else:
+            patterns = [
+                f"{greeting}, kalau masih bingung tentang {topic}, cek panduan dulu lalu {cta}.",
+                f"{greeting}, reminder singkat: pastikan info kamu benar. Topik hari ini: {topic}. {cta}.",
+                f"{greeting}, buat yang baru gabung, mulai pelan-pelan dulu. Kata kunci grup: {base_terms}.",
+                f"{greeting}, kalau sudah siap mulai, siapkan ID dan kode undangan, lalu {cta}.",
+            ]
         candidates = []
         for index in range(int(payload.count)):
             text = patterns[index % len(patterns)]
@@ -6123,10 +7494,17 @@ class Service:
         }
         executor = self.resolve_guild_executor(expected_guild)
         if executor:
+            has_platform_cms = bool(str(executor.get('platform_backend_url') or '').strip() and str(executor.get('platform_authorization') or '').strip())
             context.update({
+                'bind_route': 'cms_id' if has_platform_cms else 'guild_invite_code',
                 'executor_backend_url': str(executor.get('backend_url') or ''),
+                'executor_oauth_token': str(executor.get('oauth_token') or ''),
+                'executor_oauth_token_secret': str(executor.get('oauth_token_secret') or ''),
+                'executor_guild_backend_token': str(executor.get('guild_backend_token') or ''),
                 'executor_login_username': str(executor.get('login_username') or ''),
                 'executor_password_secret_ref': str(executor.get('password_secret_ref') or ''),
+                'executor_platform_backend_url': str(executor.get('platform_backend_url') or ''),
+                'executor_platform_authorization': str(executor.get('platform_authorization') or ''),
                 'executor_proxy_url': str(executor.get('proxy_url') or ''),
                 'executor_proxy_region': str(executor.get('proxy_region') or ''),
                 'executor_proxy_type': str(executor.get('proxy_type') or ''),
@@ -6636,13 +8014,14 @@ class Service:
         critical_missing = [
             name for name, value in {
                 'mobile': final_mobile,
-                'registration_group': final_registration_group,
                 'app_name': final_app_name,
                 'dept_name': final_dept_name,
             }.items() if not value
         ]
         if critical_missing:
             review_reason_codes.extend(f'missing_{name}' for name in critical_missing)
+        if final_mobile and final_account_id and final_registration_group and final_app_name and final_dept_name and final_invite_code:
+            confidence = max(confidence, 0.75)
         if confidence < 0.75:
             review_reason_codes.append('low_confidence')
         review_reason_codes = list(dict.fromkeys(review_reason_codes))
@@ -8666,7 +10045,7 @@ class Service:
         final_mobile = parsed_payload.get('mobile') or normalized_mobile
         final_area_code = parsed_payload.get('area_code') or normalized_area_code
         final_country = parsed_payload.get('country') or normalized_country
-        final_registration_group = payload.registration_group or parsed_payload.get('registration_group')
+        final_registration_group = payload.registration_group or parsed_payload.get('registration_group') or OTHER_CHANNEL_REGISTRATION_GROUP
         if prefer_payload_over_defaults:
             final_app_name = (
                 explicit_app_name
@@ -9289,6 +10668,64 @@ class Service:
     def _format_operator_crm_failure_reason(self, *, retried: bool = False) -> str:
         return 'CRM failed after retries. Check manually.' if retried else 'CRM failed. Check manually.'
 
+    def _registration_membership_phone_keys(self, *, mobile: Optional[str] = None, area_code: Optional[int] = None) -> set[str]:
+        raw = str(mobile or '').strip()
+        keys: set[str] = set()
+        if not raw:
+            return keys
+        digits = ''.join(ch for ch in raw if ch.isdigit())
+        if digits:
+            keys.add(digits)
+        try:
+            normalized_mobile, normalized_area_code, _ = normalize_phone_identity(mobile=raw, area_code=int(area_code or 0), country='')
+        except Exception:
+            normalized_mobile, normalized_area_code = '', 0
+        if normalized_mobile:
+            keys.add(str(normalized_mobile))
+            if normalized_area_code:
+                keys.add(f'{int(normalized_area_code)}{normalized_mobile}')
+                keys.add(f'+{int(normalized_area_code)}{normalized_mobile}')
+        for prefix in sorted(PHONE_PREFIX_COUNTRY_MAP.keys(), key=len, reverse=True):
+            if digits.startswith(prefix) and len(digits) > len(prefix):
+                keys.add(digits[len(prefix):])
+                break
+        return {key for key in keys if key}
+
+    def _find_registration_group_memberships_for_phone(self, *, mobile: Optional[str], area_code: Optional[int] = None) -> Dict[str, Any]:
+        keys = self._registration_membership_phone_keys(mobile=mobile, area_code=area_code)
+        if not keys:
+            return {'status': 'missing', 'matches': []}
+        rows: List[Dict[str, Any]] = []
+        with self.db.connect() as conn:
+            candidates = [dict(row) for row in conn.execute(
+                """
+                SELECT member_id, approval_run_id, registration_group, registration_group_name,
+                       requester_id, display_name, wa_phone_raw, wa_phone_normalized, approved_at, created_at
+                FROM registration_group_approval_batch_members
+                WHERE COALESCE(wa_phone_raw, '') != '' OR COALESCE(wa_phone_normalized, '') != ''
+                ORDER BY approved_at DESC, created_at DESC
+                LIMIT 1000
+                """
+            ).fetchall()]
+        for row in candidates:
+            row_keys = set()
+            row_keys.update(self._registration_membership_phone_keys(mobile=row.get('wa_phone_normalized'), area_code=area_code))
+            row_keys.update(self._registration_membership_phone_keys(mobile=row.get('wa_phone_raw'), area_code=area_code))
+            if keys.intersection(row_keys):
+                rows.append(row)
+        groups: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            group = str(row.get('registration_group_name') or row.get('registration_group') or '').strip()
+            if not group:
+                continue
+            groups.setdefault(group.lower(), {**row, 'resolved_registration_group': group})
+        unique_rows = list(groups.values())
+        if not unique_rows:
+            return {'status': 'missing', 'matches': []}
+        if len(unique_rows) == 1:
+            return {'status': 'unique', 'match': unique_rows[0], 'matches': unique_rows}
+        return {'status': 'multiple', 'matches': unique_rows}
+
     def _format_lark_reply_text(self, result: Dict[str, Any]) -> str:
         parsed_payload = result.get('parsed_payload') or {}
         reply_area_code = result.get('reply_area_code')
@@ -9348,6 +10785,14 @@ class Service:
                 f'Group: {group}\n'
                 f'Code: {code}'
             )
+        if result.get('reason') == 'multiple_registration_groups_found':
+            return (
+                '**❌ Multiple registration groups found. Please provide Group.**\n'
+                f'Phone: {phone}\n'
+                f'ID: {account_id}\n'
+                f'Group: {group}\n'
+                f'Code: {code}'
+            )
         if result.get('reason') == 'invalid_phone_format':
             return (
                 '**🚫 Invalid phone format. Use +<country code> <number>.**\n'
@@ -9358,7 +10803,7 @@ class Service:
             )
         if result.get('reason') == 'invalid_group_format':
             return (
-                '**🚫 Invalid group format. Use English-Number, e.g. Piso-12.**\n'
+                '**🚫 Invalid group format. Please copy the exact registration group name.**\n'
                 f'Phone: {phone}\n'
                 f'ID: {account_id}\n'
                 f'Group: {group}\n'
@@ -9381,10 +10826,8 @@ class Service:
                 f'Code: {code}'
             )
         if result.get('reason') == 'crm_sync_failed':
-            result_code = str(result.get('result_code') or '').strip()
-            headline = '**❌ CRM sync failed: Bind succeeded but CRM retried.**' if result_code in {'crm_retry_exhausted', 'crm_retry_failed'} else '**❌ CRM Failed**'
             return (
-                f'{headline}\n'
+                '**❌ Bind Success, CRM Failed**\n'
                 f'Phone: {phone}\n'
                 f'ID: {account_id}\n'
                 f'Group: {group}\n'
@@ -9432,6 +10875,17 @@ class Service:
             if 'the streamer was in other guild' in lowered_reason:
                 return (
                     '**❌ Bind failed: The streamer was in another agency**\n'
+                    f'Phone: {phone}\n'
+                    f'ID: {account_id}\n'
+                    f'Group: {group}\n'
+                    f'Code: {code}'
+                )
+            if (
+                result.get('result_code') in {'cms_bind_not_verified', 'sid_not_found_or_not_anchor', 'cms_bind_invalid_sid'}
+                or 'invalid arguments' in lowered_reason
+            ):
+                return (
+                    '**❌ Bind failed: Invalid or unavailable Linky ID**\n'
                     f'Phone: {phone}\n'
                     f'ID: {account_id}\n'
                     f'Group: {group}\n'
@@ -9543,7 +10997,9 @@ class Service:
         try:
             content_obj = json.loads(content)
         except Exception:
-            content_obj = {'text': str(content)}
+            raw_content = str(content)
+            malformed_text_match = re.match(r'^\{"text":"(.*)"\}$', raw_content, flags=re.S)
+            content_obj = {'text': malformed_text_match.group(1) if malformed_text_match else raw_content}
         sender = event.get('sender') or {}
         sender_id = (sender.get('sender_id') or {}).get('open_id') or 'lark_unknown'
         message_type = (message.get('message_type') or 'text')
@@ -9637,7 +11093,7 @@ class Service:
         explicit_fields = extract_explicit_intake_fields(cleaned_text)
 
         mobile_match = PHONE_CANDIDATE_PATTERN.search(cleaned_text)
-        registration_group_match = re.search(r'(?:注册群组|group)\s*[:：]?\s*([A-Za-z]+(?:-\d+)?)', cleaned_text, flags=re.IGNORECASE)
+        registration_group_match = REGISTRATION_GROUP_LABEL_PATTERN.search(cleaned_text)
         app_match = re.search(r'\b(Linky|FUMI)\b', cleaned_text, flags=re.IGNORECASE)
         dept_match = re.search(r'(?:公会|guild|dept)\s*[:：]?\s*([A-Za-z]+)', cleaned_text, flags=re.IGNORECASE)
         account_match = re.search(r'(?:^|\b)(?:id|uid|ywid|用户id|用户ID)\s*[:：是]?\s*(\d{6,})', cleaned_text, flags=re.IGNORECASE)
@@ -9653,7 +11109,7 @@ class Service:
             normalized_reply_phone = resolved_phone
         else:
             normalized_reply_phone = format_display_phone(resolved_phone if resolved_phone != '-' else None, area_code=(parsed_text.get('area_code') if isinstance(parsed_text, dict) else None))
-        resolved_group = registration_group_match.group(1) if registration_group_match else (bare_candidates.get('registration_group_line') or parsed_text.get('registration_group') or None)
+        resolved_group = normalize_registration_group_candidate(registration_group_match.group(1)) if registration_group_match else (bare_candidates.get('registration_group_line') or parsed_text.get('registration_group') or None)
         resolved_account_id = account_match.group(1) if account_match else (bare_candidates.get('account_id_line') or parsed_text.get('account_id') or None)
         invite_code_meta = normalize_invite_code_candidate(
             invite_match_value
@@ -9671,7 +11127,34 @@ class Service:
             or active_default_dept
             or None
         )
+        if not resolved_group and normalized_reply_phone != '-':
+            membership_lookup = self._find_registration_group_memberships_for_phone(
+                mobile=normalized_reply_phone,
+                area_code=(parsed_text.get('area_code') if isinstance(parsed_text, dict) else None),
+            )
+            if membership_lookup.get('status') == 'unique':
+                resolved_group = str((membership_lookup.get('match') or {}).get('resolved_registration_group') or '').strip() or None
+            elif membership_lookup.get('status') == 'multiple':
+                result = {
+                    'accepted': False,
+                    'ignored': True,
+                    'reason': 'multiple_registration_groups_found',
+                    'reply_phone': normalized_reply_phone,
+                    'reply_id': resolved_account_id or '-',
+                    'reply_group': '-',
+                    'reply_code': resolved_invite_code or invite_code_meta.get('raw_input') or '-',
+                    'reply_missing_fields': ['Group'],
+                    'registration_group_candidates': [
+                        str((item or {}).get('resolved_registration_group') or '').strip()
+                        for item in (membership_lookup.get('matches') or [])
+                        if str((item or {}).get('resolved_registration_group') or '').strip()
+                    ],
+                }
+                return _finalize(message_id, result)
         invalid_group_candidate = extract_invalid_group_candidate(cleaned_text)
+        explicit_group_label_present = bool(REGISTRATION_GROUP_LABEL_PATTERN.search(cleaned_text))
+        if invalid_group_candidate and explicit_group_label_present:
+            resolved_group = None
 
         explicit_app_name = str(explicit_fields.get('app_name') or (app_match.group(1) if app_match else '')).strip() or None
         explicit_dept_name = str(explicit_fields.get('dept_name') or (dept_match.group(1) if dept_match else '')).strip() or None
@@ -9696,7 +11179,38 @@ class Service:
             }
             return _finalize(message_id, result)
 
-        if invalid_group_candidate and not resolved_group:
+        explicit_mobile_value = str(explicit_fields.get('mobile') or '').strip()
+        explicit_invite_value = str(explicit_fields.get('invite_code') or '').strip()
+        has_phone_input = bool(
+            (explicit_mobile_value and not is_blank_intake_field_value(explicit_mobile_value))
+            or bare_candidates.get('mobile_line')
+            or mobile_match
+        )
+        explicit_code_input = bool(
+            (explicit_invite_value and not is_blank_intake_field_value(explicit_invite_value))
+            or invite_match_value
+        )
+        has_only_bare_invite_code = bool(
+            resolved_invite_code
+            and not explicit_code_input
+            and not has_phone_input
+            and not resolved_group
+            and not resolved_account_id
+        )
+
+        if not has_phone_input and not resolved_group and not resolved_account_id and (not resolved_invite_code or has_only_bare_invite_code):
+            result = {
+                'accepted': False,
+                'ignored': True,
+                'reason': 'irrelevant_message',
+                'reply_phone': normalized_reply_phone,
+                'reply_id': resolved_account_id or '-',
+                'reply_group': resolved_group or '-',
+                'reply_code': resolved_invite_code or invite_code_meta.get('raw_input') or '-',
+            }
+            return _finalize(message_id, result)
+
+        if invalid_group_candidate and not resolved_group and explicit_group_label_present:
             result = {
                 'accepted': False,
                 'ignored': True,
@@ -9707,25 +11221,17 @@ class Service:
             }
             return _finalize(message_id, result)
 
+        if not resolved_group:
+            resolved_group = OTHER_CHANNEL_REGISTRATION_GROUP
+
         missing_labels = []
         if not resolved_group:
             missing_labels.append('Group')
         if not resolved_account_id:
             missing_labels.append('ID')
-        has_phone_input = bool(str(explicit_fields.get('mobile') or '').strip() or bare_candidates.get('mobile_line') or mobile_match)
         if not has_phone_input:
             missing_labels.append('Phone')
 
-        if not has_phone_input and not resolved_group and not resolved_account_id and not resolved_invite_code:
-            result = {
-                'accepted': False,
-                'ignored': True,
-                'reason': 'irrelevant_message',
-                'reply_phone': normalized_reply_phone,
-                'reply_id': resolved_account_id or '-',
-                'reply_group': resolved_group or '-',
-            }
-            return _finalize(message_id, result)
         if missing_labels:
             result = {
                 'accepted': False,
@@ -9767,7 +11273,8 @@ class Service:
                 'reply_error_text': invite_validation_error['reply_text'],
             }
             return _finalize(message_id, result)
-        if not resolved_invite_code and self.require_invite_code:
+        can_bind_by_cms_id = self.guild_executor_has_platform_cms_route(resolved_dept_name or inferred_group_guild)
+        if not resolved_invite_code and self.require_invite_code and not can_bind_by_cms_id:
             result = {
                 'accepted': False,
                 'ignored': True,
@@ -13652,6 +15159,37 @@ class Service:
         decision = str(payload.decision or 'approve').strip().lower() or 'approve'
         if decision != 'approve':
             raise HTTPException(status_code=400, detail='unsupported decision')
+        target_phone_hint = str(payload.target_phone_hint or '').strip()
+        if target_phone_hint:
+            existing_membership = self._find_registration_group_memberships_for_phone(mobile=target_phone_hint)
+            if existing_membership.get('status') == 'unique':
+                active_group = str((existing_membership.get('match') or {}).get('resolved_registration_group') or '').strip()
+                requested_group = str(payload.registration_group or '').strip()
+                if active_group and requested_group and active_group.lower() != requested_group.lower():
+                    total_elapsed_seconds = round(time.perf_counter() - started, 3)
+                    return {
+                        'registration_group': payload.registration_group,
+                        'active_registration_group': active_group,
+                        'decision': decision,
+                        'approval_run_id': str(approval_run_id or '').strip() or f"registration_group_approval_{uuid.uuid4().hex[:12]}",
+                        'executed': False,
+                        'verified': False,
+                        'verification_pending': False,
+                        'crm_recorded': False,
+                        'status': 'skipped',
+                        'result_code': 'duplicate_registration_group_request',
+                        'result_reason': 'phone already has an active registration group; skip approving another registration group',
+                        'approved_count': 0,
+                        'approved_at': payload.decided_at,
+                        'elapsed_seconds': total_elapsed_seconds,
+                        'crm_elapsed_seconds': 0.0,
+                        'total_elapsed_seconds': total_elapsed_seconds,
+                        'force_immediate': payload.force_immediate,
+                        'target_member': {},
+                        'evidence_summary': {'approval_may_have_executed': False},
+                        'raw_result': {'existing_membership': existing_membership.get('match') or {}},
+                        'crm_batch': None,
+                    }
         routed_runtime = self._resolve_whatsapp_approval_runtime_executor(target_group=str(payload.registration_group or '').strip(), responsible_type='registration_group')
         executor = (routed_runtime or {}).get('executor') or self.registration_group_approval_executor
         if executor is None:
@@ -15672,7 +17210,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 'started_at': utc_now(),
                 'reset': reset,
             })
-            deadline = time.time() + 20.0
+            deadline = time.time() + 60.0
             worker_health: Dict[str, Any] = {}
             last_error = ''
             while time.time() < deadline:
@@ -15725,12 +17263,35 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         if not account_row:
             raise HTTPException(status_code=404, detail='whatsapp approval account not found')
         runtime_state = self._build_whatsapp_approval_runtime_state(account_key)
-        worker_health = {}
+        worker_health: Dict[str, Any] = {}
+        health_error = ''
         if runtime_state.get('active') and runtime_state.get('base_url') and runtime_state.get('source') == 'dedicated':
-            worker_health = self._request_whatsapp_approval_worker_health(str(runtime_state.get('base_url') or ''))
+            try:
+                worker_health = self._request_whatsapp_approval_worker_health(str(runtime_state.get('base_url') or ''))
+            except Exception as exc:
+                health_error = str(exc)
+                runtime_state['health_error'] = health_error
+                runtime_state['ready'] = False
+                runtime_state['authenticated'] = False
+                runtime_state['status'] = 'unavailable'
+                runtime_state['status_text'] = '扫码服务暂不可用，请重新生成二维码'
         elif runtime_state.get('source') == 'shared':
-            worker_health = self._current_whatsapp_approval_worker_health()
+            try:
+                worker_health = self._current_whatsapp_approval_worker_health()
+            except Exception as exc:
+                health_error = str(exc)
+                runtime_state['health_error'] = health_error
+                runtime_state['ready'] = False
+                runtime_state['authenticated'] = False
+                runtime_state['status'] = 'unavailable'
+                runtime_state['status_text'] = '共享扫码服务暂不可用'
         session_state = self._build_whatsapp_approval_session_state(account_key, worker_health=worker_health, include_qr_ascii=include_qr_ascii)
+        if health_error:
+            session_state['login_verified'] = False
+            session_state['qr_available'] = False
+            session_state['login_check_status'] = 'runtime_unavailable'
+            session_state['login_check_message'] = '扫码服务连接失败，请点击“重新生成二维码”。'
+            session_state['health_error'] = health_error
         runtime_state, session_state, worker_health, _ = self._maybe_auto_recover_whatsapp_approval_account_session(
             account_key,
             runtime_state=runtime_state,
@@ -16282,11 +17843,25 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
     def list_guild_executors(self) -> Dict[str, Any]:
         with self.db.connect() as conn:
             rows = [dict(r) for r in conn.execute(
-                "SELECT guild_name, backend_url, login_username, proxy_url, proxy_region, proxy_type, enabled, browser_profile_key, bind_concurrency, request_timeout_seconds, notes, updated_at, CASE WHEN COALESCE(password_secret_ref, '') != '' THEN 1 ELSE 0 END AS password_configured FROM guild_executors ORDER BY guild_name ASC"
+                """
+                SELECT ge.guild_name, ge.backend_url, ge.login_username, ge.platform_backend_url, ge.proxy_url, ge.proxy_region, ge.proxy_type, ge.enabled, ge.browser_profile_key, ge.bind_concurrency, ge.request_timeout_seconds, ge.notes, ge.updated_at,
+                       CASE WHEN COALESCE(ge.password_secret_ref, '') != '' THEN 1 ELSE 0 END AS password_configured,
+                       CASE WHEN COALESCE(ge.oauth_token, '') != '' AND COALESCE(ge.oauth_token_secret, '') != '' THEN 1 ELSE 0 END AS oauth_configured,
+                       CASE WHEN COALESCE(ge.guild_backend_token, '') != '' THEN 1 ELSE 0 END AS guild_backend_token_configured,
+                       CASE WHEN COALESCE(ge.platform_authorization, '') != '' THEN 1 ELSE 0 END AS platform_authorization_configured,
+                       CASE WHEN COALESCE(ct.refresh_token, '') != '' THEN 1 ELSE 0 END AS cms_refresh_token_configured
+                FROM guild_executors ge
+                LEFT JOIN cms_executor_tokens ct ON ct.guild_name = ge.guild_name
+                ORDER BY ge.guild_name ASC
+                """
             ).fetchall()]
         for row in rows:
             row['enabled'] = bool(row.get('enabled'))
             row['password_configured'] = bool(row.get('password_configured'))
+            row['oauth_configured'] = bool(row.get('oauth_configured'))
+            row['guild_backend_token_configured'] = bool(row.get('guild_backend_token_configured'))
+            row['platform_authorization_configured'] = bool(row.get('platform_authorization_configured'))
+            row['cms_refresh_token_configured'] = bool(row.get('cms_refresh_token_configured'))
         return {
             'rows': rows,
             'proxy_region_options': GUILD_EXECUTOR_PROXY_REGION_OPTIONS,
@@ -16996,24 +18571,22 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             }
         schedule_runtime = dict(binding.get('schedule_runtime') or {})
         if schedule_runtime.get('configured') and not bool(schedule_runtime.get('active_now')):
+            outside_pending_raw = live_probe.get('pending_count') if isinstance(live_probe, dict) and live_probe.get('pending_count') is not None else binding.get('next_approval_pending_count')
+            try:
+                outside_pending_count = max(int(outside_pending_raw or 0), 0)
+            except (TypeError, ValueError):
+                outside_pending_count = 0
             return {
                 'ready': True,
                 'requires_manual_seed': False,
                 'status': 'outside_schedule',
-                'detail': '时段外待命；配置有效，自动审批暂停。',
+                'detail': f'时段外待命；当前审批列表 {outside_pending_count} 人；配置有效，自动审批暂停。',
                 'source': 'schedule_window',
-                'probe': {},
+                'probe': dict(live_probe or {}),
                 'truth_state': {},
             }
         binding_probe = dict(live_probe or {})
         inherited_truth_state = dict(account_verifier.get('truth_state') or {})
-        inherited_truth_gate = Service._membership_verifier_gate_from_truth_state(
-            inherited_truth_state,
-            probe=binding_probe,
-            source_fallback=inherited_truth_state.get('source') or binding_probe.get('source') or binding_probe.get('source_base_url'),
-        )
-        if inherited_truth_gate:
-            return inherited_truth_gate
         inherited_truth_status = str(inherited_truth_state.get('status') or '').strip()
         runtime = dict((production_ops or {}).get('runtime') or {})
         status = dict(runtime.get('status') or {})
@@ -17032,6 +18605,14 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             bool(binding_link and monitor_binding_link and binding_link == monitor_binding_link),
             bool(binding_group_name and monitor_group_name and binding_group_name == monitor_group_name),
         ])
+        if target_matches_monitor:
+            inherited_truth_gate = Service._membership_verifier_gate_from_truth_state(
+                inherited_truth_state,
+                probe=binding_probe,
+                source_fallback=inherited_truth_state.get('source') or binding_probe.get('source') or binding_probe.get('source_base_url'),
+            )
+            if inherited_truth_gate:
+                return inherited_truth_gate
         authoritative_probe = dict(binding_probe)
         authoritative_truth_state = inherited_truth_state if target_matches_monitor and inherited_truth_status else {}
         if authoritative_truth_state:
@@ -17939,7 +19520,72 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         serialized['next_action'] = next_action
         return serialized
 
-    def list_whatsapp_approval_accounts(self) -> Dict[str, Any]:
+    def _ops_user_can_manage_whatsapp_approval_account(self, current_user: Optional[Dict[str, Any]], row: Optional[Dict[str, Any]]) -> bool:
+        if not current_user:
+            return True
+        role = str(current_user.get('role') or '').strip().lower()
+        if role in {OPS_AUTH_ROLE_SUPER_ADMIN, OPS_AUTH_ROLE_ADMIN, OPS_AUTH_ROLE_INTERNAL}:
+            return True
+        if role != OPS_AUTH_ROLE_CUSTOMER_SERVICE:
+            return False
+        if not row:
+            return False
+        return str(row.get('assigned_customer_service_user_id') or '').strip() == str(current_user.get('user_id') or '').strip()
+
+    def _require_whatsapp_approval_account_access(self, account_key: str, current_user: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        normalized_key = str(account_key or '').strip()
+        with self.db.connect() as conn:
+            raw = conn.execute(
+                "SELECT account_key, assigned_customer_service_user_id FROM whatsapp_approval_accounts WHERE account_key = ?",
+                (normalized_key,),
+            ).fetchone()
+        if raw is None:
+            raise HTTPException(status_code=404, detail='account_not_found')
+        row = dict(raw)
+        if not self._ops_user_can_manage_whatsapp_approval_account(current_user, row):
+            raise HTTPException(status_code=403, detail='whatsapp_approval_account_not_assigned')
+        return row
+
+    def _list_customer_service_options(self) -> List[Dict[str, Any]]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT user_id, username, display_name, role, enabled
+                FROM ops_users
+                WHERE role = ? AND enabled = 1
+                ORDER BY COALESCE(NULLIF(display_name, ''), username) ASC, username ASC
+                """,
+                (OPS_AUTH_ROLE_CUSTOMER_SERVICE,),
+            ).fetchall()
+        return [
+            {
+                'user_id': row['user_id'],
+                'username': row['username'],
+                'display_name': row['display_name'] or row['username'],
+                'role': row['role'],
+                'enabled': bool(row['enabled']),
+            }
+            for row in rows
+        ]
+
+    def _resolve_customer_service_assignment(self, user_id: str) -> Dict[str, Any]:
+        normalized_user_id = str(user_id or '').strip()
+        if not normalized_user_id:
+            raise HTTPException(status_code=400, detail='assigned_customer_service_required')
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT user_id, username, display_name, role, enabled FROM ops_users WHERE user_id = ?",
+                (normalized_user_id,),
+            ).fetchone()
+        if row is None or str(row['role'] or '').strip() != OPS_AUTH_ROLE_CUSTOMER_SERVICE or not bool(row['enabled']):
+            raise HTTPException(status_code=400, detail='assigned_customer_service_invalid')
+        return {
+            'user_id': row['user_id'],
+            'username': row['username'],
+            'display_name': row['display_name'] or row['username'],
+        }
+
+    def list_whatsapp_approval_accounts(self, current_user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         production_ops = self._production_ops_daemon_snapshot()
         official_bridge = self._official_group_bridge_summary_payload()
         try:
@@ -17947,9 +19593,17 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         except Exception:
             shared_worker_health = {}
         rows: list[Dict[str, Any]] = []
+        user_role = str((current_user or {}).get('role') or '').strip().lower()
+        user_id = str((current_user or {}).get('user_id') or '').strip()
+        where_clause = "responsible_type IN ('registration_group', 'official_group')"
+        params: tuple[Any, ...] = ()
+        if user_role == OPS_AUTH_ROLE_CUSTOMER_SERVICE:
+            where_clause += " AND assigned_customer_service_user_id = ?"
+            params = (user_id,)
         with self.db.connect() as conn:
             raw_rows = conn.execute(
-                "SELECT account_key, account_name, responsible_type, group_links, area, notify_profile_name, approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker, schedule_windows, enabled, verification_status, notes, updated_at FROM whatsapp_approval_accounts WHERE responsible_type IN ('registration_group', 'official_group') ORDER BY updated_at DESC, account_key ASC"
+                f"SELECT account_key, account_name, responsible_type, group_links, area, notify_profile_name, approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker, schedule_windows, enabled, verification_status, assigned_customer_service_user_id, assigned_customer_service_username, assigned_customer_service_display_name, notes, updated_at FROM whatsapp_approval_accounts WHERE {where_clause} ORDER BY updated_at DESC, account_key ASC",
+                params,
             ).fetchall()
         for raw_row in raw_rows:
             row = dict(raw_row)
@@ -17966,6 +19620,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'notify_robot_options': self._list_notify_robot_options(),
             'area_options': area_option_payload['options'],
             'area_option_source': area_option_payload['source_options'],
+            'customer_service_options': self._list_customer_service_options(),
             'summary': {
                 'total_accounts': len(rows),
                 'enabled_accounts': sum(1 for row in rows if row.get('enabled')),
@@ -17977,8 +19632,8 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             },
         }
 
-    def list_whatsapp_approval_candidates(self) -> Dict[str, Any]:
-        account_state = self.list_whatsapp_approval_accounts()
+    def list_whatsapp_approval_candidates(self, current_user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        account_state = self.list_whatsapp_approval_accounts(current_user=current_user)
         rows = []
         for row in account_state.get('rows') or []:
             membership_verifier = dict(row.get('membership_verifier') or {})
@@ -18029,7 +19684,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             },
         }
 
-    def update_whatsapp_approval_account(self, account_key: str, payload: WhatsAppApprovalAccountUpdateRequest) -> Dict[str, Any]:
+    def update_whatsapp_approval_account(self, account_key: str, payload: WhatsAppApprovalAccountUpdateRequest, current_user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         normalized_key = str(account_key or '').strip()
         if not normalized_key:
             raise HTTPException(status_code=400, detail='account_key is required')
@@ -18039,6 +19694,44 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         responsible_type = str(payload.responsible_type or '').strip()
         if responsible_type not in {'registration_group', 'official_group'}:
             raise HTTPException(status_code=400, detail='responsible_type must be registration_group or official_group')
+        with self.db.connect() as conn:
+            existing_row_raw = conn.execute(
+                "SELECT account_key, assigned_customer_service_user_id, assigned_customer_service_username, assigned_customer_service_display_name FROM whatsapp_approval_accounts WHERE account_key = ?",
+                (normalized_key,),
+            ).fetchone()
+        existing_row = dict(existing_row_raw) if existing_row_raw is not None else None
+        user_role = str((current_user or {}).get('role') or '').strip().lower()
+        is_admin_user = user_role in {OPS_AUTH_ROLE_SUPER_ADMIN, OPS_AUTH_ROLE_ADMIN, OPS_AUTH_ROLE_INTERNAL}
+        if current_user and not is_admin_user:
+            if not existing_row or not self._ops_user_can_manage_whatsapp_approval_account(current_user, existing_row):
+                raise HTTPException(status_code=403, detail='whatsapp_approval_account_not_assigned')
+        assignment: Dict[str, Any]
+        if is_admin_user:
+            requested_assignment_id = str(payload.assigned_customer_service_user_id or '').strip()
+            if not requested_assignment_id and existing_row:
+                requested_assignment_id = str(existing_row.get('assigned_customer_service_user_id') or '').strip()
+            if requested_assignment_id:
+                assignment = self._resolve_customer_service_assignment(requested_assignment_id)
+            elif user_role == OPS_AUTH_ROLE_INTERNAL or str((current_user or {}).get('user_id') or '').strip() == 'local-dev':
+                assignment = {'user_id': '', 'username': '', 'display_name': ''}
+            else:
+                raise HTTPException(status_code=400, detail='assigned_customer_service_required')
+        elif current_user:
+            assignment = {
+                'user_id': str(existing_row.get('assigned_customer_service_user_id') or '').strip(),
+                'username': str(existing_row.get('assigned_customer_service_username') or '').strip(),
+                'display_name': str(existing_row.get('assigned_customer_service_display_name') or '').strip(),
+            }
+        else:
+            requested_assignment_id = str(payload.assigned_customer_service_user_id or '').strip()
+            if requested_assignment_id:
+                assignment = self._resolve_customer_service_assignment(requested_assignment_id)
+            else:
+                assignment = {
+                    'user_id': str((existing_row or {}).get('assigned_customer_service_user_id') or '').strip(),
+                    'username': str((existing_row or {}).get('assigned_customer_service_username') or '').strip(),
+                    'display_name': str((existing_row or {}).get('assigned_customer_service_display_name') or '').strip(),
+                }
         raw_bindings = [
             {
                 'link': str(item.link or '').strip(),
@@ -18166,6 +19859,9 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'schedule_windows': json.dumps(schedule_windows, ensure_ascii=False),
             'enabled': 1 if payload.enabled else 0,
             'verification_status': 'pending_verification',
+            'assigned_customer_service_user_id': str(assignment.get('user_id') or '').strip(),
+            'assigned_customer_service_username': str(assignment.get('username') or '').strip(),
+            'assigned_customer_service_display_name': str(assignment.get('display_name') or '').strip(),
             'notes': str(payload.notes or '').strip(),
             'updated_at': utc_now(),
         }
@@ -18174,8 +19870,8 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 """
                 INSERT INTO whatsapp_approval_accounts (
                     account_key, account_name, responsible_type, group_links, area, notify_profile_name, approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker, schedule_windows,
-                    enabled, verification_status, notes, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    enabled, verification_status, assigned_customer_service_user_id, assigned_customer_service_username, assigned_customer_service_display_name, notes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(account_key)
                 DO UPDATE SET account_name = excluded.account_name,
                               responsible_type = excluded.responsible_type,
@@ -18189,12 +19885,15 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                               schedule_windows = excluded.schedule_windows,
                               enabled = excluded.enabled,
                               verification_status = excluded.verification_status,
+                              assigned_customer_service_user_id = excluded.assigned_customer_service_user_id,
+                              assigned_customer_service_username = excluded.assigned_customer_service_username,
+                              assigned_customer_service_display_name = excluded.assigned_customer_service_display_name,
                               notes = excluded.notes,
                               updated_at = excluded.updated_at
                 """,
                 (
                     row['account_key'], row['account_name'], row['responsible_type'], row['group_links'], row['area'], row['notify_profile_name'], row['approval_rule'], row['approval_count_threshold'], row['approval_timeout_minutes'], row['auto_recover_worker'], row['schedule_windows'],
-                    row['enabled'], row['verification_status'], row['notes'], row['updated_at'],
+                    row['enabled'], row['verification_status'], row['assigned_customer_service_user_id'], row['assigned_customer_service_username'], row['assigned_customer_service_display_name'], row['notes'], row['updated_at'],
                 ),
             )
             conn.commit()
@@ -18203,10 +19902,11 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'account': self._build_whatsapp_approval_account_runtime(row, runtime_state=runtime_state, session_state={}, skip_live_probe=True),
         }
 
-    def delete_whatsapp_approval_account(self, account_key: str) -> Dict[str, Any]:
+    def delete_whatsapp_approval_account(self, account_key: str, current_user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         normalized_key = str(account_key or '').strip()
         if not normalized_key:
             raise HTTPException(status_code=400, detail='account_key is required')
+        self._require_whatsapp_approval_account_access(normalized_key, current_user)
         self.stop_whatsapp_approval_account_runtime(normalized_key)
         with self.db.connect() as conn:
             conn.execute('DELETE FROM whatsapp_approval_accounts WHERE account_key = ?', (normalized_key,))
@@ -18288,6 +19988,15 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             config = dict(row)
             config['enabled'] = bool(config.get('enabled'))
             config['auto_recover_worker'] = bool(config.get('auto_recover_worker'))
+        has_current_approval_accounts = False
+        try:
+            with self.db.connect() as conn:
+                current_account_count = conn.execute(
+                    "SELECT COUNT(1) FROM whatsapp_approval_accounts WHERE responsible_type IN ('registration_group', 'official_group')"
+                ).fetchone()[0]
+            has_current_approval_accounts = int(current_account_count or 0) > 0
+        except Exception:
+            has_current_approval_accounts = True
         runtime_status = {}
         if PRODUCTION_OPS_DAEMON_STATUS_PATH.exists():
             try:
@@ -18304,6 +20013,19 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                     runtime_state = {}
             except Exception:
                 runtime_state = {}
+        if not has_current_approval_accounts and runtime_status:
+            runtime_status = dict(runtime_status)
+            runtime_status['incidents'] = []
+            runtime_status['observation_warnings'] = []
+            runtime_status['notifications'] = []
+            runtime_status['registration_group_cycles'] = []
+            runtime_status['official_group_cycles'] = []
+            runtime_status['worker_state'] = {
+                'ok': True,
+                'status': 'disabled_no_monitored_groups',
+                'message': '当前没有配置 WhatsApp 审批监控群组，已忽略旧守护快照异常',
+            }
+            runtime_status['stale_snapshot_suppressed'] = True
         return {
             'config': config,
             'runtime': {
@@ -18374,8 +20096,28 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'runtime_sync': runtime_sync,
         }
 
+    def _cms_executor_keepalive_status_by_guild(self) -> Dict[str, Dict[str, Any]]:
+        try:
+            if not CMS_EXECUTOR_KEEPALIVE_STATUS_PATH.exists():
+                return {}
+            payload = json.loads(CMS_EXECUTOR_KEEPALIVE_STATUS_PATH.read_text(encoding='utf-8'))
+        except Exception:
+            return {}
+        rows = payload.get('results') if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            return {}
+        result: Dict[str, Dict[str, Any]] = {}
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            guild_name = str(item.get('guild_name') or '').strip()
+            if guild_name:
+                result[guild_name] = item
+        return result
+
     def guild_executor_health(self) -> Dict[str, Any]:
         executors = self.list_guild_executors()['rows']
+        cms_keepalive_by_guild = self._cms_executor_keepalive_status_by_guild()
         human_actions = self._pending_bind_human_actions(limit=100)
         human_by_guild = {}
         for item in human_actions:
@@ -18433,9 +20175,40 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 latest_still_requires_human = latest_code in {'bind_unauthorized', 'auth_required', 'session_expired', 'bind_session_expired', 'captcha_required', 'bind_captcha_required', 'manual_continue_required', 'bind_manual_continue_required'} or 're-login' in latest_reason or 'status code 401' in latest_reason or 'unauthorized' in latest_reason or 'forbidden' in latest_reason or 'captcha' in latest_reason
                 if latest_task_id and human_task_id and latest_task_id != human_task_id and not latest_still_requires_human:
                     human_visible = False
+            cms_keepalive = cms_keepalive_by_guild.get(guild_name, {})
+            cms_token_configured = bool(executor.get('platform_authorization_configured'))
+            cms_refresh_configured = bool(executor.get('cms_refresh_token_configured'))
+            cms_keepalive_ok = bool(cms_keepalive.get('ok'))
+            if not bool(executor.get('enabled')):
+                effective_status = 'disabled'
+                effective_reason = '执行器已停用'
+            elif cms_token_configured:
+                if cms_keepalive_ok:
+                    effective_status = 'active'
+                    effective_reason = 'CMS token 有效，保活正常'
+                elif not cms_refresh_configured:
+                    effective_status = 'inactive'
+                    effective_reason = '缺 CMS Refresh Token'
+                else:
+                    effective_status = 'inactive'
+                    effective_reason = str(cms_keepalive.get('error') or 'CMS 验证失败')
+            elif bool(executor.get('oauth_configured')):
+                effective_status = 'active'
+                effective_reason = '个人 Code 绑定链路已配置'
+            else:
+                effective_status = 'inactive'
+                effective_reason = '缺绑定凭证'
             rows.append({
                 'guild_name': guild_name,
                 'enabled': bool(executor.get('enabled')),
+                'effective_status': effective_status,
+                'effective_reason': effective_reason,
+                'cms_live_status': 'active' if cms_keepalive_ok else ('unknown' if not cms_keepalive else 'inactive'),
+                'cms_live_checked_at': cms_keepalive.get('checked_at'),
+                'cms_live_error': cms_keepalive.get('error'),
+                'cms_live_seconds_to_expiry': cms_keepalive.get('seconds_to_expiry'),
+                'cms_token_configured': cms_token_configured,
+                'cms_refresh_token_configured': cms_refresh_configured,
                 'browser_profile_key': executor.get('browser_profile_key') or '',
                 'proxy_region': executor.get('proxy_region') or '',
                 'bind_concurrency': bind_concurrency,
@@ -18460,7 +20233,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             return None
         with self.db.connect() as conn:
             row = conn.execute(
-                "SELECT guild_name, backend_url, login_username, password_secret_ref, proxy_url, proxy_region, proxy_type, enabled, browser_profile_key, bind_concurrency, request_timeout_seconds, notes, updated_at FROM guild_executors WHERE guild_name = ?",
+                "SELECT guild_name, backend_url, login_username, password_secret_ref, guild_backend_token, oauth_token, oauth_token_secret, platform_backend_url, platform_authorization, proxy_url, proxy_region, proxy_type, enabled, browser_profile_key, bind_concurrency, request_timeout_seconds, notes, updated_at FROM guild_executors WHERE guild_name = ?",
                 (normalized_guild_name,),
             ).fetchone()
         if not row:
@@ -18468,7 +20241,22 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         resolved = dict(row)
         resolved['enabled'] = bool(resolved.get('enabled'))
         resolved['password_configured'] = bool(str(resolved.get('password_secret_ref') or '').strip())
+        resolved['oauth_configured'] = bool(str(resolved.get('oauth_token') or '').strip() and str(resolved.get('oauth_token_secret') or '').strip())
+        resolved['guild_backend_token_configured'] = bool(str(resolved.get('guild_backend_token') or '').strip())
+        resolved['platform_authorization_configured'] = bool(str(resolved.get('platform_authorization') or '').strip())
+        with self.db.connect() as conn:
+            token_row = conn.execute("SELECT refresh_token FROM cms_executor_tokens WHERE guild_name = ?", (normalized_guild_name,)).fetchone()
+        resolved['cms_refresh_token_configured'] = bool(token_row and str(token_row['refresh_token'] or '').strip())
         return resolved
+
+    def guild_executor_has_platform_cms_route(self, guild_name: Optional[str]) -> bool:
+        executor = self.resolve_guild_executor(guild_name)
+        if not executor or not executor.get('enabled'):
+            return False
+        return bool(
+            str(executor.get('platform_backend_url') or '').strip()
+            and str(executor.get('platform_authorization') or '').strip()
+        )
 
     def get_guild_executor(self, guild_name: str) -> Dict[str, Any]:
         resolved = self.resolve_guild_executor(guild_name)
@@ -18478,6 +20266,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'guild_name': resolved['guild_name'],
             'backend_url': resolved['backend_url'],
             'login_username': resolved['login_username'],
+            'platform_backend_url': resolved.get('platform_backend_url') or '',
             'proxy_url': resolved.get('proxy_url') or '',
             'proxy_region': resolved.get('proxy_region') or '',
             'proxy_type': resolved.get('proxy_type') or '',
@@ -18487,6 +20276,10 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'request_timeout_seconds': int(resolved.get('request_timeout_seconds') or 30),
             'notes': resolved.get('notes') or '',
             'password_configured': bool(resolved.get('password_configured')),
+            'oauth_configured': bool(resolved.get('oauth_configured')),
+            'guild_backend_token_configured': bool(resolved.get('guild_backend_token_configured')),
+            'platform_authorization_configured': bool(resolved.get('platform_authorization_configured')),
+            'cms_refresh_token_configured': bool(resolved.get('cms_refresh_token_configured')),
             'updated_at': resolved.get('updated_at'),
         }
 
@@ -18924,11 +20717,17 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         normalized_guild_name = str(guild_name or '').strip()
         if not normalized_guild_name:
             raise HTTPException(status_code=400, detail='guild_name is required')
+        existing_executor = self.resolve_guild_executor(normalized_guild_name)
         row = {
             'guild_name': normalized_guild_name,
-            'backend_url': str(payload.backend_url or '').strip(),
+            'backend_url': GUILD_BACKEND_BASE_URL,
             'login_username': str(payload.login_username or '').strip(),
             'password_secret_ref': str(payload.password_secret_ref or '').strip(),
+            'guild_backend_token': str(payload.guild_backend_token or '').strip(),
+            'oauth_token': str(payload.oauth_token or '').strip(),
+            'oauth_token_secret': str(payload.oauth_token_secret or '').strip(),
+            'platform_backend_url': PLATFORM_BACKEND_BASE_URL,
+            'platform_authorization': str(payload.platform_authorization or payload.platform_backend_token or '').strip(),
             'proxy_url': str(payload.proxy_url or '').strip(),
             'proxy_region': str(payload.proxy_region or '').strip(),
             'proxy_type': str(payload.proxy_type or '').strip() or 'http',
@@ -18942,10 +20741,11 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         if not row['browser_profile_key']:
             slug = re.sub(r'[^a-z0-9]+', '-', normalized_guild_name.lower()).strip('-') or 'default'
             row['browser_profile_key'] = f'guild-{slug}'
-        if not row['backend_url']:
-            raise HTTPException(status_code=400, detail='backend_url is required')
-        if not row['login_username']:
-            raise HTTPException(status_code=400, detail='login_username is required')
+        if not (
+            (row['oauth_token'] and row['oauth_token_secret'])
+            or (existing_executor and existing_executor.get('oauth_configured') and not row['oauth_token'] and not row['oauth_token_secret'])
+        ):
+            raise HTTPException(status_code=400, detail='oauth_token and oauth_token_secret are required')
         if row['proxy_region'] and row['proxy_region'] not in GUILD_EXECUTOR_PROXY_REGION_VALUES:
             raise HTTPException(status_code=400, detail='proxy_region must be one of the configured city options')
         with self.db.connect() as conn:
@@ -18959,14 +20759,19 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             conn.execute(
                 """
                 INSERT INTO guild_executors (
-                    guild_name, backend_url, login_username, password_secret_ref, proxy_url, proxy_region,
+                    guild_name, backend_url, login_username, password_secret_ref, guild_backend_token, oauth_token, oauth_token_secret, platform_backend_url, platform_authorization, proxy_url, proxy_region,
                     proxy_type, enabled, browser_profile_key, bind_concurrency, request_timeout_seconds,
                     notes, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_name)
                 DO UPDATE SET backend_url = excluded.backend_url,
                               login_username = excluded.login_username,
                               password_secret_ref = CASE WHEN excluded.password_secret_ref != '' THEN excluded.password_secret_ref ELSE guild_executors.password_secret_ref END,
+                              guild_backend_token = CASE WHEN excluded.guild_backend_token != '' THEN excluded.guild_backend_token ELSE guild_executors.guild_backend_token END,
+                              oauth_token = CASE WHEN excluded.oauth_token != '' THEN excluded.oauth_token ELSE guild_executors.oauth_token END,
+                              oauth_token_secret = CASE WHEN excluded.oauth_token_secret != '' THEN excluded.oauth_token_secret ELSE guild_executors.oauth_token_secret END,
+                              platform_backend_url = excluded.platform_backend_url,
+                              platform_authorization = CASE WHEN excluded.platform_authorization != '' THEN excluded.platform_authorization ELSE guild_executors.platform_authorization END,
                               proxy_url = excluded.proxy_url,
                               proxy_region = excluded.proxy_region,
                               proxy_type = excluded.proxy_type,
@@ -18978,28 +20783,28 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                               updated_at = excluded.updated_at
                 """,
                 (
-                    row['guild_name'], row['backend_url'], row['login_username'], row['password_secret_ref'], row['proxy_url'], row['proxy_region'],
+                    row['guild_name'], row['backend_url'], row['login_username'], row['password_secret_ref'], row['guild_backend_token'], row['oauth_token'], row['oauth_token_secret'], row['platform_backend_url'], row['platform_authorization'], row['proxy_url'], row['proxy_region'],
                     row['proxy_type'], row['enabled'], row['browser_profile_key'], row['bind_concurrency'], row['request_timeout_seconds'],
                     row['notes'], row['updated_at'],
                 ),
             )
+            cms_refresh_token = str(payload.cms_refresh_token or payload.refresh_token or '').strip()
+            if cms_refresh_token:
+                conn.execute(
+                    """
+                    INSERT INTO cms_executor_tokens(guild_name, refresh_token, updated_at)
+                    VALUES(?, ?, datetime('now'))
+                    ON CONFLICT(guild_name) DO UPDATE SET
+                      refresh_token = excluded.refresh_token,
+                      updated_at = datetime('now'),
+                      last_refresh_error = NULL
+                    """,
+                    (normalized_guild_name, cms_refresh_token),
+                )
             conn.commit()
-        return {
-            'saved': True,
-            'guild_name': row['guild_name'],
-            'backend_url': row['backend_url'],
-            'login_username': row['login_username'],
-            'proxy_url': row['proxy_url'],
-            'proxy_region': row['proxy_region'],
-            'proxy_type': row['proxy_type'],
-            'enabled': bool(row['enabled']),
-            'browser_profile_key': row['browser_profile_key'],
-            'bind_concurrency': row['bind_concurrency'],
-            'request_timeout_seconds': row['request_timeout_seconds'],
-            'notes': row['notes'],
-            'password_configured': bool(row['password_secret_ref']),
-            'updated_at': row['updated_at'],
-        }
+        persisted = self.get_guild_executor(normalized_guild_name)
+        persisted['saved'] = True
+        return persisted
 
     def ensure_current_intake_preset(self) -> Dict[str, Any]:
         rows = self._fetch_intake_bot_preset_rows()
@@ -19379,6 +21184,178 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'guild_options_source': str(guild_dropdown.get('source') or 'unavailable'),
         }
 
+    def _hermes_profile_root(self) -> Path:
+        return Path(os.getenv('HERMES_HOME') or (Path.home() / '.hermes')).expanduser()
+
+    def _read_dotenv_lines(self, path: Path) -> List[str]:
+        if not path.exists():
+            return []
+        return path.read_text(encoding='utf-8', errors='ignore').splitlines()
+
+    def _write_dotenv_values(self, env_path: Path, updates: Dict[str, str], *, remove_keys: Optional[List[str]] = None) -> None:
+        remove = set(remove_keys or [])
+        keys = set(updates) | remove
+        lines = []
+        seen = set()
+        for line in self._read_dotenv_lines(env_path):
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#') or '=' not in stripped:
+                lines.append(line)
+                continue
+            key = stripped.split('=', 1)[0].strip().lstrip('export ').strip()
+            if key in remove:
+                seen.add(key)
+                continue
+            if key in updates:
+                value = str(updates[key])
+                escaped = value.replace("'", "'\\''")
+                lines.append(f"{key}='{escaped}'")
+                seen.add(key)
+            else:
+                lines.append(line)
+        for key, value in updates.items():
+            if key not in seen:
+                escaped = str(value).replace("'", "'\\''")
+                lines.append(f"{key}='{escaped}'")
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text('\n'.join(lines).rstrip() + '\n', encoding='utf-8')
+        try:
+            os.chmod(env_path, 0o600)
+        except OSError:
+            pass
+
+    def _validate_lark_app_credentials(self, *, app_id: str, app_secret: str) -> Dict[str, Any]:
+        normalized_app_id = str(app_id or '').strip()
+        normalized_secret = str(app_secret or '').strip()
+        if not normalized_app_id or not normalized_secret:
+            return {'ok': False, 'code': 'missing_credentials', 'msg': 'missing app_id or app_secret'}
+        try:
+            response = requests.post(
+                'https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal',
+                json={'app_id': normalized_app_id, 'app_secret': normalized_secret},
+                timeout=15,
+            )
+            response.raise_for_status()
+            body = response.json()
+        except Exception as exc:
+            return {'ok': False, 'code': 'request_failed', 'msg': str(exc)[:180]}
+        return {'ok': body.get('code') == 0, 'code': body.get('code'), 'msg': str(body.get('msg') or '')[:180]}
+
+    def _configure_intake_bot_profile(self, *, profile_name: str, app_id: str, app_secret: str) -> Dict[str, Any]:
+        normalized_profile = str(profile_name or '').strip()
+        normalized_app_id = str(app_id or '').strip()
+        normalized_secret = str(app_secret or '').strip()
+        if not normalized_profile or not normalized_app_id or not normalized_secret:
+            return {'configured': False, 'reason': 'missing_profile_or_credentials'}
+        hermes_home = self._hermes_profile_root()
+        profile_dir = hermes_home / 'profiles' / normalized_profile
+        created = False
+        commands: List[Dict[str, Any]] = []
+        if not profile_dir.exists():
+            hermes_cli = shutil.which('hermes')
+            source_profile_dir = hermes_home / 'profiles' / 'intake'
+            if hermes_cli:
+                cmd = [hermes_cli, 'profile', 'create', normalized_profile, '--clone-from', 'intake']
+                proc = subprocess.run(cmd, cwd=str(Path.cwd()), capture_output=True, text=True, timeout=90)
+                commands.append({'action': 'profile_create', 'returncode': proc.returncode, 'stderr': (proc.stderr or '')[-300:]})
+                if proc.returncode != 0:
+                    raise HTTPException(status_code=500, detail=f'profile_create_failed:{proc.stderr[-200:] if proc.stderr else proc.returncode}')
+                created = True
+            elif source_profile_dir.exists():
+                def _ignore_profile_runtime(src: str, names: List[str]) -> set:
+                    return {name for name in names if name in {'logs', 'sessions', 'tmp', '.cache'} or name.endswith('.log')}
+                shutil.copytree(source_profile_dir, profile_dir, ignore=_ignore_profile_runtime)
+                commands.append({'action': 'profile_clone_without_hermes_cli', 'returncode': 0, 'stderr': 'hermes_cli_not_found; cloned profile directory only'})
+                created = True
+            else:
+                profile_dir.mkdir(parents=True, exist_ok=True)
+                commands.append({'action': 'profile_create_without_hermes_cli', 'returncode': 0, 'stderr': 'hermes_cli_not_found; created profile directory only'})
+                created = True
+        env_path = profile_dir / '.env'
+        updates = {
+            'FEISHU_APP_ID': normalized_app_id,
+            'FEISHU_APP_SECRET': normalized_secret,
+            'FEISHU_DOMAIN': 'lark',
+            'FEISHU_CONNECTION_MODE': 'websocket',
+            'FEISHU_ALLOW_ALL_USERS': 'true',
+            'GATEWAY_ALLOW_ALL_USERS': 'true',
+            'HERMES_DETERMINISTIC_INTAKE_ENABLED': 'true',
+            'HERMES_DETERMINISTIC_INTAKE_URL': 'http://127.0.0.1:8011/api/intake/lark/events',
+            'HERMES_DETERMINISTIC_INTAKE_TIMEOUT_SECONDS': '12',
+            'HERMES_DETERMINISTIC_INTAKE_FALLBACK_TO_AGENT': 'false',
+        }
+        self._write_dotenv_values(env_path, updates, remove_keys=['FEISHU_ALLOWED_USERS'])
+        default_auth = hermes_home / 'auth.json'
+        profile_auth = profile_dir / 'auth.json'
+        if default_auth.exists() and not profile_auth.exists():
+            shutil.copy2(default_auth, profile_auth)
+            try:
+                os.chmod(profile_auth, 0o600)
+            except OSError:
+                pass
+        hermes_cli_for_gateway = shutil.which('hermes')
+        for action, cmd in [
+            ('gateway_install', [hermes_cli_for_gateway, '-p', normalized_profile, 'gateway', 'install'] if hermes_cli_for_gateway else []),
+            ('gateway_restart', [hermes_cli_for_gateway, '-p', normalized_profile, 'gateway', 'restart'] if hermes_cli_for_gateway else []),
+        ]:
+            if not cmd:
+                commands.append({'action': action, 'returncode': -1, 'stderr': 'hermes_cli_not_found'})
+                continue
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+                commands.append({'action': action, 'returncode': proc.returncode, 'stderr': (proc.stderr or '')[-300:]})
+            except Exception as exc:
+                commands.append({'action': action, 'returncode': -1, 'stderr': str(exc)[-300:]})
+        return {'configured': True, 'profile_name': normalized_profile, 'created': created, 'env_path': str(env_path), 'commands': commands}
+
+    def activate_local_intake_bot_gateway(self, profile_name: str, payload: LocalIntakeBotGatewayActivationRequest) -> Dict[str, Any]:
+        normalized_profile_name = str(profile_name or '').strip()
+        if not normalized_profile_name or normalized_profile_name == 'current':
+            raise HTTPException(status_code=400, detail='profile_name is required')
+        if not str(payload.app_secret or '').strip():
+            raise HTTPException(status_code=400, detail='app_secret is required for gateway activation')
+        saved = self.update_intake_bot_preset(normalized_profile_name, payload)
+        setup = saved.get('profile_setup') or {}
+        commands = setup.get('commands') or []
+        failed_commands = [cmd for cmd in commands if cmd.get('action') in {'gateway_install', 'gateway_restart'} and int(cmd.get('returncode') if cmd.get('returncode') is not None else -1) != 0]
+        if failed_commands:
+            return {
+                'ok': False,
+                'profile_name': normalized_profile_name,
+                'saved': True,
+                'reason': 'gateway_command_failed',
+                'profile_setup': setup,
+                'failed_commands': failed_commands,
+            }
+        app_id = str(payload.app_id or '').strip()
+        resolved = self.resolve_intake_bot_preset(app_id=app_id or None, profile_name=normalized_profile_name)
+        logs_dir = self._hermes_profile_root() / 'profiles' / normalized_profile_name / 'logs'
+        agent_log = logs_dir / 'agent.log'
+        gateway_log = logs_dir / 'gateway.log'
+        log_tail = ''
+        connected = False
+        for _ in range(20):
+            log_tail = ''
+            for log_path in (agent_log, gateway_log):
+                if log_path.exists():
+                    try:
+                        log_tail += '\n'.join(log_path.read_text(errors='ignore').splitlines()[-100:]) + '\n'
+                    except Exception:
+                        pass
+            connected = ('Connected in websocket mode' in log_tail) and ('connected to wss://msg-frontier' in log_tail)
+            if connected:
+                break
+            time.sleep(1)
+        return {
+            'ok': bool(connected),
+            'profile_name': normalized_profile_name,
+            'saved': True,
+            'resolved': resolved,
+            'profile_setup': setup,
+            'gateway_connected': bool(connected),
+            'reason': None if connected else 'gateway_not_connected_yet',
+        }
+
     def update_intake_bot_preset(self, profile_name: str, payload: IntakeBotPresetUpdateRequest) -> Dict[str, Any]:
         self.ensure_current_intake_preset()
         normalized_profile_name = str(profile_name or '').strip()
@@ -19400,7 +21377,23 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             normalized_app_id = str(self.current_lark_app_id or '').strip()
         if normalized_profile_name != 'current' and not normalized_app_id:
             raise HTTPException(status_code=400, detail='app_id is required when creating a new bot preset.')
+        duplicate_app = next((row for row in self._fetch_intake_bot_preset_rows()
+                              if str(row.get('profile_name') or '').strip() != normalized_profile_name
+                              and str(row.get('app_id') or '').strip()
+                              and str(row.get('app_id') or '').strip() == normalized_app_id), None)
+        if normalized_profile_name != 'current' and duplicate_app:
+            raise HTTPException(status_code=400, detail=f'app_id_already_used_by_profile:{duplicate_app.get("profile_name")}')
         normalized_robot_name = str(payload.robot_name or (existing or {}).get('robot_name') or normalized_profile_name).strip() or normalized_profile_name
+        profile_setup: Dict[str, Any] = {'configured': False, 'reason': 'app_secret_not_provided'}
+        if str(payload.app_secret or '').strip() and normalized_profile_name != 'current':
+            credential_check = self._validate_lark_app_credentials(app_id=normalized_app_id, app_secret=str(payload.app_secret or '').strip())
+            if not credential_check.get('ok'):
+                raise HTTPException(status_code=400, detail=f'lark_app_credentials_invalid:{credential_check.get("code")}:{credential_check.get("msg")}')
+            profile_setup = self._configure_intake_bot_profile(
+                profile_name=normalized_profile_name,
+                app_id=normalized_app_id,
+                app_secret=str(payload.app_secret or '').strip(),
+            )
         saved_row = self._upsert_intake_bot_preset_row(
             profile_name=normalized_profile_name,
             app_id=normalized_app_id,
@@ -19420,7 +21413,23 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         return {
             'saved': True,
             **saved_row,
+            'profile_setup': profile_setup,
         }
+
+    def delete_intake_bot_preset(self, profile_name: str) -> Dict[str, Any]:
+        self.ensure_current_intake_preset()
+        normalized_profile_name = str(profile_name or '').strip()
+        if not normalized_profile_name:
+            raise HTTPException(status_code=400, detail='profile_name is required')
+        if normalized_profile_name == 'current':
+            raise HTTPException(status_code=400, detail='cannot_delete_current_preset')
+        with self.db.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM intake_bot_presets WHERE profile_name = ?",
+                (normalized_profile_name,),
+            )
+            conn.commit()
+        return {'ok': True, 'deleted': bool(cursor.rowcount)}
 
     def daily_summary(self) -> Dict[str, Any]:
         with self.db.connect() as conn:
@@ -19552,6 +21561,12 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     ingress_worker_count = cfg.get('INGRESS_WORKER_COUNT') or os.getenv('INGRESS_WORKER_COUNT') or 1
     ingress_rate_limit_per_minute = cfg.get('INGRESS_RATE_LIMIT_PER_MINUTE') or os.getenv('INGRESS_RATE_LIMIT_PER_MINUTE') or 600
     external_call_rate_limit_per_minute = cfg.get('EXTERNAL_CALL_RATE_LIMIT_PER_MINUTE') or os.getenv('EXTERNAL_CALL_RATE_LIMIT_PER_MINUTE') or 300
+    group_atmosphere_scheduler_enabled = (
+        bool(cfg.get('GROUP_ATMOSPHERE_SCHEDULER_ENABLED'))
+        if 'GROUP_ATMOSPHERE_SCHEDULER_ENABLED' in cfg
+        else (cfg["DB_PATH"] != ':memory:' and str(os.getenv('GROUP_ATMOSPHERE_SCHEDULER_ENABLED') or 'true').strip().lower() in {'1', 'true', 'yes', 'on'})
+    )
+    group_atmosphere_scheduler_poll_interval_seconds = cfg.get('GROUP_ATMOSPHERE_SCHEDULER_POLL_INTERVAL_SECONDS') or os.getenv('GROUP_ATMOSPHERE_SCHEDULER_POLL_INTERVAL_SECONDS') or 30
     require_invite_code = (
         bool(cfg.get('REQUIRE_INVITE_CODE'))
         if 'REQUIRE_INVITE_CODE' in cfg
@@ -19659,6 +21674,8 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         crm_retry_max_attempts=int(crm_retry_max_attempts or 3),
         bind_retry_max_attempts=int(bind_retry_max_attempts or 2),
         official_group_approval_webhook_url=official_group_approval_webhook_url,
+        group_atmosphere_scheduler_enabled=group_atmosphere_scheduler_enabled,
+        group_atmosphere_scheduler_poll_interval_seconds=float(group_atmosphere_scheduler_poll_interval_seconds or 30),
     )
     _schedule_registration_group_executor_warmup(registration_group_approval_executor)
     print(
@@ -19671,6 +21688,19 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     )
     service.ensure_current_intake_preset()
     app = FastAPI(title="MCN AI Automation")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            'http://47.236.9.71:7819',
+            'http://127.0.0.1:7819',
+            'http://localhost:7819',
+            'http://127.0.0.1:8011',
+            'http://localhost:8011',
+        ],
+        allow_credentials=True,
+        allow_methods=['GET', 'POST', 'DELETE', 'OPTIONS'],
+        allow_headers=['*'],
+    )
     app.state.service = service
     app.state.auth_enabled = auth_enabled
     app.state.auth_manager = auth_manager
@@ -19739,6 +21769,8 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
                 return RedirectResponse(url=f"/login?next={quote(path)}", status_code=303)
             if exc.status_code == 403 and detail == 'ops_admin_required':
                 return RedirectResponse(url='/ops', status_code=303)
+            if exc.status_code == 403 and detail in {'ops_customer_service_required', 'ops_operator_required'}:
+                return RedirectResponse(url='/ops/group-atmosphere', status_code=303)
         return JSONResponse(status_code=exc.status_code, content={'detail': detail})
 
     def _ops_api_required_role(path: str, method: str) -> Optional[str]:
@@ -19784,7 +21816,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         if path.startswith('/api/ops/whatsapp-approval-accounts/') and '/session/internal' in path:
             return OPS_AUTH_ROLE_INTERNAL
         if path.startswith('/api/ops/whatsapp-approval-accounts/') and normalized_method == 'GET':
-            return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         if path in {
             '/api/ops/ingress-queue',
             '/api/ops/operator-audit-log',
@@ -19800,14 +21832,16 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             '/api/ops/exception-queue',
             '/api/ops/sla-summary',
         } and normalized_method == 'GET':
-            return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         if path.startswith('/api/ops/guild-executors/') and normalized_method == 'GET':
-            return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         if path.startswith('/api/ops/accounts'):
             if normalized_method == 'DELETE':
                 return OPS_AUTH_ROLE_SUPER_ADMIN
             return OPS_AUTH_ROLE_ADMIN
-        if path.startswith('/api/ops/intake-bot-presets/') and normalized_method == 'POST':
+        if path.startswith('/api/ops/local-intake-bot-gateway/') and normalized_method == 'POST':
+            return OPS_AUTH_ROLE_ADMIN
+        if path.startswith('/api/ops/intake-bot-presets/') and normalized_method in {'POST', 'DELETE'}:
             return OPS_AUTH_ROLE_ADMIN
         if path in {
             '/api/ops/registration-group-approval-executor-warmup',
@@ -19831,19 +21865,19 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             '/api/ops/next-action',
             '/api/ops/whatsapp-approval-area-options',
         }:
-            return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         if path.startswith('/api/ops/operator-notifications/') and normalized_method == 'POST':
-            return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         if path.startswith('/api/ops/manual-review/') and normalized_method == 'POST':
-            return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         if path.startswith('/api/ops/guild-executors/') and normalized_method in {'POST', 'DELETE'}:
             return OPS_AUTH_ROLE_ADMIN
         if path.startswith('/api/ops/whatsapp-approval-accounts/') and normalized_method in {'POST', 'DELETE'}:
-            return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         if path.startswith('/api/ops/submissions/') and normalized_method == 'POST':
-            return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         if path.startswith('/api/ops/leads/') and normalized_method == 'POST':
-            return OPS_AUTH_ROLE_OPERATOR
+            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         return None
 
     def _assert_ops_api_permissions_complete(app: FastAPI) -> None:
@@ -19877,10 +21911,14 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             return await call_next(request)
         if path.startswith('/api/ops/'):
             is_sensitive_config_mutation = (
-                (path.startswith('/api/ops/intake-bot-presets/') and request.method.upper() == 'POST')
+                (path.startswith('/api/ops/intake-bot-presets/') and request.method.upper() in {'POST', 'DELETE'})
                 or (path.startswith('/api/ops/guild-executors/') and request.method.upper() in {'POST', 'DELETE'})
             )
-            should_enforce_ops_api_auth = bool(auth_internal_token) or path.startswith('/api/ops/accounts') or is_sensitive_config_mutation
+            client_host = str(request.client.host if request.client else '').strip().lower()
+            is_loopback_internal_call = client_host in {'127.0.0.1', '::1', 'localhost'}
+            # Production daemons/workers call ops APIs from 127.0.0.1 without a browser session.
+            # Keep browser/API role enforcement for external clients, but preserve local service-to-service calls.
+            should_enforce_ops_api_auth = bool(auth_enabled) and not is_loopback_internal_call
             if should_enforce_ops_api_auth:
                 required_role = _ops_api_required_role(path, request.method)
                 if required_role is not None:
@@ -19932,6 +21970,9 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     function safeNextUrlForRole(role) {
       const normalizedRole = String(role || '').trim().toLowerCase();
       const target = String(nextUrl || '/ops');
+      if (normalizedRole === 'operator') {
+        return (target === '/ops/group-atmosphere' || target.startsWith('/ops/group-atmosphere?')) ? target : '/ops/group-atmosphere';
+      }
       if (!['admin', 'super_admin'].includes(normalizedRole) && adminOnlyNextTargets.some((path) => target === path || target.startsWith(`${path}?`))) {
         return '/ops';
       }
@@ -20126,7 +22167,8 @@ tr:hover td { background:#fbfdff; }
 .badge { display:inline-flex; align-items:center; gap:5px; padding:4px 9px; border-radius:999px; font-size:12px; font-weight:800; }
 .badge.super_admin { background:#fde68a; color:#92400e; }
 .badge.admin { background:#dbeafe; color:#1d4ed8; }
-.badge.operator { background:#dcfce7; color:#166534; }
+.badge.customer_service { background:#dcfce7; color:#166534; }
+.badge.operator { background:#fef3c7; color:#92400e; }
 .badge.off { background:#fee2e2; color:#991b1b; }
 .badge.pending { background:#fef3c7; color:#92400e; }
 .inline-edit { display:flex; gap:8px; align-items:center; }
@@ -20158,7 +22200,7 @@ tr:hover td { background:#fbfdff; }
   <div class="summary" id="summaryCards">
     <div class="summary-item"><div class="label">总账号</div><div class="value" id="totalCount">-</div></div>
     <div class="summary-item"><div class="label">超级管理员</div><div class="value" id="superAdminCount">-</div></div>
-    <div class="summary-item"><div class="label">管理员/运营</div><div class="value" id="adminCount">-</div></div>
+    <div class="summary-item"><div class="label">管理员/客服/运营</div><div class="value" id="adminCount">-</div></div>
     <div class="summary-item"><div class="label">停用</div><div class="value" id="disabledCount">-</div></div>
   </div>
   <div class="card">
@@ -20166,7 +22208,7 @@ tr:hover td { background:#fbfdff; }
     <div class="grid">
       <label><div class="label">账号</div><input id="username" autocomplete="off" placeholder="例如 ops01" /></label>
       <label><div class="label">显示名</div><input id="displayName" autocomplete="off" placeholder="例如 印尼运营A" /></label>
-      <label><div class="label">角色</div><select id="role"><option value="operator">普通运营</option><option value="admin">管理员</option><option value="super_admin">超级管理员</option></select></label>
+      <label><div class="label">角色</div><select id="role"><option value="customer_service">客服</option><option value="operator">运营</option><option value="admin">管理员</option><option value="super_admin">超级管理员</option></select></label>
       <label><div class="label">初始密码</div><input id="password" type="password" autocomplete="new-password" placeholder="至少 8 位" /></label>
       <div><button id="createBtn" type="button" onclick="createAccount()">创建账号</button></div>
     </div>
@@ -20179,6 +22221,14 @@ tr:hover td { background:#fbfdff; }
     </div>
     <div id="tableMessage" class="status-line">加载中...</div>
     <div class="table-wrap"><table><thead><tr><th>账号</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead><tbody id="rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody></table></div>
+  </div>
+</div>
+<div id="displayNameModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
+  <div class="modal">
+    <div class="modal-head"><div><h2>修改显示名</h2><div class="muted">修改后立即在后台账号列表生效。</div></div><button class="ghost" type="button" onclick="closeDisplayNameModal()">关闭</button></div>
+    <label><div class="label">显示名</div><input id="displayNameInput" autocomplete="off" /></label>
+    <div id="displayNameMessage" class="status-line"></div>
+    <div class="modal-actions"><button class="ghost" type="button" onclick="closeDisplayNameModal()">取消</button><button id="displayNameSubmitBtn" type="button" onclick="submitDisplayNameModal()">保存显示名</button></div>
   </div>
 </div>
 <div id="passwordModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
@@ -20201,11 +22251,13 @@ let accounts = [];
 let currentUser = null;
 let passwordMode = null;
 let passwordTargetUserId = null;
+let displayNameTargetUserId = null;
+let displayNameSourceButton = null;
 const errorText = { invalid_username:'账号格式不正确', password_too_short:'密码至少 8 位', username_taken:'账号已存在', user_not_found:'账号不存在', invalid_current_password:'当前密码不正确', ops_admin_required:'需要管理员权限', ops_super_admin_required:'需要超级管理员权限', super_admin_password_protected:'管理员不能重置超级管理员密码', cannot_delete_self:'不能删除当前登录账号', ops_auth_required:'请先登录' };
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>\"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[char])); }
 function detailText(detail, fallback='操作失败') { return errorText[String(detail || '')] || String(detail || fallback); }
 function isSuperAdmin() { return currentUser && currentUser.role === 'super_admin'; }
-function roleText(role) { if (role === 'super_admin') return '超级管理员'; if (role === 'admin') return '管理员'; return '普通运营'; }
+function roleText(role) { if (role === 'super_admin') return '超级管理员'; if (role === 'admin') return '管理员'; if (role === 'customer_service') return '客服'; if (role === 'operator') return '运营'; return '客服'; }
 function badgeRole(role) { return `<span class="badge ${escapeHtml(role)}">${roleText(role)}</span>`; }
 function badgeEnabled(enabled) { return enabled ? '<span class="badge operator">启用</span>' : '<span class="badge off">停用</span>'; }
 function showToast(message, type='success') { const toast=document.getElementById('toast'); toast.textContent=message; toast.className=`toast ${type}`; toast.style.display='block'; clearTimeout(window.__accountToastTimer); window.__accountToastTimer=setTimeout(()=>{toast.style.display='none';},2600); }
@@ -20233,11 +22285,12 @@ async function loadAccounts() {
 function updateSummary() {
   const superAdmin=accounts.filter(x=>x.role==='super_admin').length;
   const admin=accounts.filter(x=>x.role==='admin').length;
+  const customerService=accounts.filter(x=>x.role==='customer_service').length;
   const operator=accounts.filter(x=>x.role==='operator').length;
   const disabled=accounts.filter(x=>!x.enabled).length;
   document.getElementById('totalCount').textContent=accounts.length;
   document.getElementById('superAdminCount').textContent=superAdmin;
-  document.getElementById('adminCount').textContent=`${admin}/${operator}`;
+  document.getElementById('adminCount').textContent=`${admin}/${customerService}/${operator}`;
   document.getElementById('disabledCount').textContent=disabled;
 }
 function renderAccounts() {
@@ -20245,16 +22298,18 @@ function renderAccounts() {
   const rows=accounts.filter(row => !q || String(row.username || '').toLowerCase().includes(q) || String(row.display_name || '').toLowerCase().includes(q));
   if (!rows.length) { document.getElementById('rows').innerHTML = '<tr><td colspan="5" class="muted">暂无匹配账号</td></tr>'; return; }
   document.getElementById('rows').innerHTML = rows.map((row) => {
-    const userId=JSON.stringify(row.user_id);
+    const userIdJson=escapeHtml(JSON.stringify(row.user_id));
+    const usernameJson=escapeHtml(JSON.stringify(row.username || ''));
+    const displayNameJson=escapeHtml(JSON.stringify(row.display_name || ''));
     const isMe=currentUser && currentUser.user_id === row.user_id;
-    const roleOptions = `<option value="operator" ${row.role === 'operator' ? 'selected' : ''}>普通运营</option><option value="admin" ${row.role === 'admin' ? 'selected' : ''}>管理员</option><option value="super_admin" ${row.role === 'super_admin' ? 'selected' : ''}>超级管理员</option>`;
-    const actions = [`<button class="ghost" type="button" onclick="openDisplayNameEditor(${userId}, ${JSON.stringify(row.display_name || '')}, this)">改显示名</button>`];
-    if (!(row.role === 'super_admin' && !isSuperAdmin())) actions.push(`<button class="secondary" type="button" onclick="openAdminResetPassword(${userId}, ${JSON.stringify(row.username)})">管理员重置密码</button>`);
-    if (isSuperAdmin() && !isMe) actions.push(`<button class="danger" type="button" onclick="deleteAccount(${userId}, ${JSON.stringify(row.username)}, this)">删除账号</button>`);
+    const roleOptions = `<option value="customer_service" ${row.role === 'customer_service' ? 'selected' : ''}>客服</option><option value="operator" ${row.role === 'operator' ? 'selected' : ''}>运营</option><option value="admin" ${row.role === 'admin' ? 'selected' : ''}>管理员</option><option value="super_admin" ${row.role === 'super_admin' ? 'selected' : ''}>超级管理员</option>`;
+    const actions = [`<button class="ghost" type="button" onclick="openDisplayNameEditor(${userIdJson}, ${displayNameJson}, this)">改显示名</button>`];
+    if (!(row.role === 'super_admin' && !isSuperAdmin())) actions.push(`<button class="secondary" type="button" onclick="openAdminResetPassword(${userIdJson}, ${usernameJson})">管理员重置密码</button>`);
+    if (isSuperAdmin() && !isMe) actions.push(`<button class="danger" type="button" onclick="deleteAccount(${userIdJson}, ${usernameJson}, this)">删除账号</button>`);
     return `<tr>
       <td><div class="account-line"><span class="account-main">${escapeHtml(row.username)}</span><span class="account-sub">${escapeHtml(row.display_name || row.username)}</span>${isMe ? '<span class="badge pending">当前登录</span>' : ''}</div></td>
-      <td><div class="role-cell">${badgeRole(row.role)}<select aria-label="修改角色" onchange="updateAccount(${userId}, {role:this.value}, this, '角色已保存')">${roleOptions}</select></div></td>
-      <td><div class="status-cell">${badgeEnabled(!!row.enabled)}<select aria-label="修改状态" onchange="updateAccount(${userId}, {enabled:this.value==='enabled'}, this, this.value==='enabled'?'账号已启用':'账号已停用')"><option value="enabled" ${row.enabled ? 'selected' : ''}>启用</option><option value="disabled" ${!row.enabled ? 'selected' : ''}>停用</option></select></div></td>
+      <td><div class="role-cell">${badgeRole(row.role)}<select aria-label="修改角色" onchange="updateAccount(${userIdJson}, {role:this.value}, this, '角色已保存')">${roleOptions}</select></div></td>
+      <td><div class="status-cell">${badgeEnabled(!!row.enabled)}<select aria-label="修改状态" onchange="updateAccount(${userIdJson}, {enabled:this.value==='enabled'}, this, this.value==='enabled'?'账号已启用':'账号已停用')"><option value="enabled" ${row.enabled ? 'selected' : ''}>启用</option><option value="disabled" ${!row.enabled ? 'selected' : ''}>停用</option></select></div></td>
       <td>${escapeHtml(row.last_login_at || '-')}</td>
       <td><div class="actions">${actions.join('')}</div></td>
     </tr>`;
@@ -20286,15 +22341,35 @@ async function deleteAccount(userId, username, control=null) {
   finally { if (control) control.disabled=false; }
 }
 function openDisplayNameEditor(userId, currentName, btn) {
-  const next = window.prompt('输入新的显示名', currentName || '');
-  if (next === null) return;
-  updateAccount(userId, {display_name: next}, btn, '显示名已保存');
+  displayNameTargetUserId = userId;
+  displayNameSourceButton = btn || null;
+  const input = document.getElementById('displayNameInput');
+  input.value = currentName || '';
+  setStatus('displayNameMessage','');
+  document.getElementById('displayNameModal').style.display='flex';
+  setTimeout(()=>input.focus(), 0);
+}
+function closeDisplayNameModal() { document.getElementById('displayNameModal').style.display='none'; displayNameTargetUserId=null; displayNameSourceButton=null; setStatus('displayNameMessage',''); }
+async function submitDisplayNameModal() {
+  const btn=document.getElementById('displayNameSubmitBtn');
+  const next=document.getElementById('displayNameInput').value.trim();
+  if (!next) { setStatus('displayNameMessage','显示名不能为空','error'); return; }
+  setBusy(btn,true,'保存中...');
+  setStatus('displayNameMessage','保存中...');
+  try {
+    await updateAccount(displayNameTargetUserId, {display_name: next}, displayNameSourceButton, '显示名已保存');
+    closeDisplayNameModal();
+  } catch (err) {
+    setStatus('displayNameMessage', err.message || '保存失败', 'error');
+  } finally {
+    setBusy(btn,false);
+  }
 }
 function clearPasswordForm() { ['currentPassword','newPassword','confirmPassword'].forEach(id => { const el=document.getElementById(id); if (el) { el.value=''; el.type='password'; } }); const toggle=document.getElementById('passwordVisibleToggle'); if (toggle) toggle.checked=false; showGeneratedPassword(''); setStatus('passwordMessage',''); }
 function openChangeOwnPassword() { passwordMode='self'; passwordTargetUserId=null; clearPasswordForm(); document.getElementById('passwordModalTitle').textContent='修改我的密码'; document.getElementById('passwordModalHint').textContent='需要输入当前密码，保存后下次登录使用新密码。'; document.getElementById('currentPasswordWrap').style.display='block'; document.getElementById('generatePasswordBtn').style.display='none'; document.getElementById('passwordSubmitBtn').textContent='保存新密码'; document.getElementById('passwordModal').style.display='flex'; }
 function openAdminResetPassword(userId, username) { passwordMode='admin-reset'; passwordTargetUserId=userId; clearPasswordForm(); document.getElementById('passwordModalTitle').textContent='管理员重置密码'; document.getElementById('passwordModalHint').textContent=`目标账号：${username}。弹窗会直接生成新密码，请复制给使用人后保存。`; document.getElementById('currentPasswordWrap').style.display='none'; document.getElementById('generatePasswordBtn').style.display='inline-flex'; document.getElementById('passwordSubmitBtn').textContent='重置密码'; document.getElementById('passwordModal').style.display='flex'; generateTemporaryPassword(); }
 function closePasswordModal() { document.getElementById('passwordModal').style.display='none'; clearPasswordForm(); }
-function closeModalOnBackdrop(event) { if (event.target && event.target.id === 'passwordModal') closePasswordModal(); }
+function closeModalOnBackdrop(event) { if (event.target && event.target.id === 'passwordModal') closePasswordModal(); if (event.target && event.target.id === 'displayNameModal') closeDisplayNameModal(); }
 async function submitPasswordModal() {
   const btn=document.getElementById('passwordSubmitBtn');
   const current=document.getElementById('currentPassword').value;
@@ -20377,19 +22452,23 @@ loadAccounts();
     .card { background: #fff; border: 1px solid #dbe4f0; border-radius: 18px; padding: 18px; box-shadow: 0 10px 28px rgba(15,23,42,.06); margin-bottom: 16px; }
     h1 { margin: 0 0 8px 0; font-size: 30px; }
     .muted { color: #5d6b82; font-size: 13px; line-height: 1.6; }
-    .filters { display: grid; grid-template-columns: minmax(220px, 1.3fr) repeat(5, minmax(0, 1fr)) auto; gap: 10px; align-items: end; }
+    .filters { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 14px 16px; align-items: end; }
+    .filters label, .range-picker { min-width: 0; display:flex; flex-direction:column; gap:0; }
     input, select { width: 100%; box-sizing: border-box; min-height:40px; padding: 10px 12px; border: 1px solid #c7d4e3; border-radius: 10px; font-size: 14px; }
     button { min-height:40px; padding: 10px 14px; border: none; border-radius: 10px; background: #2563eb; color: #fff; font-weight: 600; cursor: pointer; }
-    .range-picker { display:flex; flex-direction:column; gap:0; }
     .range-picker-display { display:flex; align-items:center; gap:8px; }
     .range-picker-input { flex:1; width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #c7d4e3; border-radius:10px; font-size:14px; background:#fff; color:#0f172a; }
     .range-picker-clear { background:#e2e8f0; color:#334155; }
     .range-picker-hidden { display:none; }
+    .filter-actions { grid-column: 3 / 5; display:flex; gap:10px; align-items:flex-end; justify-content:flex-end; flex-wrap:wrap; padding-top:0; align-self:end; }
+    .filter-actions button { min-width:96px; }
+    .filter-actions button:nth-child(n+2) { background:#f2f6ff; color:#1f55d9; border:1px solid #d7e5ff; }
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 1100px; }
     th, td { padding: 10px 12px; border-bottom: 1px solid #e5edf6; text-align: left; vertical-align: top; }
-    th { color: #5d6b82; font-weight: 600; background: #f8fbff; position: relative; white-space: nowrap; }
-    th.resizable-column { user-select: none; }
+    th { color: #5d6b82; font-weight: 600; background: #f8fbff; position: relative; white-space: nowrap; text-align:center; vertical-align:middle; }
+    td { vertical-align:middle; }
+    th.resizable-column { user-select: none; text-align:center; }
     .batch-member-resize-handle { position: absolute; top: 0; right: -4px; width: 10px; height: 100%; cursor: col-resize; z-index: 3; }
     .batch-member-resize-handle::after { content: ''; position: absolute; top: 10px; bottom: 10px; left: 4px; width: 2px; border-radius: 999px; background: #d7e3f4; }
     th.resizable-column:hover .batch-member-resize-handle::after, body.batch-member-column-resizing .batch-member-resize-handle::after { background: #93c5fd; }
@@ -20411,8 +22490,10 @@ loadAccounts();
     .selection-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:10px; color:#475569; font-size:13px; }
     .selection-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
     .selection-actions button { background:#e2e8f0; color:#334155; }
-    .select-col { text-align:center; width:48px; }
-    .select-col input { width:18px; min-height:18px; padding:0; cursor:pointer; }
+    .select-col { text-align:center; width:48px; padding-left:0; padding-right:0; vertical-align:middle; }
+    .select-col input { width:18px; height:18px; min-height:18px; padding:0; margin:0 auto; cursor:pointer; display:block; }
+    @media (max-width: 1100px) { .filters { grid-template-columns: repeat(2, minmax(180px, 1fr)); } .filter-actions { grid-column: 1 / -1; justify-content:flex-start; } }
+    @media (max-width: 720px) { .filters { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -20446,7 +22527,7 @@ loadAccounts();
         <label><div class=\"label\">地区</div><select id=\"area\"><option value=\"\">全部地区</option></select></label>
         <label><div class=\"label\">关键词</div><input id=\"keyword\" placeholder=\"昵称 / WA 号码\" /></label>
         <label><div class=\"label\">注册状态</div><select id=\"registration_status\"><option value=\"\">全部</option><option value=\"registered\">已注册</option><option value=\"in_progress\">引导注册中</option><option value=\"not_found\">未注册</option></select></label>
-        <div style=\"display:flex; gap:10px; align-items:flex-end;\"><button onclick=\"reloadBatchMembers(true)\">查询</button><button onclick=\"exportBatchMembers('xlsx')\">导出 xlsx</button><button onclick=\"exportBatchMembers('csv')\">导出 CSV</button></div>
+        <div class=\"filter-actions\"><button onclick=\"reloadBatchMembers(true)\">查询</button><button onclick=\"exportBatchMembers('xlsx')\">导出 xlsx</button><button onclick=\"exportBatchMembers('csv')\">导出 CSV</button></div>
       </div>
     </div>
     <div class=\"card\">
@@ -20883,20 +22964,41 @@ loadAccounts();
     @app.post('/api/ops/group-atmosphere/accounts/{account_key}/chat-records/upload')
     async def group_atmosphere_account_chat_records_upload(account_key: str, request: Request) -> Dict[str, Any]:
         payload = await request.json()
-        text = str((payload or {}).get('content') or '')
-        records: List[GroupAtmosphereChatRecord] = []
-        for raw_line in text.splitlines():
-            line = str(raw_line or '').strip()
-            if not line:
-                continue
-            sender = 'imported'
-            message_text = line
-            match = re.match(r'^\[[^\]]+\]\s*([^:：]+)[:：]\s*(.+)$', line)
-            if match:
-                sender = match.group(1).strip() or 'imported'
-                message_text = match.group(2).strip()
-            records.append(GroupAtmosphereChatRecord(sender=sender, text=message_text))
+        records = service._parse_group_atmosphere_chat_export(str((payload or {}).get('content') or ''))
         return service.import_group_atmosphere_chat_records_for_account(account_key, records)
+
+    @app.post('/api/ops/group-atmosphere/chat-records/auto-learn')
+    async def group_atmosphere_chat_records_auto_learn(request: Request) -> Dict[str, Any]:
+        payload = await request.json()
+        return service.auto_learn_group_atmosphere_chat_records(
+            filename=str((payload or {}).get('filename') or ''),
+            content=str((payload or {}).get('content') or ''),
+            files=(payload or {}).get('files') if isinstance((payload or {}).get('files'), list) else None,
+        )
+
+    @app.post('/api/ops/group-atmosphere/accounts/{account_key}/groups/{group_index}/send')
+    def group_atmosphere_account_group_send(account_key: str, group_index: int, payload: GroupAtmosphereManualSendRequest) -> Dict[str, Any]:
+        return service.send_group_atmosphere_account_group_message(account_key, group_index, payload)
+
+    @app.get('/api/ops/group-atmosphere/candidate-pool')
+    def group_atmosphere_candidate_pool() -> Dict[str, Any]:
+        return service.list_group_atmosphere_candidate_pool()
+
+    @app.post('/api/ops/group-atmosphere/candidate-pool/enable')
+    def group_atmosphere_candidate_pool_enable(payload: GroupAtmosphereCandidateEnableRequest) -> Dict[str, Any]:
+        return service.enable_group_atmosphere_candidates(payload)
+
+    @app.post('/api/ops/group-atmosphere/speech-plans/{config_name}/rename')
+    def group_atmosphere_speech_plan_rename(config_name: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+        return service.rename_group_atmosphere_speech_plan(config_name, payload)
+
+    @app.delete('/api/ops/group-atmosphere/speech-plans/{config_name}')
+    def group_atmosphere_speech_plan_delete(config_name: str) -> Dict[str, Any]:
+        return service.delete_group_atmosphere_speech_plan(config_name)
+
+    @app.post('/api/ops/group-atmosphere/scheduler/run-due')
+    def group_atmosphere_scheduler_run_due(payload: GroupAtmosphereSchedulerRunRequest) -> Dict[str, Any]:
+        return service.run_due_group_atmosphere_scheduler(payload)
 
     @app.post('/api/ops/group-atmosphere/configs')
     def group_atmosphere_config_upsert(payload: GroupAtmosphereConfigRequest) -> Dict[str, Any]:
@@ -21010,15 +23112,113 @@ loadAccounts();
             return html
         shell_style = '''
 <style data-ops-shell-normalized="true">
-html { scrollbar-gutter: stable; }
-body { margin: 0 !important; padding: 0 !important; background: #f4f7fb !important; color: #142033 !important; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important; }
-.page-shell, .page { width: min(1280px, calc(100vw - 48px)) !important; max-width: 1280px !important; margin: 0 auto !important; box-sizing: border-box !important; }
-.shell-nav, .nav { position: sticky !important; top: 0 !important; z-index: 30 !important; display: flex !important; align-items: center !important; gap: 10px !important; flex-wrap: wrap !important; min-height: 54px !important; margin: 0 0 16px 0 !important; padding: 12px 0 !important; background: rgba(244,247,251,.96) !important; backdrop-filter: blur(8px) !important; box-sizing: border-box !important; }
-.shell-nav a, .nav a { display: inline-flex !important; align-items: center !important; justify-content: center !important; min-height: 32px !important; box-sizing: border-box !important; padding: 6px 10px !important; border-radius: 999px !important; background: #eef2ff !important; border: 1px solid #dbeafe !important; color: #2563eb !important; text-decoration: none !important; font-size: 13px !important; line-height: 18px !important; font-weight: 600 !important; white-space: nowrap !important; }
-.card, .hero { box-sizing: border-box !important; }
-h1 { letter-spacing: -0.02em; }
-@media (max-width: 900px) { .page-shell, .page { width: min(100vw - 32px, 1280px) !important; } .shell-nav, .nav { min-height: 52px !important; } }
+/* CRM UI system v2: unified light dashboard tokens, typography, spacing */
+:root{
+  --ops-font:Inter,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --ops-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;
+  --ops-bg:#eef3f9;
+  --ops-bg-2:#f6f8fc;
+  --ops-panel:#ffffff;
+  --ops-surface:#f8fbff;
+  --ops-surface-2:#f2f6fc;
+  --ops-border:#e5ebf3;
+  --ops-border-strong:#d7e0ec;
+  --ops-text:#172033;
+  --ops-text-2:#334155;
+  --ops-muted:#718095;
+  --ops-faint:#9aa7b7;
+  --ops-blue:#2f6bff;
+  --ops-blue-hover:#1f55d9;
+  --ops-blue-soft:#edf4ff;
+  --ops-green:#16a34a;
+  --ops-green-soft:#dcfce7;
+  --ops-amber:#d97706;
+  --ops-amber-soft:#fff7ed;
+  --ops-red:#dc2626;
+  --ops-red-soft:#fff1f2;
+  --ops-r-sm:10px;
+  --ops-r-md:14px;
+  --ops-r-lg:18px;
+  --ops-r-xl:22px;
+  --ops-r-2xl:28px;
+  --ops-space-1:4px;
+  --ops-space-2:8px;
+  --ops-space-3:12px;
+  --ops-space-4:16px;
+  --ops-space-5:20px;
+  --ops-space-6:24px;
+  --ops-space-8:32px;
+  --ops-shadow:0 18px 45px rgba(38,55,91,.08);
+  --ops-shadow-soft:0 8px 24px rgba(38,55,91,.06);
+  --ops-shadow-card:0 1px 0 rgba(15,23,42,.02),0 14px 34px rgba(38,55,91,.055);
+}
+html{scrollbar-gutter:stable;background:var(--ops-bg)!important;font-size:14px!important;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+body{margin:0!important;padding:24px!important;min-height:100vh!important;background:radial-gradient(circle at 12% -8%,rgba(47,107,255,.10),transparent 31%),linear-gradient(180deg,#f7f9fd 0%,#eef3f9 100%)!important;color:var(--ops-text)!important;font-family:var(--ops-font)!important;font-size:14px!important;line-height:1.5!important;letter-spacing:-.006em!important;}
+body *{box-sizing:border-box;}
+.page-shell,body>.page{width:min(1480px,calc(100vw - 48px))!important;max-width:1480px!important;margin:0 auto!important;padding:0 0 32px!important;display:grid!important;grid-template-columns:248px minmax(0,1fr)!important;gap:24px!important;align-items:start!important;}
+.shell-nav,.nav{grid-column:1!important;grid-row:1 / span 160!important;position:sticky!important;top:24px!important;z-index:30!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:6px!important;flex-wrap:nowrap!important;min-height:calc(100vh - 48px)!important;margin:0!important;padding:22px 16px!important;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px) saturate(140%)!important;border:1px solid var(--ops-border)!important;border-radius:var(--ops-r-2xl)!important;box-shadow:var(--ops-shadow)!important;}
+.shell-nav::before,.nav::before{content:'MCN 客服工具';display:block;margin:0 8px 18px;padding:0 0 16px;border-bottom:1px solid var(--ops-border);color:#111827;font-size:18px;line-height:1.12;font-weight:760;letter-spacing:-.035em;}
+.shell-nav a,.nav a{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:10px!important;min-height:40px!important;padding:11px 14px!important;border-radius:15px!important;background:transparent!important;border:0!important;color:var(--ops-muted)!important;text-decoration:none!important;font-size:14px!important;line-height:18px!important;font-weight:620!important;letter-spacing:-.01em!important;white-space:nowrap!important;box-shadow:none!important;transition:background .16s ease,color .16s ease,transform .16s ease;}
+.shell-nav a::before,.nav a::before{content:'';width:8px;height:8px;border-radius:999px;background:#cbd5e1;flex:0 0 auto;transition:background .16s ease;}
+.shell-nav a:hover,.nav a:hover{color:var(--ops-blue-hover)!important;background:var(--ops-blue-soft)!important;transform:translateX(1px);}
+.shell-nav a:hover::before,.nav a:hover::before{background:var(--ops-blue)!important;}
+.shell-nav a.is-active,.nav a.is-active{background:var(--ops-blue)!important;color:#fff!important;box-shadow:0 12px 24px rgba(47,107,255,.22)!important;}
+.shell-nav a.is-active::before,.nav a.is-active::before{background:#fff!important;}
+.page-shell>:not(.shell-nav),body>.page>:not(.nav){grid-column:2!important;min-width:0!important;}
+.hero{padding:24px 26px!important;margin:0 0 16px!important;min-height:84px;border-radius:26px!important;background:linear-gradient(135deg,#fff 0%,#f8fbff 56%,#eef5ff 100%)!important;border:1px solid var(--ops-border)!important;box-shadow:var(--ops-shadow-card)!important;color:var(--ops-text)!important;}
+.card,.summary-item,.executor-card,.account-card,.binding-card,.advanced-fields,.qr-modal-card,.modal-card,.status-card,.group-card,.mini-note,fieldset{background:var(--ops-panel)!important;border:1px solid var(--ops-border)!important;color:var(--ops-text)!important;border-radius:var(--ops-r-xl)!important;box-shadow:var(--ops-shadow-card)!important;}
+.card{padding:20px!important;margin-top:16px!important;}
+.card + .card,.group-card + .group-card,.account-card + .account-card{margin-top:16px!important;}
+.summary-item,.status-card,.account-status-item{padding:16px!important;border-radius:var(--ops-r-lg)!important;background:linear-gradient(180deg,#fff 0%,#fbfdff 100%)!important;}
+.account-card,.binding-card{padding:18px!important;}
+.group-card,.mini-note{padding:14px!important;}
+.grid,.mini-tools,.editor-grid,.field-grid,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid,.toolbar-actions,.inline-actions{gap:14px!important;}
+h1,h2,h3,p{margin-top:0;}
+h1{font-size:28px!important;line-height:1.16!important;letter-spacing:-.045em!important;color:#111827!important;font-weight:780!important;margin-bottom:6px!important;}
+h2{font-size:19px!important;line-height:1.28!important;letter-spacing:-.03em!important;color:var(--ops-text)!important;font-weight:740!important;margin-bottom:12px!important;}
+h3{font-size:16px!important;line-height:1.32!important;letter-spacing:-.02em!important;color:var(--ops-text)!important;font-weight:720!important;margin-bottom:8px!important;}
+.section-title{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin-bottom:14px!important;}
+.section-title h2{margin:0!important;}
+.label,label,.k,.muted,.hint,.account-sub,small,.field-hint,.help{color:var(--ops-muted)!important;font-size:13px!important;line-height:1.45!important;}
+strong,.value{color:var(--ops-text)!important;font-weight:720!important;}
+input,select,textarea{width:100%;min-height:40px!important;padding:10px 12px!important;background:#fff!important;color:var(--ops-text)!important;border:1px solid var(--ops-border-strong)!important;border-radius:var(--ops-r-md)!important;box-shadow:0 1px 0 rgba(17,24,39,.02)!important;font:500 14px/1.45 var(--ops-font)!important;margin:6px 0 12px!important;}
+textarea{min-height:88px!important;resize:vertical;}
+input::placeholder,textarea::placeholder{color:var(--ops-faint)!important;}
+input:focus,select:focus,textarea:focus{border-color:#9bbcff!important;box-shadow:0 0 0 4px rgba(47,107,255,.13)!important;outline:none!important;}
+button,.button{min-height:38px!important;padding:9px 14px!important;background:var(--ops-blue)!important;color:#fff!important;border:1px solid var(--ops-blue)!important;border-radius:var(--ops-r-md)!important;font:700 14px/18px var(--ops-font)!important;letter-spacing:-.01em!important;box-shadow:0 8px 18px rgba(47,107,255,.18)!important;cursor:pointer!important;transition:background .16s ease,border-color .16s ease,transform .16s ease,box-shadow .16s ease;}
+button:hover,.button:hover{background:var(--ops-blue-hover)!important;border-color:var(--ops-blue-hover)!important;transform:translateY(-1px);}
+button.secondary,button.ghost,.button.secondary,.button.ghost{background:#f2f6ff!important;border-color:#d7e5ff!important;color:var(--ops-blue-hover)!important;box-shadow:none!important;}
+button.danger{background:var(--ops-red-soft)!important;border-color:#fecdd3!important;color:#be123c!important;box-shadow:none!important;}
+button.switch-on{background:var(--ops-green-soft)!important;border-color:#bbf7d0!important;color:#166534!important;box-shadow:none!important;}
+button.switch-off{background:var(--ops-red-soft)!important;border-color:#fecdd3!important;color:#be123c!important;box-shadow:none!important;}
+button:disabled{opacity:.58!important;cursor:not-allowed!important;transform:none!important;}
+table{width:100%!important;background:#fff!important;border-collapse:separate!important;border-spacing:0!important;border-radius:18px!important;overflow:hidden!important;box-shadow:var(--ops-shadow-soft)!important;font-size:13px!important;}
+th{background:#f5f8ff!important;color:#526178!important;border-bottom:1px solid var(--ops-border)!important;font-size:12px!important;line-height:1.35!important;font-weight:720!important;text-align:left!important;padding:11px 12px!important;}
+td{color:var(--ops-text-2)!important;border-bottom:1px solid var(--ops-border-soft)!important;padding:11px 12px!important;vertical-align:top!important;}
+tr:hover td{background:#f8fbff!important;}
+#batchMembersTable th{text-align:left!important;vertical-align:middle!important;}
+#batchMembersTable td{vertical-align:middle!important;}
+#batchMembersTable .select-col{padding-left:0!important;padding-right:0!important;text-align:center!important;vertical-align:middle!important;}
+#batchMembersTable .select-col input{width:18px!important;height:18px!important;min-height:18px!important;margin:0 auto!important;padding:0!important;display:block!important;}
+.badge,.pill,.binding-badge,.card-monitor-toggle{display:inline-flex;align-items:center;gap:6px;min-height:24px;padding:4px 10px!important;border-radius:999px!important;border:1px solid var(--ops-border)!important;background:#f6f8fc!important;color:var(--ops-text-2)!important;font-size:12px!important;font-weight:720!important;line-height:1.2!important;box-shadow:none!important;}
+.badge.operator,.badge.customer_service,.badge.admin,.badge.super_admin{background:var(--ops-blue-soft)!important;color:var(--ops-blue-hover)!important;border-color:#d7e5ff!important;}
+.badge.off,.pill.red{background:var(--ops-red-soft)!important;color:#be123c!important;border-color:#fecdd3!important;}
+.badge.pending,.pill.orange,.pill.yellow,.pill.amber{background:var(--ops-amber-soft)!important;color:#c2410c!important;border-color:#fed7aa!important;}
+.status-line.success,.pill.green,.badge.green{color:#166534!important;background:var(--ops-green-soft)!important;border-color:#bbf7d0!important;}
+.status-line.error{color:#be123c!important;}
+.toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:14px!important;margin-bottom:14px!important;}
+details{border-radius:var(--ops-r-lg)!important;border:1px solid var(--ops-border)!important;background:#fbfdff!important;padding:12px 14px!important;}
+summary{cursor:pointer;color:var(--ops-text)!important;font-weight:700!important;}
+pre,code{font-family:var(--ops-mono)!important;font-size:12px!important;line-height:1.55!important;}
+.qr-modal,.modal{background:rgba(18,31,54,.46)!important;backdrop-filter:blur(8px)!important;}
+.toast{border:1px solid var(--ops-border)!important;background:#111827!important;color:#fff!important;box-shadow:var(--ops-shadow)!important;border-radius:var(--ops-r-lg)!important;}
+@media (max-width:980px){body{padding:16px!important}.page-shell,body>.page{display:block!important;width:min(100vw - 32px,1480px)!important}.shell-nav,.nav{position:sticky!important;top:0!important;min-height:0!important;flex-direction:row!important;overflow:auto!important;border-radius:0 0 22px 22px!important;margin:-16px -16px 18px!important;padding:14px!important}.shell-nav::before,.nav::before{display:none!important}.shell-nav a,.nav a{white-space:nowrap!important}.page-shell>:not(.shell-nav),body>.page>:not(.nav){grid-column:auto!important}.card{padding:16px!important}.hero{padding:20px!important}.grid,.editor-grid,.mini-tools,.compact-grid,.account-card-grid,.account-status-grid{grid-template-columns:1fr!important}}
+
 </style>
+<script data-ops-shell-active="true">
+(function(){function markActive(){try{var path=location.pathname.replace(/\/$/, '')||'/ops';document.querySelectorAll('.shell-nav a,.nav a').forEach(function(a){var href=(a.getAttribute('href')||'').replace(/\/$/, '')||'/ops';if(href===path){a.classList.add('is-active');}});}catch(e){}}if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',markActive);}else{markActive();}})();
+</script>
+
 '''
         if '</head>' in html:
             return html.replace('</head>', shell_style + '</head>', 1)
@@ -21026,7 +23226,8 @@ h1 { letter-spacing: -0.02em; }
 
     def _ops_page_html(role: str) -> str:
         html = OPS_PAGE_HTML
-        if str(role or '').strip() in {OPS_AUTH_ROLE_SUPER_ADMIN, OPS_AUTH_ROLE_ADMIN}:
+        normalized_role = str(role or '').strip()
+        if normalized_role in {OPS_AUTH_ROLE_SUPER_ADMIN, OPS_AUTH_ROLE_ADMIN}:
             return html
         return re.sub(
             r'\s*<a[^>]*href="/ops/group-atmosphere"[^>]*data-admin-only-nav="true"[^>]*>.*?</a>',
@@ -21035,9 +23236,20 @@ h1 { letter-spacing: -0.02em; }
             flags=re.S,
         )
 
-    def _render_ops_home_page(request: Request) -> str:
+    def _group_atmosphere_page_html(role: str) -> str:
+        html = GROUP_ATMOSPHERE_PAGE_HTML
+        if str(role or '').strip() != OPS_AUTH_ROLE_OPERATOR:
+            return html
+        return html.replace(
+            '<div class="shell-nav"><a href="/ops">运营工作台</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/group-atmosphere">群聊天助手</a><a href="/ops/accounts">账号设置</a></div>',
+            '<div class="shell-nav"><a href="/ops/group-atmosphere">群聊天助手</a></div>',
+        )
+
+    def _render_ops_home_page(request: Request) -> Response:
         user = _require_ops_user(request)
-        return _with_ops_shell_style(_ops_page_html(str(user.get('role') or '').strip()))
+        if str(user.get('role') or '').strip() == OPS_AUTH_ROLE_OPERATOR:
+            return RedirectResponse(url='/ops/group-atmosphere', status_code=303)
+        return HTMLResponse(_with_ops_shell_style(_ops_page_html(str(user.get('role') or '').strip())))
 
     @app.get('/ops', response_class=HTMLResponse)
     def ops_page(request: Request) -> str:
@@ -21049,7 +23261,7 @@ h1 { letter-spacing: -0.02em; }
 
     @app.get('/ops/accounts', response_class=HTMLResponse)
     def ops_accounts_page(request: Request) -> str:
-        user = _require_ops_user(request)
+        user = _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
         return _with_ops_shell_style(_ops_accounts_page_html(str(user.get('role') or '').strip()))
 
     @app.get('/api/ops/accounts')
@@ -21114,28 +23326,28 @@ h1 { letter-spacing: -0.02em; }
 
     @app.get('/ops/intake-bot-presets', response_class=HTMLResponse)
     def intake_bot_presets_page(request: Request) -> str:
-        user = _require_ops_user(request) if auth_enabled else {'role': OPS_AUTH_ROLE_ADMIN}
-        role = str((user or {}).get('role') or OPS_AUTH_ROLE_OPERATOR).strip()
+        user = _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE) if auth_enabled else {'role': OPS_AUTH_ROLE_ADMIN}
+        role = str((user or {}).get('role') or OPS_AUTH_ROLE_CUSTOMER_SERVICE).strip()
         if role == OPS_AUTH_ROLE_SUPER_ADMIN:
             role = OPS_AUTH_ROLE_ADMIN
-        if role not in {OPS_AUTH_ROLE_ADMIN, OPS_AUTH_ROLE_OPERATOR}:
-            role = OPS_AUTH_ROLE_OPERATOR
+        if role not in {OPS_AUTH_ROLE_ADMIN, OPS_AUTH_ROLE_CUSTOMER_SERVICE}:
+            role = OPS_AUTH_ROLE_CUSTOMER_SERVICE
         html = INTAKE_BOT_PRESETS_PAGE_HTML.replace('__OPS_USER_ROLE__', role)
         return _with_ops_shell_style(html)
 
     @app.get('/ops/production-ops', response_class=HTMLResponse)
     def production_ops_page(request: Request) -> str:
-        _require_ops_user(request)
+        _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
         return _with_ops_shell_style(PRODUCTION_OPS_PAGE_HTML)
 
     @app.get('/ops/group-atmosphere', response_class=HTMLResponse)
     def group_atmosphere_page(request: Request) -> str:
-        _require_ops_user(request)
-        return _with_ops_shell_style(GROUP_ATMOSPHERE_PAGE_HTML)
+        user = _require_ops_user(request, role=OPS_AUTH_ROLE_OPERATOR)
+        return _with_ops_shell_style(_group_atmosphere_page_html(str(user.get('role') or '').strip()))
 
     @app.get('/ops/registration-group-approval-batch-members', response_class=HTMLResponse)
     def registration_group_approval_batch_members_page(request: Request) -> str:
-        _require_ops_user(request)
+        _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
         return _with_ops_shell_style(_registration_group_approval_batch_members_page_html())
 
     def _official_group_bridge_base_url() -> str:
@@ -21165,7 +23377,7 @@ h1 { letter-spacing: -0.02em; }
 
     @app.get('/ops/official-group-bridge', response_class=HTMLResponse)
     def official_group_bridge_page(request: Request) -> str:
-        _require_ops_user(request)
+        _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
         response = requests.get(f'{_official_group_bridge_base_url()}/ops/official-group-bridge', timeout=15.0)
         response.raise_for_status()
         html = response.text
@@ -21182,12 +23394,12 @@ h1 { letter-spacing: -0.02em; }
 
     @app.get('/ops/official-group-bridge/health')
     def official_group_bridge_health_proxy(request: Request) -> Dict[str, Any]:
-        _require_ops_user(request)
+        _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
         return _bridge_get_json('/ops/official-group-bridge/health')
 
     @app.get('/ops/official-group-bridge/summary')
     def official_group_bridge_summary_proxy(request: Request) -> Dict[str, Any]:
-        _require_ops_user(request)
+        _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
         return _bridge_get_json('/ops/official-group-bridge/summary')
 
     @app.get('/ops/official-group-bridge/requests')
@@ -21202,7 +23414,7 @@ h1 { letter-spacing: -0.02em; }
         sort_by: str = 'updated_at',
         sort_order: str = 'desc',
     ) -> Dict[str, Any]:
-        _require_ops_user(request)
+        _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
         return _bridge_get_json('/ops/official-group-bridge/requests', {
             'status': status,
             'target_group': target_group,
@@ -21216,12 +23428,12 @@ h1 { letter-spacing: -0.02em; }
 
     @app.get('/ops/official-group-bridge/requests/{request_id}')
     def official_group_bridge_request_detail_proxy(request: Request, request_id: str) -> Dict[str, Any]:
-        _require_ops_user(request)
+        _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
         return _bridge_get_json(f'/ops/official-group-bridge/requests/{quote(str(request_id), safe="")}')
 
     @app.post('/ops/official-group-bridge/requests/{request_id}/resolve')
     def official_group_bridge_request_resolve_proxy(request: Request, request_id: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-        _require_ops_user(request)
+        _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
         return _bridge_post_json(f'/ops/official-group-bridge/requests/{quote(str(request_id), safe="")}/resolve', payload)
 
     @app.get('/api/ops/runtime-health')
@@ -21552,6 +23764,17 @@ h1 { letter-spacing: -0.02em; }
     def ops_intake_bot_preset_update(profile_name: str, payload: IntakeBotPresetUpdateRequest):
         return service.update_intake_bot_preset(profile_name, payload)
 
+    @app.post('/api/ops/local-intake-bot-gateway/{profile_name}/activate')
+    def ops_local_intake_bot_gateway_activate(request: Request, profile_name: str, payload: LocalIntakeBotGatewayActivationRequest):
+        client_host = (request.client.host if request.client else '') or ''
+        if client_host not in {'127.0.0.1', '::1', 'localhost', 'testclient'}:
+            raise HTTPException(status_code=403, detail='local_gateway_activation_only')
+        return service.activate_local_intake_bot_gateway(profile_name, payload)
+
+    @app.delete('/api/ops/intake-bot-presets/{profile_name}')
+    def ops_intake_bot_preset_delete(profile_name: str):
+        return service.delete_intake_bot_preset(profile_name)
+
     @app.get('/api/ops/guild-executors')
     def ops_guild_executors():
         return service.list_guild_executors()
@@ -21573,12 +23796,12 @@ h1 { letter-spacing: -0.02em; }
         }
 
     @app.get('/api/ops/whatsapp-approval-accounts')
-    def ops_whatsapp_approval_accounts():
-        return service.list_whatsapp_approval_accounts()
+    def ops_whatsapp_approval_accounts(request: Request):
+        return service.list_whatsapp_approval_accounts(current_user=_request_session_user(request))
 
     @app.get('/api/ops/whatsapp-approval-accounts/overview')
-    def ops_whatsapp_approval_accounts_overview():
-        payload = service.list_whatsapp_approval_accounts() or {}
+    def ops_whatsapp_approval_accounts_overview(request: Request):
+        payload = service.list_whatsapp_approval_accounts(current_user=_request_session_user(request)) or {}
         rows = payload.get('rows') or []
         trimmed_rows = []
         for row in rows:
@@ -21599,11 +23822,15 @@ h1 { letter-spacing: -0.02em; }
                 'verification_checks': row.get('verification_checks') or [],
                 'service_scope': row.get('service_scope') or {},
                 'session_state': row.get('session_state') or {},
+                'assigned_customer_service_user_id': row.get('assigned_customer_service_user_id'),
+                'assigned_customer_service_username': row.get('assigned_customer_service_username'),
+                'assigned_customer_service_display_name': row.get('assigned_customer_service_display_name'),
                 'group_link_bindings': row.get('group_link_bindings') or [],
                 'group_binding_runtimes': row.get('group_binding_runtimes') or [],
             })
         return {
             'rows': trimmed_rows,
+            'customer_service_options': payload.get('customer_service_options') or [],
             'summary': payload.get('summary') or {},
         }
 
@@ -21696,7 +23923,8 @@ h1 { letter-spacing: -0.02em; }
         return {'rows': trimmed_rows}
 
     @app.get('/api/ops/whatsapp-approval-accounts/{account_key}/runtime')
-    def ops_whatsapp_approval_account_runtime(account_key: str):
+    def ops_whatsapp_approval_account_runtime(account_key: str, request: Request):
+        service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
         return service.get_whatsapp_approval_account_runtime(account_key)
 
     @app.get('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/internal')
@@ -21704,7 +23932,8 @@ h1 { letter-spacing: -0.02em; }
         return service.get_whatsapp_approval_account_runtime(account_key)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/start')
-    def ops_whatsapp_approval_account_runtime_start(account_key: str):
+    def ops_whatsapp_approval_account_runtime_start(account_key: str, request: Request):
+        service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
         return service.start_whatsapp_approval_account_runtime(account_key)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/internal/start')
@@ -21712,7 +23941,8 @@ h1 { letter-spacing: -0.02em; }
         return service.start_whatsapp_approval_account_runtime(account_key)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/stop')
-    def ops_whatsapp_approval_account_runtime_stop(account_key: str):
+    def ops_whatsapp_approval_account_runtime_stop(account_key: str, request: Request):
+        service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
         return service.stop_whatsapp_approval_account_runtime(account_key)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/internal/stop')
@@ -21720,7 +23950,8 @@ h1 { letter-spacing: -0.02em; }
         return service.stop_whatsapp_approval_account_runtime(account_key)
 
     @app.get('/api/ops/whatsapp-approval-accounts/{account_key}/session')
-    def ops_whatsapp_approval_account_session(account_key: str):
+    def ops_whatsapp_approval_account_session(account_key: str, request: Request):
+        service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
         return service.get_whatsapp_approval_account_session(account_key)
 
     @app.get('/api/ops/whatsapp-approval-accounts/{account_key}/session/internal')
@@ -21728,7 +23959,8 @@ h1 { letter-spacing: -0.02em; }
         return service.get_whatsapp_approval_account_session(account_key, include_qr_ascii=False)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/session/start')
-    def ops_whatsapp_approval_account_session_start(account_key: str):
+    def ops_whatsapp_approval_account_session_start(account_key: str, request: Request):
+        service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
         return service.start_whatsapp_approval_account_session(account_key)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/session/internal/start')
@@ -21736,7 +23968,8 @@ h1 { letter-spacing: -0.02em; }
         return service.start_whatsapp_approval_account_session(account_key)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/session/reset')
-    def ops_whatsapp_approval_account_session_reset(account_key: str):
+    def ops_whatsapp_approval_account_session_reset(account_key: str, request: Request):
+        service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
         return service.reset_whatsapp_approval_account_session(account_key)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/session/internal/reset')
@@ -21744,11 +23977,13 @@ h1 { letter-spacing: -0.02em; }
         return service.reset_whatsapp_approval_account_session(account_key)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/bindings/{binding_index}/manual-approve')
-    def ops_whatsapp_approval_binding_manual_approve(account_key: str, binding_index: int):
+    def ops_whatsapp_approval_binding_manual_approve(account_key: str, binding_index: int, request: Request):
+        service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
         return service.manual_approve_whatsapp_approval_binding(account_key, binding_index)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/bindings/{binding_index}/probe-refresh')
-    def ops_whatsapp_approval_binding_probe_refresh(account_key: str, binding_index: int):
+    def ops_whatsapp_approval_binding_probe_refresh(account_key: str, binding_index: int, request: Request):
+        service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
         return service.refresh_whatsapp_approval_binding_probe(account_key, binding_index)
 
     @app.get('/api/ops/whatsapp-approval-area-options')
@@ -21760,12 +23995,12 @@ h1 { letter-spacing: -0.02em; }
         return service.update_whatsapp_approval_area_options(payload)
 
     @app.get('/api/ops/whatsapp-approval-candidates')
-    def ops_whatsapp_approval_candidates():
-        return service.list_whatsapp_approval_candidates()
+    def ops_whatsapp_approval_candidates(request: Request):
+        return service.list_whatsapp_approval_candidates(current_user=_request_session_user(request))
 
     @app.get('/api/ops/whatsapp-approval-candidates/summary')
-    def ops_whatsapp_approval_candidates_summary():
-        payload = service.list_whatsapp_approval_candidates() or {}
+    def ops_whatsapp_approval_candidates_summary(request: Request):
+        payload = service.list_whatsapp_approval_candidates(current_user=_request_session_user(request)) or {}
         return {
             'summary': payload.get('summary') or {},
             'verifier_framework': payload.get('verifier_framework') or {},
@@ -21873,12 +24108,12 @@ h1 { letter-spacing: -0.02em; }
         return StreamingResponse(iter([content]), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}')
-    def ops_whatsapp_approval_account_update(account_key: str, payload: WhatsAppApprovalAccountUpdateRequest):
-        return service.update_whatsapp_approval_account(account_key, payload)
+    def ops_whatsapp_approval_account_update(account_key: str, payload: WhatsAppApprovalAccountUpdateRequest, request: Request):
+        return service.update_whatsapp_approval_account(account_key, payload, current_user=_request_session_user(request))
 
     @app.delete('/api/ops/whatsapp-approval-accounts/{account_key}')
-    def ops_whatsapp_approval_account_delete(account_key: str):
-        return service.delete_whatsapp_approval_account(account_key)
+    def ops_whatsapp_approval_account_delete(account_key: str, request: Request):
+        return service.delete_whatsapp_approval_account(account_key, current_user=_request_session_user(request))
 
     @app.get('/api/ops/official-group-bridge-summary')
     def ops_official_group_bridge_summary():
@@ -22060,8 +24295,88 @@ h1 { letter-spacing: -0.02em; }
                 'pending_count': sum(_numeric(row.get('pending_count')) for row in rows),
             }
 
-        def _rows_from_daemon_cycles(cycles: Any, approval_scope: str) -> list[Dict[str, Any]]:
+        def _truthy_enabled(value: Any, default: bool = True) -> bool:
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            text = str(value).strip().lower()
+            if text in {'0', 'false', 'no', 'off', 'disabled'}:
+                return False
+            if text in {'1', 'true', 'yes', 'on', 'enabled'}:
+                return True
+            return default
+
+        def _target_tokens(*values: Any) -> set[str]:
+            tokens: set[str] = set()
+            for value in values:
+                text = str(value or '').strip()
+                if text:
+                    tokens.add(text.lower())
+            return tokens
+
+        def _current_monitor_targets() -> tuple[set[str], Dict[str, set[str]]]:
+            configured_scopes: set[str] = set()
+            active_targets: Dict[str, set[str]] = {'registration_group': set(), 'official_group': set()}
+            try:
+                current_accounts_payload = service.list_whatsapp_approval_accounts() if hasattr(service, 'list_whatsapp_approval_accounts') else {}
+            except Exception:
+                return configured_scopes, active_targets
+            current_account_rows = current_accounts_payload.get('rows') if isinstance(current_accounts_payload, dict) else None
+            if not isinstance(current_account_rows, list):
+                return configured_scopes, active_targets
+            for account in current_account_rows:
+                if not isinstance(account, dict):
+                    continue
+                scope = str(account.get('responsible_type') or '').strip()
+                if scope not in active_targets:
+                    continue
+                configured_scopes.add(scope)
+                if not _truthy_enabled(account.get('enabled'), True):
+                    continue
+                bindings = account.get('group_link_bindings')
+                if not isinstance(bindings, list):
+                    bindings = []
+                for binding in bindings:
+                    if not isinstance(binding, dict):
+                        continue
+                    if not _truthy_enabled(binding.get('enabled'), True):
+                        continue
+                    active_targets[scope].update(_target_tokens(
+                        binding.get('group_name'),
+                        binding.get('registration_group'),
+                        binding.get('target_group_label'),
+                        binding.get('target_group'),
+                        binding.get('group_id'),
+                        binding.get('link'),
+                    ))
+            return configured_scopes, active_targets
+
+        def _row_matches_active_target(row: Dict[str, Any], active_targets: set[str]) -> bool:
+            if not active_targets:
+                return False
+            return bool(active_targets & _target_tokens(
+                row.get('registration_group'),
+                row.get('group_name'),
+                row.get('target_group_label'),
+                row.get('target_group'),
+                row.get('group_id'),
+                row.get('binding_link'),
+            ))
+
+        def _filter_rows_to_active_targets(rows: Any, active_targets: set[str]) -> list[Dict[str, Any]]:
+            filtered: list[Dict[str, Any]] = []
+            for row in list(rows or []):
+                if isinstance(row, dict) and _row_matches_active_target(row, active_targets):
+                    filtered.append(row)
+            return filtered
+
+        def _rows_from_daemon_cycles(cycles: Any, approval_scope: str, active_targets: set[str]) -> list[Dict[str, Any]]:
             rows: list[Dict[str, Any]] = []
+            if not active_targets:
+                return rows
             for cycle in list(cycles or []):
                 if not isinstance(cycle, dict):
                     continue
@@ -22075,30 +24390,60 @@ h1 { letter-spacing: -0.02em; }
                     or monitor_target.get('target_group')
                     or payload.get('group_id')
                 )
-                rows.append({
+                row = {
                     'approval_scope': approval_scope,
                     'registration_group': monitor_target.get('registration_group') or group_name,
                     'group_name': group_name,
                     'target_group_label': group_name,
+                    'target_group': monitor_target.get('target_group'),
+                    'group_id': payload.get('group_id') or monitor_target.get('group_id'),
                     'pending_count': _numeric(payload.get('pending_count')),
-                })
+                }
+                if _row_matches_active_target(row, active_targets):
+                    rows.append(row)
             return rows
 
+        configured_scopes, active_targets_by_scope = _current_monitor_targets()
+        has_active_monitors = any(active_targets_by_scope.values())
         payload: Dict[str, Any] = {}
-        try:
-            production_ops = service._production_ops_daemon_snapshot() if hasattr(service, '_production_ops_daemon_snapshot') else {}
-            status = ((production_ops.get('runtime') or {}).get('status') or {}) if isinstance(production_ops, dict) else {}
-            registration_snapshot_rows = _rows_from_daemon_cycles(status.get('registration_group_cycles'), 'registration_group')
-            official_snapshot_rows = _rows_from_daemon_cycles(status.get('official_group_cycles'), 'official_group')
-            if status.get('checked_at') and (registration_snapshot_rows or official_snapshot_rows):
+        if not has_active_monitors:
+            payload = {
+                'registration_groups': [],
+                'official_groups': [],
+            }
+        else:
+            try:
+                production_ops = service._production_ops_daemon_snapshot() if hasattr(service, '_production_ops_daemon_snapshot') else {}
+                status = ((production_ops.get('runtime') or {}).get('status') or {}) if isinstance(production_ops, dict) else {}
+                registration_snapshot_rows = _rows_from_daemon_cycles(
+                    status.get('registration_group_cycles'),
+                    'registration_group',
+                    active_targets_by_scope.get('registration_group') or set(),
+                )
+                official_snapshot_rows = _rows_from_daemon_cycles(
+                    status.get('official_group_cycles'),
+                    'official_group',
+                    active_targets_by_scope.get('official_group') or set(),
+                )
+                if status.get('checked_at') and (registration_snapshot_rows or official_snapshot_rows):
+                    payload = {
+                        'registration_groups': registration_snapshot_rows,
+                        'official_groups': official_snapshot_rows,
+                    }
+            except Exception:
+                payload = {}
+            if not payload:
+                payload = service.approval_batch_queue() or {}
                 payload = {
-                    'registration_groups': registration_snapshot_rows,
-                    'official_groups': official_snapshot_rows,
+                    'registration_groups': _filter_rows_to_active_targets(
+                        payload.get('registration_groups'),
+                        active_targets_by_scope.get('registration_group') or set(),
+                    ),
+                    'official_groups': _filter_rows_to_active_targets(
+                        payload.get('official_groups'),
+                        active_targets_by_scope.get('official_group') or set(),
+                    ),
                 }
-        except Exception:
-            payload = {}
-        if not payload:
-            payload = service.approval_batch_queue() or {}
 
         registration_groups = _trim_rows(payload.get('registration_groups'))
         official_groups = _trim_rows(payload.get('official_groups'))

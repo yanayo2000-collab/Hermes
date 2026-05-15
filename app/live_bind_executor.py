@@ -7,6 +7,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
@@ -34,6 +35,9 @@ class LiveChromeBindExecutor:
         return asyncio.run(self._run(context))
 
     async def _run(self, context: dict[str, Any]) -> dict[str, Any]:
+        if str(context.get('bind_route') or '').strip().lower() == 'cms_id':
+            return self._run_cms_id_bind(context)
+
         browser_profile_key = str(context.get('executor_browser_profile_key') or '').strip()
         profile_dir_name = self.profile_map.get(browser_profile_key)
         if not profile_dir_name:
@@ -44,7 +48,9 @@ class LiveChromeBindExecutor:
                 'raw_result': {'browser_profile_key': browser_profile_key},
             }
 
-        backend_url = str(context.get('executor_backend_url') or '').strip()
+        backend_url = str(context.get('executor_backend_url') or '').strip().rstrip('/')
+        if backend_url == 'https://guild.linke.ai/guild':
+            backend_url = backend_url + '/addAnchor'
         invite_code = str(context.get('invite_code') or '').strip().upper()
         if not backend_url or not invite_code:
             return {
@@ -141,6 +147,171 @@ class LiveChromeBindExecutor:
                 except Exception:
                     proc.kill()
             shutil.rmtree(temp_root, ignore_errors=True)
+
+    def _run_cms_id_bind(self, context: dict[str, Any]) -> dict[str, Any]:
+        account_id = str(context.get('account_id') or '').strip()
+        target_guild = str(context.get('dept_name') or '').strip()
+        base_url = str(context.get('executor_platform_backend_url') or '').strip().rstrip('/') or 'https://cms.linke.ai'
+        authorization = str(context.get('executor_platform_authorization') or '').strip()
+        raw_result: dict[str, Any] = {
+            'executor_mode': 'cms_id',
+            'guild_code': target_guild,
+            'deptName': target_guild,
+            'sid': account_id,
+        }
+        if not account_id.isdigit():
+            return {
+                'status': 'failed',
+                'result_code': 'cms_bind_invalid_sid',
+                'result_reason': 'Invalid Linky ID / SID for CMS bind',
+                'raw_result': raw_result,
+            }
+        if not authorization:
+            return {
+                'status': 'failed',
+                'result_code': 'cms_authorization_missing',
+                'result_reason': 'CMS Authorization is not configured for this guild executor',
+                'raw_result': raw_result,
+            }
+        try:
+            guild = self._cms_find_target_guild(base_url=base_url, authorization=authorization, target_guild=target_guild)
+            raw_result['cms_guild_id'] = guild.get('id')
+            raw_result['cms_guild_name'] = guild.get('guild_name')
+            raw_result['cms_guild_sid'] = guild.get('sid')
+            before = self._cms_query_sid(base_url=base_url, authorization=authorization, sid=account_id)
+            before_match = self._cms_match_target_guild(before, guild)
+            if before_match == 'target':
+                raw_result['precheck'] = 'already_in_target_guild'
+                return {
+                    'status': 'success',
+                    'result_code': 'bind_success',
+                    'result_reason': 'CMS verified SID already in target guild',
+                    'raw_result': raw_result,
+                }
+            if before_match == 'other':
+                raw_result['precheck'] = 'already_in_other_guild'
+                raw_result['existing_guild_name'] = str((before[0] or {}).get('guild_name') or '') if before else ''
+                raw_result['existing_guild_id'] = str((before[0] or {}).get('guild_id') or '') if before else ''
+                return {
+                    'status': 'failed',
+                    'result_code': 'already_in_other_guild',
+                    'result_reason': 'The streamer was in another agency',
+                    'raw_result': raw_result,
+                }
+            submit = self._cms_add_anchor(base_url=base_url, authorization=authorization, sid=account_id, guild_id=str(guild.get('id') or ''))
+            raw_result['cms_submit_code'] = submit.get('code')
+            raw_result['cms_submit_success'] = submit.get('success')
+            after = self._cms_query_sid(base_url=base_url, authorization=authorization, sid=account_id)
+            after_match = self._cms_match_target_guild(after, guild)
+            if after_match == 'target':
+                raw_result['postcheck'] = 'verified_target_guild'
+                return {
+                    'status': 'success',
+                    'result_code': 'bind_success',
+                    'result_reason': 'CMS bind verified',
+                    'raw_result': raw_result,
+                }
+            message = str(submit.get('message') or submit.get('msg') or submit.get('error') or 'CMS bind was not verified')
+            return {
+                'status': 'failed',
+                'result_code': 'cms_bind_not_verified',
+                'result_reason': message,
+                'raw_result': raw_result,
+            }
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                code = 'cms_authorization_invalid'
+                reason = f'CMS authorization rejected with HTTP {exc.code}'
+            else:
+                code = 'cms_http_error'
+                reason = f'CMS request failed with HTTP {exc.code}'
+            return {'status': 'failed', 'result_code': code, 'result_reason': reason, 'raw_result': raw_result}
+        except Exception as exc:
+            return {
+                'status': 'failed',
+                'result_code': 'cms_bind_runtime_error',
+                'result_reason': str(exc),
+                'raw_result': raw_result,
+            }
+
+    def _cms_headers(self, authorization: str) -> dict[str, str]:
+        return {
+            'authorization': authorization,
+            'content-type': 'application/json',
+            'accept': 'application/json, text/plain, */*',
+            'origin': 'https://cms.linke.ai',
+            'referer': 'https://cms.linke.ai/',
+        }
+
+    def _cms_request_json(self, *, method: str, url: str, authorization: str, body: Optional[dict[str, Any]] = None) -> Any:
+        data = None if body is None else json.dumps(body).encode('utf-8')
+        req = urllib.request.Request(url, data=data, headers=self._cms_headers(authorization), method=method)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            text = resp.read().decode('utf-8', errors='replace')
+        return json.loads(text) if text else {}
+
+    def _cms_find_target_guild(self, *, base_url: str, authorization: str, target_guild: str) -> dict[str, Any]:
+        url = f'{base_url}/api/admin/linky/industrial/industrial/getGuildIdAndName'
+        data = self._cms_request_json(method='GET', url=url, authorization=authorization)
+        rows = data.get('data') if isinstance(data, dict) else data
+        if not isinstance(rows, list):
+            rows = []
+        target_norm = target_guild.strip().lower()
+        exact = [r for r in rows if isinstance(r, dict) and str(r.get('guild_name') or '').strip().lower() == target_norm]
+        if exact:
+            return dict(exact[0])
+        contains = [r for r in rows if isinstance(r, dict) and target_norm and target_norm in str(r.get('guild_name') or '').strip().lower()]
+        if contains:
+            return dict(contains[0])
+        raise RuntimeError(f'CMS target guild not visible for this authorization: {target_guild}')
+
+    def _cms_query_sid(self, *, base_url: str, authorization: str, sid: str) -> list[dict[str, Any]]:
+        url = f'{base_url}/api/admin/linky/industrial/streamer_detail/page'
+        candidates = [
+            {'page': 1, 'size': 10, 'sid': sid},
+            {'page': 1, 'size': 10, 'user_id': sid},
+        ]
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for body in candidates:
+            data = self._cms_request_json(method='POST', url=url, authorization=authorization, body=body)
+            rows: Any = []
+            if isinstance(data, dict):
+                rows = data.get('data') or data.get('records') or []
+                if isinstance(rows, dict):
+                    rows = rows.get('records') or rows.get('list') or rows.get('rows') or []
+            if not isinstance(rows, list):
+                rows = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                row_sid = str(row.get('sid') or row.get('user_id') or '')
+                if row_sid and row_sid != sid:
+                    continue
+                key = json.dumps(row, sort_keys=True, ensure_ascii=False)
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(dict(row))
+        return merged
+
+    def _cms_match_target_guild(self, rows: list[dict[str, Any]], guild: dict[str, Any]) -> str:
+        if not rows:
+            return 'none'
+        target_id = str(guild.get('id') or '').strip()
+        target_name = str(guild.get('guild_name') or '').strip().lower()
+        for row in rows:
+            guild_id = str(row.get('guild_id') or row.get('industrial_id') or '').strip()
+            guild_name = str(row.get('guild_name') or row.get('industrial_name') or '').strip().lower()
+            if (target_id and guild_id == target_id) or (target_name and guild_name == target_name):
+                return 'target'
+        return 'other'
+
+    def _cms_add_anchor(self, *, base_url: str, authorization: str, sid: str, guild_id: str) -> dict[str, Any]:
+        if not guild_id:
+            raise RuntimeError('CMS target guild_id is missing')
+        url = f'{base_url}/api/admin/linky/industrial/streamer_detail/addAnchor'
+        data = self._cms_request_json(method='POST', url=url, authorization=authorization, body={'sids': [int(sid)], 'guild_id': int(guild_id)})
+        return data if isinstance(data, dict) else {'data': data}
 
     def _pick_free_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

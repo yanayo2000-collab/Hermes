@@ -1491,6 +1491,12 @@ async function buildGroupStateFromGroup(context, group, options = {}) {
   const mode = normalizeGroupStateMode(context, options);
   const sourceTs = new Date().toISOString();
   if (mode === 'fast') {
+    const refreshFn = typeof options.refreshFn === 'function' ? options.refreshFn : forceRefreshApprovalGroupBeforeRead;
+    const fastRefreshEvidence = options.skipRefresh ? [] : await refreshFn(context, group, {
+      ...options,
+      refreshWaitMs: Number(options.refreshWaitMs ?? 150),
+      settleWaitMs: Number(options.settleWaitMs ?? 50),
+    });
     const rawRequests = typeof group.getGroupMembershipRequests === 'function'
       ? await group.getGroupMembershipRequests()
       : [];
@@ -1512,8 +1518,8 @@ async function buildGroupStateFromGroup(context, group, options = {}) {
       pending_zero_confidence: requesterRows.length <= 0 ? 'unverified' : null,
       zero_pending_unverified: requesterRows.length <= 0,
       approval_state_status: requesterRows.length > 0 ? 'confirmed_pending' : 'unverified_empty',
-      refresh_attempted: false,
-      refresh_evidence: [],
+      refresh_attempted: !options.skipRefresh,
+      refresh_evidence: fastRefreshEvidence,
       probe_mode: 'fast',
       source_layer: 'group_object',
       verification_stage: 'fast',
@@ -1697,14 +1703,14 @@ async function groupStateWithRecovery(context) {
   const mode = normalizeGroupStateMode(context);
   try {
     if (mode === 'fast') {
-      return await groupState(context, { mode: 'fast', skipRefresh: true });
+      return await groupState(context, { mode: 'fast' });
     }
     return await resolveAuthoritativeGroupState(context);
   } catch (error) {
     if (isExecutionContextDestroyedError(error)) {
       await sleep(400);
       if (mode === 'fast') {
-        return await groupState(context, { mode: 'fast', skipRefresh: true });
+        return await groupState(context, { mode: 'fast' });
       }
       return await resolveAuthoritativeGroupState(context);
     }

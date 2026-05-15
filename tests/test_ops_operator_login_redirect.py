@@ -1,16 +1,16 @@
-from fastapi.testclient import TestClient
-
 from app.main import create_app
 
 
-def make_client(settings=None):
-    cfg = {"DB_PATH": ":memory:", "AUTO_LARK_REPLY": False, "AUTH_ENABLED": True}
-    if settings:
-        cfg.update(settings)
-    return TestClient(create_app(cfg))
+def make_client(config=None):
+    from fastapi.testclient import TestClient
+    cfg = {'AUTH_ENABLED': True, 'DB_PATH': ':memory:', 'AUTO_LARK_REPLY': False}
+    if config:
+        cfg.update(config)
+    app = create_app(cfg)
+    return TestClient(app)
 
 
-def test_login_page_preserves_operator_account_settings_next_target():
+def test_login_page_redirects_operator_to_group_atmosphere():
     client = make_client()
     admin = client.post('/api/ops/auth/bootstrap', json={
         'username': 'admin01',
@@ -26,13 +26,14 @@ def test_login_page_preserves_operator_account_settings_next_target():
     assert 'const adminOnlyNextTargets = [];' in html
     assert "'/ops/accounts'" not in html
     assert "'/ops/production-ops'" not in html
-    assert "'/ops/group-atmosphere'" not in html
+    assert "normalizedRole === 'operator'" in html
+    assert "'/ops/group-atmosphere'" in html
     assert 'safeNextUrlForRole(data.user && data.user.role)' in html
     assert '初始化管理员' not in html
     assert 'bootstrapTab' not in html
 
 
-def test_operator_login_api_succeeds_and_account_settings_is_self_service_only():
+def test_operator_role_is_limited_to_group_atmosphere_only():
     client = make_client()
     admin = client.post('/api/ops/auth/bootstrap', json={
         'username': 'admin01',
@@ -56,29 +57,28 @@ def test_operator_login_api_succeeds_and_account_settings_is_self_service_only()
 
     assert login.status_code == 200
     assert login.json()['user']['role'] == 'operator'
-    assert client.get('/ops').status_code == 200
-    assert client.get('/ops/production-ops').status_code == 200
-    ops_html = client.get('/ops').text
-    assert '/ops/intake-bot-presets' in ops_html
-    assert '/ops/production-ops' in ops_html
-    assert '/ops/registration-group-approval-batch-members' in ops_html
-    assert '/ops/accounts' in ops_html
-    assert '账号设置' in ops_html
-    assert '/ops/group-atmosphere' not in ops_html
-    accounts_page = client.get('/ops/accounts')
-    assert accounts_page.status_code == 200
-    html = accounts_page.text
-    assert '账号设置' in html
-    assert '修改我的密码' in html
-    assert '/api/ops/auth/password' in html
-    assert '显示密码' in html
-    assert 'togglePasswordVisibility' in html
-    assert 'showToast' in html
-    assert '密码修改成功' in html
-    assert '新增账号' not in html
-    assert '账号列表' not in html
-    assert '管理员重置密码' not in html
-    assert '/api/ops/accounts' not in html
-    accounts_api = client.get('/api/ops/accounts')
-    assert accounts_api.status_code == 403
-    assert accounts_api.json()['detail'] == 'ops_admin_required'
+
+    ops_home = client.get('/ops', follow_redirects=False)
+    assert ops_home.status_code == 303
+    assert ops_home.headers['location'] == '/ops/group-atmosphere'
+
+    group_page = client.get('/ops/group-atmosphere')
+    assert group_page.status_code == 200
+    html = group_page.text
+    assert '群聊天助手' in html
+    assert '/api/ops/group-atmosphere/accounts' in html
+    assert '/ops/intake-bot-presets' not in html
+    assert '/ops/production-ops' not in html
+    assert '/ops/registration-group-approval-batch-members' not in html
+    assert '/ops/accounts' not in html
+
+    assert client.get('/api/ops/group-atmosphere/accounts').status_code == 200
+    runtime = client.get('/api/ops/runtime-health')
+    assert runtime.status_code == 403
+    assert runtime.json()['detail'] == 'ops_customer_service_required'
+    approval_accounts = client.get('/api/ops/whatsapp-approval-accounts')
+    assert approval_accounts.status_code == 403
+    assert approval_accounts.json()['detail'] == 'ops_customer_service_required'
+    assert client.get('/ops/production-ops', follow_redirects=False).status_code == 303
+    assert client.get('/ops/intake-bot-presets', follow_redirects=False).status_code == 303
+    assert client.get('/ops/accounts', follow_redirects=False).status_code == 303

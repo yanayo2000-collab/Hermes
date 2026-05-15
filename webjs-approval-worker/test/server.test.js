@@ -181,7 +181,7 @@ test('normalizeGroupStateMode defaults to full_verify and accepts fast mode only
   assert.equal(normalizeGroupStateMode({ mode: 'unknown' }), 'full_verify');
 });
 
-test('buildGroupStateFromGroup fast mode skips refresh and contact enrichment', async () => {
+test('buildGroupStateFromGroup fast mode skips contact enrichment but keeps lightweight refresh', async () => {
   let refreshCalled = false;
   let contactLookupCalled = false;
   const group = {
@@ -213,8 +213,8 @@ test('buildGroupStateFromGroup fast mode skips refresh and contact enrichment', 
   assert.equal(result.member_count, null);
   assert.deepEqual(result.requester_ids, ['r1@lid', 'r2@lid']);
   assert.deepEqual(result.requesters, []);
-  assert.equal(result.refresh_attempted, false);
-  assert.equal(refreshCalled, false);
+  assert.equal(result.refresh_attempted, true);
+  assert.equal(refreshCalled, true);
   assert.equal(contactLookupCalled, false);
   assert.ok(result.fingerprint);
 });

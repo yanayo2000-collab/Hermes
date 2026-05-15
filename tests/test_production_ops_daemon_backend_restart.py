@@ -564,12 +564,69 @@ def test_notification_delivery_summary_keeps_target_and_status_fields():
 
 
 
+def test_duplicate_registration_group_request_notifies_customer_service_without_critical_incident():
+    cycle = {
+        'checked_at': '2026-05-14T10:00:00+00:00',
+        'backend_health': {'ok': True},
+        'worker_state': {'ok': True},
+        'release_evaluation': {'ok': True},
+        'registration_group': 'Carote-02',
+        'monitor_target': {
+            'group_name': 'Carote-02',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'notify_robot_name': '审批bot01',
+        },
+        'formal_approval': {
+            'triggered': True,
+            'ok': False,
+            'fingerprint': 'fp-duplicate',
+            'release_count': 1,
+            'returncode': 0,
+            'reason_code': 'batch_size_reached',
+            'result': {
+                'formal_run': {
+                    'approval_run_id': 'registration_group_approval_dup001',
+                    'result': {
+                        'registration_group': 'Carote-02',
+                        'active_registration_group': 'Permata-31',
+                        'executed': False,
+                        'verified': False,
+                        'crm_recorded': False,
+                        'status': 'skipped',
+                        'result_code': 'duplicate_registration_group_request',
+                        'result_reason': 'phone already has an active registration group; skip approving another registration group',
+                        'approved_count': 0,
+                    },
+                }
+            },
+        },
+    }
+
+    assert build_incidents(cycle) == []
+    notifications = build_success_notifications(cycle)
+
+    assert [item['code'] for item in notifications] == ['registration_duplicate_group_request_skipped']
+    notification = notifications[0]
+    assert notification['severity'] == 'warning'
+    assert notification['notify_profile_name'] == 'wa-approval-broadcast'
+    assert notification['notify_robot_name'] == '审批bot01'
+    assert notification['details']['group_name'] == 'Carote-02'
+    assert notification['details']['active_registration_group'] == 'Permata-31'
+    text = format_lark_alert('mcn-production-ops', notification, cycle)
+    assert '注册群重复申请已拦截' in text
+    assert '注册群: Carote-02' in text
+    assert '已归属注册群: Permata-31' in text
+    assert '结果: 已跳过自动审批，不会放入第二个注册群' in text
+
+
+
 def test_success_notification_codes_exact_match_guardrail():
     assert SUCCESS_NOTIFICATION_CODES == {
         'formal_approval_succeeded',
         'formal_approval_recovered',
         'worker_probe_recovered',
         'registration_cycle_noop',
+        'registration_duplicate_group_request_skipped',
         'startup_initial_batch_succeeded',
         'official_group_approval_succeeded',
         'official_group_manual_review_required',
@@ -799,6 +856,110 @@ def test_registration_group_cycle_waiting_for_scan_skips_rebuild_and_reports_log
     assert cycle['worker_state']['recovery']['reason'] == 'whatsapp_account_waiting_for_scan'
     assert cycle['worker_state']['recovery']['login_check_status'] == 'waiting_for_scan'
     assert cycle['decision_group_state']['mismatch_reasons'] == ['whatsapp_account_waiting_for_scan']
+
+
+
+def test_registration_group_cycle_pending_runtime_initializing_skips_rebuild_and_reports_login_unready(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    target = {
+        'registration_group': '120363417671114118@g.us',
+        'group_name': '🇮🇩2️⃣2️⃣Grup Registrasi Resmi  ✘ Linky 💎',
+        'worker_base_url': '',
+        'account_key': 'registration-639974974871',
+        'account_name': 'WA Admin',
+        'binding_link': 'https://chat.whatsapp.com/IJ8Fhs0UqMCKtnbDFbIPZH',
+        'binding_group_name': '🇮🇩2️⃣2️⃣Grup Registrasi Resmi  ✘ Linky 💎',
+        'notify_profile_name': 'wa-approval-broadcast-02',
+        'notify_robot_name': '审批bot02',
+        'area': 'Indonesia',
+        'approval_count_threshold': 9000,
+        'approval_timeout_minutes': 9000,
+        'auto_recover_worker': True,
+        'schedule_runtime': {'configured': True, 'active_now': True},
+        'schedule_windows': [{'start': '00:00', 'end': '24:00'}],
+        'source': 'account_binding',
+        'runtime_state': {
+            'active': True,
+            'ready': False,
+            'authenticated': False,
+            'base_url': 'http://127.0.0.1:33157',
+            'started_at': '2026-05-14T06:50:52+00:00',
+            'status': 'initializing',
+        },
+        'session_state': {
+            'login_verified': False,
+            'login_check_status': 'pending_runtime',
+            'status': 'initializing',
+            'qr_available': False,
+            'session_target_match': True,
+        },
+    }
+
+    def fake_fetch_json(*args, **kwargs):
+        raise AssertionError('pending-runtime QR initialization should not restart runtime or probe group-state')
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+
+    cycle = _run_registration_group_cycle(args, {}, target, now=datetime(2026, 5, 14, 6, 53, 10, tzinfo=timezone.utc))
+
+    assert cycle['worker_state']['ok'] is False
+    assert cycle['worker_state']['error'] == 'whatsapp_qr_initializing'
+    assert cycle['worker_state']['recovery']['attempted'] is False
+    assert cycle['worker_state']['recovery']['reason'] == 'whatsapp_qr_initializing'
+    assert cycle['worker_state']['recovery']['login_check_status'] == 'pending_runtime'
+    assert cycle['decision_group_state']['mismatch_reasons'] == ['whatsapp_qr_initializing']
+
+
+
+def test_registration_group_cycle_auth_failed_initializing_skips_rebuild_and_reports_login_unready(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    target = {
+        'registration_group': '120363417671114118@g.us',
+        'group_name': '🇮🇩2️⃣2️⃣Grup Registrasi Resmi  ✘ Linky 💎',
+        'worker_base_url': '',
+        'account_key': 'registration-639974974871',
+        'account_name': 'WA Admin',
+        'binding_link': 'https://chat.whatsapp.com/IJ8Fhs0UqMCKtnbDFbIPZH',
+        'binding_group_name': '🇮🇩2️⃣2️⃣Grup Registrasi Resmi  ✘ Linky 💎',
+        'notify_profile_name': 'wa-approval-broadcast-02',
+        'notify_robot_name': '审批bot02',
+        'area': 'Indonesia',
+        'approval_count_threshold': 9000,
+        'approval_timeout_minutes': 9000,
+        'auto_recover_worker': True,
+        'schedule_runtime': {'configured': True, 'active_now': True},
+        'schedule_windows': [{'start': '00:00', 'end': '24:00'}],
+        'source': 'account_binding',
+        'runtime_state': {
+            'active': True,
+            'ready': False,
+            'authenticated': False,
+            'base_url': 'http://127.0.0.1:35355',
+            'started_at': '2026-05-14T07:13:38+00:00',
+            'status': 'initializing',
+        },
+        'session_state': {
+            'login_verified': False,
+            'login_check_status': 'auth_failed',
+            'status': 'initializing',
+            'qr_available': False,
+            'session_target_match': True,
+        },
+    }
+
+    def fake_fetch_json(*args, **kwargs):
+        raise AssertionError('auth-failed initializing login state should not restart runtime or probe group-state')
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+
+    cycle = _run_registration_group_cycle(args, {}, target, now=datetime(2026, 5, 14, 7, 16, 10, tzinfo=timezone.utc))
+
+    assert cycle['worker_state']['ok'] is False
+    assert cycle['worker_state']['error'] == 'whatsapp_qr_initializing'
+    assert cycle['worker_state']['recovery']['attempted'] is False
+    assert cycle['worker_state']['recovery']['reason'] == 'whatsapp_qr_initializing'
+    assert cycle['worker_state']['recovery']['login_check_status'] == 'auth_failed'
+    assert cycle['decision_group_state']['mismatch_reasons'] == ['whatsapp_qr_initializing']
 
 
 
@@ -2046,3 +2207,9 @@ def test_run_cycle_drains_newly_surfaced_registration_pending_into_same_success_
                             'verified': True,
                             'crm_recorded': True,
                             'result_code': 'approved',
+
+                        },
+                    },
+                },
+            },
+        }

@@ -30,11 +30,18 @@ resolved_worker_base_url="${PRODUCTION_OPS_WORKER_BASE_URL-}"
 resolved_registration_group="${PRODUCTION_OPS_REGISTRATION_GROUP-}"
 resolved_fresh_probe_cmd="${PRODUCTION_OPS_FRESH_PROBE_CMD-}"
 resolved_independent_truth_probe_cmd="${PRODUCTION_OPS_INDEPENDENT_TRUTH_PROBE_CMD-}"
+notify_flag="--notify-enabled"
+case "${PRODUCTION_OPS_NOTIFY_ENABLED:-true}" in
+  0|false|False|FALSE|no|No|NO)
+    notify_flag="--notify-disabled"
+    ;;
+esac
 if [[ -z "$resolved_fresh_probe_cmd" && -n "$resolved_registration_group" ]]; then
   resolved_fresh_probe_cmd="node $ROOT_DIR/scripts/fresh_webjs_group_state.js $(printf '%q' "$resolved_registration_group")"
 fi
 
 exec python3 "$ROOT_DIR/scripts/production_ops_daemon.py" \
+  "$notify_flag" \
   --api-base-url "${PRODUCTION_OPS_API_BASE_URL:-http://127.0.0.1:8011}" \
   --worker-base-url "$resolved_worker_base_url" \
   --registration-group "$resolved_registration_group" \

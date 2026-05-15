@@ -76,6 +76,12 @@ NOTIFICATION_POLICY_BY_CODE: Dict[str, Dict[str, str]] = {
         'retry': 'until_all_targets_sent',
         'partial_sent': 'retry_unsent_targets_only',
     },
+    'registration_duplicate_group_request_skipped': {
+        'family': 'success',
+        'dedupe': 'one_shot_per_dedupe_key',
+        'retry': 'until_all_targets_sent',
+        'partial_sent': 'retry_unsent_targets_only',
+    },
     'official_group_cycle_noop': {
         'family': 'success',
         'dedupe': 'one_shot_per_dedupe_key',
@@ -589,9 +595,11 @@ def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
         verified = formal_result.get('verified')
         crm_recorded = formal_result.get('crm_recorded')
         returncode = action.get('returncode')
+        result_code = str(formal_result.get('result_code') or '').strip()
+        if result_code == 'duplicate_registration_group_request':
+            return incidents
         confirmed_failure = returncode not in (None, 0) or verified is False or crm_recorded is False
         if confirmed_failure:
-            result_code = str(formal_result.get('result_code') or '').strip()
             summary = '正式审批已中止' if result_code == 'requester_fingerprint_changed_before_approval' else '正式审批未闭环'
             incidents.append({
                 'severity': 'critical',
@@ -713,7 +721,43 @@ def build_success_notifications(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
             seen_dedupe_keys.add(dedupe_key)
         notifications.append(notification)
 
+    def append_duplicate_group_request_notification(action_payload: Dict[str, Any], monitor_target: Dict[str, Any], group_name: str) -> None:
+        formal_run = formal_run_payload(action_payload.get('result') or {})
+        formal_result = formal_run_result(formal_run)
+        if str(formal_result.get('result_code') or '').strip() != 'duplicate_registration_group_request':
+            return
+        approval_run_id = str(formal_run.get('approval_run_id') or '').strip()
+        fingerprint = str(action_payload.get('fingerprint') or '').strip()
+        requested_group = str(formal_result.get('registration_group') or group_name or '').strip()
+        active_group = str(formal_result.get('active_registration_group') or '').strip()
+        append_notification({
+            'severity': 'warning',
+            'code': 'registration_duplicate_group_request_skipped',
+            'summary': '注册群重复申请已拦截',
+            'details': {
+                'approval_run_id': approval_run_id or None,
+                'fingerprint': fingerprint or None,
+                'group_name': requested_group or None,
+                'active_registration_group': active_group or None,
+                'result_code': formal_result.get('result_code'),
+                'result_reason': formal_result.get('result_reason'),
+            },
+            'notify_profile_name': str(monitor_target.get('notify_profile_name') or '').strip() or None,
+            'notify_robot_name': str(monitor_target.get('notify_robot_name') or '').strip() or None,
+            'dedupe_key': f"registration_duplicate_group_request_skipped:{approval_run_id or fingerprint or requested_group or 'unknown'}",
+        })
+
     action = cycle.get('formal_approval') or {}
+    top_monitor_target = cycle.get('monitor_target') if isinstance(cycle.get('monitor_target'), dict) else {}
+    top_group_name = str(
+        top_monitor_target.get('group_name')
+        or top_monitor_target.get('binding_group_name')
+        or top_monitor_target.get('registration_group')
+        or cycle.get('registration_group')
+        or ''
+    ).strip()
+    if action.get('triggered'):
+        append_duplicate_group_request_notification(action, top_monitor_target, top_group_name)
     if action.get('triggered') and action.get('ok'):
         success_attempts = formal_approval_success_attempts(action)
         if success_attempts:
@@ -874,6 +918,8 @@ def build_success_notifications(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
         ).strip()
 
         row_formal = cycle_row.get('formal_approval') or {}
+        if row_formal.get('triggered'):
+            append_duplicate_group_request_notification(row_formal, monitor_target, group_name)
         if row_formal.get('triggered') and row_formal.get('ok'):
             success_attempts = formal_approval_success_attempts(row_formal)
             if success_attempts:
@@ -1151,6 +1197,8 @@ def _compact_reason_text(incident: Dict[str, Any], cycle: Dict[str, Any]) -> str
         login_status = str(recovery.get('login_check_status') or '').strip()
         if error == 'whatsapp_account_waiting_for_scan' or recovery_reason == 'whatsapp_account_waiting_for_scan' or login_status == 'waiting_for_scan':
             return 'WhatsApp账号待登录，无法探测注册群'
+        if error == 'whatsapp_qr_initializing' or recovery_reason == 'whatsapp_qr_initializing':
+            return 'WhatsApp账号登录会话正在初始化，请稍后扫码后再探测注册群'
         if recovery.get('attempted'):
             return '自动重连失败，已重试后仍不可用'
         if error == 'worker_base_url_missing_for_selected_binding':
@@ -1313,6 +1361,30 @@ def format_lark_alert(service_name: str, incident: Dict[str, Any], cycle: Dict[s
         if reason:
             lines.append(f'原因: {reason}')
         return '\n'.join(lines)
+    if code == 'registration_duplicate_group_request_skipped':
+        details = incident.get('details') if isinstance(incident.get('details'), dict) else {}
+        requested_group = str(
+            details.get('group_name')
+            or details.get('target_group_label')
+            or ((cycle.get('monitor_target') or {}).get('group_name') if isinstance(cycle.get('monitor_target'), dict) else '')
+            or cycle.get('registration_group')
+            or ''
+        ).strip()
+        active_group = str(details.get('active_registration_group') or '').strip()
+        reason = str(details.get('result_reason') or '').strip()
+        lines = [
+            '⚠️ 生产守护提醒｜注册群重复申请已拦截',
+            f'时间: {checked_at}',
+        ]
+        if requested_group:
+            lines.append(f'注册群: {requested_group}')
+        if active_group:
+            lines.append(f'已归属注册群: {active_group}')
+        lines.append('结果: 已跳过自动审批，不会放入第二个注册群')
+        if reason:
+            lines.append(f'原因: {reason}')
+        return '\n'.join(line for line in lines if line)
+
     if code == 'worker_probe_recovered':
         details = incident.get('details') if isinstance(incident.get('details'), dict) else {}
         registration_group_label = str(

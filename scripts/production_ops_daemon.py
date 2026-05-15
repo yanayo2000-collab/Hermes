@@ -637,15 +637,26 @@ def _review_surface_positive_suspected_residue(review_surface_payload: Optional[
 
 
 def _session_waiting_for_scan(session_state: Dict[str, Any]) -> bool:
+    return _session_login_unready_recovery_reason(session_state) == 'whatsapp_account_waiting_for_scan'
+
+
+
+def _session_login_unready_recovery_reason(session_state: Dict[str, Any]) -> str:
     if not isinstance(session_state, dict):
-        return False
+        return ''
+    if bool(session_state.get('login_verified')):
+        return ''
     login_status = str(session_state.get('login_check_status') or '').strip()
     status = str(session_state.get('status') or '').strip()
-    return (
+    if (
         login_status == 'waiting_for_scan'
         or status == 'awaiting_qr'
         or (bool(session_state.get('qr_available')) and not bool(session_state.get('login_verified')))
-    )
+    ):
+        return 'whatsapp_account_waiting_for_scan'
+    if login_status in {'pending_runtime', 'auth_failed'} and status in {'', 'idle', 'initializing', 'pending_runtime'}:
+        return 'whatsapp_qr_initializing'
+    return ''
 
 
 def _recover_worker_for_target(
@@ -1637,17 +1648,18 @@ def _run_registration_group_cycle(
         if str(target.get('source') or '').strip() == 'account_binding':
             runtime_state = dict(target.get('runtime_state') or {}) if isinstance(target.get('runtime_state'), dict) else {}
             session_state = dict(target.get('session_state') or {}) if isinstance(target.get('session_state'), dict) else {}
-            if _session_waiting_for_scan(session_state):
-                cycle['worker_state']['error'] = 'whatsapp_account_waiting_for_scan'
+            login_unready_reason = _session_login_unready_recovery_reason(session_state)
+            if login_unready_reason:
+                cycle['worker_state']['error'] = login_unready_reason
                 cycle['worker_state']['recovery'] = {
                     'attempted': False,
                     'status': 'skipped',
-                    'reason': 'whatsapp_account_waiting_for_scan',
+                    'reason': login_unready_reason,
                     'trigger_reason': 'login_unready',
                     'login_check_status': session_state.get('login_check_status'),
                     'qr_available': bool(session_state.get('qr_available')),
                 }
-                cycle['decision_group_state']['mismatch_reasons'] = ['whatsapp_account_waiting_for_scan']
+                cycle['decision_group_state']['mismatch_reasons'] = [login_unready_reason]
                 return cycle
             if _runtime_in_startup_grace(runtime_state, now):
                 cycle['worker_state']['startup_grace'] = {

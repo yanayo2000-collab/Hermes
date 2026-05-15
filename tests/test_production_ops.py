@@ -1561,3 +1561,30 @@ def test_format_lark_alert_uses_waiting_for_scan_worker_reason():
 
     assert '原因: WhatsApp账号待登录，无法探测注册群' in text
     assert 'whatsapp_account_waiting_for_scan' not in text
+
+
+
+def test_format_lark_alert_uses_qr_initializing_worker_reason():
+    cycle = {
+        'checked_at': '2026-05-14T06:53:10+00:00',
+        'registration_group': '120363417671114118@g.us',
+    }
+    incident = {
+        'severity': 'critical',
+        'code': 'worker_state_failed',
+        'summary': '群状态探测失败',
+        'details': {
+            'error': 'whatsapp_qr_initializing',
+            'recovery': {
+                'attempted': False,
+                'reason': 'whatsapp_qr_initializing',
+                'login_check_status': 'pending_runtime',
+                'qr_available': False,
+            },
+        },
+    }
+
+    text = format_lark_alert('production-ops-daemon', incident, cycle)
+
+    assert '原因: WhatsApp账号登录会话正在初始化，请稍后扫码后再探测注册群' in text
+    assert 'whatsapp_qr_initializing' not in text
