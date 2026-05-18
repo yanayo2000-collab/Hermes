@@ -985,6 +985,43 @@ async function sendGroupMessage(payload) {
   return sendGroupMessageWithClient(client, payload);
 }
 
+async function fetchGroupMessagesWithClient(activeClient, payload) {
+  const targetGroup = String(payload && payload.target_group ? payload.target_group : '').trim();
+  const limit = Math.max(1, Math.min(500, Number(payload && payload.limit ? payload.limit : 100) || 100));
+  if (!targetGroup) {
+    throw new Error('target_group is required');
+  }
+  const group = await resolveGroupWithClient(activeClient, targetGroup);
+  if (!group || !group.isGroup) {
+    throw new Error(`target group not found or not a group: ${targetGroup}`);
+  }
+  if (typeof group.fetchMessages !== 'function') {
+    throw new Error('resolved group does not support fetchMessages');
+  }
+  const messages = await group.fetchMessages({ limit });
+  const records = (Array.isArray(messages) ? messages : [])
+    .map((message) => ({
+      message_id: safeString(message && message.id),
+      sender: safeString((message && (message.author || message.from)) || ''),
+      text: String((message && (message.body || message.text || message.caption)) || '').trim(),
+      created_at: message && message.timestamp ? new Date(Number(message.timestamp) * 1000).toISOString() : new Date().toISOString(),
+    }))
+    .filter((record) => record.text);
+  return {
+    status: 'success',
+    result_code: 'messages_fetched',
+    result_reason: 'recent group messages fetched for silent learning',
+    group_id: safeString(group.id) || targetGroup,
+    group_name: group.name || targetGroup,
+    fetched_count: records.length,
+    records,
+  };
+}
+
+async function fetchGroupMessages(payload) {
+  return fetchGroupMessagesWithClient(client, payload);
+}
+
 async function resolveApprovalGroup(target) {
   return resolveGroupWithClient(approvalClient, target);
 }
@@ -2269,6 +2306,29 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'POST' && req.url === '/fetch-group-messages') {
+      const payload = await collectJson(req);
+      state.last_action_at = new Date().toISOString();
+      const result = await withActionLock(async () => {
+        await ensureClientStarted();
+        await waitForReady(QR_TIMEOUT_MS).catch(() => {
+          if (!state.ready) {
+            throw new Error(state.last_qr ? 'client awaiting qr scan' : 'client not ready');
+          }
+        });
+        return fetchGroupMessages(payload);
+      });
+      logEvent('fetch_group_messages', {
+        target_group: payload.target_group || null,
+        group_id: result.group_id || null,
+        group_name: result.group_name || null,
+        result_code: result.result_code || null,
+        fetched_count: result.fetched_count || 0,
+      });
+      sendJson(res, 200, result);
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/approve') {
       const payload = await collectJson(req);
       state.last_action_at = new Date().toISOString();
@@ -2379,6 +2439,8 @@ module.exports = {
   runBrowserConflictRecoveryFlow,
   sendGroupMessageWithClient,
   sendGroupMessage,
+  fetchGroupMessagesWithClient,
+  fetchGroupMessages,
 };
 
 process.on('exit', () => {

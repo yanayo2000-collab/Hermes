@@ -14,19 +14,25 @@ def make_client(settings=None):
     return TestClient(create_app(cfg))
 
 
+COMMON_ADMIN_NAV = [
+    ('/ops', '管理员看板'),
+    ('/ops/intake-submit', '绑定中心'),
+    ('/ops/production-ops', '群审批控制台'),
+    ('/ops/registration-group-approval-batch-members', '注册群审批留存页'),
+    ('/ops/group-atmosphere', '群聊天助手'),
+    ('/ops/accounts', '账号设置'),
+]
+
+
+def extract_first_nav_links(html: str):
+    match = re.search(r"<div\s+class=[\"'](?:shell-nav|nav)[\"'][^>]*>(.*?)</div>", html, re.S)
+    assert match, 'page should render the shared ops navigation'
+    return re.findall(r"<a\s+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", match.group(1), re.S)
+
+
 def assert_common_nav(html: str):
-    expected = [
-        ('/ops', '运营工作台'),
-        ('/ops/intake-bot-presets', '收口配置中心'),
-        ('/ops/production-ops', '群审批控制台'),
-        ('/ops/group-atmosphere', '群聊天助手'),
-        ('/ops/registration-group-approval-batch-members', '注册群审批留存页'),
-        ('/ops/accounts', '账号设置'),
-    ]
-    assert 'shell-nav' in html
-    for href, label in expected:
-        assert f'href="{href}"' in html or f'href=\"{href}\"' in html
-        assert label in html
+    assert 'shell-nav' in html or 'class="nav"' in html or 'class=\"nav\"' in html
+    assert extract_first_nav_links(html) == COMMON_ADMIN_NAV
 
 
 def test_group_atmosphere_has_visible_ops_page_and_common_nav():
@@ -39,6 +45,15 @@ def test_group_atmosphere_has_visible_ops_page_and_common_nav():
     assert '群聊天助手' in html
     assert 'ga_accounts' in html
     assert 'ga_accounts_card' in html
+    assert 'ga_learning_upload_card' in html
+    assert '话术学习' in html
+    assert 'ga_upload_chat_btn' in html
+    assert html.index('id="ga_accounts_card"') < html.index('id="ga_learning_upload_card"')
+    assert html.index('id="ga_role_bridge_card"') < html.index('id="ga_accounts_card"')
+    assert '群聊天助手 · 话术角色分发控制台' in html
+    assert 'ga_overview_stats' in html
+    assert '发送判定优先级' in html
+    assert '角色挂载中心' in html
     assert 'ga_editor_card' in html
     assert 'ga_editor_modal' in html
     assert 'modal-card' in html
@@ -61,6 +76,62 @@ def test_group_atmosphere_has_visible_ops_page_and_common_nav():
     assert '/api/ops/group-atmosphere/accounts' in html
     assert_common_nav(html)
 
+
+def test_ops_navigation_uses_exact_active_link_not_hardcoded_nth_child():
+    client = make_client({'AUTH_ENABLED': False})
+
+    response = client.get('/ops/group-atmosphere')
+
+    assert response.status_code == 200
+    html = response.text
+    assert 'data-ops-shell-active="true"' in html
+    assert 'canonicalOpsPath' in html
+    assert "path.indexOf('/ops/group-atmosphere')===0" not in html
+    assert "path.indexOf('/ops/bind-failed-users')===0" not in html
+    assert 'data-current-ops-path' in html
+    assert '.shell-nav a.is-active,.nav a.is-active' in html
+    assert 'a:nth-child(' not in html
+
+
+def test_ops_active_nav_script_highlights_only_current_product(tmp_path):
+    client = make_client({'AUTH_ENABLED': False})
+    response = client.get('/ops/group-atmosphere')
+    assert response.status_code == 200
+    html = response.text
+    match = re.search(r'<script data-ops-shell-active="true">(.*?)</script>', html, re.S)
+    assert match, 'shared active-nav script should be present'
+    script = match.group(1)
+    if not shutil.which('node'):
+        return
+    script_path = tmp_path / 'active_nav_check.js'
+    script_path.write_text(
+        """
+const anchors = [
+  {href:'/ops', classList:{set:new Set(), add(x){this.set.add(x)}, remove(x){this.set.delete(x)}, contains(x){return this.set.has(x)}}},
+  {href:'/ops/intake-submit', classList:{set:new Set(), add(x){this.set.add(x)}, remove(x){this.set.delete(x)}, contains(x){return this.set.has(x)}}},
+  {href:'/ops/production-ops', classList:{set:new Set(), add(x){this.set.add(x)}, remove(x){this.set.delete(x)}, contains(x){return this.set.has(x)}}},
+  {href:'/ops/group-atmosphere', classList:{set:new Set(), add(x){this.set.add(x)}, remove(x){this.set.delete(x)}, contains(x){return this.set.has(x)}}},
+];
+anchors.forEach(a => a.getAttribute = () => a.href);
+global.location = { pathname: '/ops/group-atmosphere' };
+global.document = {
+  readyState: 'complete',
+  documentElement: { attrs:{}, setAttribute(k,v){ this.attrs[k]=v; } },
+  querySelectorAll(){ return anchors; },
+  addEventListener(){}
+};
+""" + script + """
+const active = anchors.filter(a => a.classList.contains('is-active')).map(a => a.href);
+if (active.length !== 1 || active[0] !== '/ops/group-atmosphere') {
+  throw new Error('bad active nav: ' + JSON.stringify(active));
+}
+if (anchors[0].classList.contains('is-active')) {
+  throw new Error('dashboard should not stay active on group atmosphere');
+}
+"""
+    )
+    result = subprocess.run(['node', str(script_path)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 def test_group_atmosphere_buttons_script_is_valid_javascript(tmp_path):
     client = make_client({'AUTH_ENABLED': False})
@@ -88,6 +159,23 @@ def test_group_atmosphere_buttons_script_is_valid_javascript(tmp_path):
         assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_ops_admin_pages_share_identical_navigation_order():
+    client = make_client({'AUTH_ENABLED': False})
+    paths = [
+        '/ops',
+        '/ops/intake-submit',
+        '/ops/production-ops',
+        '/ops/registration-group-approval-batch-members',
+        '/ops/group-atmosphere',
+    ]
+    navs = {}
+    for path in paths:
+        response = client.get(path)
+        assert response.status_code == 200, path
+        navs[path] = extract_first_nav_links(response.text)
+    assert set(tuple(nav) for nav in navs.values()) == {tuple(COMMON_ADMIN_NAV)}
+
+
 def test_production_ops_page_keeps_only_nav_group_atmosphere_entry():
     client = make_client({'AUTH_ENABLED': False})
 
@@ -96,7 +184,20 @@ def test_production_ops_page_keeps_only_nav_group_atmosphere_entry():
     assert response.status_code == 200
     html = response.text
     assert '群聊天助手' in html
-    assert 'href="/ops/group-atmosphere"' in html or 'href=\"/ops/group-atmosphere\"' in html
+    assert 'href="/ops/group-atmosphere"' in html or 'href=\\"/ops/group-atmosphere\\"' in html
     assert 'groupAtmosphereEntryCard' not in html
     assert '进入群活跃助手' not in html
     assert_common_nav(html)
+
+
+def test_production_ops_approval_account_modal_uses_compact_width_and_no_empty_second_column():
+    client = make_client({'AUTH_ENABLED': False})
+
+    response = client.get('/ops/production-ops')
+
+    assert response.status_code == 200
+    html = response.text
+    assert '.approval-account-editor-card { width:min(960px, calc(100vw - 48px))' in html
+    assert '.approval-account-editor-body .section-split { display:block!important;' in html
+    assert '.approval-account-editor-body .binding-config-grid { grid-template-columns:minmax(280px, 1.35fr) minmax(220px, .95fr) minmax(160px, .65fr)!important;' in html
+    assert '.approval-account-editor-body .binding-meta-grid { grid-template-columns:minmax(170px, 1fr) minmax(140px, .72fr) minmax(140px, .72fr) minmax(160px, .82fr)!important;' in html

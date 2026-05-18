@@ -77,3 +77,162 @@ def test_non_cms_route_still_reports_missing_chrome_profile_mapping():
 
     assert result["status"] == "failed"
     assert result["result_code"] == "bind_executor_profile_not_configured"
+
+
+def test_cms_id_bind_fails_closed_when_precheck_business_response_is_not_success():
+    executor = FakeCmsExecutor([
+        [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
+        {"code": 1001, "message": "状态码: 400, 错误信息: invalid arguments"},
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "cms_precheck_untrusted"
+    assert all("addAnchor" not in call["url"] for call in executor.calls)
+
+
+def test_cms_id_bind_rejects_query_rows_without_matching_sid_as_untrusted():
+    executor = FakeCmsExecutor([
+        [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
+        {"code": 1000, "data": {"records": [{"guild_id": "3432", "guild_name": "Carote"}]}},
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "cms_precheck_untrusted"
+    assert all("addAnchor" not in call["url"] for call in executor.calls)
+
+
+def test_cms_id_bind_rejects_ambiguous_contains_guild_match():
+    executor = FakeCmsExecutor([
+        [
+            {"id": "3432", "guild_name": "Carote Main", "sid": "43536425"},
+            {"id": "5078", "guild_name": "Carote2", "sid": "50781344"},
+        ],
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "cms_target_guild_ambiguous"
+    assert all("addAnchor" not in call["url"] for call in executor.calls)
+
+
+def test_cms_id_bind_uses_configured_guild_id_and_sid_to_disambiguate_same_name():
+    executor = FakeCmsExecutor([
+        [
+            {"id": "9000", "guild_name": "Carote", "sid": "90000000"},
+            {"id": "3432", "guild_name": "Carote", "sid": "43536425"},
+        ],
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "3432", "guild_name": "Carote"}]}},
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+        "executor_cms_guild_id": "3432",
+        "executor_cms_guild_sid": "43536425",
+    })
+
+    assert result["status"] == "success"
+    assert result["result_code"] == "bind_success"
+    assert result["raw_result"]["cms_guild_id"] == "3432"
+    assert result["raw_result"]["cms_guild_sid"] == "43536425"
+
+
+def test_cms_id_bind_rejects_configured_guild_id_sid_mismatch():
+    executor = FakeCmsExecutor([
+        [
+            {"id": "3432", "guild_name": "Carote", "sid": "99999999"},
+        ],
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+        "executor_cms_guild_id": "3432",
+        "executor_cms_guild_sid": "43536425",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "cms_target_guild_not_visible"
+    assert all("addAnchor" not in call["url"] for call in executor.calls)
+
+
+def test_cms_id_bind_retries_postcheck_before_success():
+    executor = FakeCmsExecutor([
+        [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "success": True},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "3432", "guild_name": "Carote"}]}},
+    ])
+    executor.cms_postcheck_retry_delay_seconds = 0
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+    })
+
+    assert result["status"] == "success"
+    assert result["result_code"] == "bind_success"
+    assert result["raw_result"]["postcheck_attempts"] == 2
+
+
+def test_cms_id_bind_classifies_add_anchor_invalid_arguments_when_sid_stays_missing():
+    executor = FakeCmsExecutor([
+        [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1001, "message": "状态码: 400, 错误信息: invalid arguments"},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+    ])
+    executor.cms_postcheck_retry_delay_seconds = 0
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "cms_add_anchor_invalid_arguments"
+    assert result["raw_result"]["postcheck"] == "sid_not_found_or_not_anchor"

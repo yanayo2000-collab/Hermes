@@ -270,6 +270,80 @@ def test_group_atmosphere_candidate_pool_can_enable_one_candidate_for_all_enable
     assert {item['json']['target_group'] for item in sent} == {'group-a@g.us', 'group-b@g.us'}
 
 
+def test_group_atmosphere_scheduler_ignores_stale_delivery_configs_after_group_plan_switch(monkeypatch):
+    client = make_client()
+    client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'auto-id-community_seed',
+        'enabled': False,
+        'account_key': 'auto-id-community_seed',
+        'target_group': 'auto-id-community_seed',
+        'group_name': '活跃气氛包',
+        'language': 'id',
+        'status': 'plan_ready',
+        'template_pool': [{'template_id': 'seed-1', 'text': 'Halo kak, cek info grup ya.', 'safe_to_send': True, 'enabled': True}],
+    })
+    client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'auto-id-motivation_admin',
+        'enabled': False,
+        'account_key': 'auto-id-motivation_admin',
+        'target_group': 'auto-id-motivation_admin',
+        'group_name': '激励话术包',
+        'language': 'id',
+        'status': 'plan_ready',
+        'template_pool': [{'template_id': 'mot-1', 'text': 'Semangat kak, pelan-pelan pasti bisa.', 'safe_to_send': True, 'enabled': True}],
+    })
+    client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_key': 'atmosphere-indo-01',
+        'account_name': '印尼账号01',
+        'region': '印尼',
+        'role_positioning': 'community_seed',
+        'daily_max_messages': 5,
+        'min_interval_minutes': 0,
+        'groups': [
+            {'target_group': 'group-a@g.us', 'group_name': '印尼A群', 'enabled': True, 'speech_plan_config_name': 'auto-id-community_seed'},
+            {'target_group': 'group-b@g.us', 'group_name': '印尼B群', 'enabled': True, 'speech_plan_config_name': 'auto-id-motivation_admin'},
+        ],
+        'enabled': True,
+    })
+    stale = client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'deliver-auto-id-community_seed-atmosphere-indo-01-group-b-2',
+        'enabled': True,
+        'account_key': 'atmosphere-indo-01',
+        'target_group': 'group-b@g.us',
+        'group_name': '印尼B群',
+        'language': 'id',
+        'worker_base_url': 'http://worker.local',
+        'daily_max_messages': 5,
+        'min_interval_minutes': 0,
+        'status': 'enabled',
+        'template_pool': [{'template_id': 'stale-seed', 'text': 'STALE should not send', 'safe_to_send': True, 'enabled': True}],
+    })
+    assert stale.status_code == 200
+
+    sent = []
+
+    def fake_post(url, json=None, timeout=None):
+        sent.append({'url': url, 'json': json, 'timeout': timeout})
+        return FakeSendResponse()
+
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+    run = client.post('/api/ops/group-atmosphere/scheduler/run-due', json={})
+
+    assert run.status_code == 200
+    payload = run.json()
+    assert payload['sent_count'] == 2
+    assert {(item['json']['target_group'], item['json']['message_text']) for item in sent} == {
+        ('group-a@g.us', 'Halo kak, cek info grup ya.'),
+        ('group-b@g.us', 'Semangat kak, pelan-pelan pasti bisa.'),
+    }
+    assert all(item['json']['message_text'] != 'STALE should not send' for item in sent)
+    disabled_configs = client.get('/api/ops/group-atmosphere/configs').json()['rows']
+    stale_config = next(item for item in disabled_configs if item['config_name'] == 'deliver-auto-id-community_seed-atmosphere-indo-01-group-b-2')
+    assert stale_config['enabled'] is False
+    assert stale_config['status'] == 'disabled_stale_plan'
+
+
+
 def test_group_atmosphere_candidate_pool_exposes_language_role_and_binds_selected_group():
     client = make_client()
     client.post('/api/ops/group-atmosphere/chat-records/auto-learn', json={

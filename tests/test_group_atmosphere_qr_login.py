@@ -12,6 +12,19 @@ def make_client(settings=None):
     return TestClient(create_app(cfg))
 
 
+def test_group_atmosphere_page_has_unique_button_safe_dom_ids_and_feedback_guard():
+    client = make_client()
+    response = client.get('/ops/group-atmosphere')
+    assert response.status_code == 200
+    html = response.text
+
+    assert html.count('id="ga_role_positioning"') == 1
+    assert 'id="ga_account_role_positioning"' in html
+    assert 'ga_account_role_positioning.value' in html
+    assert 'Promise.resolve(handler()).catch' in html
+    assert 'setFeedback(`操作失败：${err.message||err}`' in html
+
+
 def test_group_atmosphere_login_refresh_does_not_auto_select_learning_or_simulation_selectors():
     client = make_client()
     response = client.get('/ops/group-atmosphere')
@@ -24,9 +37,9 @@ def test_group_atmosphere_login_refresh_does_not_auto_select_learning_or_simulat
     assert "if(simSelect)simSelect.value=key||''" not in html
     assert "if(candidateSelect)candidateSelect.value=key||''" not in html
     assert "const uploadCurrent=uploadSelect?uploadSelect.value:''" in html
-    assert "const simCurrent=simSelect?simSelect.value:''" in html
+    assert "const simCurrent=simSelect?simSelect.value:''" not in html
     assert "const candidateCurrent=candidateSelect?candidateSelect.value:''" not in html
-    assert "const key=document.getElementById('ga_sim_account_select')?.value.trim()||''" in html
+    assert "const key=document.getElementById('ga_sim_account_select')?.value.trim()||''" not in html
 
 
 def test_group_atmosphere_candidate_pool_exposes_own_account_selector_and_action_feedback():
@@ -39,35 +52,30 @@ def test_group_atmosphere_candidate_pool_exposes_own_account_selector_and_action
     assert 'ga_candidate_role_filter' in html
     assert 'ga_candidate_account_select' not in html
     assert 'ga_candidate_group_select' not in html
-    assert '选择语言/地区' in html
-    assert '选择角色' in html
+    assert '语言/地区' in html
+    assert '角色' in html
     assert '选择投放账号' not in html
     assert '选择发言群</option>' not in html
-    assert '请选择话术方案' in html
-    assert 'ga_group_1_plan' in html
-    assert 'speech_plan_config_name' in html
-    assert '话术方案库' in html
-    assert '逐群装载' in html
-    assert '已装载方案' in html
-    assert '话术包' in html
-    assert '保存名称' in html
-    assert '删除话术包' in html
-    assert '使用位置：' in html
-    assert 'renameSpeechPlan' in html
-    assert 'deleteSpeechPlan' in html
-    assert 'deliver-' not in html
-    assert 'openGroupPlanLoader' in html
-    assert 'loadPlanIntoGroup' in html
-    assert 'groupPlanLabel' in html
-    assert 'setGroupPlanSelectValue' in html
-    assert '当前方案：' in html
+    assert '角色挂载' in html
+    assert 'ga_bridge_role_select' in html
+    assert 'ga_bridge_account_select' in html
+    assert 'ga_bridge_group_choices' in html
+    assert 'ga_mount_role_btn' in html
+    assert '话术角色' in html
+    assert '学习话术号' not in html
+    assert '手动新增话术' in html
+    assert '/api/ops/group-atmosphere/role-bindings' in html
+    assert '/api/ops/group-atmosphere/roles/manual-phrases' in html
+    assert '逐群装载' not in html
+    assert '请选择话术方案' not in html
+    assert 'ga_group_1_plan' not in html
     assert 'ga_candidate_result' in html
     assert 'filterCandidateRows' in html
     assert 'speechPlanRows' in html
     assert "data-ga-enable-candidate" in html
     assert "candidateButton.dataset.configName" in html
     assert "正在加入话术方案" in html
-    assert "请到 WhatsApp 账号配置里选择这个话术方案" in html
+    assert "已加入话术方案" in html
     assert "未真正发送" in html
 
 
@@ -145,22 +153,18 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert '+ 增加发言群' in html
     assert 'ga_account_enabled' in html
     assert 'ga_action_feedback' in html
-    assert 'ga_chat_file' in html
-    assert 'multiple' in html
-    assert 'ga_clear_chat_files_btn' in html
-    assert '清空文件' in html
-    assert 'ga_tool_account_select' in html
-    assert 'ga_sim_account_select' in html
-    assert '请选择账号' in html
-    assert '话术学习' in html
-    assert '上传并学习' in html
-    assert '自动分配到话术库' in html
-    assert '/api/ops/group-atmosphere/chat-records/auto-learn' in html
-    assert '候选话术池' in html
+    assert 'ga_chat_file' not in html
+    assert 'ga_clear_chat_files_btn' not in html
+    assert 'ga_tool_account_select' not in html
+    assert 'ga_sim_account_select' not in html
+    assert '话术学习' not in html
+    assert '上传并学习' not in html
+    assert '自动分配到话术库' not in html
+    assert '候选话术' in html
     assert '自动发言' in html
-    assert '全部已启用账号' in html
-    assert '立即检查可发送话术' in html
-    assert '后台会按每日上限与间隔自动随机发送' in html
+    assert '已启用账号' not in html
+    assert '检查可发送' in html
+    assert '后台会按每日上限与间隔自动随机发送' not in html
     assert 'ga_max_interval_minutes' in html
     assert 'stopAtmosphereSchedulerLoop' not in html
     assert 'toggleAtmosphereSchedulerLoop' not in html
@@ -168,7 +172,7 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert '/api/ops/group-atmosphere/candidate-pool' in html
     assert '/api/ops/group-atmosphere/scheduler/run-due' in html
     assert '请先在聊天记录区域选择账号' not in html
-    assert '请先在发送前预览区域选择账号' in html
+    assert '请先在发送前预览区域选择账号' not in html
     assert 'id="ga_start_qr_btn"' not in html
     assert 'id="ga_refresh_session_btn"' not in html
     assert 'class="status-grid"' not in html
@@ -182,6 +186,8 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert 'account-card' in html
     assert 'account-status-grid' in html
     assert '账号用途' in html
+    assert '账号已启用' in html
+    assert '账号启用中' not in html
     assert '运行状态' in html
     assert '登录状态' in html
     assert '当前账号' not in html
@@ -301,13 +307,10 @@ def test_group_atmosphere_account_upsert_and_list_without_approval_requirements(
     too_many = client.post('/api/ops/group-atmosphere/accounts', json={
         'account_name': 'too many',
         'region': '印尼',
-        'groups': [
-            {'target_group': 'g1@g.us'}, {'target_group': 'g2@g.us'},
-            {'target_group': 'g3@g.us'}, {'target_group': 'g4@g.us'},
-        ],
+        'groups': [{'target_group': f'g{i}@g.us'} for i in range(11)],
     })
     assert too_many.status_code == 400
-    assert 'at most 3 groups' in too_many.json()['detail']
+    assert 'at most 10 groups' in too_many.json()['detail']
 
     deleted = client.delete(f"/api/ops/group-atmosphere/accounts/{body['account_key']}")
     assert deleted.status_code == 200

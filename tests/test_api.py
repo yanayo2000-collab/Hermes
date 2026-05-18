@@ -339,7 +339,1522 @@ def test_operator_cannot_access_admin_account_management():
 
 
 
-def test_customer_service_intake_config_center_is_read_only_and_mutations_are_admin_only():
+def test_ops_intake_workbench_generates_guild_sections_by_executor_assignment():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    cs1 = client.post('/api/ops/accounts', json={
+        'username': 'cs_carote', 'password': 'operator123', 'display_name': 'Carote客服', 'role': 'customer_service', 'enabled': True,
+    }).json()['user']
+    cs2 = client.post('/api/ops/accounts', json={
+        'username': 'cs_permata', 'password': 'operator123', 'display_name': 'Permata客服', 'role': 'customer_service', 'enabled': True,
+    }).json()['user']
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token', 'oauth_token_secret': 'guild-oauth-secret', 'enabled': True,
+    }).status_code == 200
+    assert client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token', 'oauth_token_secret': 'guild-oauth-secret', 'enabled': True,
+    }).status_code == 200
+    assert client.post('/api/ops/intake-workbench/guilds/Carote/assignees', json={'user_ids': [cs1['user_id']]}).status_code == 200
+    assert client.post('/api/ops/intake-workbench/guilds/Permata/assignees', json={'user_ids': [cs2['user_id']]}).status_code == 200
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'cs_carote', 'password': 'operator123'}).status_code == 200
+    page = client.get('/ops/intake-submit')
+    assert page.status_code == 200
+    assert '公会收口区' in page.text
+    guilds = client.get('/api/ops/intake-workbench/guilds')
+    assert guilds.status_code == 200
+    names = [row['guild_name'] for row in guilds.json()['rows']]
+    assert names == ['Carote']
+
+    op = client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'cs_permata', 'password': 'operator123'}).status_code == 200
+    guilds = client.get('/api/ops/intake-workbench/guilds')
+    assert [row['guild_name'] for row in guilds.json()['rows']] == ['Permata']
+
+
+def test_ops_intake_workbench_guild_tabs_highlight_only_selected_guild():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    page = client.get('/ops/intake-submit')
+    assert page.status_code == 200
+    html = page.text
+    assert "state.activeGuild===g.guild_name?'active':''" in html
+    assert "class=\"tab ${state.activeGuild===g.guild_name?'active':''}\"" in html
+    assert '.tabs .tab{background:#fff!important' in html
+    assert '.tabs .tab:hover{background:#eef4ff!important' in html
+    assert '.tabs .tab.active{background:#2563eb!important' in html
+    assert html.index('button { border:0') < html.index('.tabs .tab{background:#fff!important') < html.index('.tabs .tab.active{background:#2563eb!important')
+
+
+def test_ops_intake_workbench_cms_id_route_allows_blank_code_without_sending_dash():
+    captured = {}
+
+    def real_bind_executor(context):
+        captured.update(context)
+        return {'status': 'success', 'result_code': 'bind_success', 'result_reason': 'ok'}
+
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        # The workbench guild must be authoritative; production may not default to Carote.
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+        'REAL_BIND_EXECUTOR': real_bind_executor,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    text = '+62 898978979\n🇮🇩 2️⃣4️⃣Grup Registrasi Resmi × Linky 💎\n44898989'
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': text})
+    assert parsed.status_code == 200
+    parsed_body = parsed.json()
+    assert parsed_body['code_required'] is False
+    assert parsed_body['fields']['code'] == '-'
+    assert parsed_body['can_submit'] is True
+
+    submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed_body['fields']})
+
+    assert submit.status_code == 200
+    body = submit.json()
+    assert body['result']['accepted'] is True
+    assert body['result'].get('parsed_payload', {}).get('dept_name') == 'Carote'
+    assert body['item']['parsed_code'] == ''
+    assert 'Agency: Carote' in body['result'].get('submitted_text', '')
+    assert 'Code: -' not in body['result'].get('submitted_text', '')
+    assert 'Missing: Code' not in body['item']['reply_text']
+    assert 'Invalid Code' not in body['item']['reply_text']
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed['task_id'] == body['result']['task_id']
+    assert captured['dept_name'] == 'Carote'
+    assert captured['bind_route'] == 'cms_id'
+    assert processed.get('result_code') != 'bind_executor_profile_not_configured'
+
+
+def test_external_app_intake_tugao_submit_latest_and_feedback_guard():
+    client = make_client({
+        'EXTERNAL_APP_INTAKE_TOKENS': {'tugao_app': 'tugao-secret-token'},
+        'EXTERNAL_APP_INTAKE_DEFAULT_GUILDS': {'tugao_app': 'Carote'},
+        'EXTERNAL_APP_INTAKE_ALLOWED_GUILDS': {'tugao_app': ['Carote', 'Permata']},
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+
+    payload = {
+        'source': 'tugao_app',
+        'external_user_id': 'tugao-user-001',
+        'external_session_id': 'im-session-001',
+        'external_message_id': 'msg-001',
+        'customer_service_id': 'system001',
+        'customer_service_name': 'Tugao客服A',
+        'phone': '+62 898978979',
+        'linky_account_id': '44898989',
+        'guild': '',
+        'code': 'ABC0O1',
+        'raw_text': 'Phone: +62 898978979\nID: 44898989\nCode: ABC0O1',
+    }
+
+    unauthorized = client.post('/api/external/app-intake/submissions', json=payload, headers={'X-Source': 'tugao_app'})
+    assert unauthorized.status_code == 401
+
+    headers = {'Authorization': 'Bearer tugao-secret-token', 'X-Source': 'tugao_app'}
+    submitted = client.post('/api/external/app-intake/submissions', json=payload, headers=headers)
+    assert submitted.status_code == 200
+    body = submitted.json()
+    assert body['ok'] is True
+    assert body['external_user_id'] == 'tugao-user-001'
+    assert body['system_status'] == 'bind_queued'
+    assert body['feedback_status'] == 'not_feedbackable'
+    assert body['message'] == '已提交，系统处理中，请勿重复提交'
+    submission_id = body['submission_id']
+
+    with client.app.state.service.db.connect() as conn:
+        row = conn.execute('SELECT source, external_user_id, external_session_id, external_message_id, external_customer_service_id, external_customer_service_name, parsed_code, guild_name FROM ops_intake_items WHERE item_id=?', (submission_id,)).fetchone()
+        assert row['source'] == 'tugao_app'
+        assert row['external_user_id'] == 'tugao-user-001'
+        assert row['external_session_id'] == 'im-session-001'
+        assert row['external_message_id'] == 'msg-001'
+        assert row['external_customer_service_id'] == 'system001'
+        assert row['external_customer_service_name'] == 'Tugao客服A'
+        assert row['parsed_code'] == ''
+        assert row['guild_name'] == 'Carote'
+
+    latest = client.get('/api/external/app-intake/users/tugao-user-001/latest', headers=headers)
+    assert latest.status_code == 200
+    latest_body = latest.json()
+    assert latest_body['has_submission'] is True
+    assert latest_body['submission_id'] == submission_id
+    assert latest_body['system_status'] == 'bind_queued'
+
+    duplicate = client.post('/api/external/app-intake/submissions', json=payload, headers=headers)
+    assert duplicate.status_code == 200
+    duplicate_body = duplicate.json()
+    assert duplicate_body['duplicate'] is True
+    assert duplicate_body['submission_id'] == submission_id
+
+    other_cs_payload = dict(payload, customer_service_id='system002', customer_service_name='Tugao客服B')
+    duplicate_pending = client.post('/api/external/app-intake/submissions', json=other_cs_payload, headers=headers)
+    assert duplicate_pending.status_code == 409
+    assert duplicate_pending.json()['reason'] == 'duplicate_pending'
+    assert duplicate_pending.json()['existing_submission_id'] == submission_id
+
+    with client.app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE ops_intake_items SET system_status='fully_success', feedback_status='pending_feedback', reply_text='绑定成功，请继续按照客服指引操作。' WHERE item_id=?",
+            (submission_id,),
+        )
+        conn.commit()
+
+    before_copy_done = client.post(f'/api/external/app-intake/submissions/{submission_id}/feedback-done', json={
+        'customer_service_id': 'system001', 'customer_service_name': 'Tugao客服A'
+    }, headers=headers)
+    assert before_copy_done.status_code == 200
+    assert before_copy_done.json()['feedback_status'] == 'feedback_done'
+
+
+def test_ops_intake_workbench_updates_item_reply_after_async_bind_failure():
+    def real_bind_executor(context):
+        return {
+            'status': 'failed',
+            'result_code': 'cms_add_anchor_invalid_arguments',
+            'result_reason': '状态码: 400, 错误信息: invalid arguments',
+            'raw_result': {'executor_mode': 'cms_id'},
+        }
+
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+        'REAL_BIND_EXECUTOR': real_bind_executor,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    text = 'Phone: +62 898978979\nID: 44898989\nGroup: 🇮🇩2️⃣4️⃣Grup Registrasi Resmi ✘ Linky 💎\nCode: -'
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': text}).json()
+    submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed['fields']})
+    assert submit.status_code == 200
+    item_id = submit.json()['item']['item_id']
+
+    processed = client.app.state.service.process_next_automation_task()
+
+    assert processed['result_code'] == 'cms_add_anchor_invalid_arguments'
+    item = client.app.state.service._get_ops_intake_item(item_id)
+    assert item['system_status'] == 'bind_failed'
+    assert item['result_code'] == 'cms_add_anchor_invalid_arguments'
+    assert '**❌ Bind failed: Invalid or unavailable Linky ID**' in item['reply_text']
+    assert '**❌ Failed**' not in item['reply_text']
+
+
+
+def test_ops_intake_workbench_cms_other_channel_without_code_queues_bind_not_manual_review():
+    captured = {}
+
+    def real_bind_executor(context):
+        captured.update(context)
+        return {'status': 'success', 'result_code': 'bind_success', 'result_reason': 'ok'}
+
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+        'REAL_BIND_EXECUTOR': real_bind_executor,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    text = 'Phone: +62 898978979\nID: 44898989'
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': text}).json()
+    assert parsed['fields']['group'] == '其他渠道'
+    assert parsed['code_required'] is False
+
+    submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed['fields']})
+
+    assert submit.status_code == 200
+    body = submit.json()
+    assert body['result']['next_action'] == 'queue_bind_check'
+    assert body['item']['system_status'] == 'bind_queued'
+    assert body['item']['feedback_status'] == 'not_feedbackable'
+    assert body['item']['parsed_group'] == '其他渠道'
+    assert body['item']['parsed_code'] == ''
+    assert body['item']['result_reason'] != 'low_confidence'
+    assert 'Code: -' not in body['result'].get('submitted_text', '')
+
+
+def test_lark_reply_template_for_accepted_bind_failure_uses_specific_reason():
+    client = make_client({})
+    service = client.app.state.service
+
+    reply = service._format_lark_reply_text({
+        'accepted': True,
+        'reason': 'bind_check_failed',
+        'result_code': 'cms_add_anchor_invalid_arguments',
+        'result_reason': '状态码: 400, 错误信息: invalid arguments',
+        'reply_phone': '+62 898978979',
+        'reply_id': '44898989',
+        'reply_group': '其他渠道',
+        'reply_code_display': '-',
+    })
+
+    assert reply.startswith('**❌ Bind failed: Invalid or unavailable Linky ID**')
+    assert '**❌ Failed**' not in reply
+    assert 'Group: 其他渠道' in reply
+
+
+def test_ops_intake_workbench_failed_item_can_be_cleared_from_pending_cards():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    cs = client.post('/api/ops/accounts', json={'username': 'cs_clear_card', 'password': 'operator123', 'display_name': '客服清卡', 'role': 'customer_service', 'enabled': True}).json()['user']
+    assert client.post('/api/ops/guild-executors/Carote', json={'oauth_token': 'guild-oauth-token', 'oauth_token_secret': 'guild-oauth-secret', 'enabled': True}).status_code == 200
+    assert client.post('/api/ops/intake-workbench/guilds/Carote/assignees', json={'user_ids': [cs['user_id']]}).status_code == 200
+    service = client.app.state.service
+    now = datetime.now(timezone.utc).isoformat()
+    with service.db.connect() as conn:
+        conn.execute("""
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, ('intake_item_clear_card', 'Carote', cs['user_id'], '客服清卡', 'raw', '+62 898978979', '44898989', '其他渠道', '', 'Linky', 'Carote', 'bind_failed', 'not_feedbackable', '**❌ Bind failed: Invalid or unavailable Linky ID**', 'cms_add_anchor_invalid_arguments', 'invalid arguments', '{}', now, now))
+        conn.commit()
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'cs_clear_card', 'password': 'operator123'}).status_code == 200
+    before = client.get('/api/ops/intake-workbench/items?guild_name=Carote').json()
+    assert [row['item_id'] for row in before['rows']] == ['intake_item_clear_card']
+
+    cleared = client.post('/api/ops/intake-workbench/items/intake_item_clear_card/clear')
+
+    assert cleared.status_code == 200
+    assert cleared.json()['item']['feedback_status'] == 'cleared'
+    after = client.get('/api/ops/intake-workbench/items?guild_name=Carote').json()
+    assert after['rows'] == []
+
+
+def test_ops_intake_submit_page_exposes_clear_failed_card_button():
+    client = make_client({'AUTH_ENABLED': False})
+    html = client.get('/ops/intake-submit').text
+    assert 'clearItemCard' in html
+    assert '/api/ops/intake-workbench/items/${encodeURIComponent(itemId)}/clear' in html
+    assert '清除卡片' in html
+    assert "confirm('确认清除这张事项卡片" not in html
+    assert "confirm('确认已将该结果反馈给用户" not in html
+
+
+def test_ops_intake_workbench_generic_failed_reply_is_enhanced_from_latest_bind_task():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    cs = client.post('/api/ops/accounts', json={'username': 'cs_enhance_card', 'password': 'operator123', 'display_name': '客服增强', 'role': 'customer_service', 'enabled': True}).json()['user']
+    assert client.post('/api/ops/guild-executors/Carote', json={'oauth_token': 'guild-oauth-token', 'oauth_token_secret': 'guild-oauth-secret', 'enabled': True}).status_code == 200
+    assert client.post('/api/ops/intake-workbench/guilds/Carote/assignees', json={'user_ids': [cs['user_id']]}).status_code == 200
+    service = client.app.state.service
+    now = datetime.now(timezone.utc).isoformat()
+    with service.db.connect() as conn:
+        conn.execute("""
+            INSERT INTO leads (
+                lead_id, trace_id, source_platform, source_page_id, country, area_code, mobile,
+                yw_id, app_name, dept_name, pendaftaran_group, current_status, matched_customer_id,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, ('lead_enhance_card', 'trace-enhance-card', 'lark', 'ops-intake', 'ID', 62, '898978979', '44898989', 'Linky', 'Carote', '其他渠道', 'bind_failed', 'customer_enhance_card', now, now))
+        conn.execute("""
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at,
+                status, result_code, result_reason, finished_at, raw_result
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, ('task_enhance_card', 'lead_enhance_card', 'bind_check', 'P0', '{}', 'bind-check:enhance-card', 'test', now, 'failed', 'cms_add_anchor_invalid_arguments', '状态码: 400, 错误信息: invalid arguments', now, '{}'))
+        conn.execute("""
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, ('intake_item_enhance_card', 'Carote', cs['user_id'], '客服增强', 'raw', '+62 898978979', '44898989', '其他渠道', '', 'Linky', 'Carote', 'manual_required', 'not_feedbackable', '**❌ Failed**\nPhone: +62 898978979\nID: 44898989\nGroup: 其他渠道\nCode: -', '', '', '{"lead_id":"lead_enhance_card"}', now, now))
+        conn.commit()
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'cs_enhance_card', 'password': 'operator123'}).status_code == 200
+    body = client.get('/api/ops/intake-workbench/items?guild_name=Carote').json()
+    row = body['rows'][0]
+    assert row['item_id'] == 'intake_item_enhance_card'
+    assert row['reply_text'].startswith('**❌ Bind failed: Invalid or unavailable Linky ID**')
+    assert '**❌ Failed**' not in row['reply_text']
+
+
+def test_ops_intake_submit_success_copy_template_button_is_removed():
+    client = make_client({'AUTH_ENABLED': False})
+    html = client.get('/ops/intake-submit').text
+    assert 'copyTextWithFallback' in html  # still used by the processing-notice copy action
+    assert '复制成功模板' not in html
+    assert '不可复制成功模板' not in html
+    assert 'copyReply(' not in html
+    assert 'template-copied' not in html
+    assert '浏览器未允许自动复制，但已记录为可反馈' not in html
+
+
+def test_ops_intake_workbench_code_matrix_for_cms_and_invite_routes():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    assert client.post('/api/ops/guild-executors/Piso', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'enabled': True,
+    }).status_code == 200
+    base_text = 'Phone: +62 898978979\nID: 44898989\nGroup: Test Group'
+
+    cms_invalid = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': base_text + '\nCode: 123'}).json()
+    assert cms_invalid['code_required'] is False
+    assert cms_invalid['can_submit'] is True
+    assert 'invalid_code' not in cms_invalid['errors']
+    cms_submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': base_text + '\nCode: 123', 'fields': cms_invalid['fields']})
+    assert cms_submit.status_code == 200
+    cms_body = cms_submit.json()
+    assert cms_body['result']['accepted'] is True
+    assert cms_body['item']['parsed_code'] == ''
+    assert 'Code: 123' not in cms_body['result'].get('submitted_text', '')
+    assert 'Missing: Code' not in cms_body['item'].get('reply_text', '')
+    assert 'Invalid Code' not in cms_body['item'].get('reply_text', '')
+
+    invite_dash = client.post('/api/ops/intake-workbench/guilds/Piso/parse', json={'text': base_text + '\nCode: -'}).json()
+    assert invite_dash['code_required'] is True
+    assert invite_dash['can_submit'] is False
+    assert 'missing_code' in invite_dash['errors']
+
+    invite_invalid = client.post('/api/ops/intake-workbench/guilds/Piso/parse', json={'text': base_text + '\nCode: 123'}).json()
+    assert invite_invalid['can_submit'] is False
+    assert 'invalid_code' in invite_invalid['errors']
+
+    invalid_phone = client.post('/api/ops/intake-workbench/guilds/Piso/parse', json={'text': 'Phone: abc\nID: 44898989\nGroup: Test Group\nCode: ABC123'}).json()
+    assert invalid_phone['can_submit'] is False
+    assert 'invalid_phone' in invalid_phone['errors']
+    assert 'missing_phone' not in invalid_phone['errors']
+
+    invalid_id = client.post('/api/ops/intake-workbench/guilds/Piso/parse', json={'text': 'Phone: +62 898978979\nID: 123\nGroup: Test Group\nCode: ABC123'}).json()
+    assert invalid_id['can_submit'] is False
+    assert 'invalid_id' in invalid_id['errors']
+    assert 'missing_id' not in invalid_id['errors']
+
+    cms_invalid_id = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': 'Phone: +62 898978979\nID: 123\nGroup: Test Group'}).json()
+    assert cms_invalid_id['code_required'] is False
+    assert cms_invalid_id['can_submit'] is False
+    assert 'invalid_id' in cms_invalid_id['errors']
+
+    invite_valid = client.post('/api/ops/intake-workbench/guilds/Piso/parse', json={'text': base_text + '\nCode: ABC123'}).json()
+    assert invite_valid['can_submit'] is True
+    invite_submit = client.post('/api/ops/intake-workbench/guilds/Piso/submit', json={'text': base_text + '\nCode: ABC123', 'fields': invite_valid['fields']})
+    assert invite_submit.status_code == 200
+    assert 'Code: ABC123' in invite_submit.json()['result'].get('submitted_text', '')
+
+
+
+def test_ops_intake_workbench_reuses_recent_duplicate_submission_instead_of_creating_new_item():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    text = 'Phone: +62 898978979\nID: 44898989\nGroup: 🇮🇩2️⃣4️⃣Grup Registrasi Resmi ✘ Linky 💎\nCode: -'
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': text}).json()
+
+    first = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed['fields']}).json()
+    second = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed['fields']}).json()
+
+    assert second['duplicate'] is True
+    assert second['item']['item_id'] == first['item']['item_id']
+    with client.app.state.service.db.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) AS total FROM ops_intake_items WHERE parsed_phone=? AND parsed_account_id=?", ('+62 898978979', '44898989')).fetchone()['total']
+    assert count == 1
+
+
+
+def test_ops_intake_workbench_normalizes_indonesia_local_phone_when_group_context_is_clear():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={
+        'text': 'Phone: 0898978979\nID: 44898989\nGroup: 🇮🇩2️⃣4️⃣Grup Registrasi Resmi ✘ Linky 💎\nCode: -'
+    }).json()
+
+    assert parsed['can_submit'] is True
+    assert parsed['fields']['phone'] == '+62 898978979'
+    assert 'invalid_phone' not in parsed['errors']
+
+
+
+def test_ops_intake_workbench_rejects_confusable_code_for_invite_route_but_ignores_for_cms_route():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    assert client.post('/api/ops/guild-executors/Piso', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'enabled': True,
+    }).status_code == 200
+    base = 'Phone: +62 898978979\nID: 44898989\nGroup: Test Group'
+
+    invite = client.post('/api/ops/intake-workbench/guilds/Piso/parse', json={'text': base + '\nCode: ABC0O1'}).json()
+    assert invite['can_submit'] is False
+    assert 'invalid_code_confusable_characters' in invite['errors']
+
+    cms = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': base + '\nCode: ABC0O1'}).json()
+    assert cms['code_required'] is False
+    assert cms['can_submit'] is True
+    assert cms['fields']['code'] == '-'
+    assert 'invalid_code_confusable_characters' not in cms['errors']
+
+
+
+def test_ops_intake_workbench_autofills_group_with_audit_metadata_from_unique_membership():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+    })
+    service = client.app.state.service
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    service._replace_registration_group_approval_batch_members(
+        approval_run_id='registration_group_approval_autofill_test',
+        registration_group='RG-ID-24',
+        registration_group_name='🇮🇩2️⃣4️⃣Grup Registrasi Resmi ✘ Linky 💎',
+        approved_at='2026-05-16T01:00:00.000000+00:00',
+        selected_candidates=[{
+            'requesterId': '62898978979@lid',
+            'phoneRaw': '+62 898978979',
+            'phoneNormalized': '+62898978979',
+            'displayName': 'test-user',
+            'requestedAtIso': '2026-05-16T00:55:00.000Z',
+        }],
+    )
+
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={
+        'text': 'Phone: +62 898978979\nID: 44898989\nCode: -'
+    }).json()
+
+    assert parsed['can_submit'] is True
+    assert parsed['fields']['group'] == '🇮🇩2️⃣4️⃣Grup Registrasi Resmi ✘ Linky 💎'
+    assert parsed['group_auto_filled'] is True
+    assert parsed['group_auto_fill_source'] == 'registration_group_approval_history'
+    assert parsed['group_auto_fill_confidence'] == 'unique'
+
+
+def test_ops_intake_workbench_without_group_falls_back_to_other_channel_when_no_membership():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={
+        'text': 'Phone: +62 898978979\nID: 44898989'
+    }).json()
+
+    assert parsed['can_submit'] is True
+    assert parsed['fields']['group'] == '其他渠道'
+    assert parsed['group_auto_filled'] is True
+    assert parsed['group_auto_fill_source'] == 'no_registration_group_history'
+    assert parsed['group_auto_fill_confidence'] == 'fallback'
+    assert 'missing_group' not in parsed['errors']
+
+
+def test_lark_reply_template_can_mark_code_as_not_applicable_for_cms_route():
+    service = make_client({'AUTH_ENABLED': False}).app.state.service
+
+    reply = service._format_lark_reply_text({
+        'accepted': True,
+        'lead_status': 'synced',
+        'crm_verified': True,
+        'reply_phone': '+62 898978979',
+        'reply_id': '44898989',
+        'reply_group': '🇮🇩2️⃣4️⃣Grup Registrasi Resmi ✘ Linky 💎',
+        'reply_code_display': 'N/A (CMS ID bind)',
+    })
+
+    assert 'Code: N/A (CMS ID bind)' in reply
+    assert 'Code: -' not in reply
+
+
+
+def test_ops_intake_workbench_keeps_queued_bind_out_of_pending_feedback_until_full_success():
+    def real_bind_executor(context):
+        return {'status': 'success', 'result_code': 'bind_success', 'result_reason': 'ok', 'raw_result': {'guild_code': context['dept_name']}}
+
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+        'REAL_BIND_EXECUTOR': real_bind_executor,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    text = 'Phone: +62 898978979\nID: 44898989\nGroup: Test Group\nCode: -'
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': text}).json()
+
+    submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed['fields']})
+
+    assert submit.status_code == 200
+    item = submit.json()['item']
+    assert item['system_status'] == 'bind_queued'
+    assert item['feedback_status'] == 'not_feedbackable'
+    assert client.get('/api/ops/intake-workbench/items?guild_name=Carote').json()['summary']['pending_feedback'] == 0
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed['result_code'] == 'bind_success'
+    updated = client.app.state.service._get_ops_intake_item(item['item_id'])
+    assert updated['system_status'] == 'fully_success'
+    assert updated['feedback_status'] == 'pending_feedback'
+
+
+def test_ops_intake_workbench_cross_customer_service_duplicate_pending_blocks_new_task():
+    client = make_client({'AUTH_ENABLED': True, 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Carote', 'REQUIRE_INVITE_CODE': True, 'AUTO_BIND_SIMULATION': False})
+    bootstrap_admin_and_login(client)
+    cs1 = client.post('/api/ops/accounts', json={'username': 'cs_dup_a', 'password': 'operator123', 'display_name': '客服A', 'role': 'customer_service', 'enabled': True}).json()['user']
+    cs2 = client.post('/api/ops/accounts', json={'username': 'cs_dup_b', 'password': 'operator123', 'display_name': '客服B', 'role': 'customer_service', 'enabled': True}).json()['user']
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    assert client.post('/api/ops/intake-workbench/guilds/Carote/assignees', json={'user_ids': [cs1['user_id'], cs2['user_id']]}).status_code == 200
+    text = 'Phone: +62 898978979\nID: 44898989\nGroup: Test Group\nCode: -'
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'cs_dup_a', 'password': 'operator123'}).status_code == 200
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': text}).json()
+    first = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed['fields']})
+    assert first.status_code == 200
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'cs_dup_b', 'password': 'operator123'}).status_code == 200
+    second = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed['fields']})
+
+    assert second.status_code == 409
+    detail = second.json()['detail']
+    assert detail['reason'] == 'duplicate_pending'
+    assert detail['existing_item_id'] == first.json()['item']['item_id']
+    assert detail['existing_owner'] == '客服A'
+
+
+def test_ops_intake_workbench_route_snapshot_is_saved_to_item_and_bind_task_payload():
+    client = make_client({'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Permata', 'REQUIRE_INVITE_CODE': True, 'AUTO_BIND_SIMULATION': False})
+    service = client.app.state.service
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    text = 'Phone: +62 898978979\nID: 44898989\nGroup: Test Group\nCode: ABC0O1'
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': text}).json()
+    submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed['fields']})
+    assert submit.status_code == 200
+    item = submit.json()['item']
+    route_snapshot = json.loads(item['route_snapshot'])
+    assert route_snapshot['bind_route'] == 'cms_id'
+    assert route_snapshot['expected_guild'] == 'Carote'
+    assert route_snapshot['code_included_in_dedupe'] is False
+    assert item['dedupe_route'] == 'cms_id'
+    assert item['idempotency_key']
+
+    with service.db.connect() as conn:
+        task_payload = json.loads(conn.execute('SELECT payload FROM automation_tasks WHERE task_id=?', (submit.json()['result']['task_id'],)).fetchone()['payload'])
+    assert task_payload['route_snapshot']['bind_route'] == 'cms_id'
+    assert task_payload['route_snapshot']['expected_guild'] == 'Carote'
+
+
+def test_ops_intake_workbench_group_autofill_submit_records_unconfirmed_audit_flag():
+    client = make_client({'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Carote', 'REQUIRE_INVITE_CODE': True, 'AUTO_BIND_SIMULATION': False})
+    service = client.app.state.service
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    service._replace_registration_group_approval_batch_members(
+        approval_run_id='registration_group_approval_unconfirmed_submit_test',
+        registration_group='RG-ID-24',
+        registration_group_name='🇮🇩2️⃣4️⃣Grup Registrasi Resmi ✘ Linky 💎',
+        approved_at='2026-05-16T01:00:00.000000+00:00',
+        selected_candidates=[{'requesterId': '62898978979@lid', 'phoneRaw': '+62 898978979', 'phoneNormalized': '+628****8979', 'displayName': 'test-user', 'requestedAtIso': '2026-05-16T00:55:00.000Z'}],
+    )
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': 'Phone: +62 898978979\nID: 44898989\nCode: -'}).json()
+    assert parsed['group_auto_filled'] is True
+
+    submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': 'Phone: +62 898978979\nID: 44898989\nCode: -', 'fields': parsed['fields']})
+
+    assert submit.status_code == 200
+    item = submit.json()['item']
+    assert item['group_auto_filled'] == 1
+    assert item['group_auto_fill_confirmed'] == 0
+    assert item['group_auto_fill_source'] == 'registration_group_approval_history'
+
+
+def test_ops_intake_workbench_feedback_done_no_longer_requires_copy_and_admin_reason_for_force():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    cs = client.post('/api/ops/accounts', json={'username': 'cs_feedback_guard', 'password': 'operator123', 'display_name': '客服反馈', 'role': 'customer_service', 'enabled': True}).json()['user']
+    assert client.post('/api/ops/guild-executors/Carote', json={'oauth_token': 'guild-oauth-token', 'oauth_token_secret': 'guild-oauth-secret', 'enabled': True}).status_code == 200
+    assert client.post('/api/ops/intake-workbench/guilds/Carote/assignees', json={'user_ids': [cs['user_id']]}).status_code == 200
+    service = client.app.state.service
+    now = datetime.now(timezone.utc).isoformat()
+    with service.db.connect() as conn:
+        conn.execute("""
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, ('intake_item_feedback_guard', 'Carote', cs['user_id'], '客服反馈', 'raw', '+62 898978979', '44898989', 'Test Group', '', 'Linky', 'Carote', 'fully_success', 'pending_feedback', '✅ Success', 'bind_success', '', '{}', now, now))
+        conn.commit()
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'cs_feedback_guard', 'password': 'operator123'}).status_code == 200
+    done = client.post('/api/ops/intake-workbench/items/intake_item_feedback_guard/feedback-done')
+    assert done.status_code == 200
+    assert done.json()['item']['feedback_status'] == 'feedback_done'
+
+    with service.db.connect() as conn:
+        conn.execute("UPDATE ops_intake_items SET feedback_status='pending_feedback', template_copied_at=NULL, template_copied_by=NULL WHERE item_id='intake_item_feedback_guard'")
+        conn.commit()
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'admin01', 'password': 'secret123'}).status_code == 200
+    missing_reason = client.post('/api/ops/intake-workbench/items/intake_item_feedback_guard/feedback-done', json={'force': True})
+    assert missing_reason.status_code == 400
+    assert missing_reason.json()['detail'] == 'force_feedback_reason_required'
+    forced = client.post('/api/ops/intake-workbench/items/intake_item_feedback_guard/feedback-done', json={'force': True, 'reason': '客服已手工反馈'})
+    assert forced.status_code == 200
+    assert forced.json()['item']['force_feedback_reason'] == '客服已手工反馈'
+
+
+def test_ops_intake_workbench_parse_submit_item_and_mark_feedback_done():
+    captured = {}
+
+    def real_bind_executor(context):
+        captured.update(context)
+        return {'status': 'success', 'result_code': 'bind_success', 'result_reason': 'ok', 'raw_result': {'guild_code': context['dept_name']}}
+
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+        'REAL_BIND_EXECUTOR': real_bind_executor,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    text = '+62 81234567890\nCarote-25\n45678901'
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': text})
+    assert parsed.status_code == 200
+    parsed_body = parsed.json()
+    assert parsed_body['fields']['phone'] == '+62 81234567890'
+    assert parsed_body['fields']['account_id'] == '45678901'
+    assert parsed_body['fields']['group'] == 'Carote-25'
+    assert parsed_body['can_submit'] is True
+
+    submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed_body['fields']})
+    assert submit.status_code == 200
+    item = submit.json()['item']
+    assert item['guild_name'] == 'Carote'
+    assert item['feedback_status'] == 'not_feedbackable'
+    assert item['system_status'] == 'bind_queued'
+    assert item['reply_text'] is not None
+
+    rows = client.get('/api/ops/intake-workbench/items?guild_name=Carote')
+    assert rows.status_code == 200
+    assert rows.json()['summary']['pending_feedback'] == 0
+    assert rows.json()['summary']['processing'] == 1
+    assert rows.json()['rows'][0]['item_id'] == item['item_id']
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed['result_code'] == 'bind_success'
+    done = client.post(f"/api/ops/intake-workbench/items/{item['item_id']}/feedback-done")
+    assert done.status_code == 200
+    assert done.json()['item']['feedback_status'] == 'feedback_done'
+    after_done = client.get('/api/ops/intake-workbench/items?guild_name=Carote').json()
+    assert after_done['summary']['pending_feedback'] == 0
+    assert after_done['rows'] == []
+
+    include_done = client.get('/api/ops/intake-workbench/items?guild_name=Carote&include_done=true').json()
+    assert include_done['summary']['feedback_done_today'] == 1
+    assert include_done['rows'][0]['feedback_status'] == 'feedback_done'
+
+
+def test_ops_intake_workbench_default_items_excludes_cleared_and_failed_is_not_processing_badge():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    now = datetime.now(timezone.utc).isoformat()
+    with client.app.state.service.db.connect() as conn:
+        conn.execute("""
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            'intake_item_cleared_should_hide', 'Carote', 'cs1', '客服1', 'raw',
+            '+62 81230000000', '11111111', '其他渠道', '', 'Linky', 'Carote',
+            'failed', 'cleared', '❌ Bind failed', 'cms_bind_invalid_sid', 'Invalid ID', '{}', now, now,
+        ))
+        conn.execute("""
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            'intake_item_cleared_processing_should_not_count', 'Carote', 'cs1', '客服1', 'raw',
+            '+62 81230000002', '33333333', '其他渠道', '', 'Linky', 'Carote',
+            'bind_queued', 'cleared', '资料已接收，等待处理', '', '', '{}', now, now,
+        ))
+        conn.execute("""
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            'intake_item_failed_visible', 'Carote', 'cs1', '客服1', 'raw',
+            '+62 81230000001', '22222222', '其他渠道', '', 'Linky', 'Carote',
+            'failed', 'not_feedbackable', '❌ Bind failed', 'cms_bind_invalid_sid', 'Invalid ID', '{}', now, now,
+        ))
+        conn.commit()
+
+    rows = client.get('/api/ops/intake-workbench/items?guild_name=Carote').json()
+    assert [row['item_id'] for row in rows['rows']] == ['intake_item_failed_visible']
+    assert rows['summary']['processing'] == 0
+
+    page = client.get('/ops/intake-submit')
+    assert page.status_code == 200
+    assert "s==='failed'||s==='bind_failed'" in page.text
+    assert "if(row.feedback_status==='cleared')return pill('已清除')" in page.text
+
+
+def test_ops_intake_workbench_feedback_done_today_counts_only_today():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    today = datetime.now(timezone.utc).isoformat()
+    old_day = '2020-01-02T03:04:05+00:00'
+    with client.app.state.service.db.connect() as conn:
+        for item_id, done_at in [('intake_done_today', today), ('intake_done_old', old_day)]:
+            conn.execute("""
+                INSERT INTO ops_intake_items (
+                    item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                    parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                    system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                    created_at, processed_at, feedback_done_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                item_id, 'Carote', 'cs1', '客服1', 'raw',
+                '+62 81230000000', '11111111', '其他渠道', '', 'Linky', 'Carote',
+                'fully_success', 'feedback_done', '✅ Success', 'bind_success', '', '{}', done_at, done_at, done_at,
+            ))
+        conn.commit()
+    rows = client.get('/api/ops/intake-workbench/items?guild_name=Carote').json()
+    assert rows['summary']['feedback_done_today'] == 1
+
+
+def test_ops_intake_bind_failed_page_uses_small_default_limit_and_admin_clear_action():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    page = client.get('/ops/bind-failed-users')
+    assert page.status_code == 200
+    assert "params.set('limit','50')" in page.text
+    assert '清除当前筛选结果' in page.text
+    assert '/api/ops/intake-workbench/bind-failed-items/clear' in page.text
+    assert ".join('\\n')" in page.text
+    assert ".join('\n')" not in page.text
+
+
+def test_admin_can_clear_bind_failed_items_but_customer_service_cannot():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    cs = client.post('/api/ops/accounts', json={
+        'username': 'cs_carote_clear', 'password': 'operator123', 'display_name': 'Carote客服', 'role': 'customer_service', 'enabled': True,
+    }).json()['user']
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token', 'oauth_token_secret': 'guild-oauth-secret', 'enabled': True,
+    }).status_code == 200
+    assert client.post('/api/ops/intake-workbench/guilds/Carote/assignees', json={'user_ids': [cs['user_id']]}).status_code == 200
+    service = client.app.state.service
+    now = datetime.now(timezone.utc).isoformat()
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'intake_item_clear_1', 'Carote', 'cs1', '客服1', 'Phone: +62 81230000000',
+                '+62 81230000000', '11111111', '其他渠道', 'ABC123', 'Linky', 'Carote',
+                'failed', 'pending_feedback', '❌ Bind failed', 'cms_bind_invalid_sid', 'Invalid ID', '{}', now, now,
+            ),
+        )
+        conn.commit()
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'cs_carote_clear', 'password': 'operator123'}).status_code == 200
+    denied = client.post('/api/ops/intake-workbench/bind-failed-items/clear', json={'guild_name': 'Carote'})
+    assert denied.status_code == 403
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'admin01', 'password': 'secret123'}).status_code == 200
+    before = client.get('/api/ops/intake-workbench/bind-failed-items?guild_name=Carote')
+    assert before.json()['summary']['bind_failed_count'] == 1
+    cleared = client.post('/api/ops/intake-workbench/bind-failed-items/clear', json={'guild_name': 'Carote'})
+    assert cleared.status_code == 200
+    assert cleared.json()['cleared_count'] == 1
+    after = client.get('/api/ops/intake-workbench/bind-failed-items?guild_name=Carote')
+    assert after.json()['summary']['bind_failed_count'] == 0
+
+
+def test_admin_can_clear_selected_bind_failed_items_without_clearing_all():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    service = client.app.state.service
+    now = datetime.now(timezone.utc).isoformat()
+    with service.db.connect() as conn:
+        for idx in range(2):
+            conn.execute(
+                """
+                INSERT INTO ops_intake_items (
+                    item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                    parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                    system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                    created_at, processed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f'intake_item_clear_selected_{idx}', 'Carote', 'cs1', '客服1', f'Phone: +62 8123000000{idx}',
+                    f'+62 8123000000{idx}', f'1111111{idx}', '其他渠道', 'ABC123', 'Linky', 'Carote',
+                    'failed', 'pending_feedback', '❌ Bind failed', 'cms_bind_invalid_sid', 'Invalid ID', '{}', now, now,
+                ),
+            )
+        conn.commit()
+
+    before = client.get('/api/ops/intake-workbench/bind-failed-items?guild_name=Carote')
+    assert before.status_code == 200
+    assert before.json()['summary']['bind_failed_count'] == 2
+
+    cleared = client.post('/api/ops/intake-workbench/bind-failed-items/clear', json={
+        'guild_name': 'Carote',
+        'item_ids': ['intake_item_clear_selected_0'],
+    })
+    assert cleared.status_code == 200
+    assert cleared.json()['cleared_count'] == 1
+
+    after = client.get('/api/ops/intake-workbench/bind-failed-items?guild_name=Carote')
+    body = after.json()
+    assert body['summary']['bind_failed_count'] == 1
+    assert [row['item_id'] for row in body['rows']] == ['intake_item_clear_selected_1']
+
+
+def test_ops_intake_bind_failed_page_exposes_selected_clear_controls():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    page = client.get('/ops/bind-failed-users')
+    assert page.status_code == 200
+    html = page.text
+    assert 'bindFailedSelectAll' in html
+    assert 'data-bind-failed-select' in html
+    assert '清除选中失败消息' in html
+    assert 'clearSelectedFailedItems' in html
+    assert '重置筛选' in html
+    assert '重置筛选只清空筛选条件，不删除用户数据' in html
+    assert '清除当前筛选结果' in html
+    assert '清空</button>' not in html
+    assert 'failed-list' in html
+    assert 'failed-row' in html
+    assert '全选当前页' in html
+    assert 'bind-table' not in html
+    assert '.failed-row{display:grid' in html
+    assert '.failed-fields{display:grid' in html
+    assert 'grid-template-columns:34px minmax(120px,.72fr) minmax(0,2.1fr) minmax(170px,.9fr) 74px' in html
+    assert 'grid-template-columns:minmax(104px,1fr) minmax(74px,.68fr) minmax(118px,1.05fr) minmax(62px,.58fr)' in html
+    assert '.failed-user{min-width:0;border-right' in html
+    assert '.reason-cell{min-width:0;background:#f8fafc' in html
+    assert '.reason-text{display:-webkit-box' in html
+    assert '.row-actions{display:flex;flex-direction:column' in html
+    assert '.list-select-row' in html
+    assert 'failed-field-head' in html
+    assert '<span>Phone</span><span>ID</span><span>Group</span><span>Code</span>' in html
+    assert '成员信息' in html
+    assert '可直接修正后回填或重提' not in html
+    assert '<label>Phone</label>' not in html
+    assert '<label>ID</label>' not in html
+    assert '<label>Group</label>' not in html
+    assert '<label>Code</label>' not in html
+    assert 'aria-label="${label}"' in html
+    assert 'min-width:1060px' not in html
+    assert 'title="回填到收口区"' in html
+    assert '>回填</button>' in html
+    assert 'title="重新提交"' in html
+    assert '>重提</button>' in html
+    assert 'selectionSummary' in html
+    assert 'clearSelectedButton' in html
+    assert 'clearCurrentButton' in html
+    assert 'button:disabled' in html
+    assert '当前筛选条件下没有需要处理的失败记录' in html
+    assert 'formatDisplayTime' in html
+
+
+def test_ops_intake_bind_failed_items_can_be_edited_and_resubmitted(monkeypatch):
+    client = make_client({'DB_PATH': ':memory:'})
+    service = client.app.state.service
+    now = datetime.now(timezone.utc).isoformat()
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'intake_item_bind_failed_1', 'Carote', 'cs1', '客服1', 'Phone: +62 81230000000',
+                '+62 81230000000', '11111111', '其他渠道', 'ABC123', 'Linky', 'Carote',
+                'failed', 'pending_feedback', '❌ Bind failed', 'cms_bind_invalid_sid', 'Invalid ID', '{}', now, now,
+            ),
+        )
+        conn.commit()
+
+    failed = client.get('/api/ops/intake-workbench/bind-failed-items')
+    assert failed.status_code == 200
+    failed_body = failed.json()
+    assert failed_body['summary']['bind_failed_count'] == 1
+    assert failed_body['rows'][0]['item_id'] == 'intake_item_bind_failed_1'
+    assert failed_body['rows'][0]['source_type'] == 'ops_intake_item'
+    assert failed_body['rows'][0]['editable_fields']['phone'] == '+62 81230000000'
+    assert failed_body['rows'][0]['editable_fields']['account_id'] == '11111111'
+
+    def fake_submit(text, profile_name=None, submitted_by=None):
+        assert 'ID: 22222222' in text
+        return {
+            'accepted': True,
+            'reply_text': '**✅ Success**\nPhone: +62 81230000000\nID: 22222222\nGroup: 其他渠道\nCode: ABC123',
+            'reply_phone': '+62 81230000000',
+            'reply_id': '22222222',
+            'reply_group': '其他渠道',
+            'reply_code': 'ABC123',
+            'result_code': 'bind_success',
+            'lead_status': 'bind_success',
+            'current_submission_crm_verified': True,
+        }
+
+    monkeypatch.setattr(service, 'submit_ops_intake_text', fake_submit)
+    resubmit = client.post('/api/ops/intake-workbench/items/intake_item_bind_failed_1/resubmit', json={
+        'text': '',
+        'fields': {'phone': '+62 81230000000', 'account_id': '22222222', 'group': '其他渠道', 'code': 'ABC123'},
+    })
+    assert resubmit.status_code == 200
+    body = resubmit.json()
+    assert body['source_item_id'] == 'intake_item_bind_failed_1'
+    assert body['item']['item_id'] != 'intake_item_bind_failed_1'
+    assert body['item']['system_status'] in {'success', 'fully_success'}
+    assert body['item']['parsed_account_id'] == '22222222'
+
+    failed_after = client.get('/api/ops/intake-workbench/bind-failed-items')
+    assert failed_after.status_code == 200
+    assert failed_after.json()['summary']['bind_failed_count'] == 1
+
+    page = client.get('/ops/bind-failed-users')
+    assert page.status_code == 200
+    assert '绑定失败用户' in page.text
+    assert '日期（北京时间）' in page.text
+    assert '公会' in page.text
+    assert '操作客服' in page.text
+    assert 'bindFailedGuildFilter' in page.text
+    assert 'bindFailedDateFilter' in page.text
+    assert 'bindFailedOperatorFilter' in page.text
+    assert '回填到收口区' in page.text
+    assert '重新提交' in page.text
+    assert 'ops_intake_prefill' in page.text
+    assert '/api/ops/intake-workbench/bind-failed-items' in page.text
+
+
+def test_ops_bind_failed_items_support_scope_and_filters_by_guild_date_and_operator():
+    client = make_client({'DB_PATH': ':memory:'})
+    service = client.app.state.service
+    with service.db.connect() as conn:
+        rows = [
+            ('intake_item_carote_cs1', 'Carote', 'cs1', '客服1', '+62 811', '11111111', '2026-05-14T16:30:00+00:00'),
+            ('intake_item_permata_cs1', 'Permata', 'cs1', '客服1', '+62 822', '22222222', '2026-05-15T04:00:00+00:00'),
+            ('intake_item_carote_cs2', 'Carote', 'cs2', '客服2', '+62 833', '33333333', '2026-05-15T16:30:00+00:00'),
+        ]
+        for item_id, guild, user_id, username, phone, account_id, created_at in rows:
+            conn.execute(
+                """
+                INSERT INTO ops_intake_items (
+                    item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                    parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                    system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                    created_at, processed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item_id, guild, user_id, username, f'Phone: {phone}', phone, account_id, '其他渠道', 'ABC123', 'Linky', guild,
+                    'failed', 'pending_feedback', '❌ Bind failed', 'cms_bind_invalid_sid', 'Invalid ID', '{}', created_at, created_at,
+                ),
+            )
+        conn.commit()
+
+    carote = client.get('/api/ops/intake-workbench/bind-failed-items?guild_name=Carote')
+    assert carote.status_code == 200
+    assert {row['item_id'] for row in carote.json()['rows']} == {'intake_item_carote_cs1', 'intake_item_carote_cs2'}
+
+    beijing_day = client.get('/api/ops/intake-workbench/bind-failed-items?date=2026-05-15')
+    assert beijing_day.status_code == 200
+    assert {row['item_id'] for row in beijing_day.json()['rows']} == {'intake_item_carote_cs1', 'intake_item_permata_cs1'}
+
+    operator = client.get('/api/ops/intake-workbench/bind-failed-items?submitted_by=cs1')
+    assert operator.status_code == 200
+    assert {row['item_id'] for row in operator.json()['rows']} == {'intake_item_carote_cs1', 'intake_item_permata_cs1'}
+
+    combined = client.get('/api/ops/intake-workbench/bind-failed-items?guild_name=Carote&date=2026-05-15&submitted_by=客服1')
+    assert combined.status_code == 200
+    assert [row['item_id'] for row in combined.json()['rows']] == ['intake_item_carote_cs1']
+
+
+def test_ops_bind_failed_page_includes_legacy_lead_failures_and_prefill_flow(monkeypatch):
+    client = make_client({'DB_PATH': ':memory:'})
+    service = client.app.state.service
+    now = datetime.now(timezone.utc).isoformat()
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO leads (
+                lead_id, trace_id, source_platform, source_page_id, country, area_code, mobile,
+                yw_id, app_name, dept_name, pendaftaran_group, current_status, matched_customer_id,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'lead_bind_failed_legacy_1', 'trace-bind-failed-legacy-1', 'lark', 'ops-intake', 'ID', 62, '81239990000',
+                '33333333', 'Linky', 'Carote', '其他渠道', 'bind_failed', 'customer_legacy_1', now, now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at, status,
+                result_code, result_reason, finished_at, raw_result
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'task_bind_failed_legacy_1', 'lead_bind_failed_legacy_1', 'bind_check', 'P0',
+                json.dumps({'account_id': '33333333', 'invite_code': 'ABC123'}, ensure_ascii=False),
+                'bind-check:legacy:1', 'test', now, 'failed', 'cms_add_anchor_invalid_arguments', 'Invalid arguments', now, '{}',
+            ),
+        )
+        conn.commit()
+
+    failed = client.get('/api/ops/intake-workbench/bind-failed-items')
+    assert failed.status_code == 200
+    failed_body = failed.json()
+    assert failed_body['summary']['bind_failed_count'] == 1
+    row = failed_body['rows'][0]
+    assert row['item_id'] == 'lead_bind_failed_legacy_1'
+    assert row['source_type'] == 'lead_bind_failed'
+    assert row['task_id'] == 'task_bind_failed_legacy_1'
+    assert row['editable_fields'] == {
+        'phone': '+62 81239990000',
+        'account_id': '33333333',
+        'group': '其他渠道',
+        'code': 'ABC123',
+        'app': 'Linky',
+        'agency': 'Carote',
+    }
+
+    def fake_submit(text, profile_name=None, submitted_by=None):
+        assert 'ID: 44444444' in text
+        assert 'Phone: +62 81239990000' in text
+        return {
+            'accepted': True,
+            'reply_text': '**✅ Success**\nPhone: +62 81239990000\nID: 44444444\nGroup: 其他渠道\nCode: ABC123',
+            'reply_phone': '+62 81239990000',
+            'reply_id': '44444444',
+            'reply_group': '其他渠道',
+            'reply_code': 'ABC123',
+            'result_code': 'bind_success',
+            'lead_status': 'bind_success',
+            'current_submission_crm_verified': True,
+        }
+
+    monkeypatch.setattr(service, 'submit_ops_intake_text', fake_submit)
+    resubmit = client.post('/api/ops/intake-workbench/items/lead_bind_failed_legacy_1/resubmit', json={
+        'text': '',
+        'fields': {'phone': '+62 81239990000', 'account_id': '44444444', 'group': '其他渠道', 'code': 'ABC123'},
+    })
+    assert resubmit.status_code == 200
+    assert resubmit.json()['source_item_id'] == 'lead_bind_failed_legacy_1'
+    assert resubmit.json()['item']['parsed_account_id'] == '44444444'
+
+
+def test_ops_bind_failed_clear_hides_legacy_lead_failures():
+    client = make_client({'AUTH_ENABLED': True, 'DB_PATH': ':memory:'})
+    bootstrap_admin_and_login(client)
+    service = client.app.state.service
+    now = datetime.now(timezone.utc).isoformat()
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO leads (
+                lead_id, trace_id, source_platform, source_page_id, country, area_code, mobile,
+                yw_id, app_name, dept_name, pendaftaran_group, current_status, matched_customer_id,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'lead_bind_failed_clear_1', 'trace-bind-failed-clear-1', 'lark', 'ops-intake', 'ID', 62, '81239990001',
+                '55555555', 'Linky', 'Carote', '其他渠道', 'bind_failed', 'customer_clear_1', now, now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at, status,
+                result_code, result_reason, finished_at, raw_result
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'task_bind_failed_clear_1', 'lead_bind_failed_clear_1', 'bind_check', 'P0',
+                json.dumps({'account_id': '55555555', 'invite_code': 'ABC123'}, ensure_ascii=False),
+                'bind-check:clear:1', 'test', now, 'failed', 'cms_add_anchor_invalid_arguments', 'Invalid arguments', now, '{}',
+            ),
+        )
+        conn.commit()
+
+    before = client.get('/api/ops/intake-workbench/bind-failed-items')
+    assert before.status_code == 200
+    assert [row['item_id'] for row in before.json()['rows']] == ['lead_bind_failed_clear_1']
+    assert before.json()['rows'][0]['source_type'] == 'lead_bind_failed'
+
+    cleared = client.post('/api/ops/intake-workbench/bind-failed-items/clear', json={'limit': 500})
+    assert cleared.status_code == 200
+    assert cleared.json()['cleared_count'] == 1
+
+    after = client.get('/api/ops/intake-workbench/bind-failed-items')
+    assert after.status_code == 200
+    assert after.json()['rows'] == []
+    with service.db.connect() as conn:
+        row = conn.execute(
+            "SELECT source_type, source_id FROM ops_intake_bind_failed_clears WHERE source_id = ?",
+            ('lead_bind_failed_clear_1',),
+        ).fetchone()
+    assert dict(row) == {'source_type': 'lead', 'source_id': 'lead_bind_failed_clear_1'}
+
+
+def test_ops_bind_failed_entry_is_not_top_nav_and_is_scoped_from_intake():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    ops_page = client.get('/ops')
+    assert ops_page.status_code == 200
+    assert '<title>管理员看板</title>' in ops_page.text
+    assert '<h1>管理员看板</h1>' in ops_page.text
+    assert '/ops/bind-failed-users?scope=all' in ops_page.text
+
+    intake_page = client.get('/ops/intake-submit')
+    assert intake_page.status_code == 200
+    nav = intake_page.text.split('<div class="shell-nav">', 1)[1].split('</div>', 1)[0]
+    assert '绑定失败用户' not in nav
+    assert '/ops/bind-failed-users?guild_name=${encodeURIComponent(g.guild_name)}' in intake_page.text
+    assert 'ops_intake_prefill' in intake_page.text
+
+
+def test_customer_service_can_use_ops_intake_submit_page_and_operator_cannot():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    cs_create = client.post('/api/ops/accounts', json={
+        'username': 'cs_intake',
+        'password': 'operator123',
+        'display_name': '客服收口',
+        'role': 'customer_service',
+        'enabled': True,
+    })
+    assert cs_create.status_code == 200
+    op_create = client.post('/api/ops/accounts', json={
+        'username': 'op_intake',
+        'password': 'operator123',
+        'display_name': '运营收口拒绝',
+        'role': 'operator',
+        'enabled': True,
+    })
+    assert op_create.status_code == 200
+
+    client.post('/api/ops/auth/logout')
+    login = client.post('/api/ops/auth/login', json={'username': 'cs_intake', 'password': 'operator123'})
+    assert login.status_code == 200
+    page = client.get('/ops/intake-submit')
+    assert page.status_code == 200
+    assert '绑定中心' in page.text
+    assert '客服收口区' in page.text
+    assert 'data-ops-role="customer_service"' in page.text
+    assert '/api/ops/intake-workbench/guilds' in page.text
+    response = client.post('/api/ops/intake-submit', json={'text': 'hello', 'profile_name': None})
+    assert response.status_code == 200
+    body = response.json()
+    assert body['source'] == 'ops_intake_submit'
+    assert body['reason'] in {'irrelevant_message', 'missing_required_fields'}
+    assert 'reply_text' in body
+
+    client.post('/api/ops/auth/logout')
+    login = client.post('/api/ops/auth/login', json={'username': 'op_intake', 'password': 'operator123'})
+    assert login.status_code == 200
+    page = client.get('/ops/intake-submit', follow_redirects=False)
+    assert page.status_code in {303, 307}
+    response = client.post('/api/ops/intake-submit', json={'text': 'hello', 'profile_name': None})
+    assert response.status_code == 403
+    assert response.json()['detail'] == 'ops_customer_service_required'
+
+
+def test_ops_intake_submit_reuses_existing_cms_bind_route():
+    captured = {}
+
+    def real_bind_executor(context):
+        captured.update(context)
+        return {
+            'status': 'success',
+            'result_code': 'bind_success',
+            'result_reason': 'cms bind ok',
+            'raw_result': {'guild_code': context['dept_name'], 'executor_mode': context['bind_route']},
+        }
+
+    client = make_client({
+        'LARK_APP_ID': 'cli_default_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+        'REAL_BIND_EXECUTOR': real_bind_executor,
+    })
+    executor = client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'cms_guild_id': '3432',
+        'cms_guild_sid': '43536425',
+        'enabled': True,
+    })
+    assert executor.status_code == 200
+
+    response = client.post('/api/ops/intake-submit', json={
+        'text': '+62 81234567890\nCarote-25\n45678901',
+        'profile_name': None,
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is True
+    assert body['source'] == 'ops_intake_submit'
+    assert body['reply_group'] == 'Carote-25'
+    assert body['reply_id'] == '45678901'
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed is not None
+    assert captured['dept_name'] == 'Carote'
+    assert captured['account_id'] == '45678901'
+    assert captured['bind_route'] == 'cms_id'
+    assert captured['executor_platform_authorization'] == 'Bearer cms-carote-token'
+
+
+def test_ops_home_is_admin_dashboard_with_core_metrics_only():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+
+    page = client.get('/ops')
+    assert page.status_code == 200
+    body = page.text
+    assert '管理员看板' in body
+    assert '收口数据' in body
+    assert '审批群监控' in body
+    assert '群聊天助手数据' in body
+    assert '绑定失败用户数' in body
+    assert '待完成用户' in body
+    assert '待 AI 绑定' not in body
+    assert '待入官方群' not in body
+    assert '/api/ops/dashboard/summary' in body
+    assert '/api/ops/approval-batch-queue/summary' in body
+    assert '/api/ops/group-atmosphere/accounts' in body
+    assert '/api/ops/group-atmosphere/configs' in body
+    assert '人工待办' not in body
+    assert 'AI 下一步处理建议' not in body
+    assert '快捷入口' not in body
+
+
+def test_ops_home_only_admin_and_super_admin_can_view():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    create_admin = client.post('/api/ops/accounts', json={
+        'username': 'admin_ops', 'password': 'admin12345', 'display_name': '管理员', 'role': 'admin', 'enabled': True,
+    })
+    assert create_admin.status_code == 200
+    create_cs = client.post('/api/ops/accounts', json={
+        'username': 'cs_ops', 'password': 'operator123', 'display_name': '客服', 'role': 'customer_service', 'enabled': True,
+    })
+    assert create_cs.status_code == 200
+    create_operator = client.post('/api/ops/accounts', json={
+        'username': 'operator_ops', 'password': 'operator123', 'display_name': '运营', 'role': 'operator', 'enabled': True,
+    })
+    assert create_operator.status_code == 200
+
+    client.post('/api/ops/auth/logout')
+    login_admin = client.post('/api/ops/auth/login', json={'username': 'admin_ops', 'password': 'admin12345'})
+    assert login_admin.status_code == 200
+    admin_page = client.get('/ops')
+    assert admin_page.status_code == 200
+    assert '管理员看板' in admin_page.text
+
+    client.post('/api/ops/auth/logout')
+    login_cs = client.post('/api/ops/auth/login', json={'username': 'cs_ops', 'password': 'operator123'})
+    assert login_cs.status_code == 200
+    cs_page = client.get('/ops', follow_redirects=False)
+    assert cs_page.status_code == 303
+    assert cs_page.headers['location'] == '/ops/intake-submit'
+
+    client.post('/api/ops/auth/logout')
+    login_operator = client.post('/api/ops/auth/login', json={'username': 'operator_ops', 'password': 'operator123'})
+    assert login_operator.status_code == 200
+    operator_page = client.get('/ops', follow_redirects=False)
+    assert operator_page.status_code == 303
+    assert operator_page.headers['location'] == '/ops/group-atmosphere'
+
+
+def test_ops_dashboard_summary_counts_bind_failed_and_pending_completion_users():
+    client = make_client({'DB_PATH': ':memory:'})
+    service = client.app.state.service
+    now = datetime.now(timezone.utc).isoformat()
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO leads (lead_id, trace_id, source_platform, source_page_id, country, area_code, mobile, current_status, matched_customer_id, parser_status, review_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('lead_bind_failed_dash', 'trace_bind_failed_dash', 'wa', 'page', 'ID', 62, '81234560000', 'bind_failed', '', 'ok', 'not_needed', now, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'intake_item_success_pending_dash', 'Carote', 'cs1', '客服1', 'Phone: +62 81234560001',
+                '+62 81234560001', '12345678', '其他渠道', '', 'Linky', 'Carote',
+                'success', 'pending_feedback', '✅ Success', 'bind_success', '', '{}', now, now,
+            ),
+        )
+        conn.commit()
+
+    summary = service.ops_dashboard_summary()
+    assert summary['bind_failed_count'] == 1
+    assert summary['pending_completion_user_count'] == 1
+
+
+def test_customer_service_intake_config_center_is_hidden_and_mutations_are_admin_only():
     client = make_client({'AUTH_ENABLED': True})
     bootstrap_admin_and_login(client)
     create = client.post('/api/ops/accounts', json={
@@ -354,14 +1869,13 @@ def test_customer_service_intake_config_center_is_read_only_and_mutations_are_ad
     login = client.post('/api/ops/auth/login', json={'username': 'ops_config', 'password': 'operator123'})
     assert login.status_code == 200
 
-    page = client.get('/ops/intake-bot-presets')
-    assert page.status_code == 200
-    body = page.text
-    assert '收口配置中心' in body
-    assert 'data-ops-role="customer_service"' in body
-    assert 'body[data-ops-role="customer_service"] .admin-only' in body
-    assert "window.__opsUserRole = 'customer_service'" in body
-    assert "if (!isOpsAdmin())" in body
+    page = client.get('/ops/intake-bot-presets', follow_redirects=False)
+    assert page.status_code in {303, 307}
+
+    home = client.get('/ops')
+    assert home.status_code == 200
+    assert '绑定中心' in home.text
+    assert '收口配置中心' not in home.text
 
     preset_update = client.post('/api/ops/intake-bot-presets/current', json={
         'default_app': 'Linky',
@@ -445,16 +1959,9 @@ def test_customer_service_can_access_ops_runtime_health_but_not_admin_only_ops_a
     official_bridge_summary = client.get('/api/ops/official-group-bridge-summary/summary')
     assert official_bridge_summary.status_code == 200
 
-    ops_page = client.get('/ops')
-    assert ops_page.status_code == 200
-    ops_page_body = ops_page.text
-    assert '/ops/intake-bot-presets' in ops_page_body
-    assert '/ops/production-ops' in ops_page_body
-    assert '/ops/registration-group-approval-batch-members' in ops_page_body
-    assert '/ops/accounts' in ops_page_body
-    assert '账号设置' in ops_page_body
-    assert '/ops/group-atmosphere' not in ops_page_body
-    assert '/ops/official-group-bridge' not in ops_page_body
+    ops_page = client.get('/ops', follow_redirects=False)
+    assert ops_page.status_code == 303
+    assert ops_page.headers['location'] == '/ops/intake-submit'
 
     account_runtime = client.get('/api/ops/whatsapp-approval-accounts/wa-admin-demo/runtime')
     assert account_runtime.status_code in {200, 404}
@@ -471,8 +1978,9 @@ def test_customer_service_can_access_ops_runtime_health_but_not_admin_only_ops_a
     executor_state = client.get('/api/ops/registration-group-approval-executor-group-state', params={'registration_group': '8️⃣5️⃣'})
     assert executor_state.status_code == 403
 
-    intake_page = client.get('/ops/intake-bot-presets')
-    assert intake_page.status_code == 200
+    intake_page = client.get('/ops/intake-bot-presets', follow_redirects=False)
+    assert intake_page.status_code in {303, 307}
+    assert intake_page.headers['location'] == '/ops/intake-submit'
 
     production_ops_page = client.get('/ops/production-ops')
     assert production_ops_page.status_code == 200
@@ -1523,60 +3031,46 @@ def test_group_approval_batch_run_ready_dispatches_official_scope(monkeypatch):
     assert body['approval_scope'] == 'official_group'
 
 
-def test_intake_bot_presets_page_loads():
+def test_binding_center_page_replaces_intake_bot_presets_page():
     client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
-    response = client.get('/ops/intake-bot-presets')
+    legacy = client.get('/ops/intake-bot-presets', follow_redirects=False)
+    assert legacy.status_code in {303, 307}
+    assert legacy.headers['location'] == '/ops/intake-submit'
+
+    response = client.get('/ops/intake-submit')
     assert response.status_code == 200
     body = response.text
-    assert '收口机器人配置中心' in body
-    assert '/api/ops/intake-bot-presets' in body
+    assert '绑定中心' in body
+    assert '客服收口区' in body
+    assert '公会执行器' in body
+    assert '收口机器人配置中心' not in body
+    assert '新增机器人配置' not in body
+    assert 'presetCardGrid' not in body
+    assert 'presetConfigModal' not in body
+    assert 'deletePreset(' not in body
+    assert '/api/ops/intake-workbench/guilds' in body
     assert '/api/ops/guild-executors' in body
-    assert '/ops/production-ops' in body
-    assert '打开群审批控制台' not in body
-    assert '进入群审批控制台' not in body
-    assert 'robot_name' in body
-    assert 'default_app' in body
-    assert 'default_guild' in body
-    assert '新增机器人配置' in body
-    assert 'openPresetModal(null)' in body
-    assert 'presetCardGrid' in body
-    assert 'presetConfigModal' in body
-    assert 'savePresetFromModal()' in body
-    assert 'deletePreset(' in body
-    assert 'window.__presetModalDraft' in body
-    assert 'capturePresetModalDraft();' in body
-    assert 'applyPresetModalDraft(row || {})' in body
-    assert 'onchange="capturePresetModalDraft()"' in body
-    assert '编辑名称' not in body
-    assert '<table class="preset-table"' not in body
-    assert '＋ 新增公会执行器' in body
-    assert 'executorConfigModal' in body
+    assert '编辑客服' in body
+    assert 'assigneeModal' in body
+    assert 'assigneeDropdownButton' in body
+    assert 'assigneeOptions' in body
+    assert 'type="checkbox"' in body
+    assert 'toggleAssigneeDropdown' in body
+    assert 'openAssigneeModal' in body
+    assert 'saveAssignees' in body
+    assert 'executorSection' in body
     assert 'openExecutorModal(null)' in body
-    assert '编辑公会执行器' in body
-    assert 'saveExecutorModalButton' in body
-    assert 'setExecutorModalStatus' in body
-
-    assert 'new_executor_oauth_token' in body
-    assert 'new_executor_oauth_token_secret' in body
     assert 'CMS Token' in body
     assert 'CMS Refresh Token' in body
-    assert 'new_executor_cms_refresh_token' in body
-    assert '生效状态' in body
-    assert '失效/待处理' in body
-    assert '保存执行器' in body
-    assert '回填编辑' not in body
-    assert 'openExecutorModal(' in body
-    assert '后台地址' not in body
-    assert '登录账号' not in body
-    assert '代理地区' in body
-    assert '代理地址' not in body
-    assert '代理类型' not in body
-    assert '浏览器配置键' not in body
-    assert '历史值（待改）' in body
-    assert '已分配给' in body
-    assert '删除执行器' in body
-    assert 'deleteExecutor' in body
-    assert 'default_agency' not in body
+    assert 'executor_cms_refresh_token' in body
+    assert 'data-ops-role="admin"' in body
+    assert '复制成功模板' not in body
+    assert '不可复制成功模板' not in body
+    assert 'copyReply(' not in body
+    assert '/template-copied' not in body
+    assert '当前不可反馈用户，系统仍在处理中' not in body
+    assert '系统根据历史审批记录自动补全 Group' in body
+    assert '后台已完成绑定，资料同步中，请勿重复提交' in body
 
 
 def test_group_approval_checks_rejects_registration_scope():
@@ -1628,6 +3122,15 @@ def test_production_ops_page_loads():
     assert '账号名称' in body
     assert '账号名称（account_name）' not in body
     assert 'wa_enabled_toggle' not in body
+    assert 'openApprovalAccountEditorButton' in body
+    assert 'approvalAccountEditorModal' in body
+    assert 'approvalAccountEditorTitle' in body
+    assert 'openNewApprovalAccountEditor' in body
+    assert 'openApprovalAccountEditorModal' in body
+    assert 'closeApprovalAccountEditorModal' in body
+    assert '新增 WhatsApp 账号' in body
+    assert '编辑 WhatsApp 审批账号' in body
+    assert '回填编辑' not in body
     assert 'setApprovalAccountEnabled' in body
     assert 'setApprovalBindingEnabled' in body
     assert 'manualApproveBinding' in body
@@ -7028,6 +8531,8 @@ def test_guild_executors_api_lists_and_updates_executor_config():
         'browser_profile_key': 'permata-profile',
         'bind_concurrency': 3,
         'request_timeout_seconds': 45,
+        'cms_guild_id': '413',
+        'cms_guild_sid': '25400979',
         'notes': 'permata executor',
     })
     assert saved.status_code == 200
@@ -7065,6 +8570,8 @@ def test_guild_executors_api_lists_and_updates_executor_config():
     assert resolved_body['login_username'] == 'permata@example.com'
     assert resolved_body['proxy_url'] == 'http://proxy-xm:8080'
     assert resolved_body['proxy_region'] == '厦门'
+    assert resolved_body['cms_guild_id'] == '413'
+    assert resolved_body['cms_guild_sid'] == '25400979'
     assert resolved_body['password_configured'] is True
     assert 'password_secret_ref' not in resolved_body
 
@@ -7078,6 +8585,8 @@ def test_guild_executors_api_lists_and_updates_executor_config():
     assert rows[0]['login_username'] == 'permata@example.com'
     assert rows[0]['proxy_url'] == 'http://proxy-xm:8080'
     assert rows[0]['proxy_region'] == '厦门'
+    assert rows[0]['cms_guild_id'] == '413'
+    assert rows[0]['cms_guild_sid'] == '25400979'
     assert rows[0]['proxy_type'] == 'http'
     assert rows[0]['browser_profile_key'] == 'permata-profile'
     assert rows[0]['bind_concurrency'] == 3
@@ -7200,6 +8709,21 @@ def test_guild_executor_api_preserves_optional_tokens_without_echoing_or_blank_o
     assert 'oauth_token_secret' not in fetched
     assert 'platform_authorization' not in fetched
 
+
+
+def test_create_app_initializes_live_bind_executor_for_cms_route_without_chrome_profile_map(monkeypatch):
+    monkeypatch.delenv('BIND_CHROME_PROFILE_MAP', raising=False)
+    client = make_client({
+        'ENABLE_CHROME_BIND_EXECUTOR': True,
+        'BIND_CHROME_PROFILE_MAP': '',
+        'LARK_APP_ID': 'cli_default_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+    })
+    executor = client.app.state.service.real_bind_executor
+    assert executor is not None
+    assert callable(executor)
+    assert getattr(executor, 'profile_map', None) == {}
 
 
 def test_lark_intake_without_code_can_continue_for_guild_with_cms_authorization_and_routes_bind_by_id():
@@ -8283,6 +9807,24 @@ def test_lark_reply_templates_include_code_field_for_success_and_failures():
         'reply_code': 'EKVFGQ',
     })
     assert not_verified_yet.startswith('**❌ Failed**')
+
+    already_registered_crm_failed = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'crm_sync_failed',
+        'bind_precheck': 'already_in_target_guild',
+        'result_reason': 'Data duplication.',
+        'reply_phone': '+62 8989811289819',
+        'reply_id': '46058697',
+        'reply_group': '其他渠道',
+        'reply_code': '-',
+    })
+    assert already_registered_crm_failed == (
+        '**❌ Previously registered in this agency**\n'
+        'Phone: +62 8989811289819\n'
+        'ID: 46058697\n'
+        'Group: 其他渠道\n'
+        'Code: -'
+    )
 
     bind_failed = service._format_lark_reply_text({
         'accepted': False,
@@ -20454,7 +21996,7 @@ def test_ops_page_serves_operational_workbench_html():
     assert response.status_code == 200
     assert 'text/html' in response.headers['content-type']
     body = response.text
-    assert '运营工作台' in body
+    assert '管理员看板' in body
     assert '今日链路概览' in body
     assert '人工待办' in body
     assert '系统健康' in body
@@ -22527,7 +24069,7 @@ def test_intake_bot_presets_api_returns_crm_dropdown_options():
     ]
 
 
-def test_intake_bot_presets_page_uses_dropdown_selects_for_app_and_guild():
+def test_binding_center_replaces_intake_bot_presets_dropdown_page():
     from app.main import create_app
 
     crm = StubCrmAdapter()
@@ -22541,49 +24083,27 @@ def test_intake_bot_presets_page_uses_dropdown_selects_for_app_and_guild():
     })
     client = TestClient(app)
 
-    response = client.get('/ops/intake-bot-presets')
+    legacy = client.get('/ops/intake-bot-presets', follow_redirects=False)
+    assert legacy.status_code in {303, 307}
+    assert legacy.headers['location'] == '/ops/intake-submit'
 
+    response = client.get('/ops/intake-submit')
     assert response.status_code == 200
     body = response.text
-    assert '收口配置中心' in body
-    assert 'page-shell' in body
-    assert 'shell-nav' in body
-    assert '配置概况' in body
-    assert '机器人配置列表' in body
-    assert '执行器总览' in body
-    assert 'new_executor_oauth_token' in body
-    assert 'new_executor_oauth_token_secret' in body
-    assert 'new_executor_platform_authorization' in body
-    assert 'new_executor_backend_url' not in body
-    assert 'new_executor_platform_backend_url' not in body
-    assert 'new_executor_proxy_url' not in body
-    assert 'new_executor_proxy_type' not in body
-    assert 'new_executor_browser_profile_key' not in body
-    assert 'CMS ID 绑' in body
-    assert '个人 Code 绑' in body
-    assert '群审批控制台</h2>' not in body
-    assert 'Config Center' not in body
-    assert 'config-workspace' in body
-    assert 'fillPresetModalOptions(' in body
-    assert 'preset_modal_app_secret' in body
-    assert 'preset_modal_activation_status' in body
-    assert 'setPresetActivationStatus' in body
-    assert 'activateLocalIntakeBotGateway' in body
-    assert '机器人配置已保存，正在启用机器人' in body
-    assert '启用中…' in body
-    assert 'suggestedPresetProfileNameFromAppId' in body
-    assert 'Lark App Secret' in body
-    assert 'window.__presetAppOptions' in body
-    assert 'window.__presetGuildOptions' in body
-    assert 'window.__presetAppOptionsSource' in body
-    assert 'window.__presetGuildOptionsSource' in body
-    assert 'setInterval(() => {' in body
-    assert 'reloadPresets().catch(err => showToast(err.message, \'error\'))' in body
-    assert 'Using live CRM dropdown options only.' in body
-    assert 'placeholder="手动输入"' not in body
+    assert '绑定中心' in body
+    assert '客服收口区' in body
+    assert '公会执行器' in body
+    assert '机器人配置列表' not in body
+    assert '收口配置中心' not in body
+    assert 'preset_modal_app_secret' not in body
+    assert 'activateLocalIntakeBotGateway' not in body
+    assert 'executor_oauth_token' in body
+    assert 'executor_oauth_token_secret' in body
+    assert 'executor_platform_authorization' in body
+    assert 'executor_cms_refresh_token' in body
 
 
-def test_intake_bot_presets_page_disables_save_when_crm_options_unavailable():
+def test_binding_center_does_not_render_legacy_crm_dropdown_guard():
     from app.main import create_app
 
     app = create_app({
@@ -22593,17 +24113,16 @@ def test_intake_bot_presets_page_disables_save_when_crm_options_unavailable():
     })
     client = TestClient(app)
 
-    response = client.get('/ops/intake-bot-presets')
+    response = client.get('/ops/intake-submit')
 
     assert response.status_code == 200
     body = response.text
-    assert 'CRM dropdown options are currently unavailable. Saving is disabled.' in body
-    assert 'throw new Error(\'CRM dropdown options are unavailable. Saving is disabled.\')' in body
+    assert '绑定中心' in body
+    assert 'CRM dropdown options are currently unavailable. Saving is disabled.' not in body
+    assert 'throw new Error(\'CRM dropdown options are unavailable. Saving is disabled.\')' not in body
     assert 'placeholder="手动输入"' not in body
-    assert 'const manualInput = document.getElementById(`default_app_manual_${profileName}`);' not in body
-    assert 'const manualGuildInput = document.getElementById(`default_guild_manual_${profileName}`);' not in body
-    assert 'default_app: defaultApp' in body
-    assert 'default_guild: defaultGuild' in body
+    assert 'default_app: defaultApp' not in body
+    assert 'default_guild: defaultGuild' not in body
 
 
 def test_intake_bot_presets_api_rejects_manual_fallback_values_when_crm_options_unavailable():

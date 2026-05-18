@@ -12,7 +12,12 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
-import websockets
+
+class CmsBindFlowError(RuntimeError):
+    def __init__(self, result_code: str, result_reason: str) -> None:
+        super().__init__(result_reason)
+        self.result_code = result_code
+        self.result_reason = result_reason
 
 
 class LiveChromeBindExecutor:
@@ -24,12 +29,16 @@ class LiveChromeBindExecutor:
         chrome_user_data_root: Optional[str] = None,
         startup_timeout_seconds: float = 20.0,
         post_submit_wait_seconds: float = 8.0,
+        cms_postcheck_max_attempts: int = 3,
+        cms_postcheck_retry_delay_seconds: float = 0.75,
     ) -> None:
         self.profile_map = {str(k): str(v) for k, v in (profile_map or {}).items()}
         self.chrome_binary = chrome_binary or '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
         self.chrome_user_data_root = str(Path(chrome_user_data_root or '~/Library/Application Support/Google/Chrome').expanduser())
         self.startup_timeout_seconds = max(5.0, float(startup_timeout_seconds or 20.0))
         self.post_submit_wait_seconds = max(3.0, float(post_submit_wait_seconds or 8.0))
+        self.cms_postcheck_max_attempts = max(1, int(cms_postcheck_max_attempts or 3))
+        self.cms_postcheck_retry_delay_seconds = max(0.0, float(cms_postcheck_retry_delay_seconds or 0.0))
 
     def __call__(self, context: dict[str, Any]) -> dict[str, Any]:
         return asyncio.run(self._run(context))
@@ -92,6 +101,7 @@ class LiveChromeBindExecutor:
             )
             await self._wait_debugger(port)
             ws_url = self._get_ws_url(port)
+            import websockets
             async with websockets.connect(ws_url, max_size=2**24) as conn:
                 client = _CdpClient(conn)
                 await client.call('Page.enable')
@@ -174,7 +184,13 @@ class LiveChromeBindExecutor:
                 'raw_result': raw_result,
             }
         try:
-            guild = self._cms_find_target_guild(base_url=base_url, authorization=authorization, target_guild=target_guild)
+            guild = self._cms_find_target_guild(
+                base_url=base_url,
+                authorization=authorization,
+                target_guild=target_guild,
+                configured_guild_id=str(context.get('executor_cms_guild_id') or '').strip(),
+                configured_guild_sid=str(context.get('executor_cms_guild_sid') or '').strip(),
+            )
             raw_result['cms_guild_id'] = guild.get('id')
             raw_result['cms_guild_name'] = guild.get('guild_name')
             raw_result['cms_guild_sid'] = guild.get('sid')
@@ -201,23 +217,52 @@ class LiveChromeBindExecutor:
             submit = self._cms_add_anchor(base_url=base_url, authorization=authorization, sid=account_id, guild_id=str(guild.get('id') or ''))
             raw_result['cms_submit_code'] = submit.get('code')
             raw_result['cms_submit_success'] = submit.get('success')
-            after = self._cms_query_sid(base_url=base_url, authorization=authorization, sid=account_id)
-            after_match = self._cms_match_target_guild(after, guild)
-            if after_match == 'target':
-                raw_result['postcheck'] = 'verified_target_guild'
-                return {
-                    'status': 'success',
-                    'result_code': 'bind_success',
-                    'result_reason': 'CMS bind verified',
-                    'raw_result': raw_result,
-                }
-            message = str(submit.get('message') or submit.get('msg') or submit.get('error') or 'CMS bind was not verified')
+            submit_message = str(submit.get('message') or submit.get('msg') or submit.get('error') or '').strip()
+            after: list[dict[str, Any]] = []
+            after_match = 'none'
+            for attempt in range(1, self.cms_postcheck_max_attempts + 1):
+                after = self._cms_query_sid(base_url=base_url, authorization=authorization, sid=account_id)
+                after_match = self._cms_match_target_guild(after, guild)
+                raw_result['postcheck_attempts'] = attempt
+                if after_match == 'target':
+                    raw_result['postcheck'] = 'verified_target_guild'
+                    return {
+                        'status': 'success',
+                        'result_code': 'bind_success',
+                        'result_reason': 'CMS bind verified',
+                        'raw_result': raw_result,
+                    }
+                if after_match == 'other':
+                    raw_result['postcheck'] = 'mismatched_other_guild'
+                    break
+                if attempt < self.cms_postcheck_max_attempts and self.cms_postcheck_retry_delay_seconds:
+                    time.sleep(self.cms_postcheck_retry_delay_seconds)
+            message = submit_message or 'CMS bind was not verified'
+            lowered_message = message.lower()
+            if after_match == 'none':
+                raw_result['postcheck'] = 'sid_not_found_or_not_anchor'
+                if 'invalid arguments' in lowered_message or submit.get('code') == 1001:
+                    result_code = 'cms_add_anchor_invalid_arguments'
+                    message = message or 'Invalid or unavailable Linky ID'
+                elif submit.get('code') in (1000, '1000') or submit.get('success') is True:
+                    result_code = 'cms_postcheck_timeout'
+                    message = 'CMS bind submitted but postcheck did not verify target guild'
+                else:
+                    result_code = 'cms_sid_not_found'
+                    message = message or 'SID not found or not available as anchor'
+            elif after_match == 'other':
+                result_code = 'cms_postcheck_mismatch'
+                message = message or 'CMS postcheck found another guild after bind submit'
+            else:
+                result_code = 'cms_bind_not_verified'
             return {
                 'status': 'failed',
-                'result_code': 'cms_bind_not_verified',
+                'result_code': result_code,
                 'result_reason': message,
                 'raw_result': raw_result,
             }
+        except CmsBindFlowError as exc:
+            return {'status': 'failed', 'result_code': exc.result_code, 'result_reason': exc.result_reason, 'raw_result': raw_result}
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403):
                 code = 'cms_authorization_invalid'
@@ -250,20 +295,77 @@ class LiveChromeBindExecutor:
             text = resp.read().decode('utf-8', errors='replace')
         return json.loads(text) if text else {}
 
-    def _cms_find_target_guild(self, *, base_url: str, authorization: str, target_guild: str) -> dict[str, Any]:
+    def _cms_find_target_guild(
+        self,
+        *,
+        base_url: str,
+        authorization: str,
+        target_guild: str,
+        configured_guild_id: str = '',
+        configured_guild_sid: str = '',
+    ) -> dict[str, Any]:
         url = f'{base_url}/api/admin/linky/industrial/industrial/getGuildIdAndName'
         data = self._cms_request_json(method='GET', url=url, authorization=authorization)
         rows = data.get('data') if isinstance(data, dict) else data
         if not isinstance(rows, list):
             rows = []
+        dict_rows = [r for r in rows if isinstance(r, dict)]
         target_norm = target_guild.strip().lower()
-        exact = [r for r in rows if isinstance(r, dict) and str(r.get('guild_name') or '').strip().lower() == target_norm]
-        if exact:
+        configured_id = str(configured_guild_id or '').strip()
+        configured_sid = str(configured_guild_sid or '').strip()
+        if configured_id or configured_sid:
+            configured_matches = []
+            for row in dict_rows:
+                row_id = str(row.get('id') or row.get('guild_id') or '').strip()
+                row_sid = str(row.get('sid') or row.get('guild_sid') or '').strip()
+                id_ok = not configured_id or row_id == configured_id
+                sid_ok = not configured_sid or row_sid == configured_sid
+                if id_ok and sid_ok:
+                    configured_matches.append(row)
+            if len(configured_matches) == 1:
+                matched = dict(configured_matches[0])
+                matched_name = str(matched.get('guild_name') or '').strip().lower()
+                if target_norm and matched_name and matched_name != target_norm:
+                    raise CmsBindFlowError('cms_target_guild_mismatch', f'Configured CMS guild does not match target guild: {target_guild}')
+                return matched
+            if len(configured_matches) > 1:
+                raise CmsBindFlowError('cms_target_guild_ambiguous', f'Configured CMS guild is ambiguous: {target_guild}')
+            raise CmsBindFlowError('cms_target_guild_not_visible', f'Configured CMS guild is not visible for this authorization: {target_guild}')
+        exact = [r for r in dict_rows if str(r.get('guild_name') or '').strip().lower() == target_norm]
+        if len(exact) == 1:
             return dict(exact[0])
-        contains = [r for r in rows if isinstance(r, dict) and target_norm and target_norm in str(r.get('guild_name') or '').strip().lower()]
+        if len(exact) > 1:
+            raise CmsBindFlowError('cms_target_guild_ambiguous', f'CMS target guild is ambiguous: {target_guild}')
+        contains = [r for r in dict_rows if target_norm and target_norm in str(r.get('guild_name') or '').strip().lower()]
         if contains:
-            return dict(contains[0])
-        raise RuntimeError(f'CMS target guild not visible for this authorization: {target_guild}')
+            raise CmsBindFlowError('cms_target_guild_ambiguous', f'CMS target guild requires exact match: {target_guild}')
+        raise CmsBindFlowError('cms_target_guild_not_visible', f'CMS target guild not visible for this authorization: {target_guild}')
+
+    def _cms_extract_rows_from_detail_response(self, data: Any) -> list[dict[str, Any]]:
+        if isinstance(data, dict):
+            code = data.get('code')
+            success = data.get('success')
+            if code is not None and str(code) != '1000':
+                message = str(data.get('message') or data.get('msg') or data.get('error') or 'CMS detail query did not return success')
+                raise CmsBindFlowError('cms_precheck_untrusted', message)
+            if success is False:
+                message = str(data.get('message') or data.get('msg') or data.get('error') or 'CMS detail query was not successful')
+                raise CmsBindFlowError('cms_precheck_untrusted', message)
+            rows: Any = data.get('data') or data.get('records') or []
+            if isinstance(rows, dict):
+                rows = rows.get('records') or rows.get('list') or rows.get('rows') or []
+        else:
+            rows = data
+        if rows in (None, ''):
+            return []
+        if not isinstance(rows, list):
+            raise CmsBindFlowError('cms_precheck_untrusted', 'CMS detail query returned an unsupported data shape')
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise CmsBindFlowError('cms_precheck_untrusted', 'CMS detail query returned an unsupported row shape')
+            normalized.append(dict(row))
+        return normalized
 
     def _cms_query_sid(self, *, base_url: str, authorization: str, sid: str) -> list[dict[str, Any]]:
         url = f'{base_url}/api/admin/linky/industrial/streamer_detail/page'
@@ -273,25 +375,25 @@ class LiveChromeBindExecutor:
         ]
         merged: list[dict[str, Any]] = []
         seen: set[str] = set()
+        saw_unmatched_rows = False
         for body in candidates:
             data = self._cms_request_json(method='POST', url=url, authorization=authorization, body=body)
-            rows: Any = []
-            if isinstance(data, dict):
-                rows = data.get('data') or data.get('records') or []
-                if isinstance(rows, dict):
-                    rows = rows.get('records') or rows.get('list') or rows.get('rows') or []
-            if not isinstance(rows, list):
-                rows = []
+            rows = self._cms_extract_rows_from_detail_response(data)
             for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                row_sid = str(row.get('sid') or row.get('user_id') or '')
-                if row_sid and row_sid != sid:
+                row_sid = str(row.get('sid') or row.get('user_id') or '').strip()
+                if not row_sid:
+                    raise CmsBindFlowError('cms_precheck_untrusted', 'CMS detail row has no verifiable SID')
+                if row_sid != sid:
+                    saw_unmatched_rows = True
                     continue
                 key = json.dumps(row, sort_keys=True, ensure_ascii=False)
                 if key not in seen:
                     seen.add(key)
                     merged.append(dict(row))
+            if merged:
+                break
+        if not merged and saw_unmatched_rows:
+            raise CmsBindFlowError('cms_precheck_untrusted', 'CMS detail query returned rows for a different SID')
         return merged
 
     def _cms_match_target_guild(self, rows: list[dict[str, Any]], guild: dict[str, Any]) -> str:
@@ -299,12 +401,15 @@ class LiveChromeBindExecutor:
             return 'none'
         target_id = str(guild.get('id') or '').strip()
         target_name = str(guild.get('guild_name') or '').strip().lower()
+        found_known_other = False
         for row in rows:
             guild_id = str(row.get('guild_id') or row.get('industrial_id') or '').strip()
             guild_name = str(row.get('guild_name') or row.get('industrial_name') or '').strip().lower()
             if (target_id and guild_id == target_id) or (target_name and guild_name == target_name):
                 return 'target'
-        return 'other'
+            if guild_id or guild_name:
+                found_known_other = True
+        return 'other' if found_known_other else 'none'
 
     def _cms_add_anchor(self, *, base_url: str, authorization: str, sid: str, guild_id: str) -> dict[str, Any]:
         if not guild_id:
