@@ -43,17 +43,17 @@ def test_group_atmosphere_has_visible_ops_page_and_common_nav():
     assert response.status_code == 200
     html = response.text
     assert '群聊天助手' in html
+    assert '群聊天助手' in html
     assert 'ga_accounts' in html
     assert 'ga_accounts_card' in html
     assert 'ga_learning_upload_card' in html
-    assert '话术学习' in html
+    assert '<h2>话术学习</h2>' not in html
     assert 'ga_upload_chat_btn' in html
-    assert html.index('id="ga_accounts_card"') < html.index('id="ga_learning_upload_card"')
     assert html.index('id="ga_role_bridge_card"') < html.index('id="ga_accounts_card"')
-    assert '群聊天助手 · 话术角色分发控制台' in html
-    assert 'ga_overview_stats' in html
-    assert '发送判定优先级' in html
-    assert '角色挂载中心' in html
+    assert 'data-layout="ops-workbench-redesign"' in html
+    assert '桥接操作区' in html
+    assert '新增桥接' in html
+    assert 'WhatsApp 账号与群组' in html
     assert 'ga_editor_card' in html
     assert 'ga_editor_modal' in html
     assert 'modal-card' in html
@@ -66,14 +66,17 @@ def test_group_atmosphere_has_visible_ops_page_and_common_nav():
     assert '.group-card-grid{display:flex;flex-direction:column' in html
     assert "setSelectedAtmosphereAccountKey('${esc(r.account_key)}');startAtmosphereQr(false)" in html
     assert "selectAtmosphereAccount('${esc(r.account_key)}');startAtmosphereQr(false)" not in html
-    assert '账号用途' in html
-    assert '运行状态' in html
+    assert '账号用途' not in html
+    assert '运行状态' not in html
     assert '登录状态' in html
     assert 'Runtime' not in html
     assert '当前账号' not in html
     assert '像群审批后台一样管理多个 WhatsApp 账号' not in html
     assert '系统会学习该地区/角色的常用表达' not in html
     assert '/api/ops/group-atmosphere/accounts' in html
+    assert 'linear-gradient(135deg,#fff 0%,#f8fbff 56%,#eef5ff 100%)' not in html
+    assert '.ga-page-head{display:flex!important;align-items:flex-start!important;justify-content:space-between!important;gap:16px!important;margin:0!important;padding:20px 24px!important;background:var(--crm-panel)!important;border:1px solid var(--crm-border)!important;border-radius:24px!important;box-shadow:var(--crm-shadow-card)!important;}' in html
+    assert '.ga-proto-page .ga-workbench-stats ~ .ga-proto-stack{margin-top:var(--crm-card-gap,16px)!important;}' in html
     assert_common_nav(html)
 
 

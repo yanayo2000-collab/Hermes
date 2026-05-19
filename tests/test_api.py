@@ -157,6 +157,37 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
     assert "approvalRoleCanManage(currentRole)" in production_ops_page.text
     assert "currentRole === 'admin'" not in production_ops_page.text
     assert "String(window.__opsUserRole || '').trim() === 'admin'" not in production_ops_page.text
+    assert '<h2 style=\"margin-top:0;\">当前状态</h2>' not in production_ops_page.text
+    assert '审批账号总数' not in production_ops_page.text
+    assert 'id=\"registrationPendingCount\"' not in production_ops_page.text
+    assert 'id=\"approvalExceptionCount\"' not in production_ops_page.text
+    assert '<h2 style=\"margin-top:0;\">注册群审批</h2>' in production_ops_page.text
+    assert '<h2 style=\"margin-top:0;\">官方群审批</h2>' in production_ops_page.text
+    assert 'id=\"workerHealthMeta\"' in production_ops_page.text
+    assert '<h2 style=\"margin-top:0;\">官方群总览</h2>' not in production_ops_page.text
+    assert '.top-overview-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows:1fr; gap:16px; margin-top:0; align-items:stretch; }' in production_ops_page.text
+    assert 'linear-gradient(135deg,#fff 0%,#f8fbff 56%,#eef5ff 100%)' not in production_ops_page.text
+    assert '.hero{padding:20px 24px!important;margin:0!important;min-height:var(--ops-hero-min-height)!important;border-radius:24px!important;background:var(--ops-panel)!important;border:1px solid var(--ops-border)!important;box-shadow:var(--ops-shadow-card)!important;color:var(--ops-text)!important;}' in production_ops_page.text
+    assert 'body[data-ops-shell-page="production-ops"]>.page-shell>.hero,body[data-ops-shell-page="intake-submit"]>.page-shell>.hero,body[data-ops-shell-page="registration-group-approval-batch-members"]>.page-shell>.hero,body[data-ops-shell-page="bind-failed-users"]>.page-shell>.hero,body[data-ops-shell-page="accounts"]>.page-shell>.hero,.page-shell[data-ops-shell-page="production-ops"]>.hero,.page-shell[data-ops-shell-page="intake-submit"]>.hero,.page-shell[data-ops-shell-page="registration-group-approval-batch-members"]>.hero,.page-shell[data-ops-shell-page="bind-failed-users"]>.hero,.page-shell[data-ops-shell-page="accounts"]>.hero{border-bottom-left-radius:0!important;border-bottom-right-radius:0!important;border-bottom-color:transparent!important;box-shadow:none!important;}' in production_ops_page.text
+    assert 'body[data-ops-shell-page="production-ops"]>.page-shell>.top-overview-grid,body[data-ops-shell-page="intake-submit"]>.page-shell>.summary,body[data-ops-shell-page="registration-group-approval-batch-members"]>.page-shell>.batch-members-summary,body[data-ops-shell-page="bind-failed-users"]>.page-shell>.summary,body[data-ops-shell-page="accounts"]>.page-shell>.summary,.page-shell[data-ops-shell-page="production-ops"]>.top-overview-grid,.page-shell[data-ops-shell-page="intake-submit"]>.summary,.page-shell[data-ops-shell-page="registration-group-approval-batch-members"]>.batch-members-summary,.page-shell[data-ops-shell-page="bind-failed-users"]>.summary,.page-shell[data-ops-shell-page="accounts"]>.summary{margin-top:calc(-1 * var(--ops-card-gap))!important;padding:0 20px 20px!important;background:var(--ops-panel)!important;border:1px solid var(--ops-border)!important;border-top:0!important;border-radius:0 0 24px 24px!important;box-shadow:var(--ops-shadow-card)!important;}' in production_ops_page.text
+    assert '.ga-proto-page .ga-page-head{border-bottom-left-radius:0!important;border-bottom-right-radius:0!important;border-bottom-color:transparent!important;box-shadow:none!important;margin-bottom:0!important;}' in production_ops_page.text
+    assert '.ga-proto-page .ga-page-head ~ .ga-workbench-stats{margin:0 0 16px!important;padding:0 20px 20px!important;background:var(--ops-panel)!important;border:1px solid var(--ops-border)!important;border-top:0!important;border-radius:0 0 24px 24px!important;box-shadow:var(--ops-shadow-card)!important;}' in production_ops_page.text
+    assert '.page-shell .top-overview-grid > .card.card,body>.page .top-overview-grid > .card.card{margin-top:0!important;}' in production_ops_page.text
+    assert '.grid > .card,.summary-grid > .summary-item,.stats-grid > .summary-item,.stats-grid > .card,.ga-stats > .card,.executor-card-grid > .executor-card,.account-card-grid > .account-card,.guild-grid > .guild-card,.executor-grid > .executor-card{margin-top:0!important;}' in production_ops_page.text
+    assert 'data-ops-shell-page=\"production-ops\"' in production_ops_page.text
+    assert '.top-overview-grid .status-card { flex:1; display:flex; align-items:stretch; padding:10px!important; }' in production_ops_page.text
+    assert '.top-overview-grid .status-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); gap:8px 12px; }' in production_ops_page.text
+    assert 'const compact = Boolean(el.closest(\'.top-overview-grid\'));' in production_ops_page.text
+    assert 'status-pair' in production_ops_page.text
+    assert "const registrationOperationalRows = [" in production_ops_page.text
+    assert "const officialOperationalRows = [" in production_ops_page.text
+    for label in ['运行状态', '今日已通过', '审批账号', '最近检查', '异常提示']:
+        assert label in production_ops_page.text
+    assert "['待审批人数'," in production_ops_page.text
+    assert "['待处理人数'," in production_ops_page.text
+    for technical_label in ["['模式',", "['目标群数',", "['今日新增',", "['超时超1小时',", "['绑定群数',", "['当前生效',", "['真实校验',", "['当前探针',"]:
+        assert technical_label not in production_ops_page.text
+    assert 'min-height:260px' not in production_ops_page.text
 
     accounts_page = client.get('/ops/accounts')
     assert accounts_page.status_code == 200
@@ -165,9 +196,35 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
     assert '修改我的密码' in accounts_page.text
     assert '管理员重置密码' in accounts_page.text
     assert '<th>更新时间</th>' not in accounts_page.text
-    assert 'account-line' in accounts_page.text
+    assert 'account-main' in accounts_page.text
     assert 'role-cell' in accounts_page.text
     assert 'status-cell' in accounts_page.text
+    assert 'col.col-actions { width:32%; }' in accounts_page.text
+    assert '.table-wrap { overflow-x:auto; padding-bottom:2px; }' in accounts_page.text
+    assert '.account-name-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }' in accounts_page.text
+    assert '.status-line:empty { display:none; }' in accounts_page.text
+    assert '.page { max-width:1280px; margin:0 auto; display:grid; gap:16px; }' in accounts_page.text
+    assert '.summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; margin:0; }' in accounts_page.text
+    assert '.grid { display:grid; grid-template-columns: 1.1fr 1.1fr .9fr 1.1fr auto; gap:16px!important; align-items:end; }' in accounts_page.text
+    assert '.page .grid { gap:16px!important; }' in accounts_page.text
+    assert '.accounts-hero { display:flex!important; justify-content:space-between!important; align-items:center!important; gap:16px!important; flex-wrap:nowrap!important; }' in accounts_page.text
+    assert '<div class="card hero compact-card accounts-hero">' in accounts_page.text
+    assert '<div class="accounts-hero-actions"><button class="secondary" type="button" onclick="openChangeOwnPassword()">修改我的密码</button></div>' in accounts_page.text
+    assert '.account-modal-card { width:min(520px,100%); max-height:calc(100vh - 48px); overflow:auto; background:#fff!important;' in accounts_page.text
+    assert '<div id="passwordModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">\n  <div class="account-modal-card">' in accounts_page.text
+    assert '<div id="passwordModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">\n  <div class="modal">' not in accounts_page.text
+    assert '.role-cell select { width:126px; min-width:126px;' in accounts_page.text
+    assert '.status-cell select { width:86px; min-width:86px;' in accounts_page.text
+    assert '<th>显示名</th>' not in accounts_page.text
+    assert '<th>当前</th>' not in accounts_page.text
+    assert '管理员重置密码</button>' not in accounts_page.text
+    assert '删除账号</button>' not in accounts_page.text
+    assert 'formatLoginTime' in accounts_page.text
+    assert 'formatLoginTime(row.last_login_at)' in accounts_page.text
+    assert '已加载 ${accounts.length} 个账号' not in accounts_page.text
+    assert '已加载 ${regionOptions.length} 个地区' not in accounts_page.text
+    assert '<div id="tableMessage" class="status-line"></div>' in accounts_page.text
+    assert '<div id="regionMessage" class="status-line"></div>' in accounts_page.text
     assert 'roleHint(' not in accounts_page.text
     assert '/api/ops/auth/password' in accounts_page.text
     assert 'showToast' in accounts_page.text
@@ -182,6 +239,16 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
     assert 'displayNameModal' in accounts_page.text
     assert 'submitDisplayNameModal' in accounts_page.text
     assert '保存显示名' in accounts_page.text
+    assert 'mcnRegionManagementCard' in accounts_page.text
+    assert '地区管理' in accounts_page.text
+    assert '/api/ops/mcn-region-options?include_disabled=true' in accounts_page.text
+    assert 'saveRegionOptions' in accounts_page.text
+    assert '保存配置' in accounts_page.text
+    assert accounts_page.text.index('<h2>账号列表</h2>') < accounts_page.text.index('id="mcnRegionManagementCard"')
+    assert 'region-head' in accounts_page.text
+    assert 'region-cell region-main' in accounts_page.text
+    assert 'region-sort' not in accounts_page.text
+    assert '<span>排序</span>' not in accounts_page.text
 
     for path in [
         '/ops',
@@ -196,8 +263,13 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
         assert page.status_code == 200
         assert 'data-ops-shell-normalized="true"' in page.text
         assert 'CRM UI system v2: unified light dashboard tokens, typography, spacing' in page.text
-        assert 'grid-template-columns:248px minmax(0,1fr)' in page.text
+        assert 'grid-template-columns:248px minmax(0,1fr)' in page.text or 'grid-template-columns:var(--ops-nav-width) minmax(0,1fr)' in page.text
+        assert 'position:fixed!important;top:24px!important;left:max(24px,calc((100vw - 1480px)/2))!important;' in page.text
+        assert 'height:calc(100vh - 48px)!important;min-height:0!important;overflow-y:auto!important;' in page.text
         assert '--ops-font:Inter' in page.text
+        assert '--crm-card-gap:16px' in page.text or '--ops-card-gap:16px' in page.text
+        assert 'gap:var(--crm-card-gap) var(--crm-layout-gap)!important' in page.text or 'gap:var(--ops-card-gap) var(--ops-layout-gap)!important' in page.text
+        assert '.card + .card,.section-card + .section-card,.group-card + .group-card,.account-card + .account-card,.executor-card + .executor-card,.guild-card + .guild-card{margin-top:16px!important;}' in page.text
 
     create_operator = client.post('/api/ops/accounts', json={
         'username': 'ops01',
@@ -385,6 +457,72 @@ def test_ops_intake_workbench_guild_tabs_highlight_only_selected_guild():
     assert '.tabs .tab:hover{background:#eef4ff!important' in html
     assert '.tabs .tab.active{background:#2563eb!important' in html
     assert html.index('button { border:0') < html.index('.tabs .tab{background:#fff!important') < html.index('.tabs .tab.active{background:#2563eb!important')
+
+
+def test_ops_accounts_page_admin_region_management_updates_unified_source():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    page = client.get('/ops/accounts')
+    assert page.status_code == 200
+    html = page.text
+    assert 'id="mcnRegionManagementCard"' in html
+    assert '地区管理' in html
+    assert '/api/ops/mcn-region-options?include_disabled=true' in html
+    assert 'saveRegionOptions' in html
+    assert '保存配置' in html
+    assert html.index('<h2>账号列表</h2>') < html.index('id="mcnRegionManagementCard"')
+    assert 'region-head' in html
+    assert 'region-cell region-main' in html
+    assert 'region-sort' not in html
+    assert '<span>排序</span>' not in html
+    assert 'grid-template-columns:minmax(220px,1fr) 110px 92px 82px' in html
+    assert '.region-head span { display:flex; align-items:center; height:100%; transform:translateX(5px); }' in html
+    assert '.region-head span:not(:first-child) { justify-content:center; text-align:center; }' in html
+    assert '.region-head span:first-child { justify-content:flex-start; text-align:left; transform:translateX(5px); }' in html
+    assert '地区选项源' not in html
+    assert 'area_options_text' not in html
+
+    response = client.get('/api/ops/mcn-region-options?include_disabled=true')
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['source'] == 'mcn_region_options'
+    assert payload['editable'] is True
+    assert any(row['label_zh'] == '印尼' for row in payload['enabled_options'])
+    assert any(row['code'] == 'PH' and row['enabled'] is False for row in payload['options'])
+
+    save = client.put('/api/ops/mcn-region-options', json={'options': [
+        {'code': 'ID', 'enabled': True, 'sort_order': 10},
+        {'code': 'BR', 'enabled': False, 'sort_order': 20},
+        {'code': 'MX', 'enabled': True, 'sort_order': 30},
+        {'code': 'PH', 'enabled': True, 'sort_order': 40},
+    ]})
+    assert save.status_code == 200
+    saved = save.json()
+    enabled_codes = [row['code'] for row in saved['enabled_options']]
+    assert 'PH' in enabled_codes
+    assert 'BR' not in enabled_codes
+    approval_areas = client.get('/api/ops/whatsapp-approval-area-options').json()['options']
+    assert [row['code'] for row in approval_areas] == ['ID', 'MX', 'PH']
+
+
+def test_customer_service_cannot_access_region_management_configuration():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    client.post('/api/ops/accounts', json={
+        'username': 'cs_region',
+        'password': 'operator123',
+        'display_name': 'Region客服',
+        'role': 'customer_service',
+        'enabled': True,
+    })
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'cs_region', 'password': 'operator123'}).status_code == 200
+
+    page = client.get('/ops/accounts', follow_redirects=False)
+    assert page.status_code in {303, 307}
+    assert page.headers['location'] == '/ops'
+    update = client.put('/api/ops/mcn-region-options', json={'options': [{'code': 'PH', 'enabled': True, 'sort_order': 40}]})
+    assert update.status_code == 403
 
 
 def test_ops_intake_workbench_cms_id_route_allows_blank_code_without_sending_dash():
@@ -3106,7 +3244,10 @@ def test_production_ops_page_loads():
     assert '/api/ops/whatsapp-approval-candidates\'' not in body
     assert '/api/ops/official-group-bridge-summary\'' not in body
     assert 'WhatsApp 审批账号' in body
-    assert '官方群总览' in body
+    assert 'body[data-ops-shell-page="production-ops"]>.page-shell>.hero,body[data-ops-shell-page="intake-submit"]>.page-shell>.hero,body[data-ops-shell-page="registration-group-approval-batch-members"]>.page-shell>.hero,body[data-ops-shell-page="bind-failed-users"]>.page-shell>.hero,body[data-ops-shell-page="accounts"]>.page-shell>.hero,.page-shell[data-ops-shell-page="production-ops"]>.hero,.page-shell[data-ops-shell-page="intake-submit"]>.hero,.page-shell[data-ops-shell-page="registration-group-approval-batch-members"]>.hero,.page-shell[data-ops-shell-page="bind-failed-users"]>.hero,.page-shell[data-ops-shell-page="accounts"]>.hero{border-bottom-left-radius:0!important;border-bottom-right-radius:0!important;border-bottom-color:transparent!important;box-shadow:none!important;}' in body
+    assert 'body[data-ops-shell-page="production-ops"]>.page-shell>.top-overview-grid,body[data-ops-shell-page="intake-submit"]>.page-shell>.summary,body[data-ops-shell-page="registration-group-approval-batch-members"]>.page-shell>.batch-members-summary,body[data-ops-shell-page="bind-failed-users"]>.page-shell>.summary,body[data-ops-shell-page="accounts"]>.page-shell>.summary,.page-shell[data-ops-shell-page="production-ops"]>.top-overview-grid,.page-shell[data-ops-shell-page="intake-submit"]>.summary,.page-shell[data-ops-shell-page="registration-group-approval-batch-members"]>.batch-members-summary,.page-shell[data-ops-shell-page="bind-failed-users"]>.summary,.page-shell[data-ops-shell-page="accounts"]>.summary{margin-top:calc(-1 * var(--ops-card-gap))!important;padding:0 20px 20px!important;background:var(--ops-panel)!important;border:1px solid var(--ops-border)!important;border-top:0!important;border-radius:0 0 24px 24px!important;box-shadow:var(--ops-shadow-card)!important;}' in body
+    assert '.ga-proto-page .ga-page-head ~ .ga-workbench-stats{margin:0 0 16px!important;padding:0 20px 20px!important;background:var(--ops-panel)!important;border:1px solid var(--ops-border)!important;border-top:0!important;border-radius:0 0 24px 24px!important;box-shadow:var(--ops-shadow-card)!important;}' in body
+    assert '官方群总览' not in body
     assert '账号概览' not in body
     assert '校验框架' not in body
     assert '账号校验候选池' not in body
@@ -3160,7 +3301,7 @@ def test_production_ops_page_loads():
     assert '未安装' in body
     assert '正常' in body
     assert '异常' in body
-    assert '超时超1小时' in body
+    assert '超时超1小时' not in body
     assert '已就绪' in body
     assert '待校验' not in body
     assert '监控中' in body
@@ -3178,6 +3319,10 @@ def test_production_ops_page_loads():
     assert 'wa_assigned_customer_service_user_id' in body
     assert '对应客服' in body
     assert '对应客服：${assignedCustomerServiceText}' in body
+    assert '<summary>校验摘要</summary>' not in body
+    assert '<summary>更多操作</summary>' not in body
+    assert 'adminMoreActionsHtml' not in body
+    assert 'verificationText' not in body
     assert 'renderAssignedCustomerServiceSelect' in body
     assert 'assigned_customer_service_user_id' in body
     assert 'wa_group_notify_profile_name_1' in body
@@ -3424,6 +3569,10 @@ def test_registration_group_approval_batch_members_page_loads():
     assert '注册群审批留存页' in body
     assert 'page-shell' in body
     assert 'shell-nav' in body
+    assert 'data-ops-shell-normalized="true"' in body
+    assert 'data-ops-shell-page="registration-group-approval-batch-members"' in body
+    assert '<div class=\"page\">' not in body
+    assert '<body><div class=\"page\">' not in body
     assert '注册群审批留存页' in body
     assert '官方群审批桥接台' not in body
     assert 'Operations' not in body
@@ -3437,11 +3586,15 @@ def test_registration_group_approval_batch_members_page_loads():
     assert 'initBatchMembersRangePicker' in body
     assert 'clearBatchMembersDateRange' in body
     assert 'approved_date_start' in body
-    assert '.filters { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 14px 16px; align-items: end; }' in body
-    assert '.filters label, .range-picker { min-width: 0; display:flex; flex-direction:column; gap:0; }' in body
+    assert '.batch-members-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:var(--ops-space-4); }' in body
+    assert '.batch-members-filters { display:grid; grid-template-columns:repeat(4,minmax(180px,1fr)); gap:14px 16px; align-items:start; }' in body
+    assert '.batch-members-filters label,.batch-members-range-picker { min-width:0; display:flex; flex-direction:column; gap:0; }' in body
+    assert '.batch-members-filters .label { height:24px; margin:0 0 6px; display:flex; align-items:center; }' in body
+    assert '.batch-members-filters input,.batch-members-filters select { min-height:42px!important; height:42px!important; margin:0!important; }' in body
     assert 'class=\"filter-actions\"' in body
-    assert '.filter-actions { grid-column: 3 / 5; display:flex; gap:10px; align-items:flex-end; justify-content:flex-end; flex-wrap:wrap; padding-top:0; align-self:end; }' in body
-    assert '.pager-jump input { width:84px; min-height:40px; padding:8px 10px; border:1px solid #cbd5e1; border-radius:10px; font-size:14px; }' in body
+    assert '.filter-actions { grid-column:3 / 5; display:flex; gap:10px; align-items:flex-start; justify-content:flex-end; flex-wrap:wrap; padding-top:30px; }' in body
+    assert '.filter-actions button { min-width:96px; min-height:42px!important; height:42px!important; margin:0!important; display:inline-flex!important; align-items:center!important; justify-content:center!important; }' in body
+    assert '.pager-jump input { width:84px; }' in body
     assert '批次ID' in body
     assert '全部注册群' in body
     assert '全部地区' in body
@@ -3467,6 +3620,9 @@ def test_registration_group_approval_batch_members_page_loads():
     assert "导出 xlsx" in body
     assert "exportBatchMembers('xlsx')" in body
     assert "exportBatchMembers('csv')" in body
+    assert "if (!selectedIds)" in body
+    assert "showBatchMembersSelectionNotice('请先选择要导出的成员')" in body
+    assert "return false;" in body
     assert 'batchMembersSelectAll' in body
     assert 'toggleBatchMembersSelectAll' in body
     assert 'toggleBatchMemberSelection' in body
@@ -3657,7 +3813,8 @@ def test_official_group_bridge_page_is_served_through_main_ops_origin():
     assert '官方群审批桥接台' in response.text
     assert 'http://127.0.0.1:55801' not in response.text
     assert 'CRM UI system v2: unified light dashboard tokens, typography, spacing' in response.text
-    assert 'grid-template-columns:248px minmax(0,1fr)' in response.text
+    assert 'grid-template-columns:248px minmax(0,1fr)' in response.text or 'grid-template-columns:var(--ops-nav-width) minmax(0,1fr)' in response.text
+    assert 'position:fixed!important;top:24px!important;left:max(24px,calc((100vw - 1480px)/2))!important;' in response.text
 
 
 
@@ -3716,6 +3873,58 @@ def test_production_ops_daemon_config_accepts_empty_registration_group_for_accou
     assert body['config']['auto_recover_worker'] is False
 
 
+def test_mcn_internal_region_options_feed_binding_approval_and_group_atmosphere():
+    client = make_client({'AUTH_ENABLED': True, 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Carote'})
+    bootstrap_admin_and_login(client)
+
+    regions = client.get('/api/ops/mcn-region-options')
+    assert regions.status_code == 200
+    body = regions.json()
+    assert [row['code'] for row in body['options'][:3]] == ['ID', 'BR', 'MX']
+    assert body['options'][0]['value'] == 'Indonesia'
+    assert body['options'][0]['label_zh'] == '印尼'
+    assert body['options'][0]['phone_code'] == '62'
+
+    approval_options = client.get('/api/ops/whatsapp-approval-area-options').json()
+    assert [row['value'] for row in approval_options['options'][:3]] == ['Indonesia', 'Brazil', 'Mexico']
+    assert approval_options['options'][0]['code'] == 'ID'
+    assert approval_options['options'][0]['label_zh'] == '印尼'
+    assert approval_options['source'] == 'mcn_region_options'
+    assert approval_options['editable'] is False
+
+    legacy_update = client.post('/api/ops/whatsapp-approval-area-options', json={'options': ['Thailand']})
+    assert legacy_update.status_code == 200
+    legacy_body = legacy_update.json()
+    assert legacy_body['saved'] is False
+    assert legacy_body['editable'] is False
+    assert legacy_body['source'] == 'mcn_region_options'
+    assert [row['value'] for row in legacy_body['options'][:3]] == ['Indonesia', 'Brazil', 'Mexico']
+    assert 'Thailand' not in [row['value'] for row in client.get('/api/ops/whatsapp-approval-area-options').json()['options']]
+
+    approval_accounts = client.get('/api/ops/whatsapp-approval-accounts').json()
+    assert approval_accounts['area_options'][0]['code'] == 'ID'
+    assert approval_accounts['area_options'][0]['phone_code'] == '62'
+
+    atmosphere_accounts = client.get('/api/ops/group-atmosphere/accounts').json()
+    assert atmosphere_accounts['region_options'][0]['code'] == 'ID'
+    assert atmosphere_accounts['region_options'][0]['label_zh'] == '印尼'
+
+    guilds = client.get('/api/ops/intake-workbench/guilds').json()
+    assert guilds['region_options'][0]['code'] == 'ID'
+    assert guilds['region_options'][0]['phone_code'] == '62'
+
+
+def test_group_atmosphere_page_uses_unified_region_options_not_hardcoded_selects():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    page = client.get('/ops/group-atmosphere')
+    assert page.status_code == 200
+    html = page.text
+    assert '/api/ops/mcn-region-options' in html
+    assert 'renderUnifiedRegionOptions' in html
+    assert '<option value="印尼">印尼</option><option value="墨西哥">墨西哥</option><option value="巴西">巴西</option>' not in html
+
+
 def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
     app = create_app({
         'DB_PATH': ':memory:',
@@ -3762,15 +3971,17 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
     assert [item['label'] for item in initial_body['area_options']] == ['Indonesia', 'Brazil', 'Mexico']
 
     updated_area_options = client.post('/api/ops/whatsapp-approval-area-options', json={
-        'options': ['Indonesia', 'Mexico', 'Brazil', 'Philippines'],
+        'options': ['Indonesia', 'Mexico', 'Brazil', 'Brazil'],
     })
     assert updated_area_options.status_code == 200
-    assert [item['label'] for item in updated_area_options.json()['options']] == ['Indonesia', 'Mexico', 'Brazil', 'Philippines']
-    assert [item['label'] for item in updated_area_options.json()['source_options']] == ['Indonesia', 'Mexico', 'Brazil', 'Philippines']
+    assert updated_area_options.json()['saved'] is False
+    assert updated_area_options.json()['editable'] is False
+    assert [item['label'] for item in updated_area_options.json()['options']] == ['Indonesia', 'Brazil', 'Mexico']
+    assert [item['label'] for item in updated_area_options.json()['source_options']] == ['Indonesia', 'Brazil', 'Mexico']
 
     refreshed_options = client.get('/api/ops/whatsapp-approval-accounts')
-    assert [item['label'] for item in refreshed_options.json()['area_options']] == ['Indonesia', 'Mexico', 'Brazil', 'Philippines']
-    assert [item['label'] for item in refreshed_options.json()['area_option_source']] == ['Indonesia', 'Mexico', 'Brazil', 'Philippines']
+    assert [item['label'] for item in refreshed_options.json()['area_options']] == ['Indonesia', 'Brazil', 'Mexico']
+    assert [item['label'] for item in refreshed_options.json()['area_option_source']] == ['Indonesia', 'Brazil', 'Mexico']
 
     overview_initial = client.get('/api/ops/whatsapp-approval-accounts/overview')
     assert overview_initial.status_code == 200
@@ -3812,11 +4023,11 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
         'group_link_bindings': [
             {
                 'link': 'https://chat.whatsapp.com/group-a',
-                'group_name': 'PH 审批群 A',
-                'area': 'Philippines',
+                'group_name': 'BR 审批群 A',
+                'area': 'Brazil',
                 'notify_profile_name': 'wa-approval-broadcast',
                 'enabled': False,
-                'registration_group': 'PH Registrations A',
+                'registration_group': 'BR Registrations A',
                 'group_id': '120363425215002841@g.us',
                 'approval_count_threshold': 25,
                 'approval_timeout_minutes': 28,
@@ -3828,11 +4039,11 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
             },
             {
                 'link': 'https://chat.whatsapp.com/group-b',
-                'group_name': 'PH 审批群 B',
-                'area': 'Philippines',
+                'group_name': 'BR 审批群 B',
+                'area': 'Brazil',
                 'notify_profile_name': 'wa-approval-broadcast-02',
                 'enabled': True,
-                'registration_group': 'PH Registrations B',
+                'registration_group': 'BR Registrations B',
                 'group_id': '120363425215002842@g.us',
                 'approval_count_threshold': 31,
                 'approval_timeout_minutes': 45,
@@ -3870,17 +4081,17 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
     assert body['account']['service_scope']['code'] == 'registration_group_console'
     assert body['account']['verification_checks'][0]['code'] == 'group_link_format'
     assert body['account']['verification_checks'][0]['ok'] is True
-    assert body['account']['area'] == 'Philippines'
+    assert body['account']['area'] == 'Brazil'
     bindings = body['account']['group_link_bindings']
     assert len(bindings) == 2
     assert bindings[0]['link'] == 'https://chat.whatsapp.com/group-a'
-    assert bindings[0]['group_name'] == 'PH 审批群 A'
+    assert bindings[0]['group_name'] == 'BR 审批群 A'
     assert bindings[0]['approval_scope'] == 'registration_group'
-    assert bindings[0]['target_group_label'] == 'PH 审批群 A'
-    assert bindings[0]['area'] == 'Philippines'
+    assert bindings[0]['target_group_label'] == 'BR 审批群 A'
+    assert bindings[0]['area'] == 'Brazil'
     assert bindings[0]['notify_profile_name'] == 'wa-approval-broadcast'
     assert bindings[0]['enabled'] is False
-    assert bindings[0]['registration_group'] == 'PH Registrations A'
+    assert bindings[0]['registration_group'] == 'BR Registrations A'
     assert bindings[0]['group_id'] == '120363425215002841@g.us'
     assert bindings[0]['approval_count_threshold'] == 25
     assert bindings[0]['approval_timeout_minutes'] == 28
@@ -3892,11 +4103,11 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
     assert bindings[0]['notify_robot_name'] == '审批bot01'
     assert bindings[0]['approval_rule_text'] == '满25人或28分钟'
     assert bindings[1]['link'] == 'https://chat.whatsapp.com/group-b'
-    assert bindings[1]['group_name'] == 'PH 审批群 B'
-    assert bindings[1]['area'] == 'Philippines'
+    assert bindings[1]['group_name'] == 'BR 审批群 B'
+    assert bindings[1]['area'] == 'Brazil'
     assert bindings[1]['notify_profile_name'] == 'wa-approval-broadcast-02'
     assert bindings[1]['enabled'] is True
-    assert bindings[1]['registration_group'] == 'PH Registrations B'
+    assert bindings[1]['registration_group'] == 'BR Registrations B'
     assert bindings[1]['group_id'] == '120363425215002842@g.us'
 
     overview_after_save = client.get('/api/ops/whatsapp-approval-accounts/overview')
@@ -3918,8 +4129,8 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
     ]
     assert body['account']['group_binding_runtimes'][0]['notify_profile_name'] == 'wa-approval-broadcast'
     assert body['account']['group_binding_runtimes'][1]['notify_profile_name'] == 'wa-approval-broadcast-02'
-    assert body['account']['group_binding_runtimes'][0]['group_name'] == 'PH 审批群 A'
-    assert body['account']['group_binding_runtimes'][1]['group_name'] == 'PH 审批群 B'
+    assert body['account']['group_binding_runtimes'][0]['group_name'] == 'BR 审批群 A'
+    assert body['account']['group_binding_runtimes'][1]['group_name'] == 'BR 审批群 B'
     assert body['account']['group_binding_runtimes'][0]['enabled'] is False
     assert body['account']['group_binding_runtimes'][1]['enabled'] is True
     assert body['account']['notify_profile_name'] == 'wa-approval-broadcast-02'
@@ -3938,11 +4149,11 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
         'group_link_bindings': [
             {
                 'link': 'https://chat.whatsapp.com/group-a',
-                'group_name': 'PH 审批群 A',
-                'area': 'Philippines',
+                'group_name': 'BR 审批群 A',
+                'area': 'Brazil',
                 'notify_profile_name': 'wa-approval-broadcast',
                 'enabled': True,
-                'registration_group': 'PH Registrations A',
+                'registration_group': 'BR Registrations A',
                 'group_id': '120363425215002841@g.us',
                 'approval_count_threshold': 25,
                 'approval_timeout_minutes': 28,
@@ -3954,11 +4165,11 @@ def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
             },
             {
                 'link': 'https://chat.whatsapp.com/group-b',
-                'group_name': 'PH 审批群 B',
-                'area': 'Philippines',
+                'group_name': 'BR 审批群 B',
+                'area': 'Brazil',
                 'notify_profile_name': 'wa-approval-broadcast',
                 'enabled': False,
-                'registration_group': 'PH Registrations B',
+                'registration_group': 'BR Registrations B',
                 'group_id': '120363425215002842@g.us',
                 'approval_count_threshold': 31,
                 'approval_timeout_minutes': 45,
@@ -8451,6 +8662,34 @@ def test_guild_executor_api_returns_proxy_region_dropdown_options_and_validates_
 
 
 
+def test_guild_executor_api_marks_proxy_effective_only_when_url_or_region_mapping_exists():
+    client = make_client({
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'GUILD_EXECUTOR_PROXY_REGION_URLS': {'福州': 'http://proxy-fz:8080'},
+    })
+    assert client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'proxy_region': '厦门',
+    }).status_code == 200
+    assert client.post('/api/ops/guild-executors/Nova', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'proxy_region': '福州',
+    }).status_code == 200
+
+    rows = {row['guild_name']: row for row in client.get('/api/ops/guild-executors').json()['rows']}
+    assert rows['Permata']['proxy_region'] == '厦门'
+    assert rows['Permata']['proxy_effective_configured'] is False
+    assert rows['Permata']['proxy_region_mapping_configured'] is False
+    assert rows['Nova']['proxy_region'] == '福州'
+    assert rows['Nova']['proxy_effective_configured'] is True
+    assert rows['Nova']['proxy_region_mapping_configured'] is True
+
+
+
 def test_guild_executor_api_enforces_unique_proxy_region_per_guild():
     client = make_client({'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
 
@@ -11964,6 +12203,69 @@ def test_process_next_automation_task_resolves_matching_guild_executor_config():
     assert processed['executor']['guild_name'] == 'Permata'
     assert processed['executor']['proxy_region'] == '厦门'
     assert processed['executor']['password_configured'] is True
+
+
+
+def test_process_next_automation_task_derives_proxy_url_from_region_map_when_proxy_url_blank():
+    captured = {}
+
+    def bind_simulator(context):
+        captured.update(context)
+        return {
+            'status': 'failed',
+            'result_code': 'bind_unauthorized',
+            'result_reason': 'AxiosError: Request failed with status code 401',
+            'raw_result': {'guild_code': context['dept_name']},
+        }
+
+    client = make_client({
+        'LARK_APP_ID': 'cli_default_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+        'AUTO_BIND_SIMULATION': False,
+        'BIND_SIMULATOR': bind_simulator,
+        'GUILD_EXECUTOR_PROXY_REGION_URLS': {'厦门': 'http://proxy-xm:8080'},
+    })
+    client.app.state.service.crm_adapter = StubCrmDropdownAdapter(
+        apps=[{'id': 'app_1', 'name': 'Linky'}, {'id': 'app_2', 'name': 'FUMI'}],
+        depts=[{'id': 'dept_1', 'deptName': 'Piso'}, {'id': 'dept_2', 'deptName': 'Permata'}],
+    )
+    assert client.post('/api/ops/intake-bot-presets/intake-a96f1cec', json={
+        'app_id': 'cli_a96f1cec1a789e15',
+        'default_app': 'FUMI',
+        'default_guild': 'Permata',
+    }).status_code == 200
+    assert client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'backend_url': 'https://guild.linke.ai/guild/addAnchor',
+        'proxy_url': '',
+        'proxy_region': '厦门',
+        'enabled': True,
+        'browser_profile_key': 'permata-profile',
+    }).status_code == 200
+
+    response = client.post('/api/intake/lark/events', json={
+        '_gateway_direct': True,
+        '_bot_app_id': 'cli_a96f1cec1a789e15',
+        'schema': '2.0',
+        'header': {'event_type': 'im.message.receive_v1'},
+        'event': {
+            'sender': {'sender_id': {'open_id': 'ou_bind_executor'}},
+            'message': {
+                'message_id': 'om_bind_executor_region_proxy',
+                'message_type': 'text',
+                'chat_type': 'p2p',
+                'content': '{"text":"+62 81234567890\\nPermata-25\\n45678901\\nCode EKVFGQ"}'
+            }
+        }
+    })
+    assert response.status_code == 200
+
+    processed = client.app.state.service.process_next_automation_task()
+    assert processed is not None
+    assert captured['executor_proxy_region'] == '厦门'
+    assert captured['executor_proxy_url'] == 'http://proxy-xm:8080'
 
 
 

@@ -36,7 +36,8 @@ def test_group_atmosphere_login_refresh_does_not_auto_select_learning_or_simulat
     assert "if(uploadSelect)uploadSelect.value=key||''" not in html
     assert "if(simSelect)simSelect.value=key||''" not in html
     assert "if(candidateSelect)candidateSelect.value=key||''" not in html
-    assert "const uploadCurrent=uploadSelect?uploadSelect.value:''" in html
+    assert "const uploadCurrent=uploadSelect?uploadSelect.value:''" not in html
+    assert 'ga_tool_account_select' not in html
     assert "const simCurrent=simSelect?simSelect.value:''" not in html
     assert "const candidateCurrent=candidateSelect?candidateSelect.value:''" not in html
     assert "const key=document.getElementById('ga_sim_account_select')?.value.trim()||''" not in html
@@ -56,11 +57,24 @@ def test_group_atmosphere_candidate_pool_exposes_own_account_selector_and_action
     assert '角色' in html
     assert '选择投放账号' not in html
     assert '选择发言群</option>' not in html
-    assert '角色挂载' in html
+    assert '群聊天助手' in html
+    assert '桥接操作区' in html
+    assert '新增桥接' in html
+    assert 'data-layout="ops-workbench-redesign"' in html
+    assert 'data-layout-zone="role-group-bridge"' in html
+    assert 'data-layout-zone="whatsapp-resource-pool"' in html
+    assert 'data-layout-zone="speech-roles"' in html
+    assert 'data-layout-zone="phrase-generation"' in html
+    assert 'WhatsApp 账号与群组' in html
     assert 'ga_bridge_role_select' in html
-    assert 'ga_bridge_account_select' in html
     assert 'ga_bridge_group_choices' in html
     assert 'ga_mount_role_btn' in html
+    assert 'ga_bridge_account_select' not in html
+    assert '选择WhatsApp账号' not in html
+    assert '选择WhatsApp号码' not in html
+    assert '已找到可用发言账号' not in html
+    assert '国家一致' not in html
+    assert '无角色类型冲突' not in html
     assert '话术角色' in html
     assert '学习话术号' not in html
     assert '手动新增话术' in html
@@ -69,6 +83,8 @@ def test_group_atmosphere_candidate_pool_exposes_own_account_selector_and_action
     assert '逐群装载' not in html
     assert '请选择话术方案' not in html
     assert 'ga_group_1_plan' not in html
+    assert '话术方案库' not in html
+    assert '删除话术包' not in html
     assert 'ga_candidate_result' in html
     assert 'filterCandidateRows' in html
     assert 'speechPlanRows' in html
@@ -153,19 +169,28 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert '+ 增加发言群' in html
     assert 'ga_account_enabled' in html
     assert 'ga_action_feedback' in html
-    assert 'ga_chat_file' not in html
-    assert 'ga_clear_chat_files_btn' not in html
+    assert 'ga_chat_file' in html
+    assert 'ga_clear_chat_files_btn' in html
     assert 'ga_tool_account_select' not in html
     assert 'ga_sim_account_select' not in html
-    assert '话术学习' not in html
-    assert '上传并学习' not in html
+    assert '<h2>话术学习</h2>' not in html
+    assert '上传并学习' in html
+    assert '学习机器人区' in html
+    assert '话术上传区' in html
     assert '自动分配到话术库' not in html
-    assert '候选话术' in html
+    assert '话术方案库' not in html
+    assert '话术包名称' not in html
+    assert '删除话术包' not in html
+    assert '话术生成区' in html
+    assert '话术备选区' in html
     assert '自动发言' in html
+    assert 'data-layout="ops-workbench-redesign"' in html
+    assert 'WhatsApp 账号与群组' in html
     assert '已启用账号' not in html
     assert '检查可发送' in html
     assert '后台会按每日上限与间隔自动随机发送' not in html
-    assert 'ga_max_interval_minutes' in html
+    assert 'ga_max_interval_minutes' not in html
+    assert 'ga_bridge_max_interval' in html
     assert 'stopAtmosphereSchedulerLoop' not in html
     assert 'toggleAtmosphereSchedulerLoop' not in html
     assert 'ga_scheduler_running' not in html
@@ -185,10 +210,10 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert 'toggleAtmosphereGroupEnabled' in html
     assert 'account-card' in html
     assert 'account-status-grid' in html
-    assert '账号用途' in html
-    assert '账号已启用' in html
+    assert '账号用途' not in html
+    assert '账号已启用' not in html
     assert '账号启用中' not in html
-    assert '运行状态' in html
+    assert '运行状态' not in html
     assert '登录状态' in html
     assert '当前账号' not in html
     assert 'Runtime' not in html
@@ -203,11 +228,11 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert 'group-card-grid' in html
     assert 'group-card' in html
     assert 'groupAutoSpeakState' in html
-    assert '群名称' in html
-    assert '入群链接' in html
+    assert '真实群名' in html
+    assert '群链接' in html
     assert '自动发言已开启' in html
     assert '开启自动发言' in html
-    assert '待登录后生效' in html
+    assert '待登录生效' in html
     assert '允许发言' not in html
     assert '生成二维码' in html
     assert '手动发言' in html
@@ -225,6 +250,84 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     nav_group_chat = html.index('/ops/group-atmosphere')
     nav_accounts = html.index('/ops/accounts')
     assert nav_registration < nav_group_chat < nav_accounts
+
+
+def test_group_atmosphere_role_bridge_auto_assigns_whatsapp_account_by_role_and_group():
+    client = make_client()
+    role = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'auto-pt-community_seed',
+        'role_name': '巴西活跃BOT',
+        'region': '巴西',
+        'language': 'pt',
+        'role_positioning': 'community_seed',
+        'phrases': ['Oi gente'],
+        'enabled': True,
+    })
+    assert role.status_code == 200
+    account = client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_key': 'atmosphere-br-01',
+        'account_name': '+55 11 90000 2233',
+        'region': '巴西',
+        'language': 'pt',
+        'role_positioning': 'community_seed',
+        'daily_max_messages': 20,
+        'min_interval_minutes': 30,
+        'max_interval_minutes': 90,
+        'groups': [{'target_group': 'br-group-1@g.us', 'group_name': '巴西群01', 'enabled': True}],
+        'enabled': True,
+    })
+    assert account.status_code == 200
+
+    response = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'auto-pt-community_seed',
+        'group_targets': ['br-group-1@g.us'],
+        'auto_speaking_enabled': True,
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['created_count'] == 1
+    binding = body['bindings'][0]
+    assert binding['role_key'] == 'auto-pt-community_seed'
+    assert binding['target_group'] == 'br-group-1@g.us'
+    assert binding['account_key'] == 'atmosphere-br-01'
+    assert binding['assigned_account_label'] == '+55 11 90000 2233'
+    assert binding['daily_max_messages'] == 20
+    assert binding['min_interval_minutes'] == 30
+    assert binding['max_interval_minutes'] == 90
+    rel = body['relationship']
+    assert rel['role_key'] == 'auto-pt-community_seed'
+    assert rel['groups'][0]['assigned_account_label'] == '+55 11 90000 2233'
+
+
+def test_group_atmosphere_role_bridge_rejects_country_mismatch_without_checklist_noise():
+    client = make_client()
+    client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'auto-pt-community_seed',
+        'role_name': '巴西活跃BOT',
+        'region': '巴西',
+        'language': 'pt',
+        'role_positioning': 'community_seed',
+        'phrases': ['Oi gente'],
+        'enabled': True,
+    })
+    client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_key': 'atmosphere-indo-01',
+        'account_name': '+62 812 0000 7788',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'groups': [{'target_group': 'id-group-1@g.us', 'group_name': '印尼群01', 'enabled': True}],
+        'enabled': True,
+    })
+
+    response = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'auto-pt-community_seed',
+        'group_targets': ['id-group-1@g.us'],
+    })
+
+    assert response.status_code == 400
+    assert '国家/地区不一致' in response.json()['detail']
 
 
 def test_group_atmosphere_account_upsert_and_list_without_approval_requirements(monkeypatch):
@@ -400,6 +503,71 @@ def test_group_atmosphere_account_list_reflects_authenticated_runtime(monkeypatc
     assert rows[0]['runtime']['authenticated'] is True
     assert rows[0]['session']['login_verified'] is True
     assert rows[0]['session']['login_check_message'] == '账号已登录，可以正常使用。'
+
+
+def test_group_atmosphere_account_list_persists_actual_group_name_after_login(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    response = client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_name': '+852 4456 8277',
+        'region': '香港',
+        'groups': [
+            {'target_group': 'https://chat.whatsapp.com/EoHAaKPML7p3BG7LNEbOl1', 'enabled': True},
+        ],
+        'enabled': True,
+    })
+    account_key = response.json()['account_key']
+    auth_path = str(service._whatsapp_approval_session_auth_path(account_key))
+    client_id = service._whatsapp_approval_session_client_id(account_key)
+
+    monkeypatch.setattr(service, '_read_whatsapp_approval_runtime_meta', lambda key: {
+        'pid': 12345,
+        'port': 59998,
+        'base_url': 'http://127.0.0.1:59998',
+        'auth_path': auth_path,
+        'client_id': client_id,
+        'started_at': datetime.now(timezone.utc).isoformat(),
+    } if key == account_key else {})
+    monkeypatch.setattr(service, '_pid_running', lambda pid: True)
+    monkeypatch.setattr(service, '_request_whatsapp_approval_worker_health', lambda base_url: {
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'approval_client': {
+            'status': 'warm',
+            'ready': True,
+            'authenticated': True,
+            'client_id': client_id,
+            'auth_path': auth_path,
+            'auth_strategy': 'LocalAuth',
+        },
+    })
+
+    class FakeProbeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'group_name': 'Hong Kong Creator Group', 'group_id': '120363000000000000@g.us'}
+
+    probe_calls = []
+
+    def fake_post(url, json=None, timeout=None):
+        probe_calls.append({'url': url, 'json': json, 'timeout': timeout})
+        return FakeProbeResponse()
+
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+
+    rows = client.get('/api/ops/group-atmosphere/accounts').json()['rows']
+
+    assert probe_calls == [{
+        'url': 'http://127.0.0.1:59998/probe-group-state',
+        'json': {'registration_group': 'https://chat.whatsapp.com/EoHAaKPML7p3BG7LNEbOl1'},
+        'timeout': 8.0,
+    }]
+    assert rows[0]['session']['login_verified'] is True
+    assert rows[0]['groups'][0]['group_name'] == 'Hong Kong Creator Group'
+    assert rows[0]['groups'][0]['group_id'] == '120363000000000000@g.us'
 
 
 def test_group_atmosphere_account_list_auto_recovers_stopped_dedicated_runtime(monkeypatch):

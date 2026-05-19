@@ -738,8 +738,8 @@ INTAKE_BOT_PRESETS_PAGE_HTML = """
 html{scrollbar-gutter:stable;background:var(--crm-bg)!important;font-size:14px!important;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
 body{margin:0!important;padding:24px!important;min-height:100vh!important;background:radial-gradient(circle at 12% -8%,rgba(47,107,255,.10),transparent 31%),linear-gradient(180deg,#f7f9fd 0%,#eef3f9 100%)!important;color:var(--crm-text)!important;font-family:var(--crm-font)!important;font-size:14px!important;line-height:1.5!important;letter-spacing:-.006em!important;}
 body *{box-sizing:border-box;}
-.page-shell,body>.page{width:min(1480px,calc(100vw - 48px))!important;max-width:1480px!important;margin:0 auto!important;padding:0 0 32px!important;display:grid!important;grid-template-columns:248px minmax(0,1fr)!important;gap:24px!important;align-items:start!important;}
-.shell-nav,.nav{grid-column:1!important;grid-row:1 / span 160!important;position:sticky!important;top:24px!important;z-index:30!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:6px!important;flex-wrap:nowrap!important;min-height:calc(100vh - 48px)!important;margin:0!important;padding:22px 16px!important;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px) saturate(140%)!important;border:1px solid var(--crm-border)!important;border-radius:var(--crm-r-2xl)!important;box-shadow:var(--crm-shadow)!important;}
+.page-shell,body>.page{width:min(1480px,calc(100vw - 48px))!important;max-width:1480px!important;margin:0 auto!important;padding:0 0 32px!important;display:grid!important;grid-template-columns:248px minmax(0,1fr)!important;gap:16px 32px!important;align-items:start!important;}
+.shell-nav,.nav{grid-column:1!important;grid-row:1 / span 160!important;position:fixed!important;top:24px!important;left:max(24px,calc((100vw - 1480px)/2))!important;width:248px!important;height:calc(100vh - 48px)!important;min-height:0!important;overflow-y:auto!important;z-index:30!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:6px!important;flex-wrap:nowrap!important;margin:0!important;padding:22px 16px!important;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px) saturate(140%)!important;border:1px solid var(--crm-border)!important;border-radius:var(--crm-r-2xl)!important;box-shadow:var(--crm-shadow)!important;}
 .shell-nav::before,.nav::before{content:'MCN 客服工具';display:block;margin:0 8px 18px;padding:0 0 16px;border-bottom:1px solid var(--crm-border);color:#111827;font-size:18px;line-height:1.12;font-weight:760;letter-spacing:-.035em;}
 .shell-nav a,.nav a{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:10px!important;min-height:40px!important;padding:11px 14px!important;border-radius:15px!important;background:transparent!important;border:0!important;color:var(--crm-muted)!important;text-decoration:none!important;font-size:14px!important;line-height:18px!important;font-weight:620!important;letter-spacing:-.01em!important;white-space:nowrap!important;box-shadow:none!important;transition:background .16s ease,color .16s ease,transform .16s ease;}
 .shell-nav a::before,.nav a::before{content:'';width:8px;height:8px;border-radius:999px;background:#cbd5e1;flex:0 0 auto;transition:background .16s ease;}
@@ -748,14 +748,19 @@ body *{box-sizing:border-box;}
 .shell-nav a.is-active,.nav a.is-active{background:var(--crm-blue)!important;color:#fff!important;box-shadow:0 12px 24px rgba(47,107,255,.22)!important;}
 .shell-nav a.is-active::before,.nav a.is-active::before{background:#fff!important;}
 .page-shell>:not(.shell-nav),body>.page>:not(.nav){grid-column:2!important;min-width:0!important;}
-.hero{padding:24px 26px!important;margin:0 0 16px!important;min-height:84px;border-radius:26px!important;background:linear-gradient(135deg,#fff 0%,#f8fbff 56%,#eef5ff 100%)!important;border:1px solid var(--crm-border)!important;box-shadow:var(--crm-shadow-card)!important;color:var(--crm-text)!important;}
+.hero{padding:20px 24px!important;margin:0!important;min-height:72px;border-radius:24px!important;background:var(--crm-panel)!important;border:1px solid var(--crm-border)!important;box-shadow:var(--crm-shadow-card)!important;color:var(--crm-text)!important;}
+.hero h1{margin-bottom:4px!important;}
+.hero p,.hero .subtitle,.hero .muted,.hero .hint,.hero .help,.hero small{color:#475569!important;font-size:13px!important;line-height:1.5!important;font-weight:500!important;max-width:920px!important;}
+.hero + .card,.hero + .summary-grid,.hero + .grid,.hero + .stats-grid,.hero + .config-workspace,.hero + .mini-tools,.hero + .ga-notice,.hero + .toolbar,.hero + .filter-card,body>.page>.hero + *,.page-shell>.hero + *{margin-top:0!important;}
+.page-shell>.card:first-of-type,body>.page>.card:first-of-type{margin-top:0!important;}
+.page-shell>.hero:first-of-type,body>.page>.hero:first-of-type{margin-top:0!important;}
 .card,.summary-item,.executor-card,.account-card,.binding-card,.advanced-fields,.qr-modal-card,.modal-card,.status-card,.group-card,.mini-note,fieldset{background:var(--crm-panel)!important;border:1px solid var(--crm-border)!important;color:var(--crm-text)!important;border-radius:var(--crm-r-xl)!important;box-shadow:var(--crm-shadow-card)!important;}
-.card{padding:20px!important;margin-top:16px!important;}
-.card + .card,.group-card + .group-card,.account-card + .account-card{margin-top:16px!important;}
+.card{padding:20px!important;margin-top:0!important;}
+.card + .card,.section-card + .section-card,.group-card + .group-card,.account-card + .account-card,.executor-card + .executor-card,.guild-card + .guild-card{margin-top:16px!important;}
 .summary-item,.status-card,.account-status-item{padding:16px!important;border-radius:var(--crm-r-lg)!important;background:linear-gradient(180deg,#fff 0%,#fbfdff 100%)!important;}
 .account-card,.binding-card{padding:18px!important;}
 .group-card,.mini-note{padding:14px!important;}
-.grid,.mini-tools,.editor-grid,.field-grid,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid,.toolbar-actions,.inline-actions{gap:14px!important;}
+.grid,.mini-tools,.editor-grid,.field-grid,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid,.toolbar-actions,.inline-actions{gap:12px!important;}
 h1,h2,h3,p{margin-top:0;}
 h1{font-size:28px!important;line-height:1.16!important;letter-spacing:-.045em!important;color:#111827!important;font-weight:780!important;margin-bottom:6px!important;}
 h2{font-size:19px!important;line-height:1.28!important;letter-spacing:-.03em!important;color:var(--crm-text)!important;font-weight:740!important;margin-bottom:12px!important;}
@@ -790,7 +795,14 @@ tr:hover td{background:#f8fbff!important;}
 .badge.pending,.pill.orange,.pill.yellow,.pill.amber{background:var(--crm-amber-soft)!important;color:#c2410c!important;border-color:#fed7aa!important;}
 .status-line.success,.pill.green,.badge.green{color:#166534!important;background:var(--crm-green-soft)!important;border-color:#bbf7d0!important;}
 .status-line.error{color:#be123c!important;}
-.toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:14px!important;margin-bottom:14px!important;}
+.toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin-bottom:12px!important;}
+:root{--crm-card-gap:var(--ops-card-gap);--crm-layout-gap:var(--ops-content-left-gap);}
+.page-shell,body>.page{gap:var(--crm-card-gap) var(--crm-layout-gap)!important;}
+.page-shell>.hero,.page-shell>.card,.page-shell>.section-card,.page-shell>.summary,.page-shell>.summary-grid,.page-shell>.stats-grid,.page-shell>.top-overview-grid,.page-shell>.ga-stats,.page-shell>.ga-prototype-board,body>.page>.hero,body>.page>.card,body>.page>.section-card,body>.page>.summary,body>.page>.summary-grid,body>.page>.stats-grid,body>.page>.top-overview-grid{margin-top:0!important;}
+.page-shell>.card + .card,body>.page>.card + .card,.page-shell>.section-card + .section-card,body>.page>.section-card + .section-card{margin-top:0!important;}
+.page-shell .top-overview-grid > .card.card,body>.page .top-overview-grid > .card.card{margin-top:0!important;}
+.grid > .card,.summary-grid > .summary-item,.stats-grid > .summary-item,.stats-grid > .card,.ga-stats > .card,.executor-card-grid > .executor-card,.account-card-grid > .account-card,.guild-grid > .guild-card,.executor-grid > .executor-card{margin-top:0!important;}
+.summary,.summary-grid,.stats-grid,.top-overview-grid,.account-grid,.guild-grid,.executor-grid,.account-card-grid,.ga-stats,.ga-board-grid,.ga-board-col,.ga-prototype-board{gap:var(--crm-card-gap)!important;}
 details{border-radius:var(--crm-r-lg)!important;border:1px solid var(--crm-border)!important;background:#fbfdff!important;padding:12px 14px!important;}
 summary{cursor:pointer;color:var(--crm-text)!important;font-weight:700!important;}
 pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-height:1.55!important;}
@@ -1226,7 +1238,9 @@ function guildExecutorRowHtml(row) {
   const effectiveText = effectiveOk ? '生效中' : (effectiveStatus === 'disabled' ? '已停用' : '失效/待处理');
   const effectiveDetail = row.effective_reason || row.cms_live_error || '';
   const safeGuildName = String(row.guild_name || '').replace(/'/g, "&#39;");
-  return `<div class="executor-card">
+  const region = String(row.proxy_region || '').trim();
+  const effectiveProxyState = row.proxy_effective_configured ? '已接入' : (region ? '未接入代理' : '未配置');
+  return `<article class="executor-card">
     <h3>${row.guild_name || ''}</h3>
     <div class="executor-meta">
       <div class="k">生效状态</div><div><span class="badge ${effectiveOk ? 'green' : 'off'}">${effectiveOk ? '🟢' : '🔴'} ${effectiveText}</span>${effectiveDetail ? `<div class="muted">${effectiveDetail}</div>` : ''}</div>
@@ -1237,7 +1251,7 @@ function guildExecutorRowHtml(row) {
       <div class="k">CMS Token</div><div>${platformState}</div>
       <div class="k">CMS Refresh</div><div>${row.cms_refresh_token_configured ? '已配置' : '未配置'}</div>
       <div class="k">CMS Guild</div><div>${row.cms_guild_id || '-'}${row.cms_guild_sid ? ` / SID ${row.cms_guild_sid}` : ''}</div>
-      <div class="k">代理地区</div><div>${row.proxy_region || '-'}</div>
+      <div class="k">代理地区</div><div>${row.proxy_region || '-'} · ${effectiveProxyState}</div>
       <div class="k">并发数</div><div>${row.bind_concurrency || '-'}</div>
       <div class="k">超时秒数</div><div>${row.request_timeout_seconds || '-'}</div>
       <div class="k">状态</div><div>${enabledText}</div>
@@ -1247,7 +1261,7 @@ function guildExecutorRowHtml(row) {
       <button type="button" class="secondary" onclick="openExecutorModal('${safeGuildName}')">编辑</button>
       <button type="button" class="danger" onclick="deleteExecutor('${safeGuildName}')">删除执行器</button>
     </div>` : ''}
-  </div>`;
+  </article>`;
 }
 async function reloadGuildExecutors() {
   const data = await loadJson('/api/ops/guild-executors');
@@ -1265,7 +1279,7 @@ async function reloadGuildExecutors() {
     ? rows.map(guildExecutorRowHtml).join('')
     : '<div class="muted">暂无公会执行器。点击右上角新增。</div>';
   document.getElementById('executorCount').textContent = String(rows.length);
-  document.getElementById('executorProxyCount').textContent = String(rows.filter(row => String(row.proxy_region || '').trim()).length);
+  document.getElementById('executorProxyCount').textContent = String(rows.filter(row => row.proxy_effective_configured === true).length);
   document.getElementById('executorSecretCount').textContent = String(rows.filter(row => row.oauth_configured).length);
   if (isOpsAdmin()) {
     const proxyRegionField = document.getElementById('new_executor_proxy_region');
@@ -1381,6 +1395,13 @@ async function deleteExecutor(guildName) {
   showToast(`删除公会执行器成功：${normalized}`, 'success');
   await reloadGuildExecutors();
 }
+async function reloadProductionOpsDaemonConfig() {
+  const node = document.getElementById('daemonEnabledState');
+  if (!node) return;
+  const data = await loadJson('/api/ops/production-ops-daemon');
+  const config = data && data.config ? data.config : {};
+  node.textContent = config.enabled ? '开启' : '关闭';
+}
 async function reloadPresets() {
   capturePresetModalDraft();
   const data = await loadJson('/api/ops/intake-bot-presets');
@@ -1461,8 +1482,8 @@ GROUP_ATMOSPHERE_PAGE_HTML = """<!doctype html>
 html{scrollbar-gutter:stable;background:var(--crm-bg)!important;font-size:14px!important;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
 body{margin:0!important;padding:24px!important;min-height:100vh!important;background:radial-gradient(circle at 12% -8%,rgba(47,107,255,.10),transparent 31%),linear-gradient(180deg,#f7f9fd 0%,#eef3f9 100%)!important;color:var(--crm-text)!important;font-family:var(--crm-font)!important;font-size:14px!important;line-height:1.5!important;letter-spacing:-.006em!important;}
 body *{box-sizing:border-box;}
-.page-shell,body>.page{width:min(1480px,calc(100vw - 48px))!important;max-width:1480px!important;margin:0 auto!important;padding:0 0 32px!important;display:grid!important;grid-template-columns:248px minmax(0,1fr)!important;gap:24px!important;align-items:start!important;}
-.shell-nav,.nav{grid-column:1!important;grid-row:1 / span 160!important;position:sticky!important;top:24px!important;z-index:30!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:6px!important;flex-wrap:nowrap!important;min-height:calc(100vh - 48px)!important;margin:0!important;padding:22px 16px!important;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px) saturate(140%)!important;border:1px solid var(--crm-border)!important;border-radius:var(--crm-r-2xl)!important;box-shadow:var(--crm-shadow)!important;}
+.page-shell,body>.page{width:min(1480px,calc(100vw - 48px))!important;max-width:1480px!important;margin:0 auto!important;padding:0 0 32px!important;display:grid!important;grid-template-columns:248px minmax(0,1fr)!important;gap:16px 32px!important;align-items:start!important;}
+.shell-nav,.nav{grid-column:1!important;grid-row:1 / span 160!important;position:fixed!important;top:24px!important;left:max(24px,calc((100vw - 1480px)/2))!important;width:248px!important;height:calc(100vh - 48px)!important;min-height:0!important;overflow-y:auto!important;z-index:30!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:6px!important;flex-wrap:nowrap!important;margin:0!important;padding:22px 16px!important;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px) saturate(140%)!important;border:1px solid var(--crm-border)!important;border-radius:var(--crm-r-2xl)!important;box-shadow:var(--crm-shadow)!important;}
 .shell-nav::before,.nav::before{content:'MCN 客服工具';display:block;margin:0 8px 18px;padding:0 0 16px;border-bottom:1px solid var(--crm-border);color:#111827;font-size:18px;line-height:1.12;font-weight:760;letter-spacing:-.035em;}
 .shell-nav a,.nav a{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:10px!important;min-height:40px!important;padding:11px 14px!important;border-radius:15px!important;background:transparent!important;border:0!important;color:var(--crm-muted)!important;text-decoration:none!important;font-size:14px!important;line-height:18px!important;font-weight:620!important;letter-spacing:-.01em!important;white-space:nowrap!important;box-shadow:none!important;transition:background .16s ease,color .16s ease,transform .16s ease;}
 .shell-nav a::before,.nav a::before{content:'';width:8px;height:8px;border-radius:999px;background:#cbd5e1;flex:0 0 auto;transition:background .16s ease;}
@@ -1471,14 +1492,19 @@ body *{box-sizing:border-box;}
 .shell-nav a.is-active,.nav a.is-active{background:var(--crm-blue)!important;color:#fff!important;box-shadow:0 12px 24px rgba(47,107,255,.22)!important;}
 .shell-nav a.is-active::before,.nav a.is-active::before{background:#fff!important;}
 .page-shell>:not(.shell-nav),body>.page>:not(.nav){grid-column:2!important;min-width:0!important;}
-.hero{padding:24px 26px!important;margin:0 0 16px!important;min-height:84px;border-radius:26px!important;background:linear-gradient(135deg,#fff 0%,#f8fbff 56%,#eef5ff 100%)!important;border:1px solid var(--crm-border)!important;box-shadow:var(--crm-shadow-card)!important;color:var(--crm-text)!important;}
+.hero{padding:20px 24px!important;margin:0!important;min-height:72px;border-radius:24px!important;background:var(--crm-panel)!important;border:1px solid var(--crm-border)!important;box-shadow:var(--crm-shadow-card)!important;color:var(--crm-text)!important;}
+.hero h1{margin-bottom:4px!important;}
+.hero p,.hero .subtitle,.hero .muted,.hero .hint,.hero .help,.hero small{color:#475569!important;font-size:13px!important;line-height:1.5!important;font-weight:500!important;max-width:920px!important;}
+.hero + .card,.hero + .summary-grid,.hero + .grid,.hero + .stats-grid,.hero + .config-workspace,.hero + .mini-tools,.hero + .ga-notice,.hero + .toolbar,.hero + .filter-card,body>.page>.hero + *,.page-shell>.hero + *{margin-top:0!important;}
+.page-shell>.card:first-of-type,body>.page>.card:first-of-type{margin-top:0!important;}
+.page-shell>.hero:first-of-type,body>.page>.hero:first-of-type{margin-top:0!important;}
 .card,.summary-item,.executor-card,.account-card,.binding-card,.advanced-fields,.qr-modal-card,.modal-card,.status-card,.group-card,.mini-note,fieldset{background:var(--crm-panel)!important;border:1px solid var(--crm-border)!important;color:var(--crm-text)!important;border-radius:var(--crm-r-xl)!important;box-shadow:var(--crm-shadow-card)!important;}
-.card{padding:20px!important;margin-top:16px!important;}
-.card + .card,.group-card + .group-card,.account-card + .account-card{margin-top:16px!important;}
+.card{padding:20px!important;margin-top:0!important;}
+.card + .card,.section-card + .section-card,.group-card + .group-card,.account-card + .account-card,.executor-card + .executor-card,.guild-card + .guild-card{margin-top:16px!important;}
 .summary-item,.status-card,.account-status-item{padding:16px!important;border-radius:var(--crm-r-lg)!important;background:linear-gradient(180deg,#fff 0%,#fbfdff 100%)!important;}
 .account-card,.binding-card{padding:18px!important;}
 .group-card,.mini-note{padding:14px!important;}
-.grid,.mini-tools,.editor-grid,.field-grid,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid,.toolbar-actions,.inline-actions{gap:14px!important;}
+.grid,.mini-tools,.editor-grid,.field-grid,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid,.toolbar-actions,.inline-actions{gap:12px!important;}
 h1,h2,h3,p{margin-top:0;}
 h1{font-size:28px!important;line-height:1.16!important;letter-spacing:-.045em!important;color:#111827!important;font-weight:780!important;margin-bottom:6px!important;}
 h2{font-size:19px!important;line-height:1.28!important;letter-spacing:-.03em!important;color:var(--crm-text)!important;font-weight:740!important;margin-bottom:12px!important;}
@@ -1513,7 +1539,14 @@ tr:hover td{background:#f8fbff!important;}
 .badge.pending,.pill.orange,.pill.yellow,.pill.amber{background:var(--crm-amber-soft)!important;color:#c2410c!important;border-color:#fed7aa!important;}
 .status-line.success,.pill.green,.badge.green{color:#166534!important;background:var(--crm-green-soft)!important;border-color:#bbf7d0!important;}
 .status-line.error{color:#be123c!important;}
-.toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:14px!important;margin-bottom:14px!important;}
+.toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin-bottom:12px!important;}
+:root{--crm-card-gap:var(--ops-card-gap);--crm-layout-gap:var(--ops-content-left-gap);}
+.page-shell,body>.page{gap:var(--crm-card-gap) var(--crm-layout-gap)!important;}
+.page-shell>.hero,.page-shell>.card,.page-shell>.section-card,.page-shell>.summary,.page-shell>.summary-grid,.page-shell>.stats-grid,.page-shell>.top-overview-grid,.page-shell>.ga-stats,.page-shell>.ga-prototype-board,body>.page>.hero,body>.page>.card,body>.page>.section-card,body>.page>.summary,body>.page>.summary-grid,body>.page>.stats-grid,body>.page>.top-overview-grid{margin-top:0!important;}
+.page-shell>.card + .card,body>.page>.card + .card,.page-shell>.section-card + .section-card,body>.page>.section-card + .section-card{margin-top:0!important;}
+.page-shell .top-overview-grid > .card.card,body>.page .top-overview-grid > .card.card{margin-top:0!important;}
+.grid > .card,.summary-grid > .summary-item,.stats-grid > .summary-item,.stats-grid > .card,.ga-stats > .card,.executor-card-grid > .executor-card,.account-card-grid > .account-card,.guild-grid > .guild-card,.executor-grid > .executor-card{margin-top:0!important;}
+.summary,.summary-grid,.stats-grid,.top-overview-grid,.account-grid,.guild-grid,.executor-grid,.account-card-grid,.ga-stats,.ga-board-grid,.ga-board-col,.ga-prototype-board{gap:var(--crm-card-gap)!important;}
 details{border-radius:var(--crm-r-lg)!important;border:1px solid var(--crm-border)!important;background:#fbfdff!important;padding:12px 14px!important;}
 summary{cursor:pointer;color:var(--crm-text)!important;font-weight:700!important;}
 pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-height:1.55!important;}
@@ -1523,24 +1556,24 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
 
 /* Group atmosphere operations layout: account-first, compact cards */
 #ga_accounts_card{margin-top:0!important;}
-#ga_role_bridge_card,#ga_role_library_card,#ga_speech_plan_library_card{margin-top:16px!important;}
+#ga_role_bridge_card,#ga_role_library_card,#ga_speech_plan_library_card{margin-top:0!important;}
 .ga-bridge-layout{display:grid;grid-template-columns:minmax(340px,.82fr) minmax(0,1.18fr);gap:16px;align-items:start;}
 .ga-bridge-form,.ga-bridge-list{min-width:0;}
 #ga_role_bindings{display:grid;gap:12px;}
 #ga_role_bindings .account-card{margin-top:0!important;}
-.mini-tools{display:grid!important;grid-template-columns:1fr!important;gap:16px!important;}
-#group-atmosphere-logs{max-height:420px;overflow:auto;}#group-atmosphere-logs table{box-shadow:none!important;}
+.mini-tools{display:grid!important;grid-template-columns:1fr!important;gap:12px!important;}
+
 @media (max-width:1100px){.ga-bridge-layout,.mini-tools{grid-template-columns:1fr!important;}}
 
 #ga_candidate_result:empty,#ga_scheduler_result:empty,#ga_role_bridge_result:empty,#ga_upload_result:empty,#ga_send_result:empty,#ga_role_editor_result:empty{display:none!important;}
-#group-atmosphere-logs:empty::before{content:'暂无日志';color:var(--crm-muted);font-size:13px;}
+
 /* Preview-inspired group atmosphere UX: role-first distribution console */
 .ga-hero{align-items:flex-start!important;gap:20px!important;}
 .ga-hero .muted{max-width:820px!important;font-size:14px!important;}
 .ga-hero-actions{display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-wrap:wrap;min-width:360px;}
 .ga-notice{display:flex!important;justify-content:space-between;gap:18px;align-items:center;padding:15px 18px!important;background:#ecfdf5!important;border-color:#bbf7d0!important;color:#047857!important;}
 .ga-notice strong{display:block;color:#065f46;font-size:15px;margin-bottom:4px;}
-.ga-stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-top:16px;}
+.ga-stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-top:12px;}
 .ga-stat{padding:15px 16px!important;min-height:96px;}
 .ga-stat .stat-label{font-size:12px;color:var(--crm-muted);margin-bottom:7px;}
 .ga-stat .stat-value{font-size:25px;font-weight:820;color:#0f172a;letter-spacing:-.035em;line-height:1;}
@@ -1570,38 +1603,278 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
 @media (max-width:1280px){.ga-stats{grid-template-columns:repeat(3,minmax(0,1fr));}.ga-bridge-layout{grid-template-columns:1fr!important}.ga-bridge-col{border-right:0!important;border-bottom:1px solid var(--crm-border)!important}.ga-bridge-col:last-child{border-bottom:0!important}.ga-hero-actions{min-width:0;justify-content:flex-start}}
 @media (max-width:760px){.ga-stats{grid-template-columns:repeat(2,minmax(0,1fr));}.ga-control-line{grid-template-columns:repeat(2,minmax(0,1fr));}}
 
+/* Prototype-aligned four-zone group chat assistant layout */
+.ga-hero{display:flex!important;align-items:center!important;justify-content:space-between!important;padding:22px 24px!important;}
+.ga-hero h1{margin:0 0 6px!important;}
+.ga-hero-actions .button{display:inline-flex!important;align-items:center!important;text-decoration:none!important;min-height:36px!important;padding:8px 12px!important;}
+#ga_overview_stats{grid-column:2!important;display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:16px!important;margin:0!important;}
+#ga_overview_stats .ga-stat{min-height:76px!important;padding:12px 14px!important;margin:0!important;border-radius:16px!important;}
+#ga_overview_stats .stat-label{margin-bottom:5px!important;font-size:12px!important;}
+#ga_overview_stats .stat-value{font-size:22px!important;}
+.ga-prototype-board{grid-column:2!important;display:grid!important;gap:16px!important;margin-top:0!important;}
+.ga-board-top{min-width:0!important;}
+.ga-board-grid{display:grid!important;grid-template-columns:minmax(250px,.95fr) minmax(230px,.82fr) minmax(300px,1.08fr)!important;gap:14px!important;align-items:start!important;}
+.ga-board-col{display:grid!important;gap:16px!important;align-content:start!important;min-width:0!important;}
+.ga-prototype-section{margin-top:0!important;min-width:0!important;}
+#ga_role_bridge_card{padding:18px!important;border-radius:22px!important;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%)!important;}
+#ga_role_bridge_card>.toolbar{margin-bottom:14px!important;padding-bottom:10px!important;border-bottom:1px solid var(--crm-border-soft)!important;}
+#ga_role_bridge_card .section-title::after{content:'角色 → 群组，系统自动分配 WA 号';font-size:12px;font-weight:650;color:#64748b;background:#eef4ff;border:1px solid #d7e5ff;border-radius:999px;padding:5px 9px;}
+.ga-bridge-layout{display:grid!important;grid-template-columns:minmax(240px,.75fr) minmax(360px,1.05fr) minmax(430px,1.25fr)!important;gap:12px!important;border:0!important;overflow:visible!important;background:transparent!important;}
+.ga-bridge-col{border:1px solid var(--crm-border)!important;border-radius:18px!important;background:#fff!important;padding:16px!important;box-shadow:var(--crm-shadow-card)!important;}
+.ga-bridge-col:last-child{background:#fbfdff!important;border-right:1px solid var(--crm-border)!important;}
+.ga-bridge-col h3{font-size:14px!important;margin:0 0 12px!important;color:#0f172a!important;}
+.ga-group-picker,#ga_bridge_group_choices{min-height:132px!important;}
+#ga_bridge_group_choices{max-height:300px!important;overflow:auto!important;}
+#ga_role_bindings{max-height:360px!important;overflow:auto!important;}
+#ga_accounts_card .account-card-grid,#ga_role_library_card #ga_role_library,#ga_candidate_card #ga_candidate_pool{display:grid!important;grid-template-columns:1fr!important;gap:10px!important;}
+#ga_accounts_card .toolbar,#ga_role_library_card .toolbar,#ga_candidate_card .toolbar,#ga_scheduler_card .toolbar{align-items:center!important;border-bottom:0!important;padding-bottom:0!important;}
+#ga_accounts_card,#ga_role_library_card,#ga_candidate_card,#ga_scheduler_card{border-radius:22px!important;}
+#ga_accounts_card .account-card{padding:15px!important;}
+#ga_candidate_card .toolbar{gap:10px!important;}
+#ga_candidate_card .toolbar-actions{display:grid!important;grid-template-columns:1fr 1fr!important;min-width:0!important;}
+#ga_candidate_card .group-card{padding:13px!important;}
+#ga_candidate_card [data-ga-enable-candidate]{margin-left:6px!important;}
+#ga_scheduler_card{background:#f8fbff!important;}
+#ga_scheduler_card .inline-actions{justify-content:flex-start!important;}
+#ga_editor_modal,#ga_role_editor_modal,#gaQrModal,#gaSendModal{grid-column:auto!important;}
+@media (max-width:980px){.ga-board-grid{grid-template-columns:1fr!important}.ga-bridge-layout{grid-template-columns:1fr!important}.ga-bridge-col{border-right:1px solid var(--crm-border)!important}.ga-hero{align-items:flex-start!important;flex-direction:column!important}.ga-hero-actions{justify-content:flex-start!important;min-width:0!important}#ga_overview_stats{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
+@media (max-width:760px){#ga_overview_stats{grid-template-columns:repeat(2,minmax(0,1fr))!important}.ga_candidate_card .toolbar-actions,#ga_candidate_card .toolbar-actions{grid-template-columns:1fr!important}}
+
+/* 0518 prototype exact direction: vertical cyan modules, local-first */
+.ga-proto-page{grid-column:2!important;width:100%!important;max-width:1390px!important;margin:0 auto!important;padding:28px 0 64px!important;display:block!important;}
+.ga-proto-title{font-size:44px!important;line-height:1.1!important;font-weight:780!important;letter-spacing:-.04em!important;margin:0 0 16px!important;color:#050505!important;}
+.ga-proto-hidden-stats{display:none!important;}
+.ga-proto-stack{display:grid!important;grid-template-columns:1fr!important;gap:16px!important;width:100%!important;}
+.ga-proto-section{background:#e8ffff!important;border:0!important;border-radius:22px!important;box-shadow:none!important;padding:36px 48px 48px!important;margin:0!important;min-height:auto!important;width:100%!important;color:#050505!important;}
+.ga-proto-head{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:24px!important;margin:0 0 54px!important;}
+.ga-proto-head h2,.ga-proto-section h2{font-size:40px!important;line-height:1.12!important;font-weight:680!important;color:#050505!important;letter-spacing:-.035em!important;margin:0!important;}
+.ga-proto-head-actions{display:flex!important;align-items:center!important;gap:14px!important;}
+.ga-proto-head button,#ga_new_bridge_btn,#ga_new_account_btn,#ga_new_role_btn{min-width:180px!important;min-height:66px!important;border-radius:18px!important;background:#62a2f6!important;border-color:#62a2f6!important;color:#050505!important;font-size:24px!important;font-weight:650!important;box-shadow:none!important;}
+.ga-inline-feedback{margin:-38px 0 22px!important;}
+#ga_role_bridge_card .ga-bridge-create{display:none;margin:0 0 28px!important;padding:22px!important;background:#fff!important;border-radius:18px!important;}
+#ga_role_bridge_card.is-creating .ga-bridge-create{display:block!important;}
+#ga_role_bridge_card .ga-bridge-layout{display:grid!important;grid-template-columns:1fr 1.4fr!important;gap:18px!important;border:0!important;background:transparent!important;}
+#ga_role_bridge_card .ga-run-control-col{display:none!important;}
+.ga-proto-card-grid,#ga_role_bindings,#ga_accounts .account-card-grid,#ga_role_library,#ga_candidate_pool{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:16px!important;max-height:none!important;overflow:visible!important;padding:0!important;}
+#ga_role_bindings>.mini-note,#ga_role_bindings>.account-card,#ga_role_library>.mini-note,#ga_candidate_pool>.group-card{background:#62a2f6!important;border:0!important;border-radius:22px!important;box-shadow:none!important;color:#050505!important;padding:28px!important;min-height:240px!important;}
+#ga_role_bindings .mini-note .mini-note,#ga_role_bindings .account-card .mini-note,#ga_role_library .mini-note .mini-note{background:#fff!important;border:0!important;border-radius:18px!important;box-shadow:none!important;margin-top:14px!important;min-height:54px!important;padding:14px 18px!important;}
+#ga_accounts .account-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;}
+#ga_accounts .account-card{background:#fff!important;border:0!important;border-radius:18px!important;box-shadow:0 8px 20px rgba(0,0,0,.06)!important;padding:22px!important;min-height:460px!important;}
+#ga_accounts .group-card{background:#f8ffff!important;border:1px solid rgba(98,162,246,.24)!important;box-shadow:none!important;border-radius:16px!important;}
+#ga_role_library{grid-template-columns:repeat(2,minmax(0,1fr))!important;}
+#ga_role_library>.mini-note{min-height:280px!important;}
+#ga_candidate_card{min-height:980px!important;}
+.ga-pool-filter-row{display:flex!important;gap:14px!important;max-width:620px!important;margin:-30px 0 26px!important;}
+.ga-pool-filter-row select{max-width:220px!important;}
+.ga-upload-panel{width:min(560px,100%)!important;background:#fff!important;border-radius:18px!important;padding:24px!important;margin:24px 0 34px!important;box-shadow:0 8px 20px rgba(0,0,0,.05)!important;}
+.ga-upload-panel h3,.ga-proto-subhead h3{font-size:26px!important;margin:0 0 16px!important;color:#050505!important;}
+
+.ga-proto-subhead{display:flex!important;align-items:center!important;justify-content:space-between!important;margin-bottom:22px!important;}
+
+
+
+.ga-proto-script-grid{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:28px!important;margin-bottom:16px!important;}
+.ga-learn-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:16px!important;}
+.ga-script-card{background:#62a2f6!important;border:0!important;border-radius:22px!important;box-shadow:none!important;color:#050505!important;padding:24px!important;min-height:160px!important;position:relative!important;}
+.ga-script-card strong{display:block!important;font-size:26px!important;margin-bottom:12px!important;color:#050505!important;}
+.ga-script-card p{font-size:18px!important;line-height:1.45!important;margin:14px 0 0!important;color:#111!important;}
+.ga-script-card button{position:absolute!important;right:16px!important;top:16px!important;min-width:72px!important;min-height:34px!important;border-radius:14px!important;font-size:16px!important;background:#eef6ff!important;color:#2f6bff!important;border:0!important;}
+.ga-script-card span{display:inline-flex!important;background:#d8ecff!important;color:#1d4ed8!important;border-radius:999px!important;padding:7px 13px!important;margin:8px 8px 0 0!important;font-size:17px!important;font-weight:650!important;}
+.ga-copy-list-section #ga_candidate_pool{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:16px!important;}
+#ga_candidate_pool{grid-template-columns:1fr!important;gap:16px!important;}
+#ga_candidate_pool>.group-card{min-height:220px!important;}
+#ga_candidate_pool .mini-note{background:#fff!important;border:0!important;border-radius:12px!important;box-shadow:none!important;margin-top:12px!important;}
+#ga_scheduler_card{display:none!important;}
+@media(max-width:1180px){.ga-proto-card-grid,#ga_role_bindings,#ga_accounts .account-card-grid,#ga_role_library{grid-template-columns:1fr!important}.ga-proto-section{padding:28px 24px!important}.ga-proto-title{font-size:36px!important}.ga-proto-head h2,.ga-proto-section h2{font-size:32px!important}}
+
+/* Prototype correction overrides after legacy ID rules */
+#ga_role_bridge_card.ga-proto-section{background:#e8ffff!important;border:0!important;box-shadow:none!important;border-radius:22px!important;padding:36px 48px 48px!important;}
+#ga_role_bridge_card.ga-proto-section>.ga-proto-head{margin-bottom:54px!important;}
+#ga_role_bridge_card #ga_role_bindings{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:16px!important;}
+#ga_role_bridge_card #ga_role_bindings>.mini-note{background:#62a2f6!important;color:#050505!important;min-height:260px!important;}
+#ga_role_library{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:16px!important;}
+#ga_role_library>.mini-note{background:#62a2f6!important;border:0!important;border-radius:22px!important;box-shadow:none!important;color:#050505!important;padding:28px!important;min-height:240px!important;}
+#ga_accounts .account-card-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:16px!important;}
+.ga-proto-page{padding-bottom:24px!important;}
+
+#ga_role_library_card #ga_role_library{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:16px!important;}
+@media(max-width:900px){#ga_role_library_card #ga_role_library,#ga_accounts .account-card-grid,#ga_role_bridge_card #ga_role_bindings{grid-template-columns:1fr!important;}}
+
+/* 0518 production workbench override: keep prototype structure, match backend UI */
+
+.ga-proto-page{grid-column:2!important;width:100%!important;max-width:1390px!important;margin:0 auto!important;padding:0 0 40px!important;display:block!important;}
+.ga-page-head{display:flex!important;align-items:flex-start!important;justify-content:space-between!important;gap:16px!important;margin:0!important;padding:20px 24px!important;background:var(--crm-panel)!important;border:1px solid var(--crm-border)!important;border-radius:24px!important;box-shadow:var(--crm-shadow-card)!important;}
+.ga-proto-title{font-size:28px!important;line-height:1.16!important;font-weight:780!important;letter-spacing:-.045em!important;margin:0 0 6px!important;color:#111827!important;}
+.ga-workbench-stats{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:16px!important;margin:16px 0!important;}
+.ga-workbench-stats .ga-stat{min-height:78px!important;padding:14px 16px!important;border-radius:18px!important;}
+.ga-workbench-stats .stat-label{font-size:12px!important;color:var(--crm-muted)!important;margin-bottom:6px!important;}
+.ga-workbench-stats .stat-value{font-size:24px!important;font-weight:820!important;color:#111827!important;line-height:1!important;}
+.ga-proto-stack{display:grid!important;grid-template-columns:1fr!important;gap:16px!important;width:100%!important;}
+.ga-proto-section{background:#fff!important;border:1px solid var(--crm-border)!important;border-radius:22px!important;box-shadow:var(--crm-shadow-card)!important;padding:20px!important;margin:0!important;min-height:auto!important;width:100%!important;color:var(--crm-text)!important;}
+.ga-proto-head{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:16px!important;margin:0 0 16px!important;padding-bottom:0!important;border-bottom:0!important;}
+.ga-proto-head h2,.ga-proto-section h2{font-size:19px!important;line-height:1.28!important;font-weight:740!important;letter-spacing:-.03em!important;color:var(--crm-text)!important;margin:0 0 4px!important;}
+.ga-proto-head-actions{display:flex!important;align-items:center!important;gap:10px!important;flex-wrap:wrap!important;justify-content:flex-end!important;}
+.ga-proto-head button,#ga_new_bridge_btn,#ga_new_account_btn,#ga_new_role_btn{min-width:auto!important;min-height:38px!important;border-radius:14px!important;background:var(--crm-blue)!important;border:1px solid var(--crm-blue)!important;color:#fff!important;font-size:14px!important;font-weight:700!important;box-shadow:0 8px 18px rgba(47,107,255,.18)!important;}
+.ga-proto-head button.secondary,.ga-script-card button.secondary{background:#f2f6ff!important;border-color:#d7e5ff!important;color:var(--crm-blue-hover)!important;box-shadow:none!important;}
+.ga-inline-feedback{margin:0 0 12px!important;min-height:20px!important;}
+#ga_role_bridge_card.ga-proto-section{background:#fff!important;border:1px solid var(--crm-border)!important;box-shadow:var(--crm-shadow-card)!important;border-radius:22px!important;padding:20px!important;}
+#ga_role_bridge_card.ga-proto-section>.ga-proto-head{margin-bottom:16px!important;border-bottom:0!important;padding-bottom:0!important;}
+#ga_role_bridge_card .ga-bridge-create{display:none;margin:0 0 16px!important;padding:16px!important;background:#f8fbff!important;border:1px solid var(--crm-border)!important;border-radius:18px!important;}
+#ga_role_bridge_card.is-creating .ga-bridge-create{display:block!important;}
+#ga_role_bridge_card .ga-bridge-layout{display:grid!important;grid-template-columns:minmax(240px,.72fr) minmax(0,1.28fr)!important;gap:16px!important;border:0!important;background:transparent!important;}
+#ga_role_bridge_card .ga-run-control-col{display:none!important;}
+.ga-bridge-col{background:#fff!important;border:1px solid var(--crm-border)!important;border-radius:16px!important;padding:14px!important;box-shadow:none!important;min-width:0!important;}
+.ga-bridge-col h3{font-size:14px!important;margin:0 0 10px!important;color:#0f172a!important;}
+#ga_bridge_group_choices{display:grid!important;gap:8px!important;max-height:260px!important;overflow:auto!important;}
+.ga-proto-card-grid,#ga_role_bindings,#ga_accounts .account-card-grid,#ga_role_library,#ga_candidate_pool{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:16px!important;max-height:none!important;overflow:visible!important;padding:0!important;}
+#ga_role_bindings>.mini-note,#ga_role_bindings>.account-card,#ga_role_library>.mini-note,#ga_candidate_pool>.group-card,.ga-script-card{background:#fff!important;border:1px solid var(--crm-border)!important;border-radius:18px!important;box-shadow:var(--crm-shadow-card)!important;color:var(--crm-text)!important;padding:16px!important;min-height:auto!important;}
+#ga_role_bindings .mini-note .mini-note,#ga_role_bindings .account-card .mini-note,#ga_role_library .mini-note .mini-note,#ga_candidate_pool .mini-note{background:#f8fbff!important;border:1px solid var(--crm-border)!important;border-radius:12px!important;box-shadow:none!important;margin-top:8px!important;min-height:auto!important;padding:10px 12px!important;}
+#ga_role_bridge_card #ga_role_bindings>.mini-note,#ga_role_bridge_card #ga_role_bindings>.account-card,#ga_role_library_card #ga_role_library>.mini-note,#ga_candidate_card #ga_candidate_pool>.group-card{background:#fff!important;border:1px solid var(--crm-border)!important;box-shadow:var(--crm-shadow-card)!important;color:var(--crm-text)!important;min-height:auto!important;padding:16px!important;}
+#ga_accounts .account-card-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:16px!important;}
+#ga_accounts .account-card{background:#fff!important;border:1px solid var(--crm-border)!important;border-radius:18px!important;box-shadow:var(--crm-shadow-card)!important;padding:16px!important;min-height:auto!important;}
+#ga_accounts .group-card-grid{display:flex!important;flex-direction:column!important;gap:10px!important;margin-top:8px!important;}
+#ga_accounts .group-card{background:#f8fbff!important;border:0!important;box-shadow:none!important;border-radius:14px!important;padding:12px!important;}
+#ga_candidate_card{min-height:auto!important;}
+.ga-proto-script-grid{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:16px!important;margin-bottom:16px!important;}
+.ga-script-card strong{display:block!important;font-size:16px!important;margin-bottom:8px!important;color:var(--crm-text)!important;}
+.ga-script-card p{display:none!important;}
+.ga-script-card button{position:static!important;float:right!important;min-width:auto!important;min-height:32px!important;border-radius:12px!important;font-size:13px!important;}
+.ga-upload-panel{width:100%!important;background:#f8fbff!important;border:1px solid var(--crm-border)!important;border-radius:18px!important;padding:16px!important;margin:0!important;box-shadow:none!important;}
+.ga-upload-panel h3,.ga-proto-subhead h3{font-size:15px!important;margin:0 0 10px!important;color:var(--crm-text)!important;}
+.ga-pool-filter-row{display:flex!important;gap:10px!important;max-width:460px!important;margin:0!important;}
+.ga-pool-filter-row select{max-width:220px!important;margin:0!important;}
+.ga-copy-list-section #ga_candidate_pool,#ga_candidate_pool{display:grid!important;grid-template-columns:1fr!important;gap:12px!important;}
+#ga_scheduler_card{display:none!important;}
+@media(max-width:1180px){.ga-workbench-stats,.ga-proto-card-grid,#ga_role_bindings,#ga_accounts .account-card-grid,#ga_role_library,.ga-proto-script-grid{grid-template-columns:1fr!important}.ga-proto-section{padding:18px!important}.ga-proto-head{flex-direction:column!important}.ga-pool-filter-row{max-width:none!important;width:100%!important}}
+
+
+#ga_candidate_pool .candidate-row-compact{display:grid!important;grid-template-columns:auto auto minmax(0,1fr) auto auto!important;align-items:center!important;gap:8px!important;min-height:38px!important;padding:6px 10px!important;border-radius:12px!important;}
+#ga_candidate_pool .candidate-row-compact input[type="text"]{min-height:32px!important;padding:6px 8px!important;font-size:13px!important;}
+#ga_candidate_pool .candidate-role-line{display:flex!important;gap:10px!important;align-items:center!important;flex-wrap:wrap!important;margin-top:8px!important;}
+#ga_candidate_pool .candidate-role-line select{width:auto!important;min-width:220px!important;}
+#ga_learning_result:empty,#ga_candidate_result:empty{display:none!important;}
+
+#ga_candidate_pool .candidate-row-compact>input,#ga_candidate_pool .candidate-row-compact>button{margin:0!important;}
+#ga_candidate_pool .candidate-row-compact>input[type="checkbox"]{width:16px!important;height:16px!important;min-height:16px!important;}
+#ga_candidate_pool .candidate-row-compact>button{min-height:32px!important;padding:5px 9px!important;font-size:12px!important;}
+/* Group atmosphere visual cleanup: less instructional copy, no inner separator lines */
+.ga-page-head .muted,.ga-proto-head .muted{display:none!important;}
+.ga-proto-section .toolbar{border-bottom:0!important;padding-bottom:0!important;}
+.ga-proto-section .section-title{border-bottom:0!important;padding-bottom:0!important;}
+.ga-proto-section hr,.ga-proto-section .divider{display:none!important;}
+.ga-proto-section .status-line{border:0!important;}
+#ga_role_library>.muted,#ga_candidate_pool>.muted,#ga_learning_accounts.muted,#ga_role_bindings>.muted{background:#f8fbff!important;border:0!important;border-radius:14px!important;padding:14px 16px!important;color:var(--crm-muted)!important;}
+#ga_candidate_count,#ga_accounts_count{height:28px!important;min-height:28px!important;padding:4px 10px!important;display:inline-flex!important;align-items:center!important;}
+.ga-proto-head-actions button,.ga-proto-head>button,.inline-actions button{margin:0!important;}
+#ga_learning_bot_card .compact-grid input,#ga_learning_bot_card .compact-grid select,#ga_candidate_card select{height:42px!important;min-height:42px!important;margin:0!important;}
+#ga_accounts .account-card-grid{grid-template-columns:repeat(auto-fill,minmax(360px,420px))!important;justify-content:start!important;align-items:start!important;}
+#ga_accounts .account-card-head{align-items:flex-start!important;gap:12px!important;}
+#ga_accounts .group-card-title{align-items:center!important;}
+
+.ga-account-group-row{display:grid!important;grid-template-columns:minmax(0,1fr) 150px auto!important;gap:10px!important;align-items:center!important;margin:0 0 10px!important;}
+.ga-account-group-row input,.ga-account-group-row select{height:42px!important;min-height:42px!important;margin:0!important;}
+.ga-account-group-row button{height:42px!important;min-height:42px!important;margin:0!important;white-space:nowrap!important;}
+.ga-account-group-row[style*="display:none"]{display:none!important;}
+@media(max-width:760px){.ga-account-group-row{grid-template-columns:1fr!important;}}
+.clear-form-button{height:42px;border:1px solid #fecaca!important;background:#fff7f7!important;color:#b91c1c!important;border-radius:12px!important;font-weight:600!important;padding:0 16px!important;box-shadow:none!important;}
+.clear-form-button:hover{background:#fee2e2!important;border-color:#fca5a5!important;color:#991b1b!important;}
+.clear-form-button:focus{outline:2px solid rgba(220,38,38,.22)!important;outline-offset:2px!important;}
+#ga_accounts .group-card-name{font-size:14px!important;font-weight:760!important;color:#111827!important;}
+#ga_accounts .group-card-link{max-width:100%!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;color:#64748b!important;font-size:12px!important;}
+#ga_accounts .account-actions button{min-height:34px!important;border-radius:12px!important;}
+#ga_accounts .account-actions .danger,#ga_accounts button.danger{background:#fff1f2!important;border:1px solid #fecdd3!important;color:#be123c!important;box-shadow:none!important;}
+#ga_accounts .switch-off,#ga_accounts .switch-pending{background:#f2f6ff!important;border:1px solid #d7e5ff!important;color:var(--crm-blue-hover)!important;}
+#ga_accounts .switch-on{background:var(--crm-blue)!important;border:1px solid var(--crm-blue)!important;color:#fff!important;}
+input[type=file]{height:42px!important;padding:7px 10px!important;background:#fff!important;border:1px dashed #c9d7ee!important;border-radius:14px!important;color:#64748b!important;}
+input[type=file]::file-selector-button{height:28px!important;margin:0 10px 0 0!important;border:0!important;border-radius:10px!important;background:#f2f6ff!important;color:var(--crm-blue-hover)!important;font-weight:700!important;padding:0 10px!important;}
+#ga_learning_bot_card .compact-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;}
+#ga_learning_bot_card .compact-grid input:last-child{grid-column:1 / -1!important;}
+#ga_candidate_card .ga-generation-grid{grid-template-columns:minmax(0,.95fr) minmax(0,1.05fr)!important;align-items:start!important;}
+#ga_candidate_pool .group-card{box-shadow:none!important;}
+#ga_candidate_role_tabs{display:flex!important;gap:8px!important;flex-wrap:wrap!important;margin:0 0 16px!important;}
+.ga-candidate-tab{height:36px!important;min-height:36px!important;padding:0 14px!important;border-radius:999px!important;border:1px solid #d7e5ff!important;background:#f2f6ff!important;color:var(--crm-blue-hover)!important;box-shadow:none!important;font-weight:720!important;margin:0!important;}
+.ga-candidate-tab.is-active{background:var(--crm-blue)!important;border-color:var(--crm-blue)!important;color:#fff!important;}
+.ga-candidate-expand{width:100%!important;margin-top:10px!important;background:#f2f6ff!important;border:1px solid #d7e5ff!important;color:var(--crm-blue-hover)!important;box-shadow:none!important;}
+.ga-source-badge{display:inline-flex!important;align-items:center!important;height:24px!important;padding:0 8px!important;border-radius:999px!important;background:#f8fbff!important;border:1px solid var(--crm-border)!important;color:#64748b!important;font-size:12px!important;font-weight:720!important;white-space:nowrap!important;}
+/* Role editor modal aligned with WhatsApp account editor */
+#ga_role_editor_modal.is-open,#ga_editor_modal.is-open,#ga_bridge_modal.is-open,#gaSendModal.is-open{display:flex!important;}
+#ga_role_editor_modal{align-items:center!important;justify-content:center!important;padding:24px!important;}
+#ga_role_editor_card{width:min(960px,calc(100vw - 48px))!important;max-height:calc(100vh - 48px)!important;overflow:auto!important;background:#fff!important;border:1px solid rgba(219,228,240,.95)!important;border-radius:22px!important;box-shadow:0 24px 64px rgba(15,23,42,.24)!important;padding:0!important;margin:0!important;}
+#ga_role_editor_card>.modal-head{position:sticky!important;top:0!important;z-index:2!important;display:flex!important;align-items:flex-start!important;justify-content:space-between!important;gap:16px!important;padding:18px 20px 14px!important;margin:0!important;border-bottom:1px solid var(--crm-border)!important;background:#fff!important;border-radius:22px 22px 0 0!important;}
+#ga_role_editor_card>.modal-head h2{margin:0!important;font-size:20px!important;line-height:1.25!important;}
+#ga_role_editor_card>.compact-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:14px 16px!important;padding:16px 20px 0!important;margin:0!important;}
+#ga_role_editor_card>.compact-grid input,#ga_role_editor_card>.compact-grid select{height:42px!important;min-height:42px!important;margin:0!important;}
+#ga_role_editor_card>.grid{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:16px!important;padding:16px 20px 0!important;margin:0!important;}
+#ga_role_editor_card>.grid>div{background:#f8fbff!important;border:1px solid var(--crm-border)!important;border-radius:16px!important;padding:14px!important;min-width:0!important;}
+#ga_role_editor_card>.grid h3{font-size:14px!important;line-height:1.3!important;margin:0 0 10px!important;color:#0f172a!important;}
+#ga_role_phrase_pool{display:grid!important;gap:8px!important;max-height:360px!important;overflow:auto!important;padding-right:2px!important;}
+#ga_role_phrase_pool .mini-note{margin:0!important;background:#fff!important;border:1px solid var(--crm-border)!important;border-radius:12px!important;padding:10px 12px!important;box-shadow:none!important;}
+#ga_role_phrases{min-height:360px!important;margin:0!important;resize:vertical!important;}
+#ga_role_editor_card>.inline-actions{display:flex!important;justify-content:flex-end!important;gap:10px!important;padding:16px 20px 20px!important;margin:0!important;}
+#ga_role_editor_card>#ga_role_editor_result{margin:0 20px!important;}
+#ga_role_editor_card .modal-close,#ga_role_editor_card>.inline-actions button{min-height:38px!important;margin:0!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;}
+@media(max-width:980px){#ga_role_editor_card>.compact-grid,#ga_role_editor_card>.grid{grid-template-columns:1fr!important;}#ga_role_phrases{min-height:220px!important;}}
+/* Group atmosphere spacing tighten */
+.ga-proto-page > .ga-workbench-stats.ga-stats{margin:16px 0!important;}
+.ga-proto-section .inline-actions{gap:10px!important;margin-top:12px!important;}
+.ga-upload-panel:first-child,.ga-upload-panel{margin-top:0!important;}
+#ga_accounts .account-card{width:100%!important;max-width:420px!important;}
+
+
+
+
+.ga-learning-card-list{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))!important;gap:12px!important;margin-top:12px!important;}
+.ga-learning-card{background:#fff!important;border:1px solid var(--crm-border)!important;border-radius:14px!important;padding:12px!important;box-shadow:none!important;}
+.ga-learning-card .toolbar{align-items:flex-start!important;}
+.ga-learning-groups{display:grid!important;gap:8px!important;margin-top:8px!important;}
+.ga-learning-group-row{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:8px!important;align-items:center!important;}
+.ga-learning-group-row input{margin:0!important;}
+#ga_learning_account_modal .modal-card{max-width:680px!important;}
 </style>
 </head><body><div class="page-shell"><div class="shell-nav"><a href="/ops">管理员看板</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/group-atmosphere">群聊天助手</a><a href="/ops/accounts" data-admin-only-nav="true">账号设置</a></div>
-<div class="hero ga-hero"><div><h1>群聊天助手</h1></div></div>
+<div class="ga-proto-page" data-layout="ops-workbench-redesign"><div class="ga-page-head"><div><h1 class="ga-proto-title">群聊天助手</h1></div></div>
 <input type="hidden" id="ga_account_key_login"/><input type="hidden" id="ga_account_key"/>
-<div class="ga-stats" id="ga_overview_stats"><div class="card ga-stat"><div class="stat-label">账号</div><div class="stat-value" id="ga_stat_accounts">0</div></div><div class="card ga-stat"><div class="stat-label">角色</div><div class="stat-value" id="ga_stat_roles">0</div></div><div class="card ga-stat"><div class="stat-label">挂载群</div><div class="stat-value" id="ga_stat_mounted">0</div></div><div class="card ga-stat"><div class="stat-label">自动发言</div><div class="stat-value" id="ga_stat_auto">0</div></div><div class="card ga-stat"><div class="stat-label">权限关闭</div><div class="stat-value" id="ga_stat_blocked">0</div></div></div>
-<div class="card" id="ga_role_bridge_card"><div class="toolbar"><div class="section-title"><h2>角色挂载</h2></div></div><div class="ga-bridge-layout"><div class="ga-bridge-col ga-role-select-col"><h3>话术角色</h3><select id="ga_bridge_role_select"><option value="">选择话术角色</option></select><div class="inline-actions"><button type="button" class="secondary" id="ga_new_role_btn_bridge">新增角色</button></div></div><div class="ga-bridge-col ga-group-select-col"><h3>WhatsApp 群组</h3><div class="ga-group-picker"><select id="ga_bridge_account_select"><option value="">选择WhatsApp账号</option></select><div id="ga_bridge_group_choices" class="muted">请选择账号</div></div><div class="compact-grid"><select id="ga_bridge_auto_speaking"><option value="true">开启自动发言</option><option value="false">暂停自动发言</option></select><input id="ga_bridge_daily_max" placeholder="每日上限"/><input id="ga_bridge_min_interval" placeholder="最小间隔分钟"/><input id="ga_bridge_max_interval" placeholder="最大间隔分钟"/></div><div class="inline-actions"><button type="button" id="ga_mount_role_btn">保存挂载</button></div><pre id="ga_role_bridge_result" class="muted"></pre></div><div class="ga-bridge-col ga-run-control-col"><h3>桥接关系</h3><div id="ga_role_bindings" class="muted">加载桥接关系...</div></div></div></div>
-<div class="card" id="ga_accounts_card"><div class="toolbar"><div class="section-title"><h2>WhatsApp账号</h2><span class="pill gray" id="ga_accounts_count">0 个账号</span></div><div class="toolbar-actions"><button type="button" id="ga_new_account_btn">新增账号</button><div id="ga_action_feedback" class="muted">就绪</div></div></div><div id="ga_accounts" class="account-table-wrap"></div></div><div class="card" id="ga_scheduler_card"><div class="toolbar"><div class="section-title"><h2>自动发言</h2></div><div id="ga_scheduler_status" class="muted">就绪</div></div><div class="inline-actions"><button type="button" id="ga_run_scheduler_btn">检查可发送</button></div><pre id="ga_scheduler_result" class="muted"></pre></div>
-<div class="modal" id="ga_editor_modal" aria-hidden="true"><div class="card modal-card" id="ga_editor_card"><div class="modal-head"><h2 id="ga_editor_title">账号配置</h2><div class="toolbar-actions"><span class="muted" id="ga_session_status">未选择</span><button type="button" class="modal-close" id="ga_close_editor_btn">关闭</button></div></div><div><div><div class="compact-grid"><input id="ga_account_name_login" placeholder="账号备注"/><select id="ga_region"><option value="印尼">印尼</option><option value="墨西哥">墨西哥</option><option value="巴西">巴西</option></select><select id="ga_account_role_positioning"><option value="community_seed">活跃气氛号</option><option value="newcomer_guide">新人引导号</option><option value="faq_helper">FAQ答疑号</option><option value="motivation_admin">激励运营号</option></select><select id="ga_randomness_level"><option value="low">随机性低</option><option value="medium" selected>随机性中</option><option value="high">随机性高</option></select></div><div class="compact-grid"><select id="ga_account_enabled"><option value="true">账号发言：开</option><option value="false">账号发言：关</option></select><input id="ga_daily_max_messages" placeholder="每日上限"/><input id="ga_min_interval_minutes" placeholder="最小间隔分钟"/><input id="ga_max_interval_minutes" placeholder="最大间隔分钟"/><button type="button" class="ghost" id="ga_clear_form_btn">清空</button></div><div class="card" style="box-shadow:none;margin-top:8px;padding:12px;"><div class="section-title"><h3 style="margin:0;font-size:15px;">发言群</h3><button type="button" class="secondary" id="ga_add_group_btn">+ 增加发言群</button></div><div id="ga_group_rows"><div data-ga-group-row="1" style="display:block"><input id="ga_group_1_target" placeholder="群1：链接 / 群名 / group_id"/><select id="ga_group_1_enabled"><option value="true">群1：开</option><option value="false">群1：关</option></select></div><div data-ga-group-row="2" style="display:none"><input id="ga_group_2_target" placeholder="群2：链接 / 群名 / group_id"/><select id="ga_group_2_enabled"><option value="true">群2：开</option><option value="false">群2：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(2)">删除群组</button></div><div data-ga-group-row="3" style="display:none"><input id="ga_group_3_target" placeholder="群3：链接 / 群名 / group_id"/><select id="ga_group_3_enabled"><option value="true">群3：开</option><option value="false">群3：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(3)">删除群组</button></div><div data-ga-group-row="4" style="display:none"><input id="ga_group_4_target" placeholder="群4：链接 / 群名 / group_id"/><select id="ga_group_4_enabled"><option value="true">群4：开</option><option value="false">群4：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(4)">删除群组</button></div><div data-ga-group-row="5" style="display:none"><input id="ga_group_5_target" placeholder="群5：链接 / 群名 / group_id"/><select id="ga_group_5_enabled"><option value="true">群5：开</option><option value="false">群5：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(5)">删除群组</button></div><div data-ga-group-row="6" style="display:none"><input id="ga_group_6_target" placeholder="群6：链接 / 群名 / group_id"/><select id="ga_group_6_enabled"><option value="true">群6：开</option><option value="false">群6：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(6)">删除群组</button></div><div data-ga-group-row="7" style="display:none"><input id="ga_group_7_target" placeholder="群7：链接 / 群名 / group_id"/><select id="ga_group_7_enabled"><option value="true">群7：开</option><option value="false">群7：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(7)">删除群组</button></div><div data-ga-group-row="8" style="display:none"><input id="ga_group_8_target" placeholder="群8：链接 / 群名 / group_id"/><select id="ga_group_8_enabled"><option value="true">群8：开</option><option value="false">群8：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(8)">删除群组</button></div><div data-ga-group-row="9" style="display:none"><input id="ga_group_9_target" placeholder="群9：链接 / 群名 / group_id"/><select id="ga_group_9_enabled"><option value="true">群9：开</option><option value="false">群9：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(9)">删除群组</button></div><div data-ga-group-row="10" style="display:none"><input id="ga_group_10_target" placeholder="群10：链接 / 群名 / group_id"/><select id="ga_group_10_enabled"><option value="true">群10：开</option><option value="false">群10：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(10)">删除群组</button></div></div></div></div><div class="inline-actions"><button type="button" id="ga_save_account_btn">保存</button></div></div></div></div>
-<div class="card" id="ga_role_library_card"><div class="toolbar"><div class="section-title"><h2>话术角色</h2></div><div class="toolbar-actions"><button type="button" id="ga_new_role_btn">新增角色</button></div></div><div id="ga_role_library" class="muted">加载话术角色...</div></div>
-<div class="modal" id="ga_role_editor_modal" aria-hidden="true"><div class="card modal-card" id="ga_role_editor_card"><div class="modal-head"><h2 id="ga_role_editor_title">话术角色</h2><div class="toolbar-actions"><button type="button" class="modal-close" id="ga_close_role_editor_btn">关闭</button></div></div><input type="hidden" id="ga_role_key"/><div class="compact-grid"><input id="ga_role_name" placeholder="角色名称，如：印尼活跃气氛号"/><select id="ga_role_region"><option value="印尼">印尼</option><option value="墨西哥">墨西哥</option><option value="巴西">巴西</option></select><select id="ga_role_positioning"><option value="community_seed">活跃气氛号</option><option value="newcomer_guide">新人引导号</option><option value="faq_helper">FAQ答疑号</option><option value="motivation_admin">激励运营号</option></select><select id="ga_role_enabled"><option value="true">角色启用</option><option value="false">角色停用</option></select></div><div class="grid"><div><h3>从话术池选择话术</h3><div id="ga_role_phrase_pool" class="muted">话术池加载中...</div></div><div><h3>已装载话术</h3><div class="muted">也可手动新增话术</div><textarea id="ga_role_phrases" placeholder="从话术池选择，或每行手动补充一条话术"></textarea></div></div><div class="inline-actions"><button type="button" id="ga_save_role_btn">保存话术角色</button><button type="button" class="ghost" id="ga_clear_role_btn">清空</button></div><pre id="ga_role_editor_result" class="muted"></pre></div></div>
-<div class="card" id="ga_speech_plan_library_card"><div class="toolbar"><div class="section-title"><h2>话术方案库</h2><span class="pill gray" id="ga_speech_plan_count">0 个方案</span></div></div><div id="ga_speech_plan_library" class="muted">暂无可装载话术方案</div></div>
-<div class="card"><div class="toolbar"><div class="section-title"><h2>候选话术</h2><span class="pill gray" id="ga_candidate_count">0 条</span></div><div class="toolbar-actions"><select id="ga_candidate_language_filter"><option value="">语言/地区</option><option value="id">印尼</option><option value="es">墨西哥</option><option value="pt">巴西</option></select><select id="ga_candidate_role_filter"><option value="">角色</option><option value="community_seed">活跃气氛号</option><option value="newcomer_guide">新人引导号</option><option value="faq_helper">FAQ答疑号</option><option value="motivation_admin">激励运营号</option></select></div></div><div id="ga_candidate_pool" class="muted">暂无候选话术</div><pre id="ga_candidate_result" class="muted"></pre></div>
+<div class="ga-stats ga-workbench-stats" id="ga_overview_stats"><div class="card ga-stat"><div class="stat-label">账号</div><div class="stat-value" id="ga_stat_accounts">0</div></div><div class="card ga-stat"><div class="stat-label">角色</div><div class="stat-value" id="ga_stat_roles">0</div></div><div class="card ga-stat"><div class="stat-label">桥接群</div><div class="stat-value" id="ga_stat_mounted">0</div></div><div class="card ga-stat"><div class="stat-label">自动发言</div><div class="stat-value" id="ga_stat_auto">0</div></div><div class="card ga-stat"><div class="stat-label">禁发群</div><div class="stat-value" id="ga_stat_blocked">0</div></div></div>
+<div class="ga-proto-stack">
+<section class="ga-proto-section ga-bridge-section" id="ga_role_bridge_card" data-layout-zone="role-group-bridge"><div class="ga-proto-head"><div><h2>桥接操作区</h2></div><button type="button" id="ga_new_bridge_btn">新增桥接</button></div><div id="ga_role_bindings" class="ga-proto-card-grid ga-bridge-card-grid muted">加载桥接关系...</div></section>
+<section class="ga-proto-section ga-wa-section" id="ga_accounts_card" data-layout-zone="whatsapp-resource-pool"><div class="ga-proto-head"><div><h2>WhatsApp 账号与群组</h2></div><div class="ga-proto-head-actions"><span class="pill gray" id="ga_accounts_count">0 个账号</span><button type="button" id="ga_new_account_btn">新增 WhatsApp 账号</button></div></div><div id="ga_action_feedback" class="muted ga-inline-feedback">就绪</div><div id="ga_accounts" class="account-table-wrap"></div></section>
+<section class="ga-proto-section ga-role-section" id="ga_role_library_card" data-layout-zone="speech-roles"><div class="ga-proto-head"><div><h2>话术角色</h2></div><button type="button" id="ga_new_role_btn">手动新增话术</button></div><div id="ga_role_library" class="muted">加载话术角色...</div></section>
+<section class="ga-proto-section ga-copy-section" id="ga_candidate_card" data-layout-zone="phrase-generation"><div class="ga-proto-head"><div><h2>话术生成区</h2></div><span class="pill gray" id="ga_candidate_count">0 条</span></div><div class="grid ga-generation-grid"><div class="ga-upload-panel" id="ga_learning_upload_card"><h3>话术上传区</h3><input type="file" id="ga_chat_file" multiple/><div class="inline-actions"><button type="button" id="ga_upload_chat_btn">上传并学习</button><button type="button" class="secondary" id="ga_clear_chat_files_btn">清空文件</button></div><pre id="ga_upload_result" class="muted"></pre></div><div class="ga-upload-panel" id="ga_learning_bot_card"><div class="toolbar"><h3>学习机器人区</h3><button type="button" id="ga_open_learning_bot_modal_btn">新增学习机器人WhatsApp账号</button></div><pre id="ga_learning_result" class="muted"></pre><div id="ga_learning_accounts" class="ga-learning-card-list muted">暂无学习机器人</div></div></div></section>
+<section class="ga-proto-section ga-copy-list-section" id="ga_candidate_list_card" data-layout-zone="candidate-phrases"><div class="ga-proto-head"><div><h2>话术备选区</h2></div><div class="ga-pool-filter-row"><select id="ga_candidate_language_filter"><option value="">语言/地区</option><option value="id">印尼</option><option value="es">墨西哥</option><option value="pt">巴西</option></select><select id="ga_candidate_role_filter" style="display:none"><option value="community_seed">气氛活跃型</option><option value="faq_helper">解惑答疑型</option><option value="newcomer_guide">教程引导型</option><option value="motivation_admin">激励运营型</option></select></div></div><div id="ga_candidate_role_tabs" class="ga-candidate-tabs"></div><div id="ga_candidate_pool" class="muted">暂无备选话术</div><pre id="ga_candidate_result" class="muted"></pre></section>
+</div>
+<div class="modal" id="ga_bridge_modal" aria-hidden="true"><div class="card modal-card" id="ga_bridge_modal_card"><div class="modal-head"><h2 id="ga_bridge_modal_title">新增桥接</h2><div class="toolbar-actions"><button type="button" class="modal-close" id="ga_close_bridge_modal_btn">关闭</button></div></div><div class="ga-bridge-create" id="ga_bridge_create_panel"><div class="compact-grid"><select id="ga_bridge_region"><option value="">国家</option></select><select id="ga_bridge_role_select"><option value="">选择话术角色</option></select><select id="ga_bridge_auto_speaking"><option value="true">开启自动发言</option><option value="false">暂停自动发言</option></select></div><div class="ga-bridge-layout"><div class="ga-bridge-col ga-group-select-col"><h3>目标群组</h3><div id="ga_bridge_group_choices" class="muted">请选择国家和话术角色</div></div><div class="ga-bridge-col"><h3>发言频率</h3><div class="compact-grid"><input id="ga_bridge_daily_max" placeholder="每日上限"/><input id="ga_bridge_min_interval" placeholder="最小间隔分钟"/><input id="ga_bridge_max_interval" placeholder="最大间隔分钟"/></div><div class="inline-actions"><button type="button" id="ga_mount_role_btn">保存桥接</button><button type="button" class="secondary" id="ga_run_scheduler_btn">检查可发送</button></div><pre id="ga_role_bridge_result" class="muted"></pre><pre id="ga_scheduler_result" class="muted"></pre><span id="ga_scheduler_status" class="muted">就绪</span></div></div></div></div></div>
+
+<div class="modal" id="ga_editor_modal" aria-hidden="true"><div class="card modal-card" id="ga_editor_card"><div class="modal-head"><h2 id="ga_editor_title">账号配置</h2><div class="toolbar-actions"><span class="muted" id="ga_session_status">未选择</span><button type="button" class="modal-close" id="ga_close_editor_btn">关闭</button></div></div><div><div><div class="compact-grid"><input id="ga_account_name_login" placeholder="账号备注"/><select id="ga_region"><option value="">加载地区...</option></select><select id="ga_account_role_positioning"><option value="community_seed">活跃气氛号</option><option value="newcomer_guide">新人引导号</option><option value="faq_helper">FAQ答疑号</option><option value="motivation_admin">激励运营号</option></select><select id="ga_randomness_level" title="控制话术表达变化幅度，不控制发言频率或发送间隔"><option value="low">话术变化：稳定</option><option value="medium" selected>话术变化：适中</option><option value="high">话术变化：灵活</option></select></div><div class="compact-grid"><select id="ga_account_enabled"><option value="true">账号发言：开</option><option value="false">账号发言：关</option></select><button type="button" class="clear-form-button" id="ga_clear_form_btn">清空表单</button></div><div class="card" style="box-shadow:none;margin-top:8px;padding:12px;"><div class="section-title"><h3 style="margin:0;font-size:15px;">发言群</h3><button type="button" class="secondary" id="ga_add_group_btn">+ 增加发言群</button></div><div id="ga_group_rows"><div class="ga-account-group-row" data-ga-group-row="1" style="display:grid"><input id="ga_group_1_target" placeholder="群1：群链接 / 真实群名 / group_id"/><select id="ga_group_1_enabled"><option value="true">群1：开</option><option value="false">群1：关</option></select></div><div class="ga-account-group-row" data-ga-group-row="2" style="display:none"><input id="ga_group_2_target" placeholder="群2：群链接 / 真实群名 / group_id"/><select id="ga_group_2_enabled"><option value="true">群2：开</option><option value="false">群2：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(2)">删除群组</button></div><div class="ga-account-group-row" data-ga-group-row="3" style="display:none"><input id="ga_group_3_target" placeholder="群3：群链接 / 真实群名 / group_id"/><select id="ga_group_3_enabled"><option value="true">群3：开</option><option value="false">群3：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(3)">删除群组</button></div><div data-ga-group-row="4" style="display:none"><input id="ga_group_4_target" placeholder="群4：群链接 / 真实群名 / group_id"/><select id="ga_group_4_enabled"><option value="true">群4：开</option><option value="false">群4：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(4)">删除群组</button></div><div data-ga-group-row="5" style="display:none"><input id="ga_group_5_target" placeholder="群5：群链接 / 真实群名 / group_id"/><select id="ga_group_5_enabled"><option value="true">群5：开</option><option value="false">群5：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(5)">删除群组</button></div><div data-ga-group-row="6" style="display:none"><input id="ga_group_6_target" placeholder="群6：群链接 / 真实群名 / group_id"/><select id="ga_group_6_enabled"><option value="true">群6：开</option><option value="false">群6：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(6)">删除群组</button></div><div data-ga-group-row="7" style="display:none"><input id="ga_group_7_target" placeholder="群7：群链接 / 真实群名 / group_id"/><select id="ga_group_7_enabled"><option value="true">群7：开</option><option value="false">群7：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(7)">删除群组</button></div><div data-ga-group-row="8" style="display:none"><input id="ga_group_8_target" placeholder="群8：群链接 / 真实群名 / group_id"/><select id="ga_group_8_enabled"><option value="true">群8：开</option><option value="false">群8：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(8)">删除群组</button></div><div data-ga-group-row="9" style="display:none"><input id="ga_group_9_target" placeholder="群9：群链接 / 真实群名 / group_id"/><select id="ga_group_9_enabled"><option value="true">群9：开</option><option value="false">群9：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(9)">删除群组</button></div><div data-ga-group-row="10" style="display:none"><input id="ga_group_10_target" placeholder="群10：群链接 / 真实群名 / group_id"/><select id="ga_group_10_enabled"><option value="true">群10：开</option><option value="false">群10：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(10)">删除群组</button></div></div></div></div><div class="inline-actions"><button type="button" id="ga_save_account_btn">保存</button></div></div></div></div>
+<div class="modal" id="ga_role_editor_modal" aria-hidden="true"><div class="card modal-card" id="ga_role_editor_card"><div class="modal-head"><h2 id="ga_role_editor_title">话术角色</h2><div class="toolbar-actions"><button type="button" class="modal-close" id="ga_close_role_editor_btn">关闭</button></div></div><input type="hidden" id="ga_role_key"/><div class="compact-grid"><input id="ga_role_name" placeholder="角色名称，如：印尼活跃气氛号"/><select id="ga_role_region"><option value="">加载地区...</option></select><select id="ga_role_positioning"><option value="community_seed">活跃气氛号</option><option value="newcomer_guide">新人引导号</option><option value="faq_helper">FAQ答疑号</option><option value="motivation_admin">激励运营号</option></select><select id="ga_role_enabled"><option value="true">角色启用</option><option value="false">角色停用</option></select></div><div class="grid"><div><h3>从话术池选择话术</h3><div id="ga_role_phrase_pool" class="muted">话术池加载中...</div></div><div><h3>已装载话术</h3><div class="muted">也可手动新增话术</div><textarea id="ga_role_phrases" placeholder="每行一条话术"></textarea></div></div><div class="inline-actions"><button type="button" id="ga_save_role_btn">保存话术角色</button><button type="button" class="ghost" id="ga_clear_role_btn">清空</button></div><pre id="ga_role_editor_result" class="muted"></pre></div></div>
+
+
+</div>
+<div class="modal" id="ga_learning_account_modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="gaLearningModalTitle"><div class="modal-head"><h2 id="gaLearningModalTitle">学习机器人WhatsApp账号</h2><div class="toolbar-actions"><button type="button" class="modal-close" id="ga_close_learning_bot_modal_btn">关闭</button></div></div><input type="hidden" id="ga_learning_account_key"/><div class="compact-grid"><input id="ga_learning_account_name" placeholder="账号备注，如：印尼学习机器人01"/><select id="ga_learning_region"><option value="印尼">印尼</option><option value="墨西哥">墨西哥</option><option value="巴西">巴西</option></select></div><div style="margin-top:12px;"><div class="section-title"><h3 style="margin:0;font-size:15px;">群链接</h3><button type="button" class="secondary" id="ga_add_learning_group_link_btn">+ 增加群链接</button></div><div id="ga_learning_group_links" class="ga-learning-groups"></div></div><div class="inline-actions"><button type="button" id="ga_save_learning_bot_btn">保存</button><button type="button" class="ghost" id="ga_cancel_learning_bot_btn">取消</button></div></div></div>
 <div id="gaQrModal" class="qr-modal" onclick="dismissAtmosphereQrModal(event)"><div class="qr-modal-card" role="dialog" aria-modal="true" aria-labelledby="gaQrModalTitle" onclick="event.stopPropagation()"><div class="qr-modal-head"><div><h3 id="gaQrModalTitle">账号登录二维码</h3></div><button type="button" class="secondary" onclick="closeAtmosphereQrModal()">关闭</button></div><div class="qr-modal-body"><div id="gaQrModalStatus" class="qr-modal-status muted">正在准备二维码…</div><div id="gaQrModalContent"></div><div class="qr-modal-actions"><button type="button" onclick="retryAtmosphereQrModal()">重新生成二维码</button><button type="button" class="secondary" onclick="refreshAtmosphereQrModal()">刷新状态</button></div></div></div></div></div>
 <div id="gaSendModal" class="modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="gaSendModalTitle"><div class="modal-head"><div><h2 id="gaSendModalTitle">手动发言</h2><div class="muted" id="gaSendModalSubTitle">选择群后发送</div></div><button type="button" class="modal-close" id="ga_close_send_modal_btn">关闭</button></div><textarea id="ga_manual_message_text" placeholder="输入临时发送到群里的消息"></textarea><div class="inline-actions"><button type="button" id="ga_send_message_btn">确认发送</button><button type="button" class="ghost" onclick="fillManualMessage('Halo kak, selamat datang ya 😊')">欢迎语</button><button type="button" class="ghost" onclick="fillManualMessage('Kalau ada pertanyaan, boleh tanya di grup ya kak.')">答疑提醒</button></div><pre id="ga_send_result" class="muted"></pre></div></div>
 <script>
-async function loadJson(url,options={}){const res=await fetch(url,options);const text=await res.text();const data=text?JSON.parse(text):{};if(!res.ok)throw new Error(data.detail||text||`HTTP ${res.status}`);return data}
+async function loadJson(url,options={}){const res=await fetch(url,options);const text=await res.text();let data={};try{data=text?JSON.parse(text):{}}catch(_){data={detail:text}}if(!res.ok)throw new Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail||data));return data}
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function renderUnifiedRegionOptions(selectId,currentValue=''){const el=document.getElementById(selectId);if(!el)return;const rows=window.__mcnRegionOptions||[];const current=String(currentValue||el.value||'').trim();const options=rows.map(r=>`<option value="${esc(r.label_zh||r.value)}" data-region-code="${esc(r.code||'')}" data-phone-code="${esc(r.phone_code||'')}">${esc(r.label_zh||r.label||r.value)}</option>`).join('');el.innerHTML=options||'<option value="印尼">印尼</option>';if(current&&Array.from(el.options).some(o=>o.value===current))el.value=current;else if(Array.from(el.options).some(o=>o.value==='印尼'))el.value='印尼'}
+async function loadUnifiedRegionOptions(){const data=await loadJson('/api/ops/mcn-region-options');window.__mcnRegionOptions=Array.isArray(data.options)?data.options:[];renderUnifiedRegionOptions('ga_region');renderUnifiedRegionOptions('ga_role_region');renderUnifiedRegionOptions('ga_bridge_region');renderUnifiedRegionOptions('ga_learning_region');return data}
 function selectedOperationalAccountKey(){return document.getElementById('ga_account_key_login').value.trim()||document.getElementById('ga_account_key').value.trim()}
-function selectedAccountKey(){return selectedOperationalAccountKey()||document.getElementById('ga_tool_account_select')?.value.trim()}
+function selectedAccountKey(){return selectedOperationalAccountKey()}
 function setFeedback(text,type='info'){const el=document.getElementById('ga_action_feedback');if(el){el.textContent=text;el.style.color=type==='error'?'#991b1b':(type==='success'?'#166534':'#5d6b82')}}
-function runAction(label,fn){setFeedback(`${label}中…`);return Promise.resolve().then(fn).then(res=>{setFeedback(`${label}成功`,'success');return res}).catch(err=>{setFeedback(`${label}失败：${err.message||err}`,'error');throw err})}
-function regionLanguage(region){return region==='印尼'?'id':(region==='墨西哥'?'es':(region==='巴西'?'pt':''))}
+function setLocalFeedback(id,text,type='info'){const el=document.getElementById(id);if(el){el.textContent=text||'';el.style.color=type==='error'?'#991b1b':(type==='success'?'#166534':'#5d6b82')}}
+const gaActionLocalTargets={'保存':'ga_session_status','生成二维码':'ga_session_status','刷新登录态':'ga_session_status','删除':'ga_session_status','切换账号开关':'ga_session_status','切换群开关':'ga_session_status','发送群消息':'ga_send_result','保存文案组名称':'ga_candidate_result','删除文案组':'ga_candidate_result','加入话术方案':'ga_candidate_result','自动发言检查':'ga_scheduler_result','保存话术角色':'ga_role_editor_result','保存桥接关系':'ga_role_bridge_result','删除桥接':'ga_role_bridge_result','删除话术角色':'ga_role_bridge_result','保存学习机器人':'ga_learning_result','删除学习机器人':'ga_learning_result','上传学习':'ga_upload_result','立即一键发言':'ga_role_bridge_result','切换群发言开关':'ga_role_bridge_result'}
+function actionLocalTarget(label){return gaActionLocalTargets[label]||''}
+function runAction(label,fn){const localTarget=actionLocalTarget(label);const localEl=localTarget?document.getElementById(localTarget):null;setFeedback(`${label}中…`);if(localEl)setLocalFeedback(localTarget,`${label}中…`);return Promise.resolve().then(fn).then(res=>{setFeedback(`${label}成功`,'success');const currentLocalText=localEl?localEl.textContent:'';if(localEl&&(!currentLocalText||currentLocalText===`${label}中…`))setLocalFeedback(localTarget,`${label}成功`,'success');return res}).catch(err=>{setFeedback(`${label}失败：${err.message||err}`,'error');if(localEl)setLocalFeedback(localTarget,`${label}失败：${err.message||err}`,'error');throw err})}
+function regionLanguage(region){const value=String(region||'').trim();const row=(window.__mcnRegionOptions||[]).find(r=>[r.label_zh,r.value,r.label,r.code].map(x=>String(x||'').trim()).includes(value));if(row&&row.language)return row.language;return value==='印尼'?'id':(value==='墨西哥'?'es':(value==='巴西'?'pt':''))}
 const GA_MAX_GROUPS=10;
 function visibleGroupCount(){return [...document.querySelectorAll('[data-ga-group-row]')].filter(row=>row.style.display!=='none').length}
 function updateGroupAddButton(){const btn=document.getElementById('ga_add_group_btn');if(btn)btn.style.display=visibleGroupCount()>=GA_MAX_GROUPS?'none':'inline-block'}
 function ensureGroupRows(){updateGroupAddButton()}
-function addGroupRow(){ensureGroupRows();for(const row of document.querySelectorAll('[data-ga-group-row]')){if(row.style.display==='none'){row.style.display='block';setFeedback(`已增加群${row.dataset.gaGroupRow}`,'success');break}}updateGroupAddButton()}
+function addGroupRow(){ensureGroupRows();for(const row of document.querySelectorAll('[data-ga-group-row]')){if(row.style.display==='none'){row.style.display='grid';setFeedback(`已增加群${row.dataset.gaGroupRow}`,'success');break}}updateGroupAddButton()}
 function removeGroupRow(n){const row=document.querySelector(`[data-ga-group-row="${n}"]`);if(row&&n>1){row.style.display='none';const target=document.getElementById(`ga_group_${n}_target`);if(target)target.value='';setFeedback(`已删除群${n}`,'success')}updateGroupAddButton()}
-function showGroupRows(count){ensureGroupRows();document.querySelectorAll('[data-ga-group-row]').forEach((row,idx)=>{row.style.display=idx<count?'block':'none'});updateGroupAddButton()}
+function showGroupRows(count){ensureGroupRows();document.querySelectorAll('[data-ga-group-row]').forEach((row,idx)=>{row.style.display=idx<count?'grid':'none'});updateGroupAddButton()}
 function formGroups(){ensureGroupRows();return Array.from({length:GA_MAX_GROUPS},(_,idx)=>idx+1).map(i=>{const row=document.querySelector(`[data-ga-group-row="${i}"]`);if(!row||row.style.display==='none')return null;const target=document.getElementById(`ga_group_${i}_target`).value.trim();const enabled=document.getElementById(`ga_group_${i}_enabled`).value==='true';return {target_group:target,group_name:target,enabled}}).filter(g=>g&&g.target_group)}
 function payloadFromAccount(r){return {account_key:r.account_key,account_name:r.account_name,region:r.region,language:r.language||regionLanguage(r.region),role_positioning:r.role_positioning,randomness_level:r.randomness_level,daily_max_messages:r.daily_max_messages,min_interval_minutes:r.min_interval_minutes,max_interval_minutes:r.max_interval_minutes,groups:(r.groups||[]).map(g=>({target_group:g.target_group,group_name:g.group_name||g.target_group,enabled:g.enabled!==false,speech_plan_config_name:g.speech_plan_config_name||'',daily_max_messages:g.daily_max_messages,min_interval_minutes:g.min_interval_minutes,max_interval_minutes:g.max_interval_minutes})),enabled:r.enabled!==false}}
-async function saveAtmosphereAccount(){return runAction('保存',async()=>{const groups=formGroups();if(!groups.length)throw new Error('至少填写1个发言群');const payload={account_key:selectedOperationalAccountKey()||null,account_name:ga_account_name_login.value.trim(),region:ga_region.value,language:regionLanguage(ga_region.value),role_positioning:ga_account_role_positioning.value,randomness_level:ga_randomness_level.value,daily_max_messages:Number(ga_daily_max_messages.value||0)||null,min_interval_minutes:Number(ga_min_interval_minutes.value||0)||null,max_interval_minutes:Number(ga_max_interval_minutes.value||0)||null,groups,enabled:ga_account_enabled.value==='true'};const data=await loadJson('/api/ops/group-atmosphere/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const key=data.account_key||(data.account||{}).account_key;ga_account_key_login.value=key;ga_account_key.value=key;renderSession(data);await reloadAll();closeAccountEditor();return data})}
+async function saveAtmosphereAccount(){return runAction('保存',async()=>{const groups=formGroups();if(!groups.length)throw new Error('至少填写1个发言群');const payload={account_key:selectedOperationalAccountKey()||null,account_name:ga_account_name_login.value.trim(),region:ga_region.value,language:regionLanguage(ga_region.value),role_positioning:ga_account_role_positioning.value,randomness_level:ga_randomness_level.value,groups,enabled:ga_account_enabled.value==='true'};const data=await loadJson('/api/ops/group-atmosphere/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const key=data.account_key||(data.account||{}).account_key;ga_account_key_login.value=key;ga_account_key.value=key;renderSession(data);await reloadAll();closeAccountEditor();return data})}
 async function startAtmosphereQr(reset){const key=selectedOperationalAccountKey();if(key)openAtmosphereQrModal(key,{loading:true,resetSuccessAnnounced:true});return runAction('生成二维码',async()=>{if(!key)throw new Error('请先保存账号');try{const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}/session/${reset?'reset':'start'}`,{method:'POST'});renderSession(data);await reloadAll();return data}catch(err){openAtmosphereQrModal(key,{loading:false,error:err.message||'生成失败'});throw err}})}
 function startAtmosphereQrForAccount(key){ga_account_key_login.value=key;ga_account_key.value=key;return startAtmosphereQr(false)}
 async function refreshAtmosphereSession(){return runAction('刷新登录态',async()=>{const key=selectedOperationalAccountKey();if(!key)throw new Error('请先选择账号');const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}/session`);renderSession(data);await reloadAll();return data})}
@@ -1619,14 +1892,14 @@ function renderSession(data){const session=data.session||{};const runtime=data.r
 function openAccountEditor(){const modal=document.getElementById('ga_editor_modal');if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false')}}
 function closeAccountEditor(){const modal=document.getElementById('ga_editor_modal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
 function openNewAccountEditor(){clearAccountForm();openAccountEditor()}
-function clearAccountForm(){ga_account_key_login.value='';ga_account_key.value='';ga_account_name_login.value='';ga_region.value='印尼';ga_account_role_positioning.value='community_seed';ga_randomness_level.value='medium';ga_account_enabled.value='true';ga_daily_max_messages.value='';ga_min_interval_minutes.value='';ga_max_interval_minutes.value='';showGroupRows(1);Array.from({length:GA_MAX_GROUPS},(_,idx)=>idx+1).forEach(i=>{document.getElementById(`ga_group_${i}_target`).value='';document.getElementById(`ga_group_${i}_enabled`).value='true';});ga_session_status.textContent='新账号';setFeedback('新账号','success')}
+function clearAccountForm(){ga_account_key_login.value='';ga_account_key.value='';ga_account_name_login.value='';renderUnifiedRegionOptions('ga_region','印尼');ga_account_role_positioning.value='community_seed';ga_randomness_level.value='medium';ga_account_enabled.value='true';showGroupRows(1);Array.from({length:GA_MAX_GROUPS},(_,idx)=>idx+1).forEach(i=>{document.getElementById(`ga_group_${i}_target`).value='';document.getElementById(`ga_group_${i}_enabled`).value='true';});ga_session_status.textContent='新账号';setFeedback('新账号','success')}
 function setSelectedAtmosphereAccountKey(key){ga_account_key_login.value=key||'';ga_account_key.value=key||''}
 function selectAtmosphereAccount(key){const r=(window.__gaAccounts||[]).find(x=>x.account_key===key);if(r){fillAccountForm(r);openAccountEditor()}}
-function fillAccountForm(r){ensureGroupRows();ga_account_key_login.value=r.account_key||'';ga_account_key.value=r.account_key||'';ga_account_name_login.value=r.account_name||'';ga_region.value=r.region||'印尼';ga_account_role_positioning.value=r.role_positioning||'community_seed';ga_randomness_level.value=r.randomness_level||'medium';ga_account_enabled.value=r.enabled===false?'false':'true';ga_daily_max_messages.value=r.daily_max_messages||'';ga_min_interval_minutes.value=r.min_interval_minutes||'';ga_max_interval_minutes.value=r.max_interval_minutes||'';const groups=r.groups||[];showGroupRows(Math.max(1,Math.min(GA_MAX_GROUPS,groups.length||1)));Array.from({length:GA_MAX_GROUPS},(_,idx)=>idx+1).forEach(i=>{const g=groups[i-1]||{};document.getElementById(`ga_group_${i}_target`).value=g.target_group||'';document.getElementById(`ga_group_${i}_enabled`).value=g.enabled===false?'false':'true'});ga_session_status.textContent='已选择账号';setFeedback('已选择账号','success')}
+function fillAccountForm(r){ensureGroupRows();ga_account_key_login.value=r.account_key||'';ga_account_key.value=r.account_key||'';ga_account_name_login.value=r.account_name||'';renderUnifiedRegionOptions('ga_region',r.region||'印尼');ga_account_role_positioning.value=r.role_positioning||'community_seed';ga_randomness_level.value=r.randomness_level||'medium';ga_account_enabled.value=r.enabled===false?'false':'true';const groups=r.groups||[];showGroupRows(Math.max(1,Math.min(GA_MAX_GROUPS,groups.length||1)));Array.from({length:GA_MAX_GROUPS},(_,idx)=>idx+1).forEach(i=>{const g=groups[i-1]||{};document.getElementById(`ga_group_${i}_target`).value=g.target_group||'';document.getElementById(`ga_group_${i}_enabled`).value=g.enabled===false?'false':'true'});ga_session_status.textContent='已选择账号';setFeedback('已选择账号','success')}
 async function deleteAtmosphereAccount(key){if(!confirm('确认删除这个 WhatsApp 账号配置？'))return;return runAction('删除',async()=>{await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}`,{method:'DELETE'});if(selectedOperationalAccountKey()===key)clearAccountForm();await reloadAll()})}
 async function toggleAtmosphereAccountEnabled(key){const r=(window.__gaAccounts||[]).find(x=>x.account_key===key);if(!r)return;return runAction('切换账号开关',async()=>{const payload=payloadFromAccount(r);payload.enabled=!payload.enabled;if(!payload.enabled)payload.groups=(payload.groups||[]).map(g=>({...g,enabled:false}));await loadJson('/api/ops/group-atmosphere/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await reloadAll()})}
 async function toggleAtmosphereGroupEnabled(key,idx){const r=(window.__gaAccounts||[]).find(x=>x.account_key===key);if(!r||!r.groups||!r.groups[idx])return;return runAction('切换群开关',async()=>{const payload=payloadFromAccount(r);payload.groups[idx].enabled=!payload.groups[idx].enabled;await loadJson('/api/ops/group-atmosphere/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await reloadAll()})}
-function roleLabel(value){const map={community_seed:'活跃气氛号',newcomer_guide:'新人引导号',faq_helper:'答疑号',motivation_admin:'激励运营号'};return map[value]||value||'-'}
+function roleLabel(value){const map={community_seed:'气氛活跃型',newcomer_guide:'教程引导型',faq_helper:'解惑答疑型',motivation_admin:'激励运营型'};return map[value]||value||'-'}
 function runtimeLabel(runtime){const status=String((runtime||{}).status||'').trim();const text=String((runtime||{}).status_text||'').trim();if(status==='running')return text&&text!=='warm'?text:'运行中';if(status==='starting')return '启动中';if(status==='stopped')return '已停止';if(status==='not_started'||!status)return '未启动';return text||status}
 function loginLabel(session,runtime){const s=session||{};if(s.login_verified)return '已登录';const status=String(s.login_check_status||'').trim();if(status==='authenticated'||status==='ready')return '已登录';if(status==='qr_pending'||status==='needs_scan')return '待扫码';if((runtime||{}).status==='running')return '待扫码';return '未登录'}
 function readableStateText(text){const raw=String(text||'').trim();if(!raw)return '';const rtWord=String.fromCharCode(82,117,110,116,105,109,101);return raw.replace(new RegExp(rtWord,'g'),'运行服务').replace(/runtime/g,'运行服务').replace(/warm/g,'运行中').replace(/not_started/g,'未启动').replace(/running/g,'运行中').replace(/stopped/g,'已停止').replace(/独立\\s+运行服务\\s+/g,'独立运行服务').replace(/独立运行服务运行中/g,'运行中')}
@@ -1634,63 +1907,102 @@ function groupAutoSpeakState(account,group,session,runtime){if(account.enabled==
 function detectedGroupName(g){const name=String(g.group_name||'').trim();const target=String(g.target_group||'').trim();return name&&name!==target?name:'待探测'}
 function candidateAccountMatches(row){const language=document.getElementById('ga_candidate_language_filter')?.value||'';const role=document.getElementById('ga_candidate_role_filter')?.value||'';return (!language||String(row.language||'')===language)&&(!role||String(row.role_positioning||'')===role)}
 function setOverviewStat(id,value){const el=document.getElementById(id);if(el)el.textContent=String(value)}
-function updateAtmosphereOverview(){const accounts=window.__gaAccounts||[];const roles=window.__gaRoles||[];const relationships=window.__gaRoleRelationships||[];const logs=window.__gaLogs||[];const mounted=relationships.reduce((n,r)=>n+((r.groups||[]).length),0);const auto=relationships.reduce((n,r)=>n+(r.auto_speaking_enabled?((r.groups||[]).filter(g=>g.group_send_permission_enabled!==false).length):0),0);const blocked=relationships.reduce((n,r)=>n+((r.groups||[]).filter(g=>g.group_send_permission_enabled===false).length),0);setOverviewStat('ga_stat_accounts',accounts.length);setOverviewStat('ga_stat_roles',roles.length);setOverviewStat('ga_stat_mounted',mounted);setOverviewStat('ga_stat_auto',auto);setOverviewStat('ga_stat_blocked',blocked);setOverviewStat('ga_stat_today',logs.length)}
+function updateAtmosphereOverview(){const accounts=window.__gaAccounts||[];const roles=window.__gaRoles||[];const relationships=window.__gaRoleRelationships||[];const mounted=relationships.reduce((n,r)=>n+((r.groups||[]).length),0);const auto=relationships.reduce((n,r)=>n+(r.auto_speaking_enabled?((r.groups||[]).filter(g=>g.group_send_permission_enabled!==false).length):0),0);const blocked=relationships.reduce((n,r)=>n+((r.groups||[]).filter(g=>g.group_send_permission_enabled===false).length),0);setOverviewStat('ga_stat_accounts',accounts.length);setOverviewStat('ga_stat_roles',roles.length);setOverviewStat('ga_stat_mounted',mounted);setOverviewStat('ga_stat_auto',auto);setOverviewStat('ga_stat_blocked',blocked)}
 function refreshCandidateGroupSelect(){refreshGroupPlanSelects()}
-function renderAccounts(rows){window.__gaAccounts=rows;const accountKeys=rows.map(r=>String(r.account_key||''));const accountOptions=['<option value=\"\">请选择账号</option>'].concat(rows.map(r=>`<option value=\"${esc(r.account_key)}\">${esc(r.account_name||r.account_key||'未命名账号')}</option>`)).join('');const uploadAccountOptions=['<option value=\"\">自动分配到话术库</option>'].concat(rows.map(r=>`<option value=\"${esc(r.account_key)}\">指定账号：${esc(r.account_name||r.account_key||'未命名账号')}</option>`)).join('');const uploadSelect=document.getElementById('ga_tool_account_select');const uploadCurrent=uploadSelect?uploadSelect.value:'';if(uploadSelect){uploadSelect.innerHTML=uploadAccountOptions;uploadSelect.value=accountKeys.includes(String(uploadCurrent||''))?uploadCurrent:'';}refreshGroupPlanSelects();renderBridgeFormOptions();ga_accounts_count.textContent=`${rows.length} 个账号`;updateAtmosphereOverview();if(!rows.length){ga_accounts.innerHTML='<div class="muted">暂无账号</div>';return}ga_accounts.innerHTML=`<div class="account-card-grid">${rows.map((r,i)=>{const rt=r.runtime||{};const sess=r.session||r.session_state||{};const regionText=r.region||'-';const roleText=roleLabel(r.role_positioning);const runtimeText=readableStateText(runtimeLabel(rt));const loginText=loginLabel(sess,rt);const health=sess.login_verified?'<span class="pill green">已登录</span>':(rt.status==='running'?'<span class="pill amber">待扫码</span>':'<span class="pill red">未登录</span>');const stateText=readableStateText(sess.login_check_message||rt.status_text)||((rt.status==='running')?'独立运行中':'扫码后可用');const dailyLimit=r.daily_max_messages?`每日最多 ${esc(r.daily_max_messages)} 条`:'未设每日上限';const intervalLimit=r.min_interval_minutes?`最小间隔 ${esc(r.min_interval_minutes)} 分钟`:'未设间隔';const groupCards=(r.groups||[]).map((g,idx)=>{const autoState=groupAutoSpeakState(r,g,sess,rt);const switchClass=autoState.effective?'switch-on':(autoState.enabled?'switch-pending':'switch-off');const planName=String(g.speech_plan_config_name||'').trim();const planText=groupPlanLabel(planName);const planPill=planName?`<span class="pill green">已装载方案</span>`:`<span class="pill amber">未装载方案</span>`;return `<div class="group-card"><div class="group-card-title"><div><div class="muted">群名称</div><div class="group-card-name">${esc(detectedGroupName(g))}</div></div><button type="button" class="${switchClass}" onclick="toggleAtmosphereGroupEnabled('${esc(r.account_key)}',${idx})">${esc(autoState.label)}</button></div><div class="muted">入群链接</div><div class="group-card-link">${esc(g.target_group||'-')}</div><div class="muted" style="margin-top:8px;">话术方案包</div><div class="group-card-link">${planPill} <span>${esc(planText)}</span></div><div class="inline-actions" style="margin-top:10px;"><button type="button" class="secondary" onclick="openGroupPlanLoader('${esc(r.account_key)}',${idx})">装载话术方案</button><button type="button" class="secondary" onclick="openManualSendModal('${esc(r.account_key)}',${idx})">手动发言</button></div></div>`}).join('');return `<div class="account-card" id="${accountDomId(r.account_key)}"><div class="account-card-head"><div><h3 style="margin:0 0 4px 0;">${esc(r.account_name||'未命名账号')}</h3><div class="muted">${esc(regionText)} · ${esc(roleText)}</div></div><button type="button" class="${r.enabled===false?'switch-off':'switch-on'}" onclick="toggleAtmosphereAccountEnabled('${esc(r.account_key)}')">${r.enabled===false?'账号已停用':'账号已启用'}</button></div><div class="account-status-grid"><div class="account-status-item"><div class="label">账号用途</div><div class="value">${esc(roleText)}</div></div><div class="account-status-item"><div class="label">运行状态</div><div class="value">${esc(runtimeText)}</div></div><div class="account-status-item"><div class="label">登录状态</div><div class="value">${esc(loginText)}</div></div></div><div class="health-line">${health}<span class="pill gray">${esc(stateText)}</span></div><div style="margin-top:12px;"><div class="muted">发言群</div><div class="group-card-grid">${groupCards||'<div class="muted">暂无发言群</div>'}</div></div><div style="margin-top:10px;"><span class="pill gray">${dailyLimit}</span> <span class="pill gray">${intervalLimit}</span></div><div class="account-actions" style="margin-top:12px;"><button type="button" class="secondary" onclick="selectAtmosphereAccount('${esc(r.account_key)}')">编辑</button><button type="button" onclick="setSelectedAtmosphereAccountKey('${esc(r.account_key)}');startAtmosphereQr(false)">生成二维码</button><button type="button" class="ghost" onclick="setSelectedAtmosphereAccountKey('${esc(r.account_key)}');refreshAtmosphereSession()">刷新登录状态</button><button type="button" class="danger" onclick="deleteAtmosphereAccount('${esc(r.account_key)}')">删除</button></div></div>`}).join('')}</div>`}
+function renderAccounts(rows){window.__gaAccounts=rows;refreshGroupPlanSelects();renderBridgeFormOptions();renderLearningAccountOptions();ga_accounts_count.textContent=`${rows.length} 个账号`;updateAtmosphereOverview();if(!rows.length){ga_accounts.innerHTML='<div class="muted">暂无账号</div>';return}ga_accounts.innerHTML=`<div class="account-card-grid">${rows.map((r,i)=>{const rt=r.runtime||{};const sess=r.session||r.session_state||{};const regionText=r.region||'-';const loginText=loginLabel(sess,rt);const health=loginText==='已登录'?'<span class="pill green">已登录</span>':'<span class="pill amber">待登录</span>';const groupCards=(r.groups||[]).map((g,idx)=>{const autoState=groupAutoSpeakState(r,g,sess,rt);const switchClass=autoState.effective?'switch-on':(autoState.enabled?'switch-pending':'switch-off');const effective=autoState.effective?'已生效':(autoState.enabled?'待登录生效':'未开启');return `<div class="group-card"><div class="group-card-title"><div><div class="muted">真实群名</div><div class="group-card-name">${esc(detectedGroupName(g))}</div></div><button type="button" class="${switchClass}" onclick="toggleAtmosphereGroupEnabled('${esc(r.account_key)}',${idx})">${g.enabled===false?'开启发言':'关闭发言'}</button></div><div class="muted">群链接</div><div class="group-card-link">${esc(g.target_group||'-')}</div><div class="status-line"><span class="muted">生效状态</span><span class="pill ${autoState.effective?'green':(autoState.enabled?'amber':'gray')}">${esc(effective)}</span></div></div>`}).join('');return `<div class="account-card" id="${accountDomId(r.account_key)}"><div class="account-card-head"><div><h3 style="margin:0 0 4px 0;">${esc(r.account_name||'未命名账号')}</h3><div class="status-line"><span class="muted">登录状态</span>${health}</div></div></div><div style="margin-top:12px;"><div class="group-card-grid">${groupCards||'<div class="muted">暂无挂载群组</div>'}</div></div><div class="account-actions" style="margin-top:12px;"><button type="button" class="secondary" onclick="selectAtmosphereAccount('${esc(r.account_key)}')">编辑</button><button type="button" onclick="setSelectedAtmosphereAccountKey('${esc(r.account_key)}');startAtmosphereQr(false)">二维码</button><button type="button" class="danger" onclick="deleteAtmosphereAccount('${esc(r.account_key)}')">删除</button></div></div>`}).join('')}</div>`;renderLearningAccountOptions()}
 
 function openManualSendModal(accountKey,idx){const account=(window.__gaAccounts||[]).find(x=>String(x.account_key||'')===String(accountKey||''));const group=account&&account.groups?account.groups[idx]:null;if(!account||!group){setFeedback('未找到发言群','error');return}window.__gaSendContext={accountKey:account.account_key,groupIndex:idx,groupName:group.group_name||group.target_group||''};const modal=document.getElementById('gaSendModal');const title=document.getElementById('gaSendModalTitle');const sub=document.getElementById('gaSendModalSubTitle');const text=document.getElementById('ga_manual_message_text');const result=document.getElementById('ga_send_result');if(title)title.textContent=`发送到：${group.group_name||'该群'}`;if(sub)sub.textContent=`${account.account_name||'账号'} · ${group.target_group||''}`;if(text)text.value='';if(result)result.textContent='';if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false');setTimeout(()=>text&&text.focus(),50)}}
 function closeManualSendModal(){const modal=document.getElementById('gaSendModal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
 function fillManualMessage(text){const el=document.getElementById('ga_manual_message_text');if(el)el.value=text||''}
-async function sendManualGroupMessage(){return runAction('发送群消息',async()=>{const ctx=window.__gaSendContext||{};if(!ctx.accountKey&&ctx.groupIndex!==0)throw new Error('请先选择发言群');const text=String(document.getElementById('ga_manual_message_text')?.value||'').trim();if(!text)throw new Error('请输入要发送的内容');const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(ctx.accountKey)}/groups/${ctx.groupIndex}/send`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message_text:text,trigger_type:'manual_ops_page'})});const result=document.getElementById('ga_send_result');if(result)result.textContent=data.sent?'发送成功':`发送失败：${data.result_reason||data.result_code||''}`;await reloadAll();if(data.sent)setTimeout(closeManualSendModal,500);return data})}
-function renderLogs(rows){window.__gaLogs=rows||[];updateAtmosphereOverview();const el=document.getElementById('group-atmosphere-logs');if(!el)return;if(!rows||!rows.length){el.innerHTML='<div class="muted">暂无日志</div>';return}const visible=(rows||[]).slice(0,20);el.innerHTML=`<table><tbody>${visible.map(r=>`<tr><td>${esc(r.created_at)}</td><td>${esc(r.config_name||'')}</td><td>${esc(r.direction)}</td><td>${esc(r.status)}</td><td>${esc(r.message_text)}</td></tr>`).join('')}</tbody></table>`}
+async function sendManualGroupMessage(){return runAction('发送群消息',async()=>{const ctx=window.__gaSendContext||{};if(!ctx.accountKey&&ctx.groupIndex!==0)throw new Error('请先选择发言群');const text=String(document.getElementById('ga_manual_message_text')?.value||'').trim();if(!text)throw new Error('请输入要发送的内容');const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(ctx.accountKey)}/groups/${ctx.groupIndex}/send`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message_text:text,trigger_type:'manual_ops_page'})});const result=document.getElementById('ga_send_result');if(result)result.textContent=data.sent?'发送成功':`发送失败：${data.result_reason||data.result_code||''}`;if(!data.sent)throw new Error(data.result_reason||data.result_code||'发送失败');await reloadAll();setTimeout(closeManualSendModal,500);return data})}
 function renderAutoLearnResult(data){const roles=(data.role_assignments||[]).map(item=>`${roleLabel(item.role_positioning)}：${item.imported_count} 条 · 候选 ${((item.candidates||[]).length)} 条`).join('\\n');return `识别地区：${data.detected_region||'-'}\n识别语言：${data.detected_language||'-'}\n导入样本：${data.imported_count||0} 条\n${roles}`}
-function filterCandidateRows(rows){const language=document.getElementById('ga_candidate_language_filter')?.value||'';const role=document.getElementById('ga_candidate_role_filter')?.value||'';return (rows||[]).filter(r=>(!language||String(r.language||'')===language)&&(!role||String(r.role_positioning||'')===role))}
+const GA_CANDIDATE_ROLES=[['community_seed','气氛活跃型'],['faq_helper','解惑答疑型'],['newcomer_guide','教程引导型'],['motivation_admin','激励运营型']];
+function activeCandidateRole(){return window.__gaCandidateActiveRole||document.getElementById('ga_candidate_role_filter')?.value||'community_seed'}
+function setCandidateRoleTab(role){window.__gaCandidateActiveRole=role;const select=document.getElementById('ga_candidate_role_filter');if(select)select.value=role;renderCandidatePool(window.__gaCandidateRows||[])}
+function filterCandidateRows(rows){const language=document.getElementById('ga_candidate_language_filter')?.value||'';const role=activeCandidateRole();return (rows||[]).filter(r=>(!language||String(r.language||'')===language)&&(!role||String(r.role_positioning||'')===role))}
+function candidateCountsByRole(rows){const language=document.getElementById('ga_candidate_language_filter')?.value||'';const counts={};(rows||[]).forEach(r=>{if(language&&String(r.language||'')!==language)return;const role=String(r.role_positioning||'community_seed');counts[role]=(counts[role]||0)+Number(r.candidate_count||0)});return counts}
+function renderCandidateTabs(rows){const box=document.getElementById('ga_candidate_role_tabs');if(!box)return;const counts=candidateCountsByRole(rows||[]);if(!window.__gaCandidateActiveRole)window.__gaCandidateActiveRole=GA_CANDIDATE_ROLES.find(([role])=>(counts[role]||0)>0)?.[0]||'community_seed';box.innerHTML=GA_CANDIDATE_ROLES.map(([role,label])=>`<button type="button" class="ga-candidate-tab ${activeCandidateRole()===role?'is-active':''}" onclick="setCandidateRoleTab('${role}')">${label} <span>${counts[role]||0}</span></button>`).join('')}
 function speechPlanRows(){return (window.__gaCandidateRows||[]).filter(r=>(r.enabled_candidate_count||0)>0)}
 function speechPlanLabel(r){return `${r.plan_display_name||roleLabel(r.role_positioning||r.config_name)} · ${r.enabled_candidate_count||0}条`}
 function groupPlanLabel(configName){const name=String(configName||'').trim();if(!name)return '未装载话术方案';const row=speechPlanRows().find(r=>String(r.config_name||'')===name);return row?speechPlanLabel(row):name}
 function setGroupPlanSelectValue(el,value){if(!el)return;const selected=String(value||'').trim();if(selected&&![...el.options].some(o=>String(o.value)===selected)){el.insertAdjacentHTML('beforeend',`<option value="${esc(selected)}">当前方案：${esc(groupPlanLabel(selected))}</option>`)}el.value=selected}
 function refreshGroupPlanSelects(){renderBridgeFormOptions()}
 function planUsageText(row){const usage=row.usage||[];if(!usage.length)return '暂未装载到任何群';return usage.map(u=>`${u.account_name||'账号'} / 群${u.group_index||'-'}：${u.group_name||u.target_group||'-'}`).join('；')}
-function renderSpeechPlanLibrary(){const rows=speechPlanRows();const box=document.getElementById('ga_speech_plan_library');const count=document.getElementById('ga_speech_plan_count');if(count)count.textContent=`${rows.length} 个话术包`;if(!box)return;if(!rows.length){box.innerHTML='<div class="muted">暂无话术包</div>';return}box.innerHTML=rows.map(r=>`<div class="mini-note" data-plan-name="${esc(r.config_name)}"><div class="toolbar" style="margin-bottom:8px;"><div><strong>${esc(speechPlanLabel(r))}</strong><div class="muted">用途：${esc(roleLabel(r.role_positioning||''))} · 内部名：${esc(r.config_name)}</div><div class="muted">使用位置：${esc(planUsageText(r))}</div></div><div class="toolbar-actions"><input id="ga_plan_name_${esc(r.config_name)}" value="${esc(r.plan_display_name||'')}" placeholder="话术包名称" style="min-width:180px;"/><button type="button" class="secondary" onclick="renameSpeechPlan('${esc(r.config_name)}')">保存名称</button><button type="button" class="danger" onclick="deleteSpeechPlan('${esc(r.config_name)}')">删除话术包</button></div></div></div>`).join('')}
+function renderSpeechPlanLibrary(){const rows=speechPlanRows();const box=document.getElementById('ga_speech_plan_library');const count=document.getElementById('ga_speech_plan_count');if(count)count.textContent=`${rows.length} 个文案组`;if(!box)return;if(!rows.length){box.innerHTML='<div class="muted">暂无文案组</div>';return}box.innerHTML=rows.map(r=>`<div class="mini-note" data-plan-name="${esc(r.config_name)}"><div class="toolbar" style="margin-bottom:8px;"><div><strong>${esc(speechPlanLabel(r))}</strong><div class="muted">用途：${esc(roleLabel(r.role_positioning||''))} · 内部名：${esc(r.config_name)}</div><div class="muted">使用位置：${esc(planUsageText(r))}</div></div><div class="toolbar-actions"><input id="ga_plan_name_${esc(r.config_name)}" value="${esc(r.plan_display_name||'')}" placeholder="文案组名称" style="min-width:180px;"/><button type="button" class="secondary" onclick="renameSpeechPlan('${esc(r.config_name)}')">保存名称</button><button type="button" class="danger" onclick="deleteSpeechPlan('${esc(r.config_name)}')">删除文案组</button></div></div></div>`).join('')}
 function openGroupPlanLoader(accountKey,groupIndex){selectAtmosphereAccount(accountKey);setTimeout(()=>{const row=document.querySelector(`[data-ga-group-row="${Number(groupIndex)+1}"]`);if(row)row.style.display='block';const el=document.getElementById(`ga_group_${Number(groupIndex)+1}_plan`);if(el){el.focus();el.scrollIntoView({block:'center',behavior:'smooth'});}setFeedback('请选择该群要装载的话术方案','success')},80)}
 function loadPlanIntoGroup(groupIndex,configName){const idx=Number(groupIndex)+1;const el=document.getElementById(`ga_group_${idx}_plan`);if(!el)return;el.value=String(configName||'');setFeedback(`群${idx}已选择话术方案：${groupPlanLabel(configName)}`,'success')}
+function candidateTypeLabel(row){return roleLabel(row.role_positioning||row.config_name||'')}
+function candidateEditedText(configName,candidateId){const el=[...document.querySelectorAll('[data-ga-candidate-text]')].find(x=>String(x.dataset.configName||'')===String(configName||'')&&String(x.dataset.candidateId||'')===String(candidateId||''));return String(el?.value||'').trim()}
+function candidateSourceLabel(item){const source=String((item||{}).source_type||(item||{}).source||'').trim();if(['manual','custom','自定义'].includes(source))return '自定义';if(['learning_account','learning_bot','学习bot'].includes(source))return '学习bot';if(['upload_file','auto_learn','local_language_profile','upload','上传生成'].includes(source))return '上传生成';return source||'上传生成'}
+function selectedCandidateTexts(){return [...document.querySelectorAll('[data-ga-candidate-select]:checked')].map(el=>candidateEditedText(el.dataset.configName||'',el.dataset.candidateId||'')).filter(Boolean)}
+function renderCandidatePool(rows){window.__gaCandidateRows=rows||[];renderSpeechPlanLibrary();renderCandidateTabs(rows||[]);const pool=document.getElementById('ga_candidate_pool');const count=document.getElementById('ga_candidate_count');const visibleRows=filterCandidateRows(rows||[]);const total=visibleRows.reduce((n,r)=>n+(r.candidate_count||0),0);if(count)count.textContent=`${total} 条`;if(!pool)return;if(!visibleRows.length){pool.innerHTML='<div class="muted">暂无备选话术</div>';return}pool.classList.remove('muted');pool.innerHTML=visibleRows.map(r=>{const all=(r.candidates||[]).slice(0,100);const role=String(r.role_positioning||'');const expanded=Boolean((window.__gaCandidateExpanded||{})[role]);const shown=expanded?all:all.slice(0,10);const more=all.length>10?`<button type="button" class="secondary ga-candidate-expand" onclick="toggleCandidateExpanded('${esc(role)}')">${expanded?'收起':'展开全部'} ${all.length} 条</button>`:'';return `<div class="group-card" data-language="${esc(r.language||'')}" data-role="${esc(role)}"><div class="group-card-title"><div><strong>${esc(candidateTypeLabel(r))}</strong><div class="muted">${esc(r.region||'-')} · ${esc(r.enabled_candidate_count||0)}/${esc(r.candidate_count||0)} 可用 · 当前显示 ${shown.length}/${all.length}</div></div></div>${shown.map(c=>`<div class="mini-note candidate-row-compact ga-candidate-row"><input type="checkbox" data-ga-candidate-select="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" data-role="${esc(role)}"/><span class="ga-source-badge">${esc(candidateSourceLabel(c))}</span><input type="text" data-ga-candidate-text="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" value="${esc(c.text)}"/><button type="button" class="secondary" onclick="saveCustomCandidate('${esc(r.config_name)}','${esc(c.candidate_id)}')">保存自定义</button><button type="button" data-ga-enable-candidate="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}">加入角色</button></div>`).join('')}${more}</div>`}).join('')}
+function toggleCandidateExpanded(role){window.__gaCandidateExpanded=window.__gaCandidateExpanded||{};window.__gaCandidateExpanded[role]=!window.__gaCandidateExpanded[role];renderCandidatePool(window.__gaCandidateRows||[])}
 
-function renderCandidatePool(rows){window.__gaCandidateRows=rows||[];renderSpeechPlanLibrary();const pool=document.getElementById('ga_candidate_pool');const count=document.getElementById('ga_candidate_count');const visibleRows=filterCandidateRows(rows||[]);const total=visibleRows.reduce((n,r)=>n+(r.candidate_count||0),0);if(count)count.textContent=`${total} 条`;if(!pool)return;if(!visibleRows.length){pool.innerHTML='<div class="muted">暂无候选话术</div>';return}pool.innerHTML=visibleRows.slice(0,6).map(r=>`<div class="group-card" data-language="${esc(r.language||'')}" data-role="${esc(r.role_positioning||'')}"><div class="group-card-title"><div><strong>${esc(roleLabel(r.role_positioning||r.config_name))}</strong><div class="muted">${esc(r.region||'-')} · ${esc(r.enabled_candidate_count||0)}/${esc(r.candidate_count||0)} 可用</div></div></div>${(r.candidates||[]).slice(0,3).map(c=>`<div class="mini-note" style="margin-top:8px;"><span class="pill ${c.enabled?'green':'gray'}">${c.enabled?'已启用':'候选'}</span> ${esc(c.text)} <button type="button" class="secondary" data-ga-enable-candidate="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}">加入方案</button></div>`).join('')}</div>`).join('')}
+function saveCustomCandidate(configName,candidateId){const text=candidateEditedText(configName,candidateId);if(!text){setFeedback('请先填写话术内容','error');setLocalFeedback('ga_candidate_result','请先填写话术内容','error');return}setFeedback('自定义话术已保留','success');setLocalFeedback('ga_candidate_result','自定义话术已保存到当前页面，选择角色后可装载','success')}
 async function loadCandidatePool(){const data=await loadJson('/api/ops/group-atmosphere/candidate-pool');renderCandidatePool(data.rows||[]);return data}
-async function renameSpeechPlan(configName){return runAction('保存话术包名称',async()=>{const input=document.getElementById(`ga_plan_name_${configName}`);const name=String(input?.value||'').trim();if(!name)throw new Error('请填写话术包名称');const data=await loadJson(`/api/ops/group-atmosphere/speech-plans/${encodeURIComponent(configName)}/rename`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan_display_name:name})});await loadCandidatePool();refreshGroupPlanSelects();await reloadAll();return data})}
-async function deleteSpeechPlan(configName){return runAction('删除话术包',async()=>{await loadJson(`/api/ops/group-atmosphere/speech-plans/${encodeURIComponent(configName)}`,{method:'DELETE'});await loadCandidatePool();refreshGroupPlanSelects();await reloadAll();return {ok:true}})}
+async function renameSpeechPlan(configName){return runAction('保存文案组名称',async()=>{const input=document.getElementById(`ga_plan_name_${configName}`);const name=String(input?.value||'').trim();if(!name)throw new Error('请填写文案组名称');const data=await loadJson(`/api/ops/group-atmosphere/speech-plans/${encodeURIComponent(configName)}/rename`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan_display_name:name})});await loadCandidatePool();refreshGroupPlanSelects();await reloadAll();return data})}
+async function deleteSpeechPlan(configName){return runAction('删除文案组',async()=>{await loadJson(`/api/ops/group-atmosphere/speech-plans/${encodeURIComponent(configName)}`,{method:'DELETE'});await loadCandidatePool();refreshGroupPlanSelects();await reloadAll();return {ok:true}})}
 async function enableCandidate(configName,candidateId){return runAction('加入话术方案',async()=>{const result=document.getElementById('ga_candidate_result');if(result)result.textContent='正在加入话术方案…';const payload={config_name:configName,candidate_ids:[candidateId]};const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/enable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(result)result.textContent=`已加入话术方案：${configName}`;await loadCandidatePool();refreshGroupPlanSelects();return data})}
 
 function formatSchedulerResults(data){const results=data.results||[];if(!results.length)return '没有可运行的自动发言配置。';const details=results.map(r=>`${r.config_name||'-'}：${r.sent?'已发送':(r.dry_run?'未真正发送':'未发送')} · ${r.result_reason||r.result_code||''}`).join('\\n');return `检查 ${data.attempted_count||0} 个配置，实际发送 ${data.sent_count||0} 条\\n${details}`}
 async function runAtmosphereScheduler(){return runAction('自动发言检查',async()=>{const status=document.getElementById('ga_scheduler_status');if(status)status.textContent='检查中…';const data=await loadJson('/api/ops/group-atmosphere/scheduler/run-due',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const el=document.getElementById('ga_scheduler_result');if(el)el.textContent=formatSchedulerResults(data);if(status)status.textContent=`已检查 ${data.attempted_count||0} 个配置，发送 ${data.sent_count||0} 条`;await reloadAll();return data})}
-async function uploadChatRecordFile(){return runAction('自动学习',async()=>{const files=Array.from(ga_chat_file.files||[]);if(!files.length)throw new Error('请选择文件');const key=document.getElementById('ga_tool_account_select')?.value.trim()||'';let data;if(key){const content=(await Promise.all(files.map(async file=>'# '+file.name+'\\n'+await file.text()))).join('\\n');data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(key)}/chat-records/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:files.map(f=>f.name).join(', '),content})});ga_upload_result.textContent=JSON.stringify(data.language_profile,null,2)}else{const payload={files:await Promise.all(files.map(async file=>({filename:file.name,content:await file.text()})))};data=await loadJson('/api/ops/group-atmosphere/chat-records/auto-learn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});ga_upload_result.textContent=renderAutoLearnResult(data)}await reloadAll();return data})}
-function clearChatFiles(){const input=document.getElementById('ga_chat_file');if(input)input.value='';const result=document.getElementById('ga_upload_result');if(result)result.textContent='';setFeedback('已清空上传文件','success')}
 function roleKeyFor(region,positioning){return `auto-${regionLanguage(region)}-${positioning}`}
 function openRoleEditor(roleKey=''){const modal=document.getElementById('ga_role_editor_modal');clearRoleEditor(false);if(roleKey){const row=(window.__gaRoles||[]).find(r=>String(r.role_key||r.config_name)===String(roleKey));if(row){document.getElementById('ga_role_key').value=row.role_key||row.config_name||'';document.getElementById('ga_role_name').value=row.role_name||row.plan_display_name||'';document.getElementById('ga_role_region').value=row.region||'印尼';document.getElementById('ga_role_positioning').value=row.role_positioning||'community_seed';document.getElementById('ga_role_enabled').value=row.enabled===false?'false':'true';document.getElementById('ga_role_phrases').value=(row.candidates||[]).map(c=>c.text).filter(Boolean).join('\\n');}}renderRolePhrasePool();if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false')}}
 function closeRoleEditor(){const modal=document.getElementById('ga_role_editor_modal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
-function clearRoleEditor(feedback=true){const region=document.getElementById('ga_role_region');const pos=document.getElementById('ga_role_positioning');document.getElementById('ga_role_key').value='';document.getElementById('ga_role_name').value='';if(region)region.value='印尼';if(pos)pos.value='community_seed';document.getElementById('ga_role_enabled').value='true';document.getElementById('ga_role_phrases').value='';const result=document.getElementById('ga_role_editor_result');if(result)result.textContent='';renderRolePhrasePool();if(feedback)setFeedback('新话术角色','success')}
+function clearRoleEditor(feedback=true){const region=document.getElementById('ga_role_region');const pos=document.getElementById('ga_role_positioning');document.getElementById('ga_role_key').value='';document.getElementById('ga_role_name').value='';if(region)renderUnifiedRegionOptions('ga_role_region','印尼');if(pos)pos.value='community_seed';document.getElementById('ga_role_enabled').value='true';document.getElementById('ga_role_phrases').value='';const result=document.getElementById('ga_role_editor_result');if(result)result.textContent='';renderRolePhrasePool();if(feedback)setFeedback('新话术角色','success')}
 function candidatePoolPhrases(){const rows=window.__gaCandidateRows||[];const out=[];rows.forEach(r=>(r.candidates||[]).forEach(c=>{if(c&&c.text)out.push({text:c.text,source:r.plan_display_name||r.config_name,language:r.language,role_positioning:c.role_positioning||r.role_positioning})}));return out}
 function renderRolePhrasePool(){const box=document.getElementById('ga_role_phrase_pool');if(!box)return;const phrases=candidatePoolPhrases();if(!phrases.length){box.innerHTML='<div class="muted">话术池暂无候选</div>';return}box.innerHTML=phrases.slice(0,80).map((p,idx)=>`<label class="mini-note" style="display:block;"><input type="checkbox" data-ga-role-pool-idx="${idx}" style="width:auto;min-height:auto;margin-right:8px;"/>${esc(p.text)}<div class="muted">${esc(p.source||'话术池')}</div></label>`).join('')}
 function collectRolePhrases(){const manual=document.getElementById('ga_role_phrases').value.split(/\\n+/).map(x=>x.trim()).filter(Boolean);const pool=candidatePoolPhrases();const picked=[...document.querySelectorAll('[data-ga-role-pool-idx]:checked')].map(el=>pool[Number(el.dataset.gaRolePoolIdx)]?.text).filter(Boolean);return Array.from(new Set([...manual,...picked]))}
-async function saveRoleEditor(){return runAction('保存话术角色',async()=>{const region=document.getElementById('ga_role_region').value;const positioning=document.getElementById('ga_role_positioning').value;const roleKey=document.getElementById('ga_role_key').value.trim()||roleKeyFor(region,positioning);const phrases=collectRolePhrases();if(!phrases.length)throw new Error('请至少选择或填写一条话术');const data=await loadJson('/api/ops/group-atmosphere/roles/manual-phrases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role_key:roleKey,role_name:document.getElementById('ga_role_name').value.trim()||`${region} · ${roleLabel(positioning)}`,region,language:regionLanguage(region),role_positioning:positioning,phrases,enabled:document.getElementById('ga_role_enabled').value==='true'})});const result=document.getElementById('ga_role_editor_result');if(result)result.textContent=`已保存 ${phrases.length} 条话术`;await reloadAll();closeRoleEditor();return data})}
-function renderBridgeFormOptions(){const roles=(window.__gaRoles||[]);const accounts=(window.__gaAccounts||[]);const roleSelect=document.getElementById('ga_bridge_role_select');if(roleSelect){const current=roleSelect.value;roleSelect.innerHTML='<option value="">选择话术角色</option>'+roles.map(r=>`<option value="${esc(r.role_key||r.config_name)}">${esc(r.role_name||r.plan_display_name||r.role_key)}</option>`).join('');roleSelect.value=roles.some(r=>String(r.role_key||r.config_name)===current)?current:''}const accountSelect=document.getElementById('ga_bridge_account_select');if(accountSelect){const current=accountSelect.value;accountSelect.innerHTML='<option value="">选择WhatsApp号码</option>'+accounts.map(a=>`<option value="${esc(a.account_key)}">${esc(a.account_name||a.account_key)}</option>`).join('');accountSelect.value=accounts.some(a=>String(a.account_key)===current)?current:''}renderBridgeGroupChoices()}
-function renderBridgeGroupChoices(){const box=document.getElementById('ga_bridge_group_choices');if(!box)return;const key=document.getElementById('ga_bridge_account_select')?.value||'';const account=(window.__gaAccounts||[]).find(a=>String(a.account_key||'')===String(key));if(!account){box.innerHTML='<div class="muted">请选择账号</div>';return}const groups=(account.groups||[]).slice(0,GA_MAX_GROUPS);box.innerHTML=groups.length?groups.map((g,idx)=>`<label class="mini-note" style="display:block;"><input type="checkbox" data-ga-bridge-group-index="${idx}" style="width:auto;min-height:auto;margin-right:8px;"/>群${idx+1}：${esc(g.group_name||g.target_group||'-')} <span class="muted">${esc(g.target_group||'')}</span></label>`).join(''):'<div class="muted">该账号暂无群组</div>'}
-async function mountSelectedRole(){return runAction('保存桥接关系',async()=>{const roleKey=document.getElementById('ga_bridge_role_select')?.value||'';const accountKey=document.getElementById('ga_bridge_account_select')?.value||'';const groupIndexes=[...document.querySelectorAll('[data-ga-bridge-group-index]:checked')].map(el=>Number(el.dataset.gaBridgeGroupIndex));if(!roleKey)throw new Error('请选择话术角色');if(!accountKey)throw new Error('请选择WhatsApp号码');if(!groupIndexes.length)throw new Error('请选择至少一个群组');if(groupIndexes.length>GA_MAX_GROUPS)throw new Error('每个桥接关系最多10个群组');const payload={role_key:roleKey,account_key:accountKey,group_indexes:groupIndexes,enabled:true,auto_speaking_enabled:document.getElementById('ga_bridge_auto_speaking').value==='true',group_send_permission_enabled:true,daily_max_messages:Number(document.getElementById('ga_bridge_daily_max').value||0)||null,min_interval_minutes:Number(document.getElementById('ga_bridge_min_interval').value||0)||null,max_interval_minutes:Number(document.getElementById('ga_bridge_max_interval').value||0)||null};const data=await loadJson('/api/ops/group-atmosphere/role-bindings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});document.getElementById('ga_role_bridge_result').textContent=`已保存 ${data.relationship?.relationship_label||'桥接关系'}，包含 ${data.created_count||0} 个群组`;await reloadAll();return data})}
-function renderBridgeRelationships(bindings){const box=document.getElementById('ga_role_bindings');if(!box)return;const relationships=bindings.relationships||[];if(!relationships.length){box.innerHTML='<div class="mini-note">暂无桥接关系</div>';return}box.innerHTML=relationships.map(rel=>{const account=(window.__gaAccounts||[]).find(a=>String(a.account_key||'')===String(rel.account_key||''))||{};const sess=account.session||account.session_state||{};const rt=account.runtime||{};const accountLogin=loginLabel(sess,rt);const groups=(rel.groups||[]).map(g=>{const permissionOk=g.group_send_permission_enabled!==false;const autoOk=rel.auto_speaking_enabled!==false;const loginOk=accountLogin==='已登录';const canSend=permissionOk&&autoOk&&loginOk;const statusCls=canSend?'green':(!permissionOk?'orange':(!loginOk?'red':'orange'));const statusText=canSend?'可发送':(!permissionOk?'群权限关闭':(!loginOk?'账号待扫码':'自动发言暂停'));const reason=canSend?'可发送':(!permissionOk?'群权限关闭':(!loginOk?'账号未登录':'自动发言暂停'));return `<div class="mini-note"><div class="toolbar" style="margin-bottom:8px;"><div><strong>${esc(rel.role_name||rel.role_key)} → ${esc(g.group_name||g.target_group)}</strong><div class="muted">WhatsApp：${esc(account.account_name||rel.account_key)} / 群${Number(g.group_index||0)+1} / ${esc(g.target_group||'')}</div></div><span class="pill ${statusCls}">${statusText}</span></div><div class="ga-control-line"><div class="ga-control-box"><div class="ga-control-label">角色状态</div><div class="ga-control-value">${rel.role_enabled===false?'停用':'启用'}</div></div><div class="ga-control-box"><div class="ga-control-label">群权限</div><div class="ga-control-value">${permissionOk?'允许':'禁止'}</div></div><div class="ga-control-box"><div class="ga-control-label">自动发言</div><div class="ga-control-value">${autoOk?'开启':'暂停'}</div></div><div class="ga-control-box"><div class="ga-control-label">今日发送</div><div class="ga-control-value">0 / ${esc(rel.daily_max_messages||'-')}</div></div></div><div class="inline-actions"><button type="button" ${canSend?'':'disabled'} onclick="triggerRelationship('${esc(g.binding_id||'')}')">一键触发发言</button><button type="button" class="secondary" onclick="toggleBridgeGroupPermission('${esc(g.binding_id)}',${permissionOk?'false':'true'})">${permissionOk?'关闭群权限':'开启群权限'}</button></div><div class="ga-reason ${canSend?'ok':(!loginOk?'bad':'warn')}">${reason}</div></div>`}).join('');return `<div class="account-card binding-card"><div class="account-card-head"><div><h3>${esc(rel.relationship_label)} · ${esc(rel.role_name||rel.role_key)}</h3><div class="muted">账号：${esc(account.account_name||rel.account_key)} · ${esc(rel.region||account.region||'-')} / ${esc(rel.language||account.language||'-')} · 频率：每日最多 ${esc(rel.daily_max_messages||0)} 条，间隔 ${esc(rel.min_interval_minutes||0)}-${esc(rel.max_interval_minutes||0)} 分钟</div></div><span class="pill ${rel.auto_speaking_enabled?'green':'orange'}">${rel.auto_speaking_enabled?'自动发言开启':'自动发言暂停'}</span></div><div class="group-card-grid" style="margin-top:10px;">${groups}</div></div>`}).join('')}
-function renderRoleBridge(roles,bindings,learning){window.__gaRoles=roles.rows||[];window.__gaRoleBindings=bindings.rows||[];window.__gaRoleRelationships=bindings.relationships||[];updateAtmosphereOverview();window.__gaLearningAccounts=learning.rows||[];renderBridgeFormOptions();renderRolePhrasePool();const roleBox=document.getElementById('ga_role_library');if(roleBox)roleBox.innerHTML=(roles.rows||[]).length?(roles.rows||[]).map(r=>`<div class="mini-note"><div class="toolbar" style="margin-bottom:6px;"><div><strong>${esc(r.role_name||r.role_key)}</strong><div class="muted">${esc(r.region||'-')} / ${esc(r.language||'-')} · ${esc(roleLabel(r.role_positioning))} · ${esc(r.enabled_phrase_count||0)}/${esc(r.phrase_count||0)}条可用</div></div><button type="button" class="secondary" onclick="openRoleEditor('${esc(r.role_key||r.config_name)}')">编辑</button></div></div>`).join(''):'<div class="muted">暂无话术角色</div>';renderBridgeRelationships(bindings)}
+async function saveRoleEditor(){return runAction('保存话术角色',async()=>{const region=document.getElementById('ga_role_region').value;const positioning=document.getElementById('ga_role_positioning').value;const roleKey=document.getElementById('ga_role_key').value.trim()||roleKeyFor(region,positioning);const phrases=collectRolePhrases();if(!phrases.length)throw new Error('请至少选择或填写一条话术');const data=await loadJson('/api/ops/group-atmosphere/roles/manual-phrases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role_key:roleKey,role_name:document.getElementById('ga_role_name').value.trim()||`${region} · ${roleLabel(positioning)}`,region,language:regionLanguage(region),role_positioning:positioning,phrases,enabled:document.getElementById('ga_role_enabled').value==='true'})});const result=document.getElementById('ga_role_editor_result');if(result)result.textContent=`已保存 ${phrases.length} 条话术`;await reloadAll();await loadRoleBridge();renderCandidatePool(window.__gaCandidateRows||[]);closeRoleEditor();setFeedback('话术角色已保存，列表已更新','success');return data})}
+function renderBridgeFormOptions(){const roles=(window.__gaRoles||[]);const roleSelect=document.getElementById('ga_bridge_role_select');if(roleSelect){const current=roleSelect.value;roleSelect.innerHTML='<option value="">选择话术角色</option>'+roles.map(r=>`<option value="${esc(r.role_key||r.config_name)}" data-region="${esc(r.region||'')}">${esc(r.role_name||r.plan_display_name||r.role_key)}</option>`).join('');roleSelect.value=roles.some(r=>String(r.role_key||r.config_name)===current)?current:''}renderUnifiedRegionOptions('ga_bridge_region',document.getElementById('ga_bridge_region')?.value||'');renderBridgeGroupChoices();renderLearningAccountOptions()}
+function bridgeRoleRegion(){const region=document.getElementById('ga_bridge_region')?.value||'';if(region)return String(region);const roleKey=document.getElementById('ga_bridge_role_select')?.value||'';const role=(window.__gaRoles||[]).find(r=>String(r.role_key||r.config_name||'')===String(roleKey));return role?String(role.region||''):''}
+function renderBridgeGroupChoices(){const box=document.getElementById('ga_bridge_group_choices');if(!box)return;const roleRegion=bridgeRoleRegion();const accounts=(window.__gaAccounts||[]).filter(a=>a.enabled!==false&&(!roleRegion||String(a.region||'')===roleRegion));const choices=[];accounts.forEach(a=>(a.groups||[]).forEach((g,idx)=>{if(!g||g.enabled===false||!String(g.target_group||'').trim())return;choices.push({account:a,group:g,index:idx})}));if(!document.getElementById('ga_bridge_role_select')?.value){box.innerHTML='<div class="muted">请选择话术角色</div>';return}if(!choices.length){box.innerHTML='<div class="muted">暂无可桥接群组</div>';return}box.innerHTML=choices.slice(0,30).map(item=>{const a=item.account;const g=item.group;const wa=a.account_name||a.account_key||'待分配';return `<label class="mini-note" style="display:block;"><input type="checkbox" data-ga-bridge-group-target="${esc(g.target_group)}" style="width:auto;min-height:auto;margin-right:8px;"/>${esc(g.group_name||g.target_group||'-')} ・ ${esc(wa)} <span class="muted">${esc(g.target_group||'')}</span></label>`}).join('')}
+async function mountSelectedRole(){return runAction('保存桥接关系',async()=>{const roleKey=document.getElementById('ga_bridge_role_select')?.value||'';const groupTargets=[...document.querySelectorAll('[data-ga-bridge-group-target]:checked')].map(el=>String(el.dataset.gaBridgeGroupTarget||'').trim()).filter(Boolean);if(!roleKey)throw new Error('请选择话术角色');if(!groupTargets.length)throw new Error('请选择至少一个群组');if(groupTargets.length>10)throw new Error('每个角色最多10个群组');const payload={role_key:roleKey,group_targets:groupTargets,enabled:true,auto_speaking_enabled:document.getElementById('ga_bridge_auto_speaking').value==='true',group_send_permission_enabled:true,daily_max_messages:Number(document.getElementById('ga_bridge_daily_max').value||0)||null,min_interval_minutes:Number(document.getElementById('ga_bridge_min_interval').value||0)||null,max_interval_minutes:Number(document.getElementById('ga_bridge_max_interval').value||0)||null};const data=await loadJson('/api/ops/group-atmosphere/role-bindings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});document.getElementById('ga_role_bridge_result').textContent=`已保存 ${data.relationship?.relationship_label||'桥接关系'}，包含 ${data.created_count||0} 个群组`;await reloadAll();closeBridgeModal();return data})}
+function bridgeAccountForGroup(group){return (window.__gaAccounts||[]).find(a=>String(a.account_key||'')===String(group.account_key||''))||{}}
+function bridgeTodayText(group,rel){const sent=Number(group.sent_count_today||0);const max=Number(rel.daily_max_messages||0);return max?`今日已发 ${sent} 条 / 上限 ${max} 条`:`今日已发 ${sent} 条`}
+function bridgeFrequencyText(rel){const min=Number(rel.min_interval_minutes||0);const max=Number(rel.max_interval_minutes||0);if(min&&max)return `随机间隔约 ${min}-${max} 分钟`;if(min)return `最小间隔 ${min} 分钟`;return '未设间隔'}
+function renderBridgeRelationships(bindings){const box=document.getElementById('ga_role_bindings');if(!box)return;const relationships=bindings.relationships||[];if(!relationships.length){box.innerHTML='<div class="mini-note">暂无桥接关系</div>';return}box.innerHTML=relationships.map(rel=>{const groups=(rel.groups||[]).map(g=>{const account=bridgeAccountForGroup(g);const sess=account.session||account.session_state||{};const rt=account.runtime||{};const accountLogin=loginLabel(sess,rt);const permissionOk=g.group_send_permission_enabled!==false;const autoOk=rel.auto_speaking_enabled!==false;const loginOk=accountLogin==='已登录';const canSend=permissionOk&&autoOk&&loginOk;const statusCls=canSend?'green':(!permissionOk?'orange':(!loginOk?'red':'orange'));const statusText=canSend?'可发送':(!permissionOk?'群权限关闭':(!loginOk?'账号未登录':'自动发言关闭'));const waLabel=g.assigned_account_label||account.account_name||g.account_key||'待重新分配';return `<div class="mini-note"><div class="toolbar" style="margin-bottom:8px;"><div><strong>${esc(g.group_name||g.target_group)} ・ ${esc(waLabel)}</strong><div class="muted">${esc(g.target_group||'')} · ${esc(bridgeTodayText(g,rel))}</div></div><span class="pill ${statusCls}">${statusText}</span></div><div class="inline-actions"><button type="button" class="secondary" onclick="openManualSendModal('${esc(g.account_key)}',${Number(g.group_index||0)})">手动发送</button><button type="button" class="secondary" onclick="toggleBridgeGroupPermission('${esc(g.binding_id)}',${permissionOk?'false':'true'})">${permissionOk?'关闭':'开启'}</button></div></div>`}).join('');const bindingIds=(rel.groups||[]).map(g=>g.binding_id).filter(Boolean).join(',');return `<div class="account-card binding-card"><div class="account-card-head"><div><h3>${esc(rel.relationship_label)} · ${esc(rel.role_name||rel.role_key)}</h3><div class="muted">国家：${esc(rel.region||'-')} · ${esc(roleLabel(rel.role_positioning||''))} · ${esc(bridgeFrequencyText(rel))}</div></div><span class="pill ${rel.auto_speaking_enabled?'green':'orange'}">${rel.auto_speaking_enabled?'自动发言已开启':'自动发言关闭'}</span></div><div class="group-card-grid" style="margin-top:10px;">${groups}</div><div class="inline-actions" style="margin-top:12px;"><button type="button" onclick="triggerRelationship('${esc((rel.groups||[])[0]?.binding_id||'')}')">一键发言</button><button type="button" class="secondary" onclick="editBridgeRelationship('${esc(rel.role_key||'')}')">编辑桥接</button><button type="button" class="danger" onclick="deleteBridgeRelationship('${esc(bindingIds)}')">删除桥接</button></div></div>`}).join('')}
+function renderRoleBridge(roles,bindings,learning){window.__gaRoles=roles.rows||[];window.__gaRoleBindings=bindings.rows||[];window.__gaRoleRelationships=bindings.relationships||[];updateAtmosphereOverview();window.__gaLearningAccounts=learning.rows||[];renderBridgeFormOptions();renderRolePhrasePool();renderLearningAccounts(window.__gaLearningAccounts);const roleBox=document.getElementById('ga_role_library');if(roleBox)roleBox.innerHTML=(roles.rows||[]).length?(roles.rows||[]).map(r=>`<div class="mini-note"><div class="toolbar" style="margin-bottom:6px;"><div><strong>${esc(r.role_name||r.role_key)}</strong><div class="muted">角色定位：${esc(roleLabel(r.role_positioning))}</div><div class="muted">国家：${esc(r.region||'-')} · 装载话术：${esc(r.enabled_phrase_count||0)}/${esc(r.phrase_count||0)} 条</div></div><div class="toolbar-actions"><button type="button" class="secondary" onclick="openRoleEditor('${esc(r.role_key||r.config_name)}')">编辑</button><button type="button" class="danger" onclick="deleteGroupAtmosphereRole('${esc(r.role_key||r.config_name)}')">删除</button></div></div></div>`).join(''):'<div class="muted">暂无话术角色</div>';renderBridgeRelationships(bindings)}
+
+
+function openBridgeModal(){const modal=document.getElementById('ga_bridge_modal');if(!modal)return;modal.classList.add('is-open');modal.setAttribute('aria-hidden','false');renderUnifiedRegionOptions('ga_bridge_region');renderBridgeFormOptions();setTimeout(()=>document.getElementById('ga_bridge_region')?.focus(),50)}
+function closeBridgeModal(){const modal=document.getElementById('ga_bridge_modal');if(!modal)return;modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}
+function editBridgeRelationship(roleKey=''){openBridgeModal();setTimeout(()=>{const sel=document.getElementById('ga_bridge_role_select');if(sel&&roleKey)sel.value=roleKey;renderBridgeGroupChoices();},60)}
+async function deleteBridgeRelationship(bindingIds=''){return runAction('删除桥接',async()=>{const ids=String(bindingIds||'').split(',').map(x=>x.trim()).filter(Boolean);if(!ids.length)throw new Error('没有可删除的桥接群组');for(const id of ids){await loadJson(`/api/ops/group-atmosphere/role-bindings/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:false,group_send_permission_enabled:false,auto_speaking_enabled:false})})}await reloadAll();return {ok:true,count:ids.length}})}
+async function deleteGroupAtmosphereRole(roleKey){return runAction('删除话术角色',async()=>{if(!roleKey)throw new Error('缺少角色');if(!confirm('确认删除这个话术角色？删除后会同时移除相关桥接关系。'))return {cancelled:true};const data=await loadJson(`/api/ops/group-atmosphere/roles/${encodeURIComponent(roleKey)}`,{method:'DELETE'});setFeedback('话术角色已删除','success');await reloadAll();await loadRoleBridge();renderCandidatePool(window.__gaCandidateRows||[]);return data})}
+
+function learningAccountKey(row){return String(row?.learning_account_key||row?.account_key||'')}
+function learningAccountGroups(row){return (row?.group_links||row?.groups||[]).map(g=>String(g?.target_group||g?.group_id||g?.link||g?.group_name||'').trim()).filter(Boolean)}
+function renderLearningAccountOptions(){const rows=window.__gaLearningAccounts||[];return rows}
+function renderLearningAccounts(inputRows){const box=document.getElementById('ga_learning_accounts');if(!box)return;const rows=Array.isArray(inputRows)?inputRows:(window.__gaLearningAccounts||[]);const list=rows.length?rows:[];if(!list.length){box.classList.add('muted');box.innerHTML='暂无学习机器人';return}box.classList.remove('muted');box.innerHTML=list.map(r=>{const key=learningAccountKey(r);const groups=learningAccountGroups(r);const sess=r.session||r.session_state||{login_verified:r.login_verified};const rt=r.runtime||{};const loginText=loginLabel(sess,rt);const loginCls=loginText==='已登录'?'green':(loginText==='待扫码'?'orange':'gray');return `<div class="ga-learning-card"><div class="toolbar"><div><strong>${esc(r.account_name||key||'学习机器人')}</strong><div class="muted">${esc(r.region||'-')} · ${groups.length||0} 个群</div></div><span class="pill ${loginCls}">${esc(loginText)}</span></div><div class="muted">${groups.slice(0,3).map(esc).join('<br/>')||'未配置群链接'}</div><div class="inline-actions"><button type="button" class="secondary" onclick="openLearningBotModal('${esc(key)}')">编辑</button><button type="button" class="secondary" onclick="startLearningQr('${esc(key)}')">扫码</button><button type="button" class="secondary" onclick="refreshLearningSession('${esc(key)}')">刷新状态</button><button type="button" class="danger" onclick="deleteLearningBot('${esc(key)}')">删除</button></div></div>`}).join('')}
+function renderLearningGroupLinks(values=['']){const box=document.getElementById('ga_learning_group_links');if(!box)return;const list=(values&&values.length?values:['']).map(v=>String(v||''));box.innerHTML=list.map((v,idx)=>`<div class="ga-learning-group-row" data-learning-group-row="${idx}"><input data-ga-learning-group-link="1" value="${esc(v)}" placeholder="群链接 / 群名 / group_id"/>${idx>0?`<button type="button" class="ghost" onclick="removeLearningGroupLinkRow(${idx})">删除</button>`:'<span></span>'}</div>`).join('')}
+function addLearningGroupLinkRow(value=''){const values=[...document.querySelectorAll('[data-ga-learning-group-link]')].map(el=>el.value);values.push(String(value||''));renderLearningGroupLinks(values)}
+function removeLearningGroupLinkRow(index){const values=[...document.querySelectorAll('[data-ga-learning-group-link]')].map(el=>el.value);values.splice(index,1);renderLearningGroupLinks(values.length?values:[''])}
+function openLearningBotModal(key=''){const modal=document.getElementById('ga_learning_account_modal');if(!modal)return;const row=(window.__gaLearningAccounts||[]).find(r=>learningAccountKey(r)===String(key||''));document.getElementById('ga_learning_account_key').value=row?learningAccountKey(row):'';document.getElementById('ga_learning_account_name').value=row?.account_name||'';renderUnifiedRegionOptions('ga_learning_region',row?.region||'印尼');renderLearningGroupLinks(row?learningAccountGroups(row):['']);modal.classList.add('is-open');modal.setAttribute('aria-hidden','false');setTimeout(()=>document.getElementById('ga_learning_account_name')?.focus(),50)}
+function closeLearningBotModal(){const modal=document.getElementById('ga_learning_account_modal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
+function collectLearningGroupLinks(){return [...document.querySelectorAll('[data-ga-learning-group-link]')].map(el=>String(el.value||'').trim()).filter(Boolean)}
+async function saveLearningBot(){return runAction('保存学习机器人',async()=>{const existing=document.getElementById('ga_learning_account_key')?.value||'';const region=document.getElementById('ga_learning_region')?.value||'印尼';const name=document.getElementById('ga_learning_account_name')?.value.trim()||`${region}学习机器人`;const groups=collectLearningGroupLinks();if(!groups.length)throw new Error('请至少填写一个群链接');const payload={learning_account_key:existing||null,account_name:name,region,language:regionLanguage(region),groups:groups.map(x=>({target_group:x,group_name:x,enabled:true})),daily_learning_time:'全天',read_recent_hours:24,max_messages_per_run:300,enabled:true};const data=await loadJson('/api/ops/group-atmosphere/learning-accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});setLocalFeedback('ga_learning_result','学习机器人已保存，和发言账号池隔离','success');await loadRoleBridge();closeLearningBotModal();return data})}
+function startLearningQr(keyArg=''){const key=keyArg||document.getElementById('ga_learning_account_key')?.value||'';if(!key){setFeedback('请先选择学习机器人账号','error');setLocalFeedback('ga_learning_result','请先选择或保存学习机器人账号','error');return}setSelectedAtmosphereAccountKey(key);setLocalFeedback('ga_learning_result','生成中…');return startAtmosphereQr(false)}
+function refreshLearningSession(keyArg=''){const key=keyArg||document.getElementById('ga_learning_account_key')?.value||'';if(!key){setFeedback('请先选择学习机器人账号','error');setLocalFeedback('ga_learning_result','请先选择学习机器人账号','error');return}setSelectedAtmosphereAccountKey(key);setLocalFeedback('ga_learning_result','正在刷新学习机器人登录态…');return refreshAtmosphereSession()}
+async function deleteLearningBot(key){return runAction('删除学习机器人',async()=>{if(!key)throw new Error('缺少学习机器人账号');if(!confirm('确认删除这个学习机器人 WhatsApp 账号？'))return {cancelled:true};const data=await loadJson(`/api/ops/group-atmosphere/learning-accounts/${encodeURIComponent(key)}`,{method:'DELETE'});setLocalFeedback('ga_learning_result','学习机器人已删除','success');await loadRoleBridge();return data})}
+async function uploadChatFiles(){return runAction('上传学习',async()=>{const input=document.getElementById('ga_chat_file');const files=[...(input?.files||[])];if(!files.length)throw new Error('请选择文件');setLocalFeedback('ga_upload_result',`正在读取 ${files.length} 个文件并解析入库…`);const payloadFiles=await Promise.all(files.map(async(file)=>({filename:file.name||'chat-export.txt',content:await file.text()})));const data=await loadJson('/api/ops/group-atmosphere/chat-records/auto-learn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({files:payloadFiles})});const assignmentCount=(data.role_assignments||[]).length;const candidateCount=(data.role_assignments||[]).reduce((n,row)=>n+((row.candidates||[]).length),0);setLocalFeedback('ga_upload_result',`已解析 ${data.file_count||files.length} 个文件，入库 ${data.imported_count||0} 条，识别地区：${data.detected_region||data.detected_language||'-'}，已生成 ${candidateCount} 条备选话术 / ${assignmentCount} 个角色分类`,'success');await loadCandidatePool();await loadRoleBridge();return data})}
+function clearChatFiles(){const input=document.getElementById('ga_chat_file');if(input)input.value='';setFeedback('已清空上传文件','success');setLocalFeedback('ga_upload_result','已清空文件','success')}
+
 async function loadRoleBridge(){const [roles,bindings,learning]=await Promise.all([loadJson('/api/ops/group-atmosphere/roles'),loadJson('/api/ops/group-atmosphere/role-bindings'),loadJson('/api/ops/group-atmosphere/learning-accounts')]);renderRoleBridge(roles,bindings,learning);return {roles,bindings,learning}}
 async function addManualPhrases(){openRoleEditor()}
 async function triggerRoleBinding(bindingId){return runAction('立即一键发言',async()=>{const data=await loadJson(`/api/ops/group-atmosphere/role-bindings/${encodeURIComponent(bindingId)}/trigger`,{method:'POST'});const el=document.getElementById('ga_role_bridge_result');if(el)el.textContent=JSON.stringify(data,null,2);await reloadAll();return data})}
 async function triggerRelationship(firstBindingId){if(!firstBindingId)throw new Error('桥接关系缺少群组');return triggerRoleBinding(firstBindingId)}
 async function toggleBridgeGroupPermission(bindingId,nextValue){return runAction('切换群发言开关',async()=>{const data=await loadJson(`/api/ops/group-atmosphere/role-bindings/${encodeURIComponent(bindingId)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_send_permission_enabled:nextValue===true||nextValue==='true'})});const el=document.getElementById('ga_role_bridge_result');if(el)el.textContent=`群发言开关已${data.binding?.group_send_permission_enabled?'开启':'关闭'}`;await reloadAll();return data})}
-async function reloadAll(){ensureGroupRows();const [a,c]=await Promise.all([loadJson('/api/ops/group-atmosphere/accounts'),loadJson('/api/ops/group-atmosphere/candidate-pool')]);renderCandidatePool(c.rows||[]);renderAccounts(a.rows||[]);await loadRoleBridge()}
-const gaButtonHandlers={ga_new_account_btn:openNewAccountEditor,ga_new_role_btn_bridge:()=>openRoleEditor(),ga_close_editor_btn:closeAccountEditor,ga_close_send_modal_btn:closeManualSendModal,ga_send_message_btn:sendManualGroupMessage,ga_clear_form_btn:clearAccountForm,ga_add_group_btn:addGroupRow,ga_save_account_btn:saveAtmosphereAccount,ga_upload_chat_btn:uploadChatRecordFile,ga_clear_chat_files_btn:clearChatFiles,ga_run_scheduler_btn:runAtmosphereScheduler,ga_mount_role_btn:mountSelectedRole,ga_new_role_btn:()=>openRoleEditor(),ga_close_role_editor_btn:closeRoleEditor,ga_save_role_btn:saveRoleEditor,ga_clear_role_btn:clearRoleEditor};
+async function reloadAll(){ensureGroupRows();const [regions,a,c]=await Promise.all([loadUnifiedRegionOptions(),loadJson('/api/ops/group-atmosphere/accounts'),loadJson('/api/ops/group-atmosphere/candidate-pool')]);if(!window.__mcnRegionOptions.length&&Array.isArray(a.region_options))window.__mcnRegionOptions=a.region_options;renderUnifiedRegionOptions('ga_region');renderUnifiedRegionOptions('ga_role_region');renderCandidatePool(c.rows||[]);renderAccounts(a.rows||[]);await loadRoleBridge()}
+function toggleBridgeCreatePanel(){const card=document.getElementById('ga_role_bridge_card');if(card){card.classList.toggle('is-creating');const sel=document.getElementById('ga_bridge_role_select');if(card.classList.contains('is-creating')&&sel)setTimeout(()=>sel.focus(),50)}}
+function openRoleEditorFromPool(){const draft=document.getElementById('ga_quick_phrase_draft');openRoleEditor();setTimeout(()=>{const target=document.getElementById('ga_role_phrases');if(target&&draft&&draft.value.trim())target.value=[target.value,draft.value.trim()].filter(Boolean).join('\\n')},80)}
+function clearQuickPhraseDraft(){const el=document.getElementById('ga_quick_phrase_draft');if(el)el.value='';setFeedback('已清空话术草稿','success')}
+const gaButtonHandlers={ga_new_bridge_btn:openBridgeModal,ga_new_account_btn:openNewAccountEditor,ga_new_role_btn:()=>openRoleEditor(),ga_new_role_btn_pool_1:()=>openRoleEditor(),ga_new_role_btn_pool_2:()=>openRoleEditor(),ga_new_role_btn_pool_3:()=>openRoleEditor(),ga_new_role_btn_pool_learn:()=>openRoleEditor(),ga_new_role_btn_pool_create:openRoleEditorFromPool,ga_clear_phrase_draft_btn:clearQuickPhraseDraft,ga_new_role_btn_bridge:()=>openRoleEditor(),ga_close_editor_btn:closeAccountEditor,ga_close_send_modal_btn:closeManualSendModal,ga_send_message_btn:sendManualGroupMessage,ga_clear_form_btn:clearAccountForm,ga_add_group_btn:addGroupRow,ga_save_account_btn:saveAtmosphereAccount,ga_run_scheduler_btn:runAtmosphereScheduler,ga_mount_role_btn:mountSelectedRole,ga_close_role_editor_btn:closeRoleEditor,ga_save_role_btn:saveRoleEditor,ga_clear_role_btn:clearRoleEditor,ga_close_bridge_modal_btn:closeBridgeModal,ga_upload_chat_btn:uploadChatFiles,ga_clear_chat_files_btn:clearChatFiles,ga_open_learning_bot_modal_btn:()=>openLearningBotModal(),ga_close_learning_bot_modal_btn:closeLearningBotModal,ga_cancel_learning_bot_btn:closeLearningBotModal,ga_add_learning_group_link_btn:()=>addLearningGroupLinkRow(),ga_save_learning_bot_btn:saveLearningBot};
 function syncToolAccountSelects(sourceId){const source=document.getElementById(sourceId);const key=source?.value||'';setSelectedAtmosphereAccountKey(key)}
 function runGaButtonHandler(id,ev){const handler=gaButtonHandlers[id];if(!handler)return false;if(ev){ev.preventDefault();ev.stopPropagation()}const now=Date.now();const last=Number(window.__gaLastButtonAt||0);if(window.__gaLastButtonId===id&&now-last<350)return true;window.__gaLastButtonId=id;window.__gaLastButtonAt=now;try{Promise.resolve(handler()).catch(err=>{setFeedback(`操作失败：${err.message||err}`,'error');console.error(err)})}catch(err){setFeedback(`操作失败：${err.message||err}`,'error');console.error(err)}return true}
-function bindGroupAtmosphereButtons(){for(const id of Object.keys(gaButtonHandlers)){const el=document.getElementById(id);if(el&&el.dataset.bound!=='1'){el.type='button';el.addEventListener('click',ev=>runGaButtonHandler(id,ev));el.addEventListener('pointerup',ev=>runGaButtonHandler(id,ev));el.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){runGaButtonHandler(id,ev)}});el.dataset.bound='1'}}if(!document.body.dataset.gaModalBound){document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closeAccountEditor()});document.body.dataset.gaModalBound='1'}if(!document.body.dataset.gaDelegated){for(const eventName of ['click','pointerup','mousedown']){document.addEventListener(eventName,ev=>{const candidateButton=ev.target&&ev.target.closest?ev.target.closest('[data-ga-enable-candidate]'):null;if(candidateButton){ev.preventDefault();ev.stopPropagation();enableCandidate(candidateButton.dataset.configName||'',candidateButton.dataset.candidateId||'');return}const target=ev.target&&ev.target.closest?ev.target.closest('button'):null;if(target&&runGaButtonHandler(target.id||'',ev))return},true)}document.body.dataset.gaDelegated='1'}window.addGroupRow=addGroupRow;window.removeGroupRow=removeGroupRow;window.saveAtmosphereAccount=saveAtmosphereAccount;window.startAtmosphereQr=startAtmosphereQr;window.refreshAtmosphereSession=refreshAtmosphereSession;window.openAtmosphereQrModal=openAtmosphereQrModal;window.startAtmosphereQrForAccount=startAtmosphereQrForAccount;window.closeAtmosphereQrModal=closeAtmosphereQrModal;window.dismissAtmosphereQrModal=dismissAtmosphereQrModal;window.retryAtmosphereQrModal=retryAtmosphereQrModal;window.refreshAtmosphereQrModal=refreshAtmosphereQrModal;window.uploadChatRecordFile=uploadChatRecordFile;window.clearChatFiles=clearChatFiles;window.deleteAtmosphereAccount=deleteAtmosphereAccount;window.fillAccountForm=fillAccountForm;window.selectAtmosphereAccount=selectAtmosphereAccount;window.toggleAtmosphereAccountEnabled=toggleAtmosphereAccountEnabled;window.toggleAtmosphereGroupEnabled=toggleAtmosphereGroupEnabled;window.setSelectedAtmosphereAccountKey=setSelectedAtmosphereAccountKey;window.openAccountEditor=openAccountEditor;window.closeAccountEditor=closeAccountEditor;window.openNewAccountEditor=openNewAccountEditor;window.openManualSendModal=openManualSendModal;window.closeManualSendModal=closeManualSendModal;window.fillManualMessage=fillManualMessage;window.sendManualGroupMessage=sendManualGroupMessage;window.loadCandidatePool=loadCandidatePool;window.enableCandidate=enableCandidate;window.runAtmosphereScheduler=runAtmosphereScheduler;window.openRoleEditor=openRoleEditor;window.closeRoleEditor=closeRoleEditor;window.saveRoleEditor=saveRoleEditor;window.toggleBridgeGroupPermission=toggleBridgeGroupPermission;window.triggerRelationship=triggerRelationship;}
+function bindGroupAtmosphereButtons(){for(const id of Object.keys(gaButtonHandlers)){const el=document.getElementById(id);if(el&&el.dataset.bound!=='1'){el.type='button';el.addEventListener('click',ev=>runGaButtonHandler(id,ev));el.addEventListener('pointerup',ev=>runGaButtonHandler(id,ev));el.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){runGaButtonHandler(id,ev)}});el.dataset.bound='1'}}if(!document.body.dataset.gaModalBound){document.addEventListener('keydown',ev=>{if(ev.key==='Escape'){closeAccountEditor();closeBridgeModal();closeLearningBotModal();closeManualSendModal();}});document.body.dataset.gaModalBound='1'}if(!document.body.dataset.gaDelegated){for(const eventName of ['click','pointerup','mousedown']){document.addEventListener(eventName,ev=>{const candidateButton=ev.target&&ev.target.closest?ev.target.closest('[data-ga-enable-candidate]'):null;if(candidateButton){ev.preventDefault();ev.stopPropagation();enableCandidate(candidateButton.dataset.configName||'',candidateButton.dataset.candidateId||'');return}const target=ev.target&&ev.target.closest?ev.target.closest('button'):null;if(target&&runGaButtonHandler(target.id||'',ev))return},true)}document.body.dataset.gaDelegated='1'}window.addGroupRow=addGroupRow;window.removeGroupRow=removeGroupRow;window.saveAtmosphereAccount=saveAtmosphereAccount;window.startAtmosphereQr=startAtmosphereQr;window.refreshAtmosphereSession=refreshAtmosphereSession;window.openAtmosphereQrModal=openAtmosphereQrModal;window.startAtmosphereQrForAccount=startAtmosphereQrForAccount;window.closeAtmosphereQrModal=closeAtmosphereQrModal;window.dismissAtmosphereQrModal=dismissAtmosphereQrModal;window.retryAtmosphereQrModal=retryAtmosphereQrModal;window.refreshAtmosphereQrModal=refreshAtmosphereQrModal;window.deleteAtmosphereAccount=deleteAtmosphereAccount;window.openLearningBotModal=openLearningBotModal;window.deleteLearningBot=deleteLearningBot;window.addLearningGroupLinkRow=addLearningGroupLinkRow;window.removeLearningGroupLinkRow=removeLearningGroupLinkRow;window.fillAccountForm=fillAccountForm;window.selectAtmosphereAccount=selectAtmosphereAccount;window.toggleAtmosphereAccountEnabled=toggleAtmosphereAccountEnabled;window.toggleAtmosphereGroupEnabled=toggleAtmosphereGroupEnabled;window.setSelectedAtmosphereAccountKey=setSelectedAtmosphereAccountKey;window.openAccountEditor=openAccountEditor;window.closeAccountEditor=closeAccountEditor;window.openNewAccountEditor=openNewAccountEditor;window.openManualSendModal=openManualSendModal;window.closeManualSendModal=closeManualSendModal;window.fillManualMessage=fillManualMessage;window.sendManualGroupMessage=sendManualGroupMessage;window.loadCandidatePool=loadCandidatePool;window.enableCandidate=enableCandidate;window.runAtmosphereScheduler=runAtmosphereScheduler;window.openRoleEditor=openRoleEditor;window.closeRoleEditor=closeRoleEditor;window.saveRoleEditor=saveRoleEditor;window.toggleBridgeGroupPermission=toggleBridgeGroupPermission;window.triggerRelationship=triggerRelationship;}
 bindGroupAtmosphereButtons();
-['ga_tool_account_select'].forEach(id=>{const el=document.getElementById(id);if(el&&el.dataset.boundSelect!=='1'){el.addEventListener('change',()=>syncToolAccountSelects(id));el.dataset.boundSelect='1';}});
-['ga_candidate_language_filter','ga_candidate_role_filter'].forEach(id=>{const el=document.getElementById(id);if(el&&el.dataset.boundCandidateFilter!=='1'){el.addEventListener('change',()=>{renderAccounts(window.__gaAccounts||[]);renderCandidatePool(window.__gaCandidateRows||[])});el.dataset.boundCandidateFilter='1';}});const bridgeAccountSelect=document.getElementById('ga_bridge_account_select');if(bridgeAccountSelect&&bridgeAccountSelect.dataset.boundBridgeSelect!=='1'){bridgeAccountSelect.addEventListener('change',renderBridgeGroupChoices);bridgeAccountSelect.dataset.boundBridgeSelect='1';}
+['ga_candidate_language_filter','ga_candidate_role_filter'].forEach(id=>{const el=document.getElementById(id);if(el&&el.dataset.boundCandidateFilter!=='1'){el.addEventListener('change',()=>{renderAccounts(window.__gaAccounts||[]);renderCandidatePool(window.__gaCandidateRows||[])});el.dataset.boundCandidateFilter='1';}});const bridgeRoleSelect=document.getElementById('ga_bridge_role_select');if(bridgeRoleSelect&&bridgeRoleSelect.dataset.boundBridgeSelect!=='1'){bridgeRoleSelect.addEventListener('change',renderBridgeGroupChoices);bridgeRoleSelect.dataset.boundBridgeSelect='1';}const bridgeRegionSelect=document.getElementById('ga_bridge_region');if(bridgeRegionSelect&&bridgeRegionSelect.dataset.boundBridgeRegion!=='1'){bridgeRegionSelect.addEventListener('change',renderBridgeGroupChoices);bridgeRegionSelect.dataset.boundBridgeRegion='1';}
 reloadAll().catch(err=>{ga_session_status.textContent=err.message||String(err)});
 </script></body></html>"""
 
@@ -1708,10 +2020,10 @@ OPS_INTAKE_SUBMIT_PAGE_HTML = r"""
     .shell-nav a { color:#2563eb; text-decoration:none; font-size:13px; font-weight:700; padding:8px 12px; border-radius:999px; background:#eef4ff; border:1px solid #d8e5ff; }
     .hero { background:linear-gradient(135deg,#10203f,#1f4fa3); color:#fff; border-radius:22px; padding:24px 26px; box-shadow:0 18px 40px rgba(16,32,63,.18); }
     .hero h1 { margin:0 0 8px; font-size:30px; } .subtitle { color:rgba(255,255,255,.82); font-size:14px; line-height:1.7; }
-    .summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:16px; }
+    .summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; margin-top:0; }
     .summary-card,.guild-card,.item-card,.section-card,.executor-card { background:#fff; border:1px solid #e5eaf3; border-radius:18px; padding:16px; box-shadow:0 10px 28px rgba(15,23,42,.05); }
     .summary-card .label { color:#64748b; font-size:12px; } .summary-card .value { font-size:26px; font-weight:900; margin-top:4px; }
-    .section-card { margin-top:16px; } .section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+    .section-card { margin-top:0; } .section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
     .section-head h2 { margin:0; font-size:22px; } .guild-grid,.executor-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:16px; margin-top:16px; }
     .guild-head,.executor-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; }
     .guild-title,.executor-title { margin:0; font-size:20px; } .muted { color:#64748b; font-size:13px; line-height:1.55; }
@@ -1805,18 +2117,23 @@ PRODUCTION_OPS_PAGE_HTML = """
     .hero .subtitle { color:var(--muted); font-size:14px; margin-top:10px; max-width:920px; line-height:1.7; }
     .card { background: var(--panel); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); border:1px solid rgba(219,228,240,.95); margin-top: 16px; }
     .card h2 { margin:0 0 14px 0; font-size:20px; }
-    .top-overview-grid { display:grid; grid-template-columns: minmax(0, 1.2fr) minmax(360px, .8fr); gap:12px; margin-top:16px; align-items:stretch; }
-    .top-overview-grid .card { margin-top:0; padding:16px; }
+    .top-overview-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows:1fr; gap:16px; margin-top:0; align-items:stretch; }
+    .page-shell .top-overview-grid > .card.card { margin-top:0!important; padding:14px 16px!important; min-height:148px; height:100%; display:flex; flex-direction:column; }
     .summary-grid { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:10px; }
     .summary-item { padding:12px 14px; border-radius:14px; background:linear-gradient(180deg, #ffffff 0%, #f8fbff 100%); border:1px solid var(--line); min-height:72px; }
     .summary-item .label { color:var(--muted); font-size:12px; margin-bottom:8px; }
     .summary-item .value { font-size:22px; font-weight:700; letter-spacing:-0.02em; }
     .status-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:12px; }
     .status-card { padding:14px; border-radius:16px; background:linear-gradient(180deg, #ffffff 0%, #f8fbff 100%); border:1px solid var(--line); }
+    .top-overview-grid .status-card { flex:1; display:flex; align-items:stretch; padding:10px!important; }
     .status-card h3 { margin:0 0 10px 0; font-size:15px; }
-    .status-meta { display:grid; grid-template-columns: 92px 1fr; gap:6px 10px; font-size:13px; }
+    .status-meta { display:grid; grid-template-columns: 96px minmax(0, 1fr); gap:8px 12px; font-size:13px; align-content:start; width:100%; }
+    .top-overview-grid .status-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); gap:8px 12px; }
+    .top-overview-grid .status-pair { min-width:0; display:grid; grid-template-columns:64px minmax(0, 1fr); align-items:center; gap:6px; }
+    .top-overview-grid .status-pair span { color:var(--muted); font-size:12px; line-height:18px; white-space:nowrap; }
+    .top-overview-grid .status-pair strong { color:var(--text); font-size:13px; font-weight:650; line-height:18px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .status-meta .k { color:var(--muted); }
-    .account-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:14px; }
+    .account-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:16px; }
     .account-card { padding:18px; border-radius:18px; background:linear-gradient(180deg, #ffffff 0%, #f7fbff 100%); border:1px solid var(--line); }
     .account-card h3 { margin:0 0 14px 0; font-size:16px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
     .account-head-left { display:flex; align-items:center; gap:10px; min-width:0; }
@@ -1967,8 +2284,8 @@ PRODUCTION_OPS_PAGE_HTML = """
 html{scrollbar-gutter:stable;background:var(--crm-bg)!important;font-size:14px!important;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
 body{margin:0!important;padding:24px!important;min-height:100vh!important;background:radial-gradient(circle at 12% -8%,rgba(47,107,255,.10),transparent 31%),linear-gradient(180deg,#f7f9fd 0%,#eef3f9 100%)!important;color:var(--crm-text)!important;font-family:var(--crm-font)!important;font-size:14px!important;line-height:1.5!important;letter-spacing:-.006em!important;}
 body *{box-sizing:border-box;}
-.page-shell,body>.page{width:min(1480px,calc(100vw - 48px))!important;max-width:1480px!important;margin:0 auto!important;padding:0 0 32px!important;display:grid!important;grid-template-columns:248px minmax(0,1fr)!important;gap:24px!important;align-items:start!important;}
-.shell-nav,.nav{grid-column:1!important;grid-row:1 / span 160!important;position:sticky!important;top:24px!important;z-index:30!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:6px!important;flex-wrap:nowrap!important;min-height:calc(100vh - 48px)!important;margin:0!important;padding:22px 16px!important;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px) saturate(140%)!important;border:1px solid var(--crm-border)!important;border-radius:var(--crm-r-2xl)!important;box-shadow:var(--crm-shadow)!important;}
+.page-shell,body>.page{width:min(1480px,calc(100vw - 48px))!important;max-width:1480px!important;margin:0 auto!important;padding:0 0 32px!important;display:grid!important;grid-template-columns:248px minmax(0,1fr)!important;gap:16px 32px!important;align-items:start!important;}
+.shell-nav,.nav{grid-column:1!important;grid-row:1 / span 160!important;position:fixed!important;top:24px!important;left:max(24px,calc((100vw - 1480px)/2))!important;width:248px!important;height:calc(100vh - 48px)!important;min-height:0!important;overflow-y:auto!important;z-index:30!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:6px!important;flex-wrap:nowrap!important;margin:0!important;padding:22px 16px!important;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px) saturate(140%)!important;border:1px solid var(--crm-border)!important;border-radius:var(--crm-r-2xl)!important;box-shadow:var(--crm-shadow)!important;}
 .shell-nav::before,.nav::before{content:'MCN 客服工具';display:block;margin:0 8px 18px;padding:0 0 16px;border-bottom:1px solid var(--crm-border);color:#111827;font-size:18px;line-height:1.12;font-weight:760;letter-spacing:-.035em;}
 .shell-nav a,.nav a{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:10px!important;min-height:40px!important;padding:11px 14px!important;border-radius:15px!important;background:transparent!important;border:0!important;color:var(--crm-muted)!important;text-decoration:none!important;font-size:14px!important;line-height:18px!important;font-weight:620!important;letter-spacing:-.01em!important;white-space:nowrap!important;box-shadow:none!important;transition:background .16s ease,color .16s ease,transform .16s ease;}
 .shell-nav a::before,.nav a::before{content:'';width:8px;height:8px;border-radius:999px;background:#cbd5e1;flex:0 0 auto;transition:background .16s ease;}
@@ -1977,14 +2294,19 @@ body *{box-sizing:border-box;}
 .shell-nav a.is-active,.nav a.is-active{background:var(--crm-blue)!important;color:#fff!important;box-shadow:0 12px 24px rgba(47,107,255,.22)!important;}
 .shell-nav a.is-active::before,.nav a.is-active::before{background:#fff!important;}
 .page-shell>:not(.shell-nav),body>.page>:not(.nav){grid-column:2!important;min-width:0!important;}
-.hero{padding:24px 26px!important;margin:0 0 16px!important;min-height:84px;border-radius:26px!important;background:linear-gradient(135deg,#fff 0%,#f8fbff 56%,#eef5ff 100%)!important;border:1px solid var(--crm-border)!important;box-shadow:var(--crm-shadow-card)!important;color:var(--crm-text)!important;}
+.hero{padding:20px 24px!important;margin:0!important;min-height:72px;border-radius:24px!important;background:var(--crm-panel)!important;border:1px solid var(--crm-border)!important;box-shadow:var(--crm-shadow-card)!important;color:var(--crm-text)!important;}
+.hero h1{margin-bottom:4px!important;}
+.hero p,.hero .subtitle,.hero .muted,.hero .hint,.hero .help,.hero small{color:#475569!important;font-size:13px!important;line-height:1.5!important;font-weight:500!important;max-width:920px!important;}
+.hero + .card,.hero + .summary-grid,.hero + .grid,.hero + .stats-grid,.hero + .config-workspace,.hero + .mini-tools,.hero + .ga-notice,.hero + .toolbar,.hero + .filter-card,body>.page>.hero + *,.page-shell>.hero + *{margin-top:0!important;}
+.page-shell>.card:first-of-type,body>.page>.card:first-of-type{margin-top:0!important;}
+.page-shell>.hero:first-of-type,body>.page>.hero:first-of-type{margin-top:0!important;}
 .card,.summary-item,.executor-card,.account-card,.binding-card,.advanced-fields,.qr-modal-card,.modal-card,.status-card,.group-card,.mini-note,fieldset{background:var(--crm-panel)!important;border:1px solid var(--crm-border)!important;color:var(--crm-text)!important;border-radius:var(--crm-r-xl)!important;box-shadow:var(--crm-shadow-card)!important;}
-.card{padding:20px!important;margin-top:16px!important;}
-.card + .card,.group-card + .group-card,.account-card + .account-card{margin-top:16px!important;}
+.card{padding:20px!important;margin-top:0!important;}
+.card + .card,.section-card + .section-card,.group-card + .group-card,.account-card + .account-card,.executor-card + .executor-card,.guild-card + .guild-card{margin-top:16px!important;}
 .summary-item,.status-card,.account-status-item{padding:16px!important;border-radius:var(--crm-r-lg)!important;background:linear-gradient(180deg,#fff 0%,#fbfdff 100%)!important;}
 .account-card,.binding-card{padding:18px!important;}
 .group-card,.mini-note{padding:14px!important;}
-.grid,.mini-tools,.editor-grid,.field-grid,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid,.toolbar-actions,.inline-actions{gap:14px!important;}
+.grid,.mini-tools,.editor-grid,.field-grid,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid,.toolbar-actions,.inline-actions{gap:12px!important;}
 h1,h2,h3,p{margin-top:0;}
 h1{font-size:28px!important;line-height:1.16!important;letter-spacing:-.045em!important;color:#111827!important;font-weight:780!important;margin-bottom:6px!important;}
 h2{font-size:19px!important;line-height:1.28!important;letter-spacing:-.03em!important;color:var(--crm-text)!important;font-weight:740!important;margin-bottom:12px!important;}
@@ -2019,7 +2341,14 @@ tr:hover td{background:#f8fbff!important;}
 .badge.pending,.pill.orange,.pill.yellow,.pill.amber{background:var(--crm-amber-soft)!important;color:#c2410c!important;border-color:#fed7aa!important;}
 .status-line.success,.pill.green,.badge.green{color:#166534!important;background:var(--crm-green-soft)!important;border-color:#bbf7d0!important;}
 .status-line.error{color:#be123c!important;}
-.toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:14px!important;margin-bottom:14px!important;}
+.toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin-bottom:12px!important;}
+:root{--crm-card-gap:var(--ops-card-gap);--crm-layout-gap:var(--ops-content-left-gap);}
+.page-shell,body>.page{gap:var(--crm-card-gap) var(--crm-layout-gap)!important;}
+.page-shell>.hero,.page-shell>.card,.page-shell>.section-card,.page-shell>.summary,.page-shell>.summary-grid,.page-shell>.stats-grid,.page-shell>.top-overview-grid,.page-shell>.ga-stats,.page-shell>.ga-prototype-board,body>.page>.hero,body>.page>.card,body>.page>.section-card,body>.page>.summary,body>.page>.summary-grid,body>.page>.stats-grid,body>.page>.top-overview-grid{margin-top:0!important;}
+.page-shell>.card + .card,body>.page>.card + .card,.page-shell>.section-card + .section-card,body>.page>.section-card + .section-card{margin-top:0!important;}
+.page-shell .top-overview-grid > .card.card,body>.page .top-overview-grid > .card.card{margin-top:0!important;}
+.grid > .card,.summary-grid > .summary-item,.stats-grid > .summary-item,.stats-grid > .card,.ga-stats > .card,.executor-card-grid > .executor-card,.account-card-grid > .account-card,.guild-grid > .guild-card,.executor-grid > .executor-card{margin-top:0!important;}
+.summary,.summary-grid,.stats-grid,.top-overview-grid,.account-grid,.guild-grid,.executor-grid,.account-card-grid,.ga-stats,.ga-board-grid,.ga-board-col,.ga-prototype-board{gap:var(--crm-card-gap)!important;}
 details{border-radius:var(--crm-r-lg)!important;border:1px solid var(--crm-border)!important;background:#fbfdff!important;padding:12px 14px!important;}
 summary{cursor:pointer;color:var(--crm-text)!important;font-weight:700!important;}
 pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-height:1.55!important;}
@@ -2029,7 +2358,7 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
 
 </style>
 </head>
-<body>
+<body data-ops-shell-page=\"production-ops\">
   <div class=\"page-shell\">
     <div class=\"shell-nav\">
       <a href=\"/ops\">管理员看板</a>
@@ -2045,18 +2374,14 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
 
     <div class=\"top-overview-grid\">
       <div class=\"card\">
-        <h2 style=\"margin-top:0;\">当前状态</h2>
-        <div class=\"summary-grid\">
-          <div class=\"summary-item\"><div class=\"label\">守护状态</div><div class=\"value\" id=\"daemonEnabledState\">-</div></div>
-          <div class=\"summary-item\"><div class=\"label\">审批账号</div><div class=\"value\" id=\"waAccountCount\">-</div></div>
-          <div class=\"summary-item\"><div class=\"label\">运行中</div><div class=\"value\" id=\"waEnabledAccountCount\">-</div></div>
-          <div class=\"summary-item\"><div class=\"label\">官方群待处理</div><div class=\"value\" id=\"officialPendingCount\">-</div></div>
+        <h2 style=\"margin-top:0;\">注册群审批</h2>
+        <div class=\"status-card\">
+          <div class=\"status-meta\" id=\"workerHealthMeta\"></div>
         </div>
-        <div class=\"muted\" id=\"productionOpsRuntimeHint\" style=\"margin-top:10px;\"></div>
       </div>
 
       <div class=\"card\">
-        <h2 style=\"margin-top:0;\">官方群总览</h2>
+        <h2 style=\"margin-top:0;\">官方群审批</h2>
         <div class=\"status-card\">
           <div class=\"status-meta\" id=\"officialBridgeSummaryMeta\"></div>
         </div>
@@ -2361,19 +2686,6 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
     </div>
     <!-- OPS_ADMIN_ONLY_APPROVAL_EDITOR_END -->
 
-    <!-- OPS_ADMIN_ONLY_AREA_OPTIONS_START -->
-    <div class=\"card\">
-      <h2 style=\"margin-top:0;\">地区选项源</h2>
-      <div class=\"field-stack\" style=\"margin-top:12px;\">
-        <label class=\"field-hint\">地区选项（每行一个）</label>
-        <textarea id=\"area_options_text\" rows=\"5\" placeholder=\"Indonesia\\nBrazil\\nMexico\"></textarea>
-      </div>
-      <div style=\"margin-top:12px; display:flex; gap:8px;\">
-        <button type=\"button\" onclick=\"saveAreaOptions()\">保存地区选项</button>
-      </div>
-    </div>
-    <!-- OPS_ADMIN_ONLY_AREA_OPTIONS_END -->
-
     <div id=\"productionOpsToast\" class=\"toast\"></div>
     <!-- OPS_ADMIN_ONLY_QR_MODAL_START -->
     <div id=\"approvalQrModal\" class=\"qr-modal\" onclick=\"dismissApprovalQrModal(event)\">
@@ -2554,7 +2866,16 @@ function renderStatusMeta(elId, rows) {
   const el = document.getElementById(elId);
   if (!el) return;
   const safeRows = Array.isArray(rows) ? rows : [];
+  const compact = Boolean(el.closest('.top-overview-grid'));
+  if (compact) {
+    el.innerHTML = safeRows.map(row => `<div class="status-pair"><span>${row[0]}</span><strong>${row[1]}</strong></div>`).join('');
+    return;
+  }
   el.innerHTML = safeRows.map(row => `<div class="k">${row[0]}</div><div>${row[1]}</div>`).join('');
+}
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = String(value ?? '-');
 }
 function toggleSwitch(inputId, enabled, wrapperId) {
   const input = document.getElementById(inputId);
@@ -2821,24 +3142,6 @@ async function reloadAreaOptions(currentValues=null) {
   const data = await loadJson('/api/ops/whatsapp-approval-area-options');
   window.__approvalAreaOptions = Array.isArray(data.options) ? data.options : [];
   renderAllGroupAreaSelects(window.__approvalAreaOptions, effectiveCurrentValues);
-  const sourceOptions = Array.isArray(data.source_options) && data.source_options.length ? data.source_options : window.__approvalAreaOptions;
-  const text = sourceOptions.map(item => String(item.value || item.label || '').trim()).filter(Boolean).join('\\n');
-  const textarea = document.getElementById('area_options_text');
-  if (textarea) textarea.value = text;
-}
-async function saveAreaOptions() {
-  const textarea = document.getElementById('area_options_text');
-  const options = String(textarea?.value || '').split('\\n').map(item => item.trim()).filter(Boolean);
-  const data = await loadJson('/api/ops/whatsapp-approval-area-options', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({options}),
-  });
-  window.__approvalAreaOptions = Array.isArray(data.options) ? data.options : [];
-  renderAllGroupAreaSelects(window.__approvalAreaOptions, [1, 2, 3].map(index => String(document.getElementById(`wa_group_area_${index}`)?.value || '').trim()));
-  const sourceOptions = Array.isArray(data.source_options) && data.source_options.length ? data.source_options : window.__approvalAreaOptions;
-  if (textarea) textarea.value = sourceOptions.map(item => String(item.value || item.label || '').trim()).filter(Boolean).join('\\n');
-  showToast('保存地区选项成功', 'success');
 }
 function renderBindingCardState(index, binding) {
   const card = document.getElementById(`wa_binding_card_${index}`);
@@ -2882,6 +3185,50 @@ function formatOfficialBridgeHealthStatus(status) {
   if (normalized === 'degraded') return '异常';
   if (normalized === 'error') return '异常';
   return normalized || '-';
+}
+function formatOpsShortTime(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '-';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw.replace('T', ' ').replace(/\.\d+/, '').replace(/(?:Z|[+-]\d{2}:?\d{2})$/, '').slice(0, 16);
+  const diffSeconds = Math.max(Math.floor((Date.now() - d.getTime()) / 1000), 0);
+  if (diffSeconds < 60) return '刚刚';
+  if (diffSeconds < 3600) return `${Math.floor(diffSeconds / 60)} 分钟前`;
+  if (diffSeconds < 86400) return `${Math.floor(diffSeconds / 3600)} 小时前`;
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function approvalAccountSummaryText(rows) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const enabledRows = safeRows.filter(item => item?.enabled !== false);
+  const onlineRows = enabledRows.filter(item => Boolean(item?.session_state?.login_verified));
+  if (!safeRows.length) return '0 个配置';
+  return `${onlineRows.length} 个在线 / ${safeRows.length} 个配置`;
+}
+function approvalLoginIssueText(rows) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const enabledRows = safeRows.filter(item => item?.enabled !== false);
+  const offlineCount = enabledRows.filter(item => !Boolean(item?.session_state?.login_verified)).length;
+  return offlineCount > 0 ? `${offlineCount} 个账号未登录` : '';
+}
+function firstFiniteValue(values, fallback='0') {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return String(n);
+  }
+  return fallback;
+}
+function registrationOperationalStatus({rows, config, workerState}) {
+  if (!Array.isArray(rows) || !rows.length) return '未配置';
+  if (config && config.enabled === false) return '已暂停';
+  return workerState?.ok ? '正常' : '异常';
+}
+function officialOperationalStatus({rows, bridgeData, health}) {
+  if (!Array.isArray(rows) || !rows.length || bridgeData?.configured === false) return '未配置';
+  const normalized = String(health?.status || '').trim();
+  if (normalized === 'healthy') return '正常';
+  if (normalized) return '异常';
+  return '正常';
 }
 function bindingVerifierReadinessText(verifier) {
   return verifier?.ready ? '已就绪' : '未就绪';
@@ -3014,10 +3361,6 @@ function accountCardHtml(row) {
   const groupBindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
     ? row.group_binding_runtimes
     : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
-  const verificationChecks = Array.isArray(row.verification_checks) ? row.verification_checks : [];
-  const verificationText = verificationChecks.length
-    ? verificationChecks.map(item => `${item.ok ? '✅' : '⚠️'} ${item.detail || item.code || '-'}`).join('<br/>')
-    : '-';
   const sessionState = (window.__approvalSessionStateByAccount && window.__approvalSessionStateByAccount[row.account_key]) || row.session_state || {};
   const accountKeyEscaped = String(row.account_key || '').replace(/'/g, "&#39;");
   const pendingAction = (window.__approvalTogglePendingByAccount || {})[String(row.account_key || '').trim()] || '';
@@ -3060,19 +3403,6 @@ function accountCardHtml(row) {
     ? `<button type="button" class="secondary" onclick="fillApprovalAccountForm('${accountKeyEscaped}')">编辑</button>
       <button type="button" class="secondary" onclick="deleteApprovalAccount('${accountKeyEscaped}')">删除账号</button>`
     : '';
-  const adminMoreActionsHtml = isAdminUser
-    ? `<details class="advanced-fields" style="margin-top:10px;">
-      <summary>更多操作</summary>
-      <div class="advanced-fields-body">
-        <div class="link-actions" style="margin-top:0;">
-          <button type="button" onclick="startApprovalAccountRuntime('${accountKeyEscaped}')">启动扫码服务</button>
-          <button type="button" class="secondary" onclick="stopApprovalAccountRuntime('${accountKeyEscaped}')">停止扫码服务</button>
-          <button type="button" class="secondary" onclick="refreshApprovalAccountSession('${accountKeyEscaped}')">刷新状态</button>
-          <button type="button" class="secondary" onclick="resetApprovalAccountSession('${accountKeyEscaped}')">重置会话</button>
-        </div>
-      </div>
-    </details>`
-    : '';
   return `<div class="account-card">
     <h3>
       <span class="account-head-left">
@@ -3095,13 +3425,8 @@ function accountCardHtml(row) {
       <div class="field-hint" style="margin-bottom:8px;">逐群绑定详情</div>
       <div class="binding-list">${groupBindings.length ? groupBindings.map((binding, index) => bindingSummaryHtml(binding, row, index)).join('') : '<div class="binding-card is-empty">暂无群绑定</div>'}</div>
     </div>
-    <details class="advanced-fields" style="margin-top:14px;">
-      <summary>校验摘要</summary>
-      <div class="advanced-fields-body"><div class="muted">${verificationText}</div></div>
-    </details>
     ${qrBlock}
     ${(operatorActionsHtml || adminActionsHtml) ? `<div class="link-actions">${operatorActionsHtml}${adminActionsHtml}</div>` : ''}
-    ${adminMoreActionsHtml}
   </div>`;
 }
 function renderApprovalAccountRows() {
@@ -3323,10 +3648,8 @@ async function reloadApprovalAccounts() {
       loading: Boolean(window.__approvalSessionLoadingByAccount && window.__approvalSessionLoadingByAccount[modalAccountKey]),
     });
   }
-  const summary = data.summary || {};
-  document.getElementById('waAccountCount').textContent = String(summary.total_accounts ?? 0);
-  document.getElementById('waEnabledAccountCount').textContent = String(summary.active_now_accounts ?? 0);
   renderRegistrationGroupOverview();
+  renderOfficialGroupOverview();
 }
 async function reloadApprovalCandidates() {
   const data = await loadJson('/api/ops/whatsapp-approval-candidates/summary');
@@ -3625,44 +3948,60 @@ async function deleteApprovalAccount(accountKey) {
 async function reloadOfficialBridgeSummary() {
   const data = await loadJson('/api/ops/official-group-bridge-summary/summary');
   window.__officialBridgeSummaryData = data;
+  renderOfficialGroupOverview();
+}
+function renderOfficialGroupOverview() {
+  if (!document.getElementById('officialBridgeSummaryMeta')) return;
+  const data = window.__officialBridgeSummaryData || {};
   const health = data.health || {};
   const summary = data.summary || {};
-  document.getElementById('officialPendingCount').textContent = String(summary.pending_count ?? 0);
-  renderStatusMeta('officialBridgeSummaryMeta', [
-    ['状态', formatOfficialBridgeHealthStatus(health.status)],
-    ['模式', formatOfficialBridgeMode(health.mode)],
-    ['目标群数', String(summary.target_group_count ?? 0)],
-    ['待处理', String(summary.pending_count ?? 0)],
-    ['今日新增', String(summary.today_created_count ?? 0)],
-    ['超时超1小时', String(summary.pending_timeout_over_1h_count ?? 0)],
-  ]);
+  const rows = Array.isArray(window.__approvalAccounts) ? window.__approvalAccounts : [];
+  const officialRows = rows.filter(item => String(item.responsible_type || '') === 'official_group');
+  const pendingTimeoutCount = Number(summary.pending_timeout_over_1h_count || 0);
+  const loginIssue = approvalLoginIssueText(officialRows);
+  const abnormalText = data.configured === false
+    ? '未配置审批通道'
+    : (pendingTimeoutCount > 0
+      ? `${pendingTimeoutCount} 人超时待处理`
+      : (loginIssue || (String(health.status || '').trim() && String(health.status || '').trim() !== 'healthy' ? formatOfficialBridgeHealthStatus(health.status) : '无异常')));
+  const officialOperationalRows = [
+    ['运行状态', officialOperationalStatus({rows: officialRows, bridgeData: data, health})],
+    ['待处理人数', String(summary.pending_count ?? 0)],
+    ['今日已通过', firstFiniteValue([summary.today_approved_count, summary.approved_today_count, summary.approved_count, summary.resolved_count], '0')],
+    ['审批账号', approvalAccountSummaryText(officialRows)],
+    ['最近检查', formatOpsShortTime(health.checked_at || summary.checked_at || data.checked_at)],
+    ['异常提示', abnormalText || '无异常'],
+  ];
+  renderStatusMeta('officialBridgeSummaryMeta', officialOperationalRows);
 }
 function renderRegistrationGroupOverview() {
   if (!document.getElementById('workerHealthMeta')) return;
   const rows = Array.isArray(window.__approvalAccounts) ? window.__approvalAccounts : [];
   const registrationRows = rows.filter(item => String(item.responsible_type || '') === 'registration_group');
-  const bindings = registrationRows.flatMap(item => Array.isArray(item.group_binding_runtimes) && item.group_binding_runtimes.length
-    ? item.group_binding_runtimes
-    : (Array.isArray(item.group_link_bindings) ? item.group_link_bindings : []));
-  const monitoredBindings = bindings.filter(item => item?.enabled !== false);
-  const activeBindings = monitoredBindings.filter(item => Boolean(item?.schedule_runtime?.active_now)).length;
-  const readyBindings = monitoredBindings.filter(item => Boolean(item?.membership_verifier?.ready)).length;
   const runtime = (window.__productionOpsDaemonData || {}).runtime || {};
+  const config = (window.__productionOpsDaemonData || {}).config || {};
   const status = runtime.status || {};
   const workerState = status.worker_state || {};
   const probeCandidates = [status.decision_group_state?.payload, status.fresh_probe?.payload, status.worker_state?.payload]
     .filter(item => item && typeof item === 'object');
-  const probeNames = [...new Set(probeCandidates.map(item => String(item.group_name || item.group_id || '').trim()).filter(Boolean))];
   const pendingValues = probeCandidates.map(item => Number(item.pending_count)).filter(item => Number.isFinite(item));
-  renderStatusMeta('workerHealthMeta', [
-    ['状态', workerState.ok ? '正常' : '异常'],
-    ['注册账号', String(registrationRows.length)],
-    ['绑定群数', String(bindings.length)],
-    ['当前生效', `${activeBindings}/${bindings.length || 0}`],
-    ['真实校验', `${readyBindings}/${bindings.length || 0}`],
-    ['当前探针', probeNames[0] || '-'],
-    ['待审批', pendingValues.length ? String(Math.max(...pendingValues)) : '-'],
-  ]);
+  const incidents = Array.isArray(status.incidents) ? status.incidents : [];
+  const warnings = Array.isArray(status.observation_warnings) ? status.observation_warnings : [];
+  const loginIssue = approvalLoginIssueText(registrationRows);
+  const abnormalText = incidents.length
+    ? `${incidents.length} 个异常`
+    : (warnings.length
+      ? `${warnings.length} 个待核验`
+      : (loginIssue || (workerState.ok ? '无异常' : (workerState.message || '审批异常'))));
+  const registrationOperationalRows = [
+    ['运行状态', registrationOperationalStatus({rows: registrationRows, config, workerState})],
+    ['待审批人数', pendingValues.length ? String(Math.max(...pendingValues)) : '-'],
+    ['今日已通过', firstFiniteValue([status.today_approved_count, status.approved_today_count, status.formal_approval?.approved_count, status.manual_approval?.approved_count], '0')],
+    ['审批账号', approvalAccountSummaryText(registrationRows)],
+    ['最近检查', formatOpsShortTime(status.checked_at)],
+    ['异常提示', abnormalText || '无异常'],
+  ];
+  renderStatusMeta('workerHealthMeta', registrationOperationalRows);
 }
 function applyProductionOpsDaemonConfig(data) {
   window.__productionOpsDaemonData = data;
@@ -3724,7 +4063,7 @@ OPS_PAGE_HTML = """
     .grid { display: grid; gap: 14px; }
     .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .section { margin-top: 16px; background: #fff; border: 1px solid #e5eaf3; border-radius: 16px; padding: 18px; box-shadow: 0 10px 30px rgba(15,23,42,.05); }
+    .section { margin-top: 0; background: #fff; border: 1px solid #e5eaf3; border-radius: 16px; padding: 18px; box-shadow: 0 10px 30px rgba(15,23,42,.05); }
     .section-title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin: 0 0 12px; font-size: 18px; color: #0f172a; }
     .card { background: #fff; border: 1px solid #e5eaf3; border-radius: 14px; padding: 16px; min-height: 96px; }
     .metric { font-size: 30px; font-weight: 800; color: #0f172a; margin-top: 6px; }
@@ -3788,7 +4127,7 @@ OPS_BIND_FAILED_USERS_PAGE_HTML = """
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>绑定失败用户</title>
 <style>
-:root{--bg:#f6f8fb;--card:#fff;--text:#172033;--muted:#667085;--line:#e7ecf3;--primary:#2563eb;--primary-weak:#eff6ff;--danger:#dc2626;--danger-weak:#fef2f2;--warning:#b45309;--warning-weak:#fff7ed;--shadow:0 1px 2px rgba(16,24,40,.04),0 10px 24px rgba(16,24,40,.06);--radius:18px}*{box-sizing:border-box}body{font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:24px;background:var(--bg);color:var(--text);font-size:14px}.page{max-width:1440px;margin:0 auto}.nav{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}.nav a{color:#334155;text-decoration:none;font-size:13px;font-weight:700;padding:8px 12px;border-radius:999px;background:#fff;box-shadow:0 0 0 1px rgba(34,42,53,.08),0 4px 8px rgba(34,42,53,.04)}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;background:linear-gradient(135deg,#111827,#1d4ed8);color:#fff;border-radius:24px;padding:22px 24px;box-shadow:var(--shadow)}.hero h1{margin:0;font-size:28px;line-height:1.15}.hero .muted{color:rgba(255,255,255,.78)}.hero-meta{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}.hero-chip{display:inline-flex;align-items:center;border-radius:999px;padding:7px 11px;background:#fff;border:1px solid rgba(255,255,255,.82);color:#1d4ed8;font-size:12px;font-weight:900}.card{background:var(--card);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);margin-top:16px}.card-head{display:flex;justify-content:space-between;gap:14px;align-items:center;margin-bottom:14px}.card-title{font-size:16px;font-weight:800}.muted{color:var(--muted);font-size:13px}.filters{display:grid;grid-template-columns:minmax(160px,.9fr) minmax(180px,1fr) minmax(220px,1.2fr) auto;gap:12px;align-items:end}.filters label{display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px}.actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}input,select{width:100%;min-height:38px;padding:8px 10px;border:1px solid #d8dee8;border-radius:10px;background:#fff;color:#172033;outline:none}input:focus,select:focus{border-color:#93c5fd;box-shadow:0 0 0 3px rgba(37,99,235,.12)}input[type="checkbox"]{width:16px;min-height:16px;accent-color:var(--primary)}button{border:0;background:var(--primary);color:#fff;border-radius:10px;padding:9px 12px;font-weight:800;cursor:pointer;white-space:nowrap;min-height:38px}.secondary{background:var(--primary-weak);color:#1d4ed8}.danger{background:var(--danger-weak);color:var(--danger)}button:disabled,.list-toolbar button:disabled{background:#f1f5f9!important;color:#94a3b8!important;box-shadow:inset 0 0 0 1px #e2e8f0!important;cursor:not-allowed}.list-card{padding:0;overflow:hidden}.list-toolbar{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:16px 18px;border-bottom:1px solid var(--line);background:#fff}.summary-line{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.summary-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#f1f5f9;color:#334155;font-size:12px;font-weight:800}.table-wrap{padding:12px;background:#f8fafc}.failed-list{display:flex;flex-direction:column;gap:8px}.list-select-row{display:grid;grid-template-columns:34px minmax(120px,.72fr) minmax(0,2.1fr) minmax(170px,.9fr) 74px;align-items:center;gap:10px;padding:9px 12px;border:1px solid #dbe3ef;border-radius:12px;background:#f1f5f9;color:#475569;font-size:12px;font-weight:900}.select-all-label{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}.list-title{color:#334155}.failed-field-head{display:grid;grid-template-columns:minmax(104px,1fr) minmax(74px,.68fr) minmax(118px,1.05fr) minmax(62px,.58fr);gap:7px;align-items:center;color:#334155;text-transform:uppercase;letter-spacing:.02em}.failed-field-head span{min-width:0;overflow:hidden;text-overflow:ellipsis}.failed-row{display:grid;grid-template-columns:34px minmax(120px,.72fr) minmax(0,2.1fr) minmax(170px,.9fr) 74px;gap:9px;align-items:center;padding:10px 10px;border:1px solid var(--line);border-radius:14px;background:#fff;box-shadow:0 1px 3px rgba(15,23,42,.04)}.failed-row:hover{border-color:#bfd3f8;box-shadow:0 4px 12px rgba(15,23,42,.06)}.failed-select{display:flex;align-items:center;justify-content:center}.failed-user{min-width:0;border-right:1px solid #eef2f7;padding-right:8px}.failed-user strong{display:block;font-size:14px;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.failed-user .meta-line{margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.failed-fields{display:grid;grid-template-columns:minmax(104px,1fr) minmax(74px,.68fr) minmax(118px,1.05fr) minmax(62px,.58fr);gap:7px;align-items:center}.field-block{min-width:0}.field-input{min-width:0;width:100%;height:34px;padding:6px 8px;font-size:13px;border-radius:9px}.reason-cell{min-width:0;background:#f8fafc;border:1px solid #edf1f6;border-radius:10px;padding:8px 8px}.reason-cell .pill{margin:0 0 5px 0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.reason-text{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:#475569;font-size:12px;line-height:1.4}.row-actions{display:flex;flex-direction:column;gap:6px;align-items:stretch;justify-content:center}.row-actions button{width:100%;min-width:0;min-height:31px;padding:6px 8px;font-size:12px;line-height:1.2}@media(max-width:1180px){.list-select-row{display:flex;justify-content:space-between}.list-select-row>span{display:none}.failed-row{grid-template-columns:30px minmax(130px,.8fr) minmax(0,2fr) 78px}.reason-cell{grid-column:3 / 5}.row-actions{grid-column:4;grid-row:1}.failed-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}.pill{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;background:var(--warning-weak);color:var(--warning);font-size:12px;font-weight:800}.empty{padding:34px 18px;color:#64748b;text-align:center}.empty strong{display:block;color:#334155;font-size:15px;margin-bottom:6px}@media(max-width:1180px){.failed-row{grid-template-columns:32px 1fr}.failed-fields{grid-column:2;grid-template-columns:repeat(2,minmax(0,1fr))}.reason-cell{grid-column:2}.row-actions{grid-column:2;grid-row:auto;flex-direction:row;justify-content:flex-start}.row-actions button{width:auto;min-width:72px}}@media(max-width:720px){.failed-fields{grid-template-columns:1fr}.failed-row{gap:10px;padding:12px}.list-select-row{align-items:flex-start;flex-direction:column}}
+:root{--bg:#f6f8fb;--card:#fff;--text:#172033;--muted:#667085;--line:#e7ecf3;--primary:#2563eb;--primary-weak:#eff6ff;--danger:#dc2626;--danger-weak:#fef2f2;--warning:#b45309;--warning-weak:#fff7ed;--shadow:0 1px 2px rgba(16,24,40,.04),0 10px 24px rgba(16,24,40,.06);--radius:18px}*{box-sizing:border-box}body{font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:24px;background:var(--bg);color:var(--text);font-size:14px}.page{max-width:1440px;margin:0 auto}.nav{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}.nav a{color:#334155;text-decoration:none;font-size:13px;font-weight:700;padding:8px 12px;border-radius:999px;background:#fff;box-shadow:0 0 0 1px rgba(34,42,53,.08),0 4px 8px rgba(34,42,53,.04)}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;background:linear-gradient(135deg,#111827,#1d4ed8);color:#fff;border-radius:24px;padding:22px 24px;box-shadow:var(--shadow)}.hero h1{margin:0;font-size:28px;line-height:1.15}.hero .muted{color:rgba(255,255,255,.78)}.hero-meta{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}.hero-chip{display:inline-flex;align-items:center;border-radius:999px;padding:7px 11px;background:#fff;border:1px solid rgba(255,255,255,.82);color:#1d4ed8;font-size:12px;font-weight:900}.card{background:var(--card);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);margin-top:12px}.card-head{display:flex;justify-content:space-between;gap:14px;align-items:center;margin-bottom:14px}.card-title{font-size:16px;font-weight:800}.muted{color:var(--muted);font-size:13px}.filters{display:grid;grid-template-columns:minmax(160px,.9fr) minmax(180px,1fr) minmax(220px,1.2fr) auto;gap:12px;align-items:end}.filters label{display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px}.actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}input,select{width:100%;min-height:38px;padding:8px 10px;border:1px solid #d8dee8;border-radius:10px;background:#fff;color:#172033;outline:none}input:focus,select:focus{border-color:#93c5fd;box-shadow:0 0 0 3px rgba(37,99,235,.12)}input[type="checkbox"]{width:16px;min-height:16px;accent-color:var(--primary)}button{border:0;background:var(--primary);color:#fff;border-radius:10px;padding:9px 12px;font-weight:800;cursor:pointer;white-space:nowrap;min-height:38px}.secondary{background:var(--primary-weak);color:#1d4ed8}.danger{background:var(--danger-weak);color:var(--danger)}button:disabled,.list-toolbar button:disabled{background:#f1f5f9!important;color:#94a3b8!important;box-shadow:inset 0 0 0 1px #e2e8f0!important;cursor:not-allowed}.list-card{padding:0;overflow:hidden}.list-toolbar{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:16px 18px;border-bottom:1px solid var(--line);background:#fff}.summary-line{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.summary-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#f1f5f9;color:#334155;font-size:12px;font-weight:800}.table-wrap{padding:12px;background:#f8fafc}.failed-list{display:flex;flex-direction:column;gap:8px}.list-select-row{display:grid;grid-template-columns:34px minmax(120px,.72fr) minmax(0,2.1fr) minmax(170px,.9fr) 74px;align-items:center;gap:10px;padding:9px 12px;border:1px solid #dbe3ef;border-radius:12px;background:#f1f5f9;color:#475569;font-size:12px;font-weight:900}.select-all-label{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}.list-title{color:#334155}.failed-field-head{display:grid;grid-template-columns:minmax(104px,1fr) minmax(74px,.68fr) minmax(118px,1.05fr) minmax(62px,.58fr);gap:7px;align-items:center;color:#334155;text-transform:uppercase;letter-spacing:.02em}.failed-field-head span{min-width:0;overflow:hidden;text-overflow:ellipsis}.failed-row{display:grid;grid-template-columns:34px minmax(120px,.72fr) minmax(0,2.1fr) minmax(170px,.9fr) 74px;gap:9px;align-items:center;padding:10px 10px;border:1px solid var(--line);border-radius:14px;background:#fff;box-shadow:0 1px 3px rgba(15,23,42,.04)}.failed-row:hover{border-color:#bfd3f8;box-shadow:0 4px 12px rgba(15,23,42,.06)}.failed-select{display:flex;align-items:center;justify-content:center}.failed-user{min-width:0;border-right:1px solid #eef2f7;padding-right:8px}.failed-user strong{display:block;font-size:14px;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.failed-user .meta-line{margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.failed-fields{display:grid;grid-template-columns:minmax(104px,1fr) minmax(74px,.68fr) minmax(118px,1.05fr) minmax(62px,.58fr);gap:7px;align-items:center}.field-block{min-width:0}.field-input{min-width:0;width:100%;height:34px;padding:6px 8px;font-size:13px;border-radius:9px}.reason-cell{min-width:0;background:#f8fafc;border:1px solid #edf1f6;border-radius:10px;padding:8px 8px}.reason-cell .pill{margin:0 0 5px 0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.reason-text{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:#475569;font-size:12px;line-height:1.4}.row-actions{display:flex;flex-direction:column;gap:6px;align-items:stretch;justify-content:center}.row-actions button{width:100%;min-width:0;min-height:31px;padding:6px 8px;font-size:12px;line-height:1.2}@media(max-width:1180px){.list-select-row{display:flex;justify-content:space-between}.list-select-row>span{display:none}.failed-row{grid-template-columns:30px minmax(130px,.8fr) minmax(0,2fr) 78px}.reason-cell{grid-column:3 / 5}.row-actions{grid-column:4;grid-row:1}.failed-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}.pill{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;background:var(--warning-weak);color:var(--warning);font-size:12px;font-weight:800}.empty{padding:34px 18px;color:#64748b;text-align:center}.empty strong{display:block;color:#334155;font-size:15px;margin-bottom:6px}@media(max-width:1180px){.failed-row{grid-template-columns:32px 1fr}.failed-fields{grid-column:2;grid-template-columns:repeat(2,minmax(0,1fr))}.reason-cell{grid-column:2}.row-actions{grid-column:2;grid-row:auto;flex-direction:row;justify-content:flex-start}.row-actions button{width:auto;min-width:72px}}@media(max-width:720px){.failed-fields{grid-template-columns:1fr}.failed-row{gap:10px;padding:12px}.list-select-row{align-items:flex-start;flex-direction:column}}
 .help-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.help-chip{font-size:12px;color:#475569;background:#f8fafc;border:1px solid var(--line);border-radius:999px;padding:6px 10px}@media(max-width:980px){body{padding:14px}.hero{display:block}.hero-meta{justify-content:flex-start;margin-top:14px}.filters{grid-template-columns:1fr}.actions{justify-content:flex-start}.list-toolbar{align-items:flex-start;flex-direction:column}}
 </style>
 </head>
@@ -4310,6 +4649,16 @@ class WhatsAppApprovalAreaOptionsUpdateRequest(BaseModel):
     options: list[str]
 
 
+class McnRegionOptionUpdateRequest(BaseModel):
+    code: str
+    enabled: bool = True
+    sort_order: Optional[int] = None
+
+
+class McnRegionOptionsUpdateRequest(BaseModel):
+    options: list[McnRegionOptionUpdateRequest] = Field(default_factory=list)
+
+
 class SubmissionResubmitRequest(BaseModel):
     corrected_by: str
     submitted_at: str
@@ -4393,10 +4742,55 @@ def _normalize_schedule_windows_payload(items: list[Any]) -> list[dict[str, str]
     return normalized
 
 
-WHATSAPP_APPROVAL_DEFAULT_AREA_OPTIONS: list[dict[str, str]] = [
-    {'value': 'Indonesia', 'label': 'Indonesia'},
-    {'value': 'Brazil', 'label': 'Brazil'},
-    {'value': 'Mexico', 'label': 'Mexico'},
+MCN_INTERNAL_REGION_OPTIONS: list[dict[str, Any]] = [
+    {'code': 'ID', 'value': 'Indonesia', 'label': 'Indonesia', 'label_zh': '印尼', 'phone_code': '62', 'language': 'id', 'enabled': True, 'sort_order': 10, 'aliases': ['Indonesia', '印尼', 'indo', 'ID']},
+    {'code': 'BR', 'value': 'Brazil', 'label': 'Brazil', 'label_zh': '巴西', 'phone_code': '55', 'language': 'pt', 'enabled': True, 'sort_order': 20, 'aliases': ['Brazil', '巴西', 'BR']},
+    {'code': 'MX', 'value': 'Mexico', 'label': 'Mexico', 'label_zh': '墨西哥', 'phone_code': '52', 'language': 'es', 'enabled': True, 'sort_order': 30, 'aliases': ['Mexico', '墨西哥', 'MX']},
+    {'code': 'PH', 'value': 'Philippines', 'label': 'Philippines', 'label_zh': '菲律宾', 'phone_code': '63', 'language': 'en', 'enabled': False, 'sort_order': 40, 'aliases': ['Philippines', '菲律宾', 'PH']},
+    {'code': 'MY', 'value': 'Malaysia', 'label': 'Malaysia', 'label_zh': '马来西亚', 'phone_code': '60', 'language': 'ms', 'enabled': False, 'sort_order': 50, 'aliases': ['Malaysia', '马来西亚', 'MY']},
+    {'code': 'SG', 'value': 'Singapore', 'label': 'Singapore', 'label_zh': '新加坡', 'phone_code': '65', 'language': 'en', 'enabled': False, 'sort_order': 60, 'aliases': ['Singapore', '新加坡', 'SG']},
+    {'code': 'HK', 'value': 'Hong Kong', 'label': 'Hong Kong', 'label_zh': '中国香港', 'phone_code': '852', 'language': 'zh', 'enabled': False, 'sort_order': 70, 'aliases': ['Hong Kong', '中国香港', '香港', 'HK']},
+]
+
+
+def _mcn_region_options(*, include_disabled: bool = False) -> list[dict[str, Any]]:
+    rows = []
+    for item in sorted(MCN_INTERNAL_REGION_OPTIONS, key=lambda row: int(row.get('sort_order') or 999)):
+        if not include_disabled and not bool(item.get('enabled')):
+            continue
+        rows.append(dict(item))
+    return rows
+
+
+def _mcn_region_by_value(value: Any) -> Optional[dict[str, Any]]:
+    normalized = str(value or '').strip().lower()
+    if not normalized:
+        return None
+    for item in MCN_INTERNAL_REGION_OPTIONS:
+        candidates = [item.get('code'), item.get('value'), item.get('label'), item.get('label_zh'), *(item.get('aliases') or [])]
+        if any(str(candidate or '').strip().lower() == normalized for candidate in candidates):
+            return dict(item)
+    return None
+
+
+def _enrich_mcn_region_option(value: Any) -> dict[str, Any]:
+    raw = str(value or '').strip()
+    region = _mcn_region_by_value(raw)
+    if region:
+        return {
+            'value': str(region.get('value') or raw),
+            'label': str(region.get('label') or region.get('value') or raw),
+            'code': str(region.get('code') or ''),
+            'label_zh': str(region.get('label_zh') or ''),
+            'phone_code': str(region.get('phone_code') or ''),
+            'language': str(region.get('language') or ''),
+            'enabled': bool(region.get('enabled')),
+        }
+    return {'value': raw, 'label': raw, 'code': '', 'label_zh': raw, 'phone_code': '', 'language': '', 'enabled': True}
+
+
+WHATSAPP_APPROVAL_DEFAULT_AREA_OPTIONS: list[dict[str, Any]] = [
+    _enrich_mcn_region_option(item['value']) for item in _mcn_region_options(include_disabled=False)
 ]
 
 
@@ -4440,15 +4834,19 @@ def _with_shared_group_approval_executor_result(result: Dict[str, Any], *, appro
     return normalized
 
 
-def _normalize_area_options(options: list[str]) -> list[dict[str, str]]:
-    normalized: list[dict[str, str]] = []
+def _normalize_area_options(options: list[str]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in options:
         value = str(item or '').strip()
-        if not value or value in seen:
+        if not value:
             continue
-        seen.add(value)
-        normalized.append({'value': value, 'label': value})
+        enriched = _enrich_mcn_region_option(value)
+        key = str(enriched.get('value') or value).strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(enriched)
     return normalized
 
 
@@ -4639,7 +5037,7 @@ class GroupAtmosphereImportChatRecordsRequest(BaseModel):
 class GroupAtmosphereAiCandidateRequest(BaseModel):
     config_name: str
     topic: str = 'general'
-    count: int = Field(default=3, ge=1, le=10)
+    count: int = Field(default=3, ge=1, le=100)
 
 
 class GroupAtmosphereCandidateEnableRequest(BaseModel):
@@ -4935,6 +5333,13 @@ class Database:
                 CREATE TABLE IF NOT EXISTS whatsapp_approval_area_options (
                     option_key TEXT PRIMARY KEY,
                     options_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS mcn_region_options (
+                    code TEXT PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    sort_order INTEGER,
                     updated_at TEXT NOT NULL
                 );
 
@@ -5779,7 +6184,7 @@ class LiveLarkReplyAdapter:
 
 
 class Service:
-    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, registration_group_approval_executor: Any = None, official_group_approval_executor: Any = None, official_group_target_map: Optional[Dict[str, str]] = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False, crm_retry_delays_seconds: Optional[List[int]] = None, crm_retry_max_attempts: int = 3, bind_retry_max_attempts: int = 2, official_group_approval_webhook_url: Optional[str] = None, group_atmosphere_scheduler_enabled: bool = False, group_atmosphere_scheduler_poll_interval_seconds: float = 30.0) -> None:
+    def __init__(self, db: Database, crm_adapter: Any = None, ocr_adapter: Any = None, lark_media_adapter: Any = None, lark_reply_adapter: Any = None, lark_reply_adapter_by_app_id: Optional[Dict[str, Any]] = None, media_cache_dir: Optional[str] = None, lark_default_app_name: Optional[str] = None, lark_default_dept_name: Optional[str] = None, current_lark_app_id: Optional[str] = None, auto_bind_simulation: bool = False, bind_simulator: Any = None, real_bind_executor: Any = None, registration_group_approval_executor: Any = None, official_group_approval_executor: Any = None, official_group_target_map: Optional[Dict[str, str]] = None, auto_bind_simulation_success_rate: float = 0.5, auto_bind_simulation_seed: Optional[int] = None, crm_base_url: Optional[str] = None, crm_username: Optional[str] = None, crm_login_error: Optional[str] = None, ingress_async_default: bool = False, ingress_worker_enabled: bool = False, ingress_worker_poll_interval: float = 0.5, ingress_worker_count: int = 1, ingress_rate_limit_per_minute: int = 600, external_call_rate_limit_per_minute: int = 300, require_invite_code: bool = False, crm_retry_delays_seconds: Optional[List[int]] = None, crm_retry_max_attempts: int = 3, bind_retry_max_attempts: int = 2, official_group_approval_webhook_url: Optional[str] = None, group_atmosphere_scheduler_enabled: bool = False, group_atmosphere_scheduler_poll_interval_seconds: float = 30.0, guild_executor_proxy_region_urls: Optional[Dict[str, str]] = None) -> None:
         self.db = db
         self.crm_adapter = crm_adapter
         self.ocr_adapter = ocr_adapter
@@ -5803,6 +6208,11 @@ class Service:
             if str(k).strip() and str(v).strip()
         }
         self.official_group_approval_webhook_url = str(official_group_approval_webhook_url or '').strip() or None
+        self.guild_executor_proxy_region_urls = {
+            str(k).strip(): str(v).strip()
+            for k, v in dict(guild_executor_proxy_region_urls or {}).items()
+            if str(k).strip() and str(v).strip()
+        }
         self.auto_bind_simulation_success_rate = max(0.0, min(1.0, float(auto_bind_simulation_success_rate or 0.5)))
         self._bind_random = random.Random(auto_bind_simulation_seed) if auto_bind_simulation_seed is not None else random.Random()
         self.media_cache_dir = Path(media_cache_dir or './data/lark_media_cache')
@@ -6018,6 +6428,7 @@ class Service:
                     'speech_plan_config_name': str(item.get('speech_plan_config_name') or '').strip(),
                     'daily_max_messages': _coerce_positive_int(item.get('daily_max_messages'), _coerce_positive_int(metadata.get('daily_max_messages'), 3)),
                     'min_interval_minutes': _coerce_positive_int(item.get('min_interval_minutes'), _coerce_positive_int(metadata.get('min_interval_minutes'), 120)),
+                    'max_interval_minutes': _coerce_positive_int(item.get('max_interval_minutes'), _coerce_positive_int(metadata.get('max_interval_minutes'), 240)),
                     'allowed_windows': item.get('allowed_windows') if isinstance(item.get('allowed_windows'), list) else [],
                 })
         return {
@@ -6176,8 +6587,18 @@ class Service:
                             'login_check_status': 'runtime_unstable',
                             'login_check_message': '扫码服务未稳定，请重新生成二维码。',
                         }
+            if bool(session_state.get('login_verified')) and base_url:
+                enriched_groups = self._probe_group_atmosphere_actual_group_names(
+                    account_key=account_key,
+                    row=row,
+                    base_url=base_url,
+                    session_state=session_state,
+                )
+                if enriched_groups:
+                    row = dict(row)
+                    row['group_links'] = json.dumps(enriched_groups, ensure_ascii=False)
             output.append(self._serialize_group_atmosphere_account_row(row, runtime_state=runtime_state, session_state=session_state))
-        return {'rows': output, 'count': len(output)}
+        return {'rows': output, 'count': len(output), 'region_options': self.list_mcn_region_options(include_disabled=False).get('enabled_options', [])}
 
     def get_group_atmosphere_whatsapp_account_session(self, account_key: str) -> Dict[str, Any]:
         return self.get_whatsapp_approval_account_session(account_key)
@@ -6683,10 +7104,11 @@ class Service:
                     template_pool=[],
                     faq_rules=[],
                     worker_base_url='',
-                    status='library_only',
+                    status='candidate_pool',
                 ))
             imported = self.import_group_atmosphere_chat_records(GroupAtmosphereImportChatRecordsRequest(config_name=config_name, records=role_records))
-            candidates = self.generate_group_atmosphere_ai_candidates(GroupAtmosphereAiCandidateRequest(config_name=config_name, topic=role, count=5))['candidates']
+            candidate_limit = min(100, max(10, len(role_records)))
+            candidates = self.generate_group_atmosphere_ai_candidates(GroupAtmosphereAiCandidateRequest(config_name=config_name, topic=role, count=candidate_limit))['candidates']
             candidate_templates = [
                 {
                     'template_id': candidate['candidate_id'],
@@ -6696,6 +7118,7 @@ class Service:
                     'text': candidate['text'],
                     'safe_to_send': False,
                     'enabled': False,
+                    'source_type': 'upload_file',
                 }
                 for candidate in candidates
             ]
@@ -6845,9 +7268,33 @@ class Service:
             name = str(config.get('config_name') or '').strip()
             if name.startswith('deliver-') or name.startswith('binding-'):
                 continue
-            if str(config.get('status') or '') in {'library_only', 'plan_ready'} or name.startswith('auto-'):
+            templates = [dict(item or {}) for item in list((config or {}).get('template_pool') or [])]
+            enabled_safe_count = sum(1 for item in templates if item.get('enabled') is True and item.get('safe_to_send') is True)
+            source_types = {str(item.get('source_type') or '').strip() for item in templates}
+            status = str(config.get('status') or '').strip()
+            # 上传/学习生成的内容只进入话术备选区；未被人工保存/启用前，不直接显示为话术角色。
+            if enabled_safe_count <= 0 and (status == 'candidate_pool' or source_types <= {'', 'upload_file'}):
+                continue
+            if status in {'library_only', 'plan_ready'} or name.startswith('auto-'):
                 rows.append(self._group_atmosphere_role_summary(config))
         return {'rows': rows, 'count': len(rows)}
+
+    def delete_group_atmosphere_role(self, role_key: str) -> Dict[str, Any]:
+        key = str(role_key or '').strip()
+        if not key:
+            raise HTTPException(status_code=400, detail='role_key_required')
+        existing = self._get_group_atmosphere_config(key)
+        if not existing:
+            raise HTTPException(status_code=404, detail='role_not_found')
+        with self.db.connect() as conn:
+            binding_count = int(conn.execute(
+                "SELECT COUNT(*) FROM whatsapp_group_atmosphere_role_bindings WHERE role_key=?",
+                (key,),
+            ).fetchone()[0] or 0)
+            conn.execute("DELETE FROM whatsapp_group_atmosphere_role_bindings WHERE role_key=?", (key,))
+            conn.execute("DELETE FROM whatsapp_group_atmosphere_configs WHERE config_name=?", (key,))
+            conn.commit()
+        return {'ok': True, 'deleted': True, 'role_key': key, 'deleted_bindings': binding_count}
 
     def _get_group_atmosphere_account_group(self, account_key: str, group_index: int) -> tuple[Dict[str, Any], Dict[str, Any]]:
         row = self._get_whatsapp_approval_account_row(str(account_key or '').strip())
@@ -6860,6 +7307,75 @@ class Service:
             raise HTTPException(status_code=404, detail='group_not_found')
         return account, dict(groups[idx] or {})
 
+    def _resolve_group_atmosphere_binding_targets(self, role: Dict[str, Any], payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        role_summary = self._group_atmosphere_role_summary(role) if role else {}
+        role_region = str((role_summary or {}).get('region') or (role or {}).get('region') or '').strip()
+        role_positioning = str((role_summary or {}).get('role_positioning') or (role or {}).get('role_positioning') or '').strip()
+        explicit_account_key = str((payload or {}).get('account_key') or '').strip()
+        group_targets = [str(x or '').strip() for x in list((payload or {}).get('group_targets') or []) if str(x or '').strip()]
+        if explicit_account_key:
+            group_indexes = (payload or {}).get('group_indexes')
+            if group_indexes is None:
+                group_indexes = [(payload or {}).get('group_index', 0)]
+            if len(list(group_indexes or [])) > 10:
+                raise HTTPException(status_code=400, detail='role_binding_groups_limit_10')
+            seen_indexes: List[int] = []
+            for idx in [int(i) for i in list(group_indexes or [])]:
+                if idx not in seen_indexes:
+                    seen_indexes.append(idx)
+            if len(seen_indexes) > 10:
+                raise HTTPException(status_code=400, detail='role_binding_groups_limit_10')
+            return [{'account_key': explicit_account_key, 'group_index': idx} for idx in seen_indexes]
+        if not group_targets:
+            raise HTTPException(status_code=400, detail='group_targets_required')
+        if len(group_targets) > 10:
+            raise HTTPException(status_code=400, detail='role_binding_groups_limit_10')
+        with self.db.connect() as conn:
+            rows = [dict(row) for row in conn.execute(
+                "SELECT * FROM whatsapp_approval_accounts WHERE responsible_type = 'group_atmosphere' AND enabled = 1 ORDER BY updated_at DESC, account_key ASC"
+            ).fetchall()]
+            existing_rows = [self._row_to_group_atmosphere_role_binding(row) for row in conn.execute("SELECT * FROM whatsapp_group_atmosphere_role_bindings").fetchall()]
+        accounts = [self._serialize_group_atmosphere_account_row(row, runtime_state={}, session_state={}) for row in rows]
+        resolved: List[Dict[str, Any]] = []
+        for target in group_targets:
+            target_matches: List[Dict[str, Any]] = []
+            country_mismatch = False
+            conflict = False
+            for account in accounts:
+                account_region = str(account.get('region') or '').strip()
+                for idx, group in enumerate(account.get('groups') or []):
+                    if str(group.get('target_group') or '').strip() != target:
+                        continue
+                    if group.get('enabled') is False:
+                        continue
+                    if role_region and account_region and account_region != role_region:
+                        country_mismatch = True
+                        continue
+                    has_conflict = False
+                    for binding in existing_rows:
+                        if str(binding.get('account_key') or '') == str(account.get('account_key') or '') and str(binding.get('target_group') or '') == target and str(binding.get('role_positioning') or '') and str(binding.get('role_positioning') or '') != role_positioning:
+                            has_conflict = True
+                            break
+                    if has_conflict:
+                        conflict = True
+                        continue
+                    target_matches.append({'account_key': account.get('account_key'), 'group_index': idx})
+            if not target_matches:
+                if country_mismatch:
+                    raise HTTPException(status_code=400, detail=f'国家/地区不一致：{target}')
+                if conflict:
+                    raise HTTPException(status_code=400, detail=f'该群已有其他话术类型，请增加另一个可用 WhatsApp 账号：{target}')
+                raise HTTPException(status_code=400, detail=f'缺少可用 WhatsApp 发言账号：{target}')
+            resolved.append(target_matches[0])
+        deduped: List[Dict[str, Any]] = []
+        seen = set()
+        for item in resolved:
+            key = (str(item.get('account_key') or ''), int(item.get('group_index') or 0))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(item)
+        return deduped
+
     def upsert_group_atmosphere_role_bindings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         role_key = str((payload or {}).get('role_key') or (payload or {}).get('config_name') or '').strip()
         if not role_key:
@@ -6867,27 +7383,17 @@ class Service:
         role = self._get_group_atmosphere_config(role_key)
         if not role:
             raise HTTPException(status_code=404, detail='role_not_found')
-        account_key = str((payload or {}).get('account_key') or '').strip()
-        if not account_key:
-            raise HTTPException(status_code=400, detail='account_key_required')
-        group_indexes = (payload or {}).get('group_indexes')
-        if group_indexes is None:
-            group_indexes = [(payload or {}).get('group_index', 0)]
-        group_indexes = [int(i) for i in list(group_indexes or [])]
-        # 一个桥接关系 = 1 个话术角色 + 1 个 WhatsApp 账号下最多 10 个群组
-        seen_indexes = []
-        for idx in group_indexes:
-            if idx not in seen_indexes:
-                seen_indexes.append(idx)
-        group_indexes = seen_indexes
-        if not group_indexes:
-            raise HTTPException(status_code=400, detail='group_indexes_required')
-        if len(group_indexes) > 10:
+        targets = self._resolve_group_atmosphere_binding_targets(role, payload)
+        if not targets:
+            raise HTTPException(status_code=400, detail='group_targets_required')
+        if len(targets) > 10:
             raise HTTPException(status_code=400, detail='role_binding_groups_limit_10')
         now = utc_now()
         bindings = []
         with self.db.connect() as conn:
-            for idx in group_indexes:
+            for target in targets:
+                account_key = str(target.get('account_key') or '').strip()
+                idx = int(target.get('group_index') or 0)
                 account, group = self._get_group_atmosphere_account_group(account_key, idx)
                 target_group = str(group.get('target_group') or '').strip()
                 if not target_group:
@@ -6954,6 +7460,8 @@ class Service:
         role = self._get_group_atmosphere_config(str(item.get('role_key') or '').strip()) or {}
         role_summary = self._group_atmosphere_role_summary(role) if role else {'role_name': item.get('role_key'), 'role_positioning': ''}
         group_name = str(item.get('group_name') or '').strip() or str(item.get('target_group') or '').strip()
+        account_row = self._get_whatsapp_approval_account_row(str(item.get('account_key') or '').strip()) or {}
+        assigned_account_label = str((account_row or {}).get('account_name') or item.get('account_key') or '').strip()
         distribution_status = '可发送'
         if not item.get('enabled'):
             distribution_status = '桥接已停用'
@@ -6969,6 +7477,7 @@ class Service:
             'language': role_summary.get('language'),
             'region': role_summary.get('region'),
             'account_key': item.get('account_key'),
+            'assigned_account_label': assigned_account_label,
             'group_index': int(item.get('group_index') or 0),
             'target_group': item.get('target_group'),
             'group_name': group_name,
@@ -6993,7 +7502,7 @@ class Service:
         grouped: Dict[str, Dict[str, Any]] = {}
         order: List[str] = []
         for row in rows:
-            key = f"{row.get('role_key') or ''}::{row.get('account_key') or ''}"
+            key = f"{row.get('role_key') or ''}"
             if key not in grouped:
                 grouped[key] = {
                     'relationship_key': key,
@@ -7016,9 +7525,11 @@ class Service:
                 order.append(key)
             grouped[key]['groups'].append({
                 'binding_id': row.get('binding_id'),
+                'account_key': row.get('account_key'),
                 'group_index': row.get('group_index'),
                 'target_group': row.get('target_group'),
                 'group_name': row.get('group_name'),
+                'assigned_account_label': row.get('assigned_account_label'),
                 'group_send_permission_enabled': bool(row.get('group_send_permission_enabled')),
                 'enabled': bool(row.get('enabled')),
                 'distribution_status': row.get('distribution_status'),
@@ -7116,10 +7627,62 @@ class Service:
         groups = list((payload or {}).get('group_links') or (payload or {}).get('groups') or [])
         roles = [str(item or '').strip() for item in list((payload or {}).get('target_role_keys') or []) if str(item or '').strip()] or ['auto-id-community_seed']
         now = utc_now()
+        account_name = str((payload or {}).get('account_name') or key).strip()
+        normalized_groups = []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            target = str(group.get('target_group') or group.get('group_id') or group.get('link') or group.get('group_name') or '').strip()
+            if not target:
+                continue
+            normalized_groups.append({
+                'target_group': target,
+                'group_name': str(group.get('group_name') or target).strip(),
+                'enabled': False if group.get('enabled') is False else True,
+                'language': language,
+                'area': region,
+            })
+        metadata = {
+            'feature': 'group_atmosphere_learning',
+            'region': region,
+            'language': language,
+            'silent_learning_only': True,
+            'max_messages_per_run': int((payload or {}).get('max_messages_per_run') or 300),
+        }
         with self.db.connect() as conn:
             conn.execute(
                 """INSERT INTO whatsapp_group_atmosphere_learning_accounts (learning_account_key, account_name, region, language, enabled, group_links, target_role_keys, daily_learning_time, read_recent_hours, max_messages_per_run, worker_base_url, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'silent_learning', ?, ?) ON CONFLICT(learning_account_key) DO UPDATE SET account_name=excluded.account_name, region=excluded.region, language=excluded.language, enabled=excluded.enabled, group_links=excluded.group_links, target_role_keys=excluded.target_role_keys, daily_learning_time=excluded.daily_learning_time, read_recent_hours=excluded.read_recent_hours, max_messages_per_run=excluded.max_messages_per_run, worker_base_url=excluded.worker_base_url, status=excluded.status, updated_at=excluded.updated_at""",
-                (key, str((payload or {}).get('account_name') or key).strip(), region, language, 0 if (payload or {}).get('enabled') is False else 1, json.dumps(groups, ensure_ascii=False), json.dumps(roles, ensure_ascii=False), str((payload or {}).get('daily_learning_time') or '03:00'), int((payload or {}).get('read_recent_hours') or 24), int((payload or {}).get('max_messages_per_run') or 300), str((payload or {}).get('worker_base_url') or '').strip(), now, now),
+                (key, account_name, region, language, 0 if (payload or {}).get('enabled') is False else 1, json.dumps(normalized_groups, ensure_ascii=False), json.dumps(roles, ensure_ascii=False), str((payload or {}).get('daily_learning_time') or '03:00'), int((payload or {}).get('read_recent_hours') or 24), int((payload or {}).get('max_messages_per_run') or 300), str((payload or {}).get('worker_base_url') or '').strip(), now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO whatsapp_approval_accounts (
+                    account_key, account_name, responsible_type, group_links, area, notify_profile_name,
+                    approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker,
+                    schedule_windows, enabled, verification_status, notes, updated_at
+                ) VALUES (?, ?, 'group_atmosphere_learning', ?, ?, '', 'silent_learning', ?, ?, 1, ?, ?, 'pending_login', ?, ?)
+                ON CONFLICT(account_key) DO UPDATE SET
+                    account_name=excluded.account_name,
+                    responsible_type='group_atmosphere_learning',
+                    group_links=excluded.group_links,
+                    area=excluded.area,
+                    enabled=excluded.enabled,
+                    verification_status='pending_login',
+                    notes=excluded.notes,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    key,
+                    account_name,
+                    json.dumps(normalized_groups, ensure_ascii=False),
+                    region,
+                    WHATSAPP_APPROVAL_DEFAULT_COUNT_THRESHOLD,
+                    WHATSAPP_APPROVAL_DEFAULT_TIMEOUT_MINUTES,
+                    json.dumps([], ensure_ascii=False),
+                    1 if (payload or {}).get('enabled') is not False else 0,
+                    json.dumps(metadata, ensure_ascii=False),
+                    now,
+                ),
             )
             conn.commit()
         return {'ok': True, 'account': self.get_group_atmosphere_learning_account(key)}
@@ -7155,8 +7718,57 @@ class Service:
 
     def list_group_atmosphere_learning_accounts(self) -> Dict[str, Any]:
         rows = self.db.connect().execute("SELECT * FROM whatsapp_group_atmosphere_learning_accounts ORDER BY updated_at DESC, learning_account_key ASC").fetchall()
-        output = [self._row_to_group_atmosphere_learning_account(row) for row in rows]
+        output = []
+        for row in rows:
+            item = self._row_to_group_atmosphere_learning_account(row)
+            account_key = str(item.get('learning_account_key') or item.get('account_key') or '').strip()
+            runtime_state = self._build_whatsapp_approval_runtime_state(account_key, allow_shared_fallback=False, skip_health_check=True) if account_key else {}
+            session_state: Dict[str, Any] = {}
+            base_url = str(runtime_state.get('base_url') or '').strip()
+            # 学习机器人扫码后，列表需要用真实 worker health 刷新登录态；否则 QR 弹窗已成功但卡片仍显示待扫码。
+            if bool(item.get('enabled')) and runtime_state.get('active') and base_url:
+                try:
+                    worker_health = self._request_whatsapp_approval_worker_health(base_url)
+                    runtime_state = self._build_whatsapp_approval_runtime_state(
+                        account_key,
+                        worker_health=worker_health,
+                        allow_shared_fallback=False,
+                    )
+                    session_state = self._build_whatsapp_approval_session_state(
+                        account_key,
+                        worker_health=worker_health,
+                        include_qr_ascii=False,
+                    )
+                except Exception as exc:
+                    runtime_state['health_error'] = str(exc)
+                    runtime_state['status_text'] = '状态刷新失败'
+                    session_state = {
+                        'account_key': account_key,
+                        'login_verified': False,
+                        'login_check_status': 'health_check_failed',
+                        'login_check_message': '状态刷新失败，请点刷新状态。',
+                    }
+            item['runtime'] = runtime_state
+            item['session'] = session_state
+            item['session_state'] = session_state
+            item['login_verified'] = bool(session_state.get('login_verified'))
+            item['login_check_status'] = session_state.get('login_check_status') or ''
+            item['login_check_message'] = session_state.get('login_check_message') or ''
+            output.append(item)
         return {'rows': output, 'count': len(output)}
+
+    def delete_group_atmosphere_learning_account(self, key: str) -> Dict[str, Any]:
+        key = str(key or '').strip()
+        if not key:
+            raise HTTPException(status_code=400, detail='missing_learning_account_key')
+        with self.db.connect() as conn:
+            existing = conn.execute("SELECT learning_account_key FROM whatsapp_group_atmosphere_learning_accounts WHERE learning_account_key=?", (key,)).fetchone()
+            if not existing:
+                raise HTTPException(status_code=404, detail='learning_account_not_found')
+            conn.execute("DELETE FROM whatsapp_group_atmosphere_learning_accounts WHERE learning_account_key=?", (key,))
+            conn.execute("DELETE FROM whatsapp_approval_accounts WHERE account_key=? AND responsible_type='group_atmosphere_learning'", (key,))
+            conn.commit()
+        return {'ok': True, 'learning_account_key': key, 'deleted': True}
 
     def learn_once_group_atmosphere_learning_account(self, key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         account = self.get_group_atmosphere_learning_account(key)
@@ -7764,9 +8376,23 @@ class Service:
                 f"{greeting}, buat yang baru gabung, mulai pelan-pelan dulu. Kata kunci grup: {base_terms}.",
                 f"{greeting}, kalau sudah siap mulai, siapkan ID dan kode undangan, lalu {cta}.",
             ]
+        samples = [str(item) for item in profile.get('phrase_samples') or [] if str(item).strip()]
         candidates = []
-        for index in range(int(payload.count)):
+        used_texts = set()
+        for index in range(min(int(payload.count), 100)):
             text = patterns[index % len(patterns)]
+            term = terms[index % len(terms)] if terms else ''
+            sample = samples[index % len(samples)] if samples else ''
+            if index >= len(patterns):
+                if sample:
+                    text = f"{text} Catatan grup: {sample[:72]}"
+                elif term:
+                    text = f"{text} Fokus: {term}."
+                else:
+                    text = f"{text} #{index + 1}"
+            if text in used_texts:
+                text = f"{text} ({index + 1})"
+            used_texts.add(text)
             candidates.append({
                 'candidate_id': f"cand-{index + 1}",
                 'text': text,
@@ -8396,6 +9022,17 @@ class Service:
         self._persist_ingress_job_result(row=row, event=event, status=status, error_text=error_text, result=result)
         return {'event_id': row['event_id'], 'status': status, 'result': result}
 
+    def _resolve_executor_proxy_url(self, executor: Optional[Dict[str, Any]]) -> str:
+        if not executor:
+            return ''
+        explicit = str(executor.get('proxy_url') or '').strip()
+        if explicit:
+            return explicit
+        region = str(executor.get('proxy_region') or '').strip()
+        if not region:
+            return ''
+        return str(self.guild_executor_proxy_region_urls.get(region) or '').strip()
+
     def _build_bind_execution_result(self, *, task_id: str) -> BindCheckResultRequest:
         with self.db.connect() as conn:
             task = conn.execute("SELECT lead_id, payload FROM automation_tasks WHERE task_id = ?", (task_id,)).fetchone()
@@ -8438,7 +9075,7 @@ class Service:
                 'executor_platform_authorization': str(executor.get('platform_authorization') or ''),
                 'executor_cms_guild_id': str(executor.get('cms_guild_id') or ''),
                 'executor_cms_guild_sid': str(executor.get('cms_guild_sid') or ''),
-                'executor_proxy_url': str(executor.get('proxy_url') or ''),
+                'executor_proxy_url': self._resolve_executor_proxy_url(executor),
                 'executor_proxy_region': str(executor.get('proxy_region') or ''),
                 'executor_proxy_type': str(executor.get('proxy_type') or ''),
                 'executor_browser_profile_key': str(executor.get('browser_profile_key') or ''),
@@ -12422,6 +13059,65 @@ class Service:
             conn.commit()
         return {'ok': True, 'guild_name': normalized_guild, 'assignees': self._ops_intake_assignees_for_guild(normalized_guild)}
 
+    def _merged_mcn_region_options(self, *, include_disabled: bool = False) -> list[dict[str, Any]]:
+        overrides: Dict[str, Dict[str, Any]] = {}
+        with self.db.connect() as conn:
+            for row in conn.execute('SELECT code, enabled, sort_order, updated_at FROM mcn_region_options').fetchall():
+                overrides[str(row['code'] or '').strip().upper()] = {
+                    'enabled': bool(row['enabled']),
+                    'sort_order': row['sort_order'],
+                    'updated_at': row['updated_at'],
+                }
+        rows: list[dict[str, Any]] = []
+        for item in _mcn_region_options(include_disabled=True):
+            row = dict(item)
+            code = str(row.get('code') or '').strip().upper()
+            override = overrides.get(code) or {}
+            if override:
+                row['enabled'] = bool(override.get('enabled'))
+                if override.get('sort_order') is not None:
+                    row['sort_order'] = int(override.get('sort_order') or row.get('sort_order') or 999)
+                row['updated_at'] = override.get('updated_at')
+            if include_disabled or bool(row.get('enabled')):
+                rows.append(row)
+        rows.sort(key=lambda row: (int(row.get('sort_order') or 999), str(row.get('label_zh') or row.get('label') or '')))
+        return rows
+
+    def list_mcn_region_options(self, *, include_disabled: bool = False) -> Dict[str, Any]:
+        options = self._merged_mcn_region_options(include_disabled=include_disabled)
+        return {
+            'options': options,
+            'enabled_options': [row for row in options if bool(row.get('enabled'))],
+            'source': 'mcn_region_options',
+            'editable': True,
+        }
+
+    def update_mcn_region_options(self, payload: McnRegionOptionsUpdateRequest) -> Dict[str, Any]:
+        known_codes = {str(item.get('code') or '').strip().upper() for item in _mcn_region_options(include_disabled=True)}
+        updates: list[tuple[int, int, str, str]] = []
+        for index, item in enumerate(payload.options or []):
+            code = str(item.code or '').strip().upper()
+            if not code or code not in known_codes:
+                raise HTTPException(status_code=400, detail='invalid_region_code')
+            sort_order = int(item.sort_order if item.sort_order is not None else (index + 1) * 10)
+            updates.append((1 if bool(item.enabled) else 0, sort_order, utc_now(), code))
+        if not updates:
+            raise HTTPException(status_code=400, detail='region_options_required')
+        with self.db.connect() as conn:
+            for enabled, sort_order, updated_at, code in updates:
+                conn.execute(
+                    """
+                    INSERT INTO mcn_region_options (code, enabled, sort_order, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(code) DO UPDATE SET enabled=excluded.enabled, sort_order=excluded.sort_order, updated_at=excluded.updated_at
+                    """,
+                    (code, enabled, sort_order, updated_at),
+                )
+            conn.commit()
+        result = self.list_mcn_region_options(include_disabled=True)
+        result['saved'] = True
+        return result
+
     def list_ops_intake_guilds(self, *, user: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         health_rows = {str(row.get('guild_name') or '').strip(): row for row in self.guild_executor_health().get('rows', [])}
         executors = self.list_guild_executors().get('rows', [])
@@ -12447,7 +13143,7 @@ class Service:
                 'assignees': assignees,
             })
         rows.sort(key=lambda row: str(row.get('guild_name') or '').lower())
-        return {'rows': rows}
+        return {'rows': rows, 'region_options': self.list_mcn_region_options(include_disabled=False).get('enabled_options', [])}
 
     def parse_ops_intake_text(self, *, guild_name: str, text: str, fields: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         normalized_guild = str(guild_name or '').strip()
@@ -18755,73 +19451,21 @@ class Service:
         }]
 
     def list_whatsapp_approval_area_options(self) -> Dict[str, Any]:
-        with self.db.connect() as conn:
-            row = conn.execute(
-                "SELECT options_json, updated_at FROM whatsapp_approval_area_options WHERE option_key = 'default'"
-            ).fetchone()
-            account_rows = conn.execute(
-                "SELECT area, group_links FROM whatsapp_approval_accounts"
-            ).fetchall()
-        source_options = list(WHATSAPP_APPROVAL_DEFAULT_AREA_OPTIONS)
-        updated_at = None
-        configured_values: list[str] = []
-        if row:
-            try:
-                loaded = json.loads(str(row['options_json'] or '[]'))
-            except Exception:
-                loaded = []
-            normalized = _normalize_area_options(loaded if isinstance(loaded, list) else [])
-            if normalized:
-                source_options = normalized
-            updated_at = row['updated_at']
-        for account_row in account_rows:
-            area_value = str(account_row['area'] or '').strip()
-            if area_value:
-                configured_values.append(area_value)
-            try:
-                loaded_group_links = json.loads(str(account_row['group_links'] or '[]'))
-            except Exception:
-                loaded_group_links = []
-            if isinstance(loaded_group_links, list):
-                for item in loaded_group_links:
-                    if isinstance(item, dict):
-                        binding_area = str(item.get('area') or '').strip()
-                        if binding_area:
-                            configured_values.append(binding_area)
-        merged = _normalize_area_options([*(item['value'] for item in source_options), *configured_values])
+        options = [_enrich_mcn_region_option(item.get('value')) for item in self.list_mcn_region_options(include_disabled=False).get('enabled_options', [])]
         return {
-            'options': merged,
-            'source_options': source_options,
-            'updated_at': updated_at,
+            'options': options,
+            'source_options': options,
+            'updated_at': None,
+            'source': 'mcn_region_options',
+            'editable': False,
         }
 
     def update_whatsapp_approval_area_options(self, payload: WhatsAppApprovalAreaOptionsUpdateRequest) -> Dict[str, Any]:
-        normalized = _normalize_area_options(payload.options or [])
-        if not normalized:
-            raise HTTPException(status_code=400, detail='at least one area option is required')
-        row = {
-            'option_key': 'default',
-            'options_json': json.dumps([item['value'] for item in normalized], ensure_ascii=False),
-            'updated_at': utc_now(),
-        }
-        with self.db.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO whatsapp_approval_area_options (option_key, options_json, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(option_key)
-                DO UPDATE SET options_json = excluded.options_json,
-                              updated_at = excluded.updated_at
-                """,
-                (row['option_key'], row['options_json'], row['updated_at']),
-            )
-            conn.commit()
-        return {
-            'saved': True,
-            'options': normalized,
-            'source_options': normalized,
-            'updated_at': row['updated_at'],
-        }
+        result = self.list_whatsapp_approval_area_options()
+        result['saved'] = False
+        result['ignored'] = True
+        result['detail'] = 'approval area options are managed by mcn_region_options'
+        return result
 
     def _notify_robot_name(self, profile_name: Optional[str]) -> str:
         normalized = str(profile_name or '').strip()
@@ -20019,6 +20663,9 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             row['guild_backend_token_configured'] = bool(row.get('guild_backend_token_configured'))
             row['platform_authorization_configured'] = bool(row.get('platform_authorization_configured'))
             row['cms_refresh_token_configured'] = bool(row.get('cms_refresh_token_configured'))
+            effective_proxy_url = self._resolve_executor_proxy_url(row)
+            row['proxy_effective_configured'] = bool(effective_proxy_url)
+            row['proxy_region_mapping_configured'] = bool(str(row.get('proxy_region') or '').strip() and self.guild_executor_proxy_region_urls.get(str(row.get('proxy_region') or '').strip()))
         return {
             'rows': rows,
             'proxy_region_options': GUILD_EXECUTOR_PROXY_REGION_OPTIONS,
@@ -23674,6 +24321,25 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         except Exception:
             official_group_target_map = {}
     media_cache_dir = cfg.get('MEDIA_CACHE_DIR')
+    proxy_region_urls_raw = cfg.get('GUILD_EXECUTOR_PROXY_REGION_URLS') or os.getenv('GUILD_EXECUTOR_PROXY_REGION_URLS') or '{}'
+    guild_executor_proxy_region_urls: Dict[str, str] = {}
+    if isinstance(proxy_region_urls_raw, dict):
+        guild_executor_proxy_region_urls = {
+            str(k).strip(): str(v).strip()
+            for k, v in proxy_region_urls_raw.items()
+            if str(k).strip() and str(v).strip()
+        }
+    else:
+        try:
+            parsed_proxy_region_urls = json.loads(str(proxy_region_urls_raw or '{}'))
+            if isinstance(parsed_proxy_region_urls, dict):
+                guild_executor_proxy_region_urls = {
+                    str(k).strip(): str(v).strip()
+                    for k, v in parsed_proxy_region_urls.items()
+                    if str(k).strip() and str(v).strip()
+                }
+        except Exception:
+            guild_executor_proxy_region_urls = {}
     lark_default_app_name = cfg.get('LARK_DEFAULT_APP_NAME') or os.getenv('LARK_DEFAULT_APP_NAME')
     lark_default_dept_name = cfg.get('LARK_DEFAULT_DEPT_NAME') or os.getenv('LARK_DEFAULT_DEPT_NAME')
     app_id = cfg.get('LARK_APP_ID') or cfg.get('FEISHU_APP_ID') or os.getenv('LARK_APP_ID') or os.getenv('FEISHU_APP_ID')
@@ -23838,6 +24504,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         official_group_approval_webhook_url=official_group_approval_webhook_url,
         group_atmosphere_scheduler_enabled=group_atmosphere_scheduler_enabled,
         group_atmosphere_scheduler_poll_interval_seconds=float(group_atmosphere_scheduler_poll_interval_seconds or 30),
+        guild_executor_proxy_region_urls=guild_executor_proxy_region_urls,
     )
     _schedule_registration_group_executor_warmup(registration_group_approval_executor)
     print(
@@ -24007,6 +24674,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             '/api/ops/official-group-approval-summary/summary',
             '/api/ops/official-group-bridge-summary/summary',
             '/api/ops/whatsapp-approval-area-options',
+            '/api/ops/mcn-region-options',
             '/api/ops/approval-batch-queue/summary',
             '/api/ops/next-bind-task/summary',
             '/api/ops/next-group-task/summary',
@@ -24087,6 +24755,10 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             '/api/ops/next-action',
             '/api/ops/whatsapp-approval-area-options',
         }:
+            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
+        if path == '/api/ops/mcn-region-options':
+            if normalized_method in {'PUT', 'POST', 'DELETE'}:
+                return OPS_AUTH_ROLE_ADMIN
             return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         if path.startswith('/api/ops/operator-notifications/') and normalized_method == 'POST':
             return OPS_AUTH_ROLE_CUSTOMER_SERVICE
@@ -24299,7 +24971,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
 <html lang=\"zh-CN\"><head><meta charset=\"utf-8\" /><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><title>账号设置</title>
 <style>
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; margin:0; padding:24px; background:#f4f7fb; color:#142033; }
-.page { max-width:1280px; margin:0 auto; }
+.page { max-width:1280px; margin:0 auto; display:grid; gap:16px; }
 .nav { position:sticky; top:0; z-index:20; display:flex; gap:10px; flex-wrap:wrap; margin:0 0 18px 0; padding:12px 0 14px; background:rgba(244,247,251,.96); backdrop-filter:blur(10px); }
 .nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:8px 12px; border-radius:999px; background:#eef4ff; border:1px solid #d8e5ff; }
 .card { background:#fff; border:1px solid #dbe4f0; border-radius:18px; padding:18px; box-shadow:0 10px 28px rgba(15,23,42,.06); margin-bottom:16px; }
@@ -24312,7 +24984,8 @@ button { min-height:40px; padding:10px 14px; border:none; border-radius:10px; ba
 .password-visibility-toggle input { width:auto; min-height:auto; }
 .toast { position:fixed; right:24px; bottom:24px; min-width:240px; max-width:420px; background:#065f46; color:#fff; padding:12px 14px; border-radius:12px; display:none; box-shadow:0 18px 45px rgba(15,23,42,.24); z-index:50; font-size:14px; }
 .toast.error { background:#991b1b; }
-.status-line { min-height:20px; color:#64748b; font-size:13px; margin-top:10px; }
+.status-line { min-height:20px; color:#64748b; font-size:13px; margin-top:8px; }
+.status-line:empty { display:none; }
 .status-line.success { color:#166534; }
 .status-line.error { color:#b91c1c; }
 </style></head>
@@ -24356,19 +25029,31 @@ async function submitPasswordChange() {
 <style>
 :root { --bg:#f4f7fb; --card:#fff; --line:#dbe4f0; --text:#142033; --muted:#64748b; --blue:#2563eb; --green:#166534; --red:#b91c1c; --amber:#92400e; }
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; margin:0; padding:24px; background:var(--bg); color:var(--text); }
-.page { max-width:1280px; margin:0 auto; }
+.page { max-width:1280px; margin:0 auto; display:grid; gap:16px; }
 .nav { position:sticky; top:0; z-index:20; display:flex; gap:10px; flex-wrap:wrap; margin:0 0 18px 0; padding:12px 0 14px; background:rgba(244,247,251,.96); backdrop-filter:blur(10px); }
 .nav a { color:var(--blue); text-decoration:none; font-size:13px; padding:8px 12px; border-radius:999px; background:#eef4ff; border:1px solid #d8e5ff; }
-.card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow:0 10px 28px rgba(15,23,42,.06); margin-bottom:16px; }
-.hero { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }
-h1 { margin:0 0 8px 0; font-size:30px; letter-spacing:-.02em; }
-h2 { margin:0 0 12px 0; font-size:18px; }
-.muted { color:var(--muted); font-size:13px; line-height:1.6; }
-.summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:14px; }
-.summary-item { background:#f8fbff; border:1px solid #e2e8f0; border-radius:14px; padding:12px; }
-.summary-item .label { margin:0 0 6px; }
-.summary-item .value { font-size:24px; font-weight:800; }
-.grid { display:grid; grid-template-columns: 1.1fr 1.1fr .9fr 1.1fr auto; gap:12px; align-items:end; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:14px 16px; box-shadow:0 10px 28px rgba(15,23,42,.06); margin-bottom:0; }
+.page > .card { padding:14px 16px!important; margin-bottom:0!important; }
+.page > .card.hero { padding:12px 16px!important; }
+.card.compact-card { padding:14px 16px; margin-bottom:0; }
+.hero { display:flex; justify-content:space-between; align-items:center; gap:14px; }
+.hero h1 { margin:0; }
+.accounts-hero { display:flex!important; justify-content:space-between!important; align-items:center!important; gap:16px!important; flex-wrap:nowrap!important; }
+.accounts-hero-title { min-width:0; }
+.accounts-hero-actions { margin-left:auto; display:flex; align-items:center; justify-content:flex-end; flex:0 0 auto; }
+.accounts-hero-actions button { min-height:42px!important; height:42px!important; margin:0!important; display:inline-flex!important; align-items:center!important; justify-content:center!important; }
+h1 { margin:0; font-size:28px; letter-spacing:-.02em; }
+h2 { margin:0; font-size:18px; }
+.muted { color:var(--muted); font-size:13px; line-height:1.45; }
+.summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; margin:0; }
+.summary-item { background:#f8fbff; border:1px solid #e2e8f0; border-radius:14px; padding:9px 12px; }
+.summary-item .label { margin:0 0 3px; }
+.summary-item .value { font-size:21px; font-weight:800; line-height:1.05; }
+.grid { display:grid; grid-template-columns: 1.1fr 1.1fr .9fr 1.1fr auto; gap:16px!important; align-items:end; }
+.page .grid { gap:16px!important; }
+.page .grid input,.page .grid select { min-height:42px!important; height:42px!important; margin:0!important; }
+.page .grid > div { display:flex; align-items:flex-end; }
+.page .grid > div > button { min-height:42px!important; height:42px!important; margin:0!important; display:inline-flex!important; align-items:center!important; justify-content:center!important; }
 label { display:block; }
 .label { color:#475569; font-size:12px; font-weight:700; margin-bottom:6px; }
 .hint { color:#64748b; font-size:12px; margin-top:6px; line-height:1.5; }
@@ -24379,22 +25064,36 @@ button.secondary { background:#334155; }
 button.ghost { background:#e2e8f0; color:#334155; }
 button.danger { background:#dc2626; }
 button:disabled { opacity:.58; cursor:not-allowed; }
-.toolbar { display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+.toolbar { display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:10px; }
+.toolbar h2 { margin:0; }
 .toolbar-left { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.toolbar-left input.search { min-height:42px!important; height:42px!important; margin:0!important; }
+.toolbar-left button { min-height:42px!important; height:42px!important; margin:0!important; display:inline-flex!important; align-items:center!important; justify-content:center!important; }
 .search { width:260px; }
-.table-wrap { overflow-x:auto; }
-table { width:100%; min-width:920px; border-collapse:collapse; font-size:13px; table-layout:auto; }
-th, td { padding:9px 10px; border-bottom:1px solid #e5edf6; text-align:left; vertical-align:middle; white-space:nowrap; }
+.table-wrap { overflow-x:auto; padding-bottom:2px; }
+table { width:100%; min-width:980px; border-collapse:collapse; font-size:13px; table-layout:fixed; }
+col.col-account { width:24%; }
+col.col-role { width:16%; }
+col.col-status { width:12%; }
+col.col-login { width:16%; }
+col.col-actions { width:32%; }
+th, td { padding:4px 10px; border-bottom:1px solid #e5edf6; text-align:left; vertical-align:middle; white-space:nowrap; height:36px; line-height:1; }
 th { color:#475569; background:#f8fbff; font-weight:800; white-space:nowrap; }
 tr:hover td { background:#fbfdff; }
-.account-line { display:flex; align-items:center; gap:8px; min-width:0; }
-.account-main { font-weight:800; font-size:14px; }
-.account-sub { color:#64748b; font-size:12px; }
-.role-cell, .status-cell { display:flex; align-items:center; gap:8px; }
-.role-cell select, .status-cell select { width:auto; min-width:108px; min-height:34px; padding:6px 8px; }
-.actions { display:flex; gap:6px; flex-wrap:nowrap; align-items:center; }
-.actions button { min-height:32px; padding:7px 10px; margin-top:0; }
-.badge { display:inline-flex; align-items:center; gap:5px; padding:4px 9px; border-radius:999px; font-size:12px; font-weight:800; }
+.account-main, .account-sub { display:flex; align-items:center; height:32px; min-height:32px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.account-main { font-weight:800; font-size:14px; gap:8px; }
+.account-name-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.account-sub { color:#64748b; font-size:13px; }
+.current-cell, .role-cell, .status-cell, .login-cell, .actions { display:flex; align-items:center; height:32px; min-height:32px; width:100%; }
+.current-cell { justify-content:center; }
+.role-cell, .status-cell { justify-content:center; gap:8px; }
+.role-cell select { width:126px; min-width:126px; height:32px!important; min-height:32px!important; padding:5px 8px!important; text-align:center; text-align-last:center; line-height:18px!important; transform:translateY(3px); }
+.status-cell select { width:86px; min-width:86px; height:32px!important; min-height:32px!important; padding:5px 8px!important; text-align:center; text-align-last:center; line-height:18px!important; transform:translateY(3px); }
+.login-cell { color:#334155; justify-content:flex-start; }
+table th:nth-child(2), table td:nth-child(2), table th:nth-child(3), table td:nth-child(3) { text-align:center; }
+.actions { gap:6px; flex-wrap:nowrap; justify-content:flex-start; }
+.actions button { height:32px!important; min-height:32px!important; padding:5px 9px!important; margin-top:0; line-height:18px!important; display:inline-flex; align-items:center; justify-content:center; }
+.badge { display:inline-flex; align-items:center; justify-content:center; gap:5px; min-height:24px; padding:3px 8px; border-radius:999px; font-size:12px; font-weight:800; line-height:18px; vertical-align:middle; }
 .badge.super_admin { background:#fde68a; color:#92400e; }
 .badge.admin { background:#dbeafe; color:#1d4ed8; }
 .badge.customer_service { background:#dcfce7; color:#166534; }
@@ -24403,7 +25102,8 @@ tr:hover td { background:#fbfdff; }
 .badge.pending { background:#fef3c7; color:#92400e; }
 .inline-edit { display:flex; gap:8px; align-items:center; }
 .inline-edit input { min-width:180px; }
-.status-line { min-height:20px; color:#64748b; font-size:13px; margin-top:10px; }
+.status-line { min-height:20px; color:#64748b; font-size:13px; margin-top:8px; }
+.status-line:empty { display:none; }
 .status-line.success { color:#166534; }
 .status-line.error { color:#b91c1c; }
 .toast { position:fixed; right:24px; bottom:24px; min-width:260px; max-width:420px; background:#111827; color:#fff; padding:12px 14px; border-radius:12px; display:none; box-shadow:0 18px 45px rgba(15,23,42,.24); z-index:50; font-size:14px; }
@@ -24411,11 +25111,36 @@ tr:hover td { background:#fbfdff; }
 .toast.error { background:#991b1b; }
 .modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,.42); display:none; align-items:center; justify-content:center; padding:20px; z-index:40; }
 .modal { width:min(520px,100%); background:#fff; border-radius:18px; padding:20px; box-shadow:0 24px 70px rgba(15,23,42,.28); }
-.modal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:14px; }
-.modal h2 { margin:0 0 6px 0; }
+.account-modal-card { width:min(520px,100%); max-height:calc(100vh - 48px); overflow:auto; background:#fff!important; border:1px solid rgba(219,228,240,.95)!important; border-radius:20px; padding:0; box-shadow:0 24px 64px rgba(15,23,42,.24); color:var(--text); }
+.account-modal-head { position:sticky; top:0; z-index:2; display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px 20px 14px; border-bottom:1px solid var(--line); background:#fff; border-radius:20px 20px 0 0; }
+.account-modal-body { padding:16px 20px 20px; }
+.account-modal-card h2 { margin:0 0 4px 0; }
 .modal-grid { display:grid; gap:12px; }
 .generated-password-panel { display:none; border:1px solid #bfdbfe; background:#eff6ff; color:#1e3a8a; border-radius:12px; padding:10px 12px; font-size:13px; line-height:1.5; }
 .generated-password-panel code { display:block; margin-top:6px; font-size:18px; color:#111827; user-select:all; word-break:break-all; }
+.region-card { padding:18px!important; }
+.region-toolbar { margin-bottom:12px!important; align-items:flex-start!important; }
+.region-toolbar h2 { margin-bottom:4px!important; }
+.region-table { border:1px solid #dbe4f0; border-radius:14px; overflow:hidden; background:#fff; }
+.region-head, .region-row { display:grid; grid-template-columns:minmax(220px,1fr) 110px 92px 82px; align-items:center; column-gap:0; }
+.region-head { min-height:38px; background:#f1f5fb; color:#475569; font-size:12px; font-weight:800; letter-spacing:0; border-bottom:1px solid #dbe4f0; }
+.region-head span, .region-cell { padding:0 12px; min-width:0; }
+.region-head span { display:flex; align-items:center; height:100%; transform:translateX(5px); }
+.region-head span:not(:first-child) { justify-content:center; text-align:center; }
+.region-head span:first-child { justify-content:flex-start; text-align:left; transform:translateX(5px); }
+.region-list { display:grid; gap:0; margin-top:0; }
+.region-row { min-height:52px; border-bottom:1px solid #e8eef6; background:#fff; font-size:13px; }
+.region-row:last-child { border-bottom:0; }
+.region-row:hover { background:#fbfdff; }
+.region-main { display:flex; align-items:center; gap:10px; min-width:0; }
+.region-code { width:34px; height:24px; display:inline-flex; align-items:center; justify-content:center; border-radius:8px; background:#eef4ff; color:#1d4ed8; font-size:12px; font-weight:800; flex:0 0 auto; }
+.region-title { min-width:0; }
+.region-name { font-weight:800; line-height:1.2; color:#0f172a; }
+.region-meta { color:#64748b; font-size:12px; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.region-center { text-align:center; }
+.region-toggle { justify-content:center; display:flex; align-items:center; gap:6px; color:#475569; font-size:12px; font-weight:700; }
+.region-toggle input[type="checkbox"] { width:16px; min-height:16px; margin:0; }
+@media (max-width: 980px) { .region-head, .region-row { grid-template-columns:minmax(190px,1fr) 86px 72px 70px; } .region-head span, .region-cell { padding:0 8px; } }
 .password-visibility-toggle { display:flex; align-items:center; gap:8px; margin-top:2px; color:#475569; font-size:13px; font-weight:700; }
 .password-visibility-toggle input { width:auto; min-height:auto; }
 .modal-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:16px; }
@@ -24423,9 +25148,9 @@ tr:hover td { background:#fbfdff; }
 </style></head>
 <body><div class="page">
   <div class="nav"><a href="/ops">管理员看板</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/group-atmosphere" data-admin-only-nav="true">群聊天助手</a><a href="/ops/accounts">账号设置</a></div>
-  <div class="card hero">
-    <div><h1>后台账号设置</h1></div>
-    <button class="secondary" type="button" onclick="openChangeOwnPassword()">修改我的密码</button>
+  <div class="card hero compact-card accounts-hero">
+    <div class="accounts-hero-title"><h1>后台账号设置</h1></div>
+    <div class="accounts-hero-actions"><button class="secondary" type="button" onclick="openChangeOwnPassword()">修改我的密码</button></div>
   </div>
   <div class="summary" id="summaryCards">
     <div class="summary-item"><div class="label">总账号</div><div class="value" id="totalCount">-</div></div>
@@ -24449,35 +25174,51 @@ tr:hover td { background:#fbfdff; }
       <div><h2>账号列表</h2></div>
       <div class="toolbar-left"><input id="accountSearch" class="search" placeholder="搜索账号/显示名" oninput="renderAccounts()" /><button class="ghost" type="button" onclick="loadAccounts()">刷新</button></div>
     </div>
-    <div id="tableMessage" class="status-line">加载中...</div>
-    <div class="table-wrap"><table><thead><tr><th>账号</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead><tbody id="rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody></table></div>
+    <div id="tableMessage" class="status-line"></div>
+    <div class="table-wrap"><table><colgroup><col class="col-account"><col class="col-role"><col class="col-status"><col class="col-login"><col class="col-actions"></colgroup><thead><tr><th>账号</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead><tbody id="rows"><tr><td colspan="5" class="muted">加载中...</td></tr></tbody></table></div>
+  </div>
+  <div class="card region-card" id="mcnRegionManagementCard" data-admin-region-management="true">
+    <div class="toolbar region-toolbar">
+      <div><h2>地区管理</h2><div class="muted">统一管理绑定中心、群审批、群聊天助手可用地区；仅管理员/超级管理员可配置。</div></div>
+      <div class="toolbar-left"><button class="ghost" type="button" onclick="loadRegionOptions()">刷新</button><button id="saveRegionBtn" type="button" onclick="saveRegionOptions()">保存配置</button></div>
+    </div>
+    <div class="region-table" aria-label="地区管理列表">
+      <div class="region-head"><span>地区</span><span>电话区号</span><span>语言</span><span>启用</span></div>
+      <div id="regionRows" class="region-list"></div>
+    </div>
+    <div id="regionMessage" class="status-line"></div>
   </div>
 </div>
 <div id="displayNameModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
-  <div class="modal">
-    <div class="modal-head"><div><h2>修改显示名</h2><div class="muted">修改后立即在后台账号列表生效。</div></div><button class="ghost" type="button" onclick="closeDisplayNameModal()">关闭</button></div>
-    <label><div class="label">显示名</div><input id="displayNameInput" autocomplete="off" /></label>
-    <div id="displayNameMessage" class="status-line"></div>
-    <div class="modal-actions"><button class="ghost" type="button" onclick="closeDisplayNameModal()">取消</button><button id="displayNameSubmitBtn" type="button" onclick="submitDisplayNameModal()">保存显示名</button></div>
+  <div class="account-modal-card">
+    <div class="account-modal-head"><div><h2>修改显示名</h2><div class="muted">修改后立即在后台账号列表生效。</div></div><button class="ghost" type="button" onclick="closeDisplayNameModal()">关闭</button></div>
+    <div class="account-modal-body">
+      <label><div class="label">显示名</div><input id="displayNameInput" autocomplete="off" /></label>
+      <div id="displayNameMessage" class="status-line"></div>
+      <div class="modal-actions"><button class="ghost" type="button" onclick="closeDisplayNameModal()">取消</button><button id="displayNameSubmitBtn" type="button" onclick="submitDisplayNameModal()">保存显示名</button></div>
+    </div>
   </div>
 </div>
 <div id="passwordModal" class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
-  <div class="modal">
-    <div class="modal-head"><div><h2 id="passwordModalTitle">修改密码</h2><div id="passwordModalHint" class="muted"></div></div><button class="ghost" type="button" onclick="closePasswordModal()">关闭</button></div>
-    <div class="modal-grid">
-      <label id="currentPasswordWrap"><div class="label">当前密码</div><input id="currentPassword" type="password" autocomplete="current-password" /></label>
-      <label><div class="label">新密码</div><input id="newPassword" type="password" autocomplete="new-password" placeholder="至少 8 位" /></label>
-      <label><div class="label">确认新密码</div><input id="confirmPassword" type="password" autocomplete="new-password" /></label>
-      <div id="generatedPasswordPanel" class="generated-password-panel">已生成新密码<code id="generatedPasswordText"></code><button class="ghost" type="button" onclick="copyGeneratedPassword()">复制密码</button></div>
-      <label class="password-visibility-toggle"><input id="passwordVisibleToggle" type="checkbox" onchange="togglePasswordVisibility(this.checked)" />显示密码</label>
+  <div class="account-modal-card">
+    <div class="account-modal-head"><div><h2 id="passwordModalTitle">修改密码</h2><div id="passwordModalHint" class="muted"></div></div><button class="ghost" type="button" onclick="closePasswordModal()">关闭</button></div>
+    <div class="account-modal-body">
+      <div class="modal-grid">
+        <label id="currentPasswordWrap"><div class="label">当前密码</div><input id="currentPassword" type="password" autocomplete="current-password" /></label>
+        <label><div class="label">新密码</div><input id="newPassword" type="password" autocomplete="new-password" placeholder="至少 8 位" /></label>
+        <label><div class="label">确认新密码</div><input id="confirmPassword" type="password" autocomplete="new-password" /></label>
+        <div id="generatedPasswordPanel" class="generated-password-panel">已生成新密码<code id="generatedPasswordText"></code><button class="ghost" type="button" onclick="copyGeneratedPassword()">复制密码</button></div>
+        <label class="password-visibility-toggle"><input id="passwordVisibleToggle" type="checkbox" onchange="togglePasswordVisibility(this.checked)" />显示密码</label>
+      </div>
+      <div id="passwordMessage" class="status-line"></div>
+      <div class="modal-actions"><button class="ghost" type="button" onclick="closePasswordModal()">取消</button><button class="ghost" id="generatePasswordBtn" type="button" onclick="generateTemporaryPassword()">生成临时密码</button><button id="passwordSubmitBtn" type="button" onclick="submitPasswordModal()">保存密码</button></div>
     </div>
-    <div id="passwordMessage" class="status-line"></div>
-    <div class="modal-actions"><button class="ghost" type="button" onclick="closePasswordModal()">取消</button><button class="ghost" id="generatePasswordBtn" type="button" onclick="generateTemporaryPassword()">生成临时密码</button><button id="passwordSubmitBtn" type="button" onclick="submitPasswordModal()">保存密码</button></div>
   </div>
 </div>
 <div id="toast" class="toast"></div>
 <script>
 let accounts = [];
+let regionOptions = [];
 let currentUser = null;
 let passwordMode = null;
 let passwordTargetUserId = null;
@@ -24490,6 +25231,7 @@ function isSuperAdmin() { return currentUser && currentUser.role === 'super_admi
 function roleText(role) { if (role === 'super_admin') return '超级管理员'; if (role === 'admin') return '管理员'; if (role === 'customer_service') return '客服'; if (role === 'operator') return '运营'; return '客服'; }
 function badgeRole(role) { return `<span class="badge ${escapeHtml(role)}">${roleText(role)}</span>`; }
 function badgeEnabled(enabled) { return enabled ? '<span class="badge operator">启用</span>' : '<span class="badge off">停用</span>'; }
+function formatLoginTime(value) { const raw=String(value || '').trim(); if (!raw) return '-'; return raw.replace('T',' ').replace(/\.\d+/, '').replace(/(?:Z|[+-]\d{2}:?\d{2})$/, '').slice(0,19); }
 function showToast(message, type='success') { const toast=document.getElementById('toast'); toast.textContent=message; toast.className=`toast ${type}`; toast.style.display='block'; clearTimeout(window.__accountToastTimer); window.__accountToastTimer=setTimeout(()=>{toast.style.display='none';},2600); }
 function setStatus(id, message, type='') { const el=document.getElementById(id); el.textContent=message || ''; el.className=`status-line ${type}`.trim(); }
 function setBusy(btn, busy, text) { if (!btn) return; if (busy) { btn.dataset.originalText=btn.textContent; btn.textContent=text || '处理中...'; btn.disabled=true; } else { btn.textContent=btn.dataset.originalText || btn.textContent; btn.disabled=false; } }
@@ -24501,12 +25243,12 @@ async function copyGeneratedPassword() { const text=document.getElementById('gen
 async function fetchJson(url, options={}) { const res=await fetch(url, {credentials:'same-origin', ...options}); let data={}; try { data=await res.json(); } catch (_) {} if (!res.ok) { const err=new Error(detailText(data.detail, '请求失败')); err.detail=data.detail; err.status=res.status; throw err; } return data; }
 async function loadCurrentUser() { const data=await fetchJson('/api/ops/auth/status'); currentUser=data.user || null; }
 async function loadAccounts() {
-  setStatus('tableMessage','加载中...');
+  setStatus('tableMessage','');
   try {
     await loadCurrentUser();
     const data = await fetchJson('/api/ops/accounts');
     accounts = Array.isArray(data.rows) ? data.rows : [];
-    updateSummary(); renderAccounts(); setStatus('tableMessage', `已加载 ${accounts.length} 个账号`, 'success');
+    updateSummary(); renderAccounts(); setStatus('tableMessage', '');
   } catch (err) {
     document.getElementById('rows').innerHTML = `<tr><td colspan="5" class="status-line error">${escapeHtml(err.message || '加载失败')}</td></tr>`;
     setStatus('tableMessage', err.message || '加载失败', 'error');
@@ -24533,14 +25275,14 @@ function renderAccounts() {
     const displayNameJson=escapeHtml(JSON.stringify(row.display_name || ''));
     const isMe=currentUser && currentUser.user_id === row.user_id;
     const roleOptions = `<option value="customer_service" ${row.role === 'customer_service' ? 'selected' : ''}>客服</option><option value="operator" ${row.role === 'operator' ? 'selected' : ''}>运营</option><option value="admin" ${row.role === 'admin' ? 'selected' : ''}>管理员</option><option value="super_admin" ${row.role === 'super_admin' ? 'selected' : ''}>超级管理员</option>`;
-    const actions = [`<button class="ghost" type="button" onclick="openDisplayNameEditor(${userIdJson}, ${displayNameJson}, this)">改显示名</button>`];
-    if (!(row.role === 'super_admin' && !isSuperAdmin())) actions.push(`<button class="secondary" type="button" onclick="openAdminResetPassword(${userIdJson}, ${usernameJson})">管理员重置密码</button>`);
-    if (isSuperAdmin() && !isMe) actions.push(`<button class="danger" type="button" onclick="deleteAccount(${userIdJson}, ${usernameJson}, this)">删除账号</button>`);
+    const actions = [`<button class="ghost" type="button" onclick="openDisplayNameEditor(${userIdJson}, ${displayNameJson}, this)">显示名</button>`];
+    if (!(row.role === 'super_admin' && !isSuperAdmin())) actions.push(`<button class="secondary" type="button" onclick="openAdminResetPassword(${userIdJson}, ${usernameJson})">重置密码</button>`);
+    if (isSuperAdmin() && !isMe) actions.push(`<button class="danger" type="button" onclick="deleteAccount(${userIdJson}, ${usernameJson}, this)">删除</button>`);
     return `<tr>
-      <td><div class="account-line"><span class="account-main">${escapeHtml(row.username)}</span><span class="account-sub">${escapeHtml(row.display_name || row.username)}</span>${isMe ? '<span class="badge pending">当前登录</span>' : ''}</div></td>
-      <td><div class="role-cell">${badgeRole(row.role)}<select aria-label="修改角色" onchange="updateAccount(${userIdJson}, {role:this.value}, this, '角色已保存')">${roleOptions}</select></div></td>
-      <td><div class="status-cell">${badgeEnabled(!!row.enabled)}<select aria-label="修改状态" onchange="updateAccount(${userIdJson}, {enabled:this.value==='enabled'}, this, this.value==='enabled'?'账号已启用':'账号已停用')"><option value="enabled" ${row.enabled ? 'selected' : ''}>启用</option><option value="disabled" ${!row.enabled ? 'selected' : ''}>停用</option></select></div></td>
-      <td>${escapeHtml(row.last_login_at || '-')}</td>
+      <td><div class="account-main" title="${escapeHtml(row.display_name || row.username)}"><span class="account-name-text">${escapeHtml(row.username)}</span>${isMe ? '<span class="badge pending">当前</span>' : ''}</div></td>
+      <td><div class="role-cell"><select aria-label="修改角色" onchange="updateAccount(${userIdJson}, {role:this.value}, this, '角色已保存')">${roleOptions}</select></div></td>
+      <td><div class="status-cell"><select aria-label="修改状态" onchange="updateAccount(${userIdJson}, {enabled:this.value==='enabled'}, this, this.value==='enabled'?'账号已启用':'账号已停用')"><option value="enabled" ${row.enabled ? 'selected' : ''}>启用</option><option value="disabled" ${!row.enabled ? 'selected' : ''}>停用</option></select></div></td>
+      <td><div class="login-cell">${escapeHtml(formatLoginTime(row.last_login_at))}</div></td>
       <td><div class="actions">${actions.join('')}</div></td>
     </tr>`;
   }).join('');
@@ -24561,6 +25303,49 @@ async function updateAccount(userId, patch, control=null, successText='已保存
   try { await fetchJson(`/api/ops/accounts/${encodeURIComponent(userId)}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(patch) }); showToast(successText); await loadAccounts(); }
   catch (err) { showToast(err.message || '更新失败', 'error'); setStatus('tableMessage', err.message || '更新失败', 'error'); await loadAccounts(); }
   finally { if (control) control.disabled=false; }
+}
+async function loadRegionOptions() {
+  setStatus('regionMessage','');
+  try {
+    const data = await fetchJson('/api/ops/mcn-region-options?include_disabled=true');
+    regionOptions = Array.isArray(data.options) ? data.options : [];
+    renderRegionOptions();
+    setStatus('regionMessage', '');
+  } catch (err) {
+    setStatus('regionMessage', err.message || '地区加载失败', 'error');
+    document.getElementById('regionRows').innerHTML = `<div class="muted">${escapeHtml(err.message || '地区加载失败')}</div>`;
+  }
+}
+function renderRegionOptions() {
+  const rows = regionOptions.map((row, index) => {
+    const code = escapeHtml(row.code || '');
+    const label = escapeHtml(row.label_zh || row.label || row.value || row.code || '-');
+    const en = escapeHtml(row.label || row.value || '');
+    const phone = escapeHtml(row.phone_code ? `+${row.phone_code}` : '-');
+    const language = escapeHtml(row.language || '-');
+    const checked = row.enabled ? 'checked' : '';
+    return `<div class="region-row" data-region-code="${code}"><div class="region-cell region-main"><span class="region-code">${code}</span><div class="region-title"><div class="region-name">${label}</div><div class="region-meta">${en}</div></div></div><div class="region-cell region-center">${phone}</div><div class="region-cell region-center">${language}</div><label class="region-cell region-toggle"><input type="checkbox" data-region-enabled ${checked}> 启用</label></div>`;
+  }).join('');
+  document.getElementById('regionRows').innerHTML = rows || '<div class="muted">暂无地区</div>';
+}
+async function saveRegionOptions() {
+  const btn = document.getElementById('saveRegionBtn');
+  const options = Array.from(document.querySelectorAll('[data-region-code]')).map((row) => ({
+    code: row.dataset.regionCode,
+    enabled: !!row.querySelector('[data-region-enabled]')?.checked,
+  }));
+  setBusy(btn, true, '保存中...');
+  setStatus('regionMessage','保存中...');
+  try {
+    const data = await fetchJson('/api/ops/mcn-region-options', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({options}) });
+    regionOptions = Array.isArray(data.options) ? data.options : regionOptions;
+    renderRegionOptions();
+    setStatus('regionMessage','地区配置已保存', 'success');
+    showToast('地区配置已保存');
+  } catch (err) {
+    setStatus('regionMessage', err.message || '地区保存失败', 'error');
+    showToast(err.message || '地区保存失败', 'error');
+  } finally { setBusy(btn, false); }
 }
 async function deleteAccount(userId, username, control=null) {
   if (!window.confirm(`确认删除账号 ${username}？该操作不可恢复。`)) return;
@@ -24621,7 +25406,7 @@ async function submitPasswordModal() {
   } catch (err) { setStatus('passwordMessage', err.message || '保存失败', 'error'); showToast(err.message || '保存失败', 'error'); }
   finally { setBusy(btn,false); }
 }
-loadAccounts();
+Promise.all([loadAccounts(), loadRegionOptions()]);
 </script></body></html>"""
         if str(role or '').strip() != OPS_AUTH_ROLE_SUPER_ADMIN:
             html = html.replace('<option value="super_admin">超级管理员</option>', '')
@@ -24674,56 +25459,47 @@ loadAccounts();
   <title>注册群审批留存页</title>
   <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css\">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 24px; background: #f4f7fb; color: #142033; }
-    .page-shell { max-width: 1280px; margin: 0 auto; }
-    .shell-nav { position: sticky; top: 0; z-index: 20; display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 18px 0; padding: 12px 0 14px; background: rgba(244,247,251,.96); backdrop-filter: blur(10px); }
-    .shell-nav a { color:#2563eb; text-decoration:none; font-size:13px; padding:8px 12px; border-radius:999px; background:#eef4ff; border:1px solid #d8e5ff; }
-    .page { max-width: 1280px; margin: 0 auto; }
-    .card { background: #fff; border: 1px solid #dbe4f0; border-radius: 18px; padding: 18px; box-shadow: 0 10px 28px rgba(15,23,42,.06); margin-bottom: 16px; }
-    h1 { margin: 0 0 8px 0; font-size: 30px; }
-    .muted { color: #5d6b82; font-size: 13px; line-height: 1.6; }
-    .filters { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 14px 16px; align-items: end; }
-    .filters label, .range-picker { min-width: 0; display:flex; flex-direction:column; gap:0; }
-    input, select { width: 100%; box-sizing: border-box; min-height:40px; padding: 10px 12px; border: 1px solid #c7d4e3; border-radius: 10px; font-size: 14px; }
-    button { min-height:40px; padding: 10px 14px; border: none; border-radius: 10px; background: #2563eb; color: #fff; font-weight: 600; cursor: pointer; }
-    .range-picker-display { display:flex; align-items:center; gap:8px; }
-    .range-picker-input { flex:1; width:100%; box-sizing:border-box; padding:10px 12px; border:1px solid #c7d4e3; border-radius:10px; font-size:14px; background:#fff; color:#0f172a; }
-    .range-picker-clear { background:#e2e8f0; color:#334155; }
+    .batch-members-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:var(--ops-space-4); }
+    .batch-members-summary .item { border:1px solid var(--ops-border); border-radius:var(--ops-r-lg); background:linear-gradient(180deg,#fff 0%,#fbfdff 100%); padding:16px; box-shadow:var(--ops-shadow-card); }
+    .batch-members-summary .value { font-size:22px; font-weight:760; color:var(--ops-text); }
+    .batch-members-filters { display:grid; grid-template-columns:repeat(4,minmax(180px,1fr)); gap:14px 16px; align-items:start; }
+    .batch-members-filters label,.batch-members-range-picker { min-width:0; display:flex; flex-direction:column; gap:0; }
+    .batch-members-filters .label { height:24px; margin:0 0 6px; display:flex; align-items:center; }
+    .batch-members-filters input,.batch-members-filters select { min-height:42px!important; height:42px!important; margin:0!important; }
+    .batch-members-range-display { display:flex; align-items:center; gap:8px; }
+    .batch-members-range-display .range-picker-input { flex:1; min-height:42px!important; height:42px!important; margin:0!important; }
+    .batch-members-range-display .range-picker-clear { min-height:42px!important; height:42px!important; margin:0!important; display:inline-flex!important; align-items:center!important; justify-content:center!important; background:#e2e8f0!important; color:#334155!important; border-color:#cbd5e1!important; box-shadow:none!important; }
     .range-picker-hidden { display:none; }
-    .filter-actions { grid-column: 3 / 5; display:flex; gap:10px; align-items:flex-end; justify-content:flex-end; flex-wrap:wrap; padding-top:0; align-self:end; }
-    .filter-actions button { min-width:96px; }
-    .filter-actions button:nth-child(n+2) { background:#f2f6ff; color:#1f55d9; border:1px solid #d7e5ff; }
-    .table-wrap { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 1100px; }
-    th, td { padding: 10px 12px; border-bottom: 1px solid #e5edf6; text-align: left; vertical-align: top; }
-    th { color: #5d6b82; font-weight: 600; background: #f8fbff; position: relative; white-space: nowrap; text-align:center; vertical-align:middle; }
-    td { vertical-align:middle; }
-    th.resizable-column { user-select: none; text-align:center; }
-    .batch-member-resize-handle { position: absolute; top: 0; right: -4px; width: 10px; height: 100%; cursor: col-resize; z-index: 3; }
-    .batch-member-resize-handle::after { content: ''; position: absolute; top: 10px; bottom: 10px; left: 4px; width: 2px; border-radius: 999px; background: #d7e3f4; }
-    th.resizable-column:hover .batch-member-resize-handle::after, body.batch-member-column-resizing .batch-member-resize-handle::after { background: #93c5fd; }
-    .summary { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin-top: 12px; }
-    .summary .item { border: 1px solid #dbe4f0; border-radius: 12px; background: #f8fbff; padding: 12px; }
-    .label { color: #5d6b82; font-size: 12px; margin-bottom: 6px; }
-    .value { font-size: 22px; font-weight: 700; }
-    .badge { display: inline-flex; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-    .badge.registered { background: #dcfce7; color: #166534; }
-    .badge.in_progress { background: #fef3c7; color: #92400e; }
-    .badge.not_found { background: #fee2e2; color: #991b1b; }
+    .filter-actions { grid-column:3 / 5; display:flex; gap:10px; align-items:flex-start; justify-content:flex-end; flex-wrap:wrap; padding-top:30px; }
+    .filter-actions button { min-width:96px; min-height:42px!important; height:42px!important; margin:0!important; display:inline-flex!important; align-items:center!important; justify-content:center!important; }
+    .filter-actions button:nth-child(n+2) { background:#f2f6ff!important; color:#1f55d9!important; border-color:#d7e5ff!important; box-shadow:none!important; }
+    .batch-members-notice { display:none; margin-top:12px; padding:10px 12px; border-radius:var(--ops-r-md); background:var(--ops-amber-soft); color:#92400e; border:1px solid #fed7aa; font-size:13px; font-weight:650; }
+    .batch-members-notice.is-visible { display:block; }
+    .table-wrap { overflow-x:auto; }
+    #batchMembersTable { min-width:1100px; }
+    #batchMembersTable th { position:relative; white-space:nowrap; text-align:left!important; vertical-align:middle!important; }
+    #batchMembersTable td { vertical-align:middle!important; }
+    th.resizable-column { user-select:none; }
+    .batch-member-resize-handle { position:absolute; top:0; right:0; width:10px; height:100%; cursor:col-resize; z-index:3; }
+    .batch-member-resize-handle::after { content:''; position:absolute; top:10px; bottom:10px; left:4px; width:2px; border-radius:999px; background:#d7e3f4; }
+    th.resizable-column:hover .batch-member-resize-handle::after, body.batch-member-column-resizing .batch-member-resize-handle::after { background:#93c5fd; }
+    .badge.registered { background:#dcfce7!important; color:#166534!important; border-color:#bbf7d0!important; }
+    .badge.in_progress { background:#fef3c7!important; color:#92400e!important; border-color:#fde68a!important; }
+    .badge.not_found { background:#fee2e2!important; color:#991b1b!important; border-color:#fecaca!important; }
     .pager { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:14px; flex-wrap:wrap; }
-    .pager-meta { color:#5d6b82; font-size:13px; }
+    .pager-meta { color:var(--ops-muted); font-size:13px; }
     .pager-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
     .pager-jump { display:flex; gap:8px; align-items:center; flex-wrap:wrap; color:#475569; font-size:13px; }
-    .pager-jump input { width:84px; min-height:40px; padding:8px 10px; border:1px solid #cbd5e1; border-radius:10px; font-size:14px; }
+    .pager-jump input { width:84px; }
     .pager-jump-total { color:#64748b; font-size:13px; }
-    .pager-actions button[disabled] { background:#cbd5e1; cursor:not-allowed; color:#475569; }
+    .pager-actions button[disabled],.filter-actions button[disabled] { background:#e2e8f0!important; border-color:#cbd5e1!important; color:#64748b!important; cursor:not-allowed!important; box-shadow:none!important; transform:none!important; }
     .selection-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:10px; color:#475569; font-size:13px; }
     .selection-actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-    .selection-actions button { background:#e2e8f0; color:#334155; }
-    .select-col { text-align:center; width:48px; padding-left:0; padding-right:0; vertical-align:middle; }
-    .select-col input { width:18px; height:18px; min-height:18px; padding:0; margin:0 auto; cursor:pointer; display:block; }
-    @media (max-width: 1100px) { .filters { grid-template-columns: repeat(2, minmax(180px, 1fr)); } .filter-actions { grid-column: 1 / -1; justify-content:flex-start; } }
-    @media (max-width: 720px) { .filters { grid-template-columns: 1fr; } }
+    .selection-actions button { background:#e2e8f0!important; color:#334155!important; border-color:#cbd5e1!important; box-shadow:none!important; }
+    .select-col { text-align:center!important; width:48px; padding-left:0!important; padding-right:0!important; vertical-align:middle!important; }
+    .select-col input { width:18px!important; height:18px!important; min-height:18px!important; padding:0!important; margin:0 auto!important; cursor:pointer; display:block!important; }
+    @media (max-width:1100px) { .batch-members-filters { grid-template-columns:repeat(2,minmax(180px,1fr)); } .filter-actions { grid-column:1 / -1; justify-content:flex-start; } }
+    @media (max-width:720px) { .batch-members-filters,.batch-members-summary { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
@@ -24736,16 +25512,18 @@ loadAccounts();
       <a href=\"/ops/group-atmosphere\" data-admin-only-nav=\"true\">群聊天助手</a>
       <a href=\"/ops/accounts\">账号设置</a>
     </div>
-  <div class=\"page\">
-    <div class=\"card\">
-      <h1>注册群审批留存页</h1>
-      <div class=\"summary\" id=\"summary\"></div>
+    <div class=\"hero\">
+      <div>
+        <h1>注册群审批留存页</h1>
+        <div class=\"subtitle\">按审批批次、注册群、地区和注册状态查看留存明细，支持筛选、选择和导出。</div>
+      </div>
     </div>
+    <div class=\"batch-members-summary\" id=\"summary\"></div>
     <div class=\"card\">
-      <div class=\"filters\">
-        <div class=\"range-picker\">
+      <div class=\"batch-members-filters\">
+        <div class=\"batch-members-range-picker\">
           <div class=\"label\">时间周期</div>
-          <div class=\"range-picker-display\">
+          <div class=\"batch-members-range-display\">
             <input id=\"rangePickerInput\" class=\"range-picker-input\" type=\"text\" placeholder=\"选择时间周期\" readonly />
             <button id=\"rangePickerClearBtn\" class=\"range-picker-clear\" type=\"button\" onclick=\"clearBatchMembersDateRange()\">清空</button>
           </div>
@@ -24757,7 +25535,8 @@ loadAccounts();
         <label><div class=\"label\">地区</div><select id=\"area\"><option value=\"\">全部地区</option></select></label>
         <label><div class=\"label\">关键词</div><input id=\"keyword\" placeholder=\"昵称 / WA 号码\" /></label>
         <label><div class=\"label\">注册状态</div><select id=\"registration_status\"><option value=\"\">全部</option><option value=\"registered\">已注册</option><option value=\"in_progress\">引导注册中</option><option value=\"not_found\">未注册</option></select></label>
-        <div class=\"filter-actions\"><button onclick=\"reloadBatchMembers(true)\">查询</button><button onclick=\"exportBatchMembers('xlsx')\">导出 xlsx</button><button onclick=\"exportBatchMembers('csv')\">导出 CSV</button></div>
+        <div class=\"filter-actions\"><button onclick=\"reloadBatchMembers(true)\">查询</button><button id=\"exportXlsxBtn\" onclick=\"exportBatchMembers('xlsx')\" disabled>导出 xlsx</button><button id=\"exportCsvBtn\" onclick=\"exportBatchMembers('csv')\" disabled>导出 CSV</button></div>
+        <div id=\"batchMembersSelectionNotice\" class=\"batch-members-notice\">请先选择要导出的成员</div>
       </div>
     </div>
     <div class=\"card\">
@@ -24797,8 +25576,7 @@ loadAccounts();
           <button id="nextPageBtn" type="button" onclick="changeBatchMembersPage(1)">下一页</button>
         </div>
       </div>
-
-  </div>
+    </div>
   </div>
   <script src=\"https://cdn.jsdelivr.net/npm/flatpickr\"></script>
   <script>
@@ -25027,13 +25805,34 @@ loadAccounts();
       const selected = Array.from(window.__batchMembersSelectedIds || []).filter(Boolean);
       return selected.join(',');
     }
+    function showBatchMembersSelectionNotice(message) {
+      const notice = document.getElementById('batchMembersSelectionNotice');
+      if (!notice) return;
+      notice.textContent = message || '';
+      notice.classList.toggle('is-visible', Boolean(message));
+    }
+    function syncBatchMemberExportControls() {
+      const selectedIds = selectedBatchMemberIdsParam();
+      const disabled = !selectedIds;
+      ['exportXlsxBtn', 'exportCsvBtn'].forEach((id) => {
+        const button = document.getElementById(id);
+        if (button) button.disabled = disabled;
+      });
+      if (selectedIds) showBatchMembersSelectionNotice('');
+    }
     function exportBatchMembers(format) {
       const params = currentBatchMemberParams();
       const selectedIds = selectedBatchMemberIdsParam();
+      if (!selectedIds) {
+        showBatchMembersSelectionNotice('请先选择要导出的成员');
+        syncBatchMemberExportControls();
+        return false;
+      }
       params.set('format', format || 'xlsx');
       params.set('limit', '5000');
-      if (selectedIds) params.set('member_ids', selectedIds);
+      params.set('member_ids', selectedIds);
       window.open(`/api/ops/registration-group-approval-batch-members/export?${params.toString()}`, '_blank');
+      return true;
     }
     function batchMemberRowId(row) {
       return String(row?.member_id || `${row?.approval_run_id || ''}:${row?.requester_id || ''}:${row?.batch_index ?? ''}`);
@@ -25059,7 +25858,8 @@ loadAccounts();
         ['未注册', computed.not_registered_members || 0],
       ].map(([label, value]) => `<div class=\"item\"><div class=\"label\">${label}</div><div class=\"value\">${value}</div></div>`).join('');
       const meta = document.getElementById('batchMembersSelectionMeta');
-      if (meta) meta.textContent = useSelection ? `已选择 ${rows.length} 个成员，统计按已选数据计算；导出已选成员` : '未选择成员时显示全部统计';
+      if (meta) meta.textContent = useSelection ? `已选择 ${rows.length} 个成员，统计按已选数据计算；导出已选成员` : '请选择成员后导出；未选择时仅显示全部统计';
+      syncBatchMemberExportControls();
     }
     function syncBatchMemberSelectionControls() {
       const rows = window.__batchMembersRows || [];
@@ -25171,6 +25971,10 @@ loadAccounts();
     def group_atmosphere_roles_manual_phrases(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         return service.upsert_group_atmosphere_manual_phrases(payload)
 
+    @app.delete('/api/ops/group-atmosphere/roles/{role_key}')
+    def group_atmosphere_role_delete(role_key: str) -> Dict[str, Any]:
+        return service.delete_group_atmosphere_role(role_key)
+
     @app.get('/api/ops/group-atmosphere/role-bindings')
     def group_atmosphere_role_bindings() -> Dict[str, Any]:
         return service.list_group_atmosphere_role_bindings()
@@ -25194,6 +25998,10 @@ loadAccounts();
     @app.post('/api/ops/group-atmosphere/learning-accounts')
     def group_atmosphere_learning_accounts_upsert(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         return service.upsert_group_atmosphere_learning_account(payload)
+
+    @app.delete('/api/ops/group-atmosphere/learning-accounts/{learning_account_key}')
+    def group_atmosphere_learning_accounts_delete(learning_account_key: str) -> Dict[str, Any]:
+        return service.delete_group_atmosphere_learning_account(learning_account_key)
 
     @app.post('/api/ops/group-atmosphere/learning-accounts/{learning_account_key}/learn-once')
     def group_atmosphere_learning_account_learn_once(learning_account_key: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
@@ -25406,9 +26214,34 @@ loadAccounts();
             return _ops_nav_html(role, nav_class=nav_class)
         return re.sub(r"<div\s+class=[\"'](?:shell-nav|nav)[\"'][^>]*>.*?</div>", repl, html, count=1, flags=re.S)
 
-    def _with_ops_shell_style(html: str, role: Optional[str] = None) -> str:
+    OPS_LOCAL_BASE_SELECTOR_RE = re.compile(
+        r'(^|[,\s])(?:\.page-shell|\.shell-nav|\.nav|\.hero|\.card|\.toolbar|table|th|td)(?:\s*(?:[,{:+>#.~]|\[)|\s*$)',
+        re.I,
+    )
+
+    def _strip_ops_local_base_layout_css(html: str) -> str:
+        """Keep page-specific CSS, but remove local redeclarations of shared shell/card/table primitives."""
+        def strip_style(match: re.Match) -> str:
+            attrs = match.group(1) or ''
+            css = match.group(2) or ''
+            if 'data-ops-shell-normalized' in attrs:
+                return match.group(0)
+            css = re.sub(
+                r'([^{}]+)\{([^{}]*)\}',
+                lambda rule: '' if OPS_LOCAL_BASE_SELECTOR_RE.search(rule.group(1)) else rule.group(0),
+                css,
+                flags=re.S,
+            )
+            return f'<style{attrs}>{css}</style>'
+        return re.sub(r'<style([^>]*)>(.*?)</style>', strip_style, html, flags=re.S | re.I)
+
+    def _with_ops_shell_style(html: str, role: Optional[str] = None, page: Optional[str] = None) -> str:
         """Apply one shared backend shell layout and one shared backend navigation across independently authored ops pages."""
+        html = _strip_ops_local_base_layout_css(html)
         html = _normalize_ops_nav(html, role)
+        if page and 'data-ops-shell-page=' not in html:
+            safe_page = re.sub(r'[^a-zA-Z0-9_-]', '', str(page))
+            html = re.sub(r'(<(?:div|main)\s+class=["\'](?:page-shell|page)["\'])', rf'\1 data-ops-shell-page="{safe_page}"', html, count=1)
         if 'data-ops-shell-normalized="true"' in html:
             return html
         shell_style = '''
@@ -25417,6 +26250,11 @@ loadAccounts();
 :root{
   --ops-font:Inter,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
   --ops-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;
+  --ops-nav-width:248px;
+  --ops-content-left-gap:32px;
+  --ops-card-gap:16px;
+  --ops-hero-min-height:72px;
+  --ops-table-row-padding-y:11px;
   --ops-bg:#eef3f9;
   --ops-bg-2:#f6f8fc;
   --ops-panel:#ffffff;
@@ -25453,11 +26291,11 @@ loadAccounts();
   --ops-shadow-soft:0 8px 24px rgba(38,55,91,.06);
   --ops-shadow-card:0 1px 0 rgba(15,23,42,.02),0 14px 34px rgba(38,55,91,.055);
 }
-html{scrollbar-gutter:stable;background:var(--ops-bg)!important;font-size:14px!important;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
-body{margin:0!important;padding:24px!important;min-height:100vh!important;background:radial-gradient(circle at 12% -8%,rgba(47,107,255,.10),transparent 31%),linear-gradient(180deg,#f7f9fd 0%,#eef3f9 100%)!important;color:var(--ops-text)!important;font-family:var(--ops-font)!important;font-size:14px!important;line-height:1.5!important;letter-spacing:-.006em!important;}
+html{scrollbar-gutter:stable;overflow-x:hidden!important;background:var(--ops-bg)!important;font-size:14px!important;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+body{margin:0!important;padding:24px!important;min-height:100vh!important;overflow-x:hidden!important;background:radial-gradient(circle at 12% -8%,rgba(47,107,255,.10),transparent 31%),linear-gradient(180deg,#f7f9fd 0%,#eef3f9 100%)!important;color:var(--ops-text)!important;font-family:var(--ops-font)!important;font-size:14px!important;line-height:1.5!important;letter-spacing:-.006em!important;}
 body *{box-sizing:border-box;}
-.page-shell,body>.page{width:min(1480px,calc(100vw - 48px))!important;max-width:1480px!important;margin:0 auto!important;padding:0 0 32px!important;display:grid!important;grid-template-columns:248px minmax(0,1fr)!important;gap:24px!important;align-items:start!important;}
-.shell-nav,.nav{grid-column:1!important;grid-row:1 / span 160!important;position:sticky!important;top:24px!important;z-index:30!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:6px!important;flex-wrap:nowrap!important;min-height:calc(100vh - 48px)!important;margin:0!important;padding:22px 16px!important;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px) saturate(140%)!important;border:1px solid var(--ops-border)!important;border-radius:var(--ops-r-2xl)!important;box-shadow:var(--ops-shadow)!important;}
+.page-shell,body>.page{width:min(1480px,calc(100vw - 48px))!important;max-width:1480px!important;margin:0 auto!important;padding:0 0 32px!important;display:grid!important;grid-template-columns:var(--ops-nav-width) minmax(0,1fr)!important;gap:var(--ops-card-gap) var(--ops-content-left-gap)!important;align-items:start!important;}
+.shell-nav,.nav{grid-column:1!important;grid-row:1 / span 160!important;position:fixed!important;top:24px!important;left:max(24px,calc((100vw - 1480px)/2))!important;width:var(--ops-nav-width)!important;height:calc(100vh - 48px)!important;min-height:0!important;overflow-y:auto!important;z-index:30!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;gap:6px!important;flex-wrap:nowrap!important;margin:0!important;padding:22px 16px!important;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(14px) saturate(140%)!important;border:1px solid var(--ops-border)!important;border-radius:var(--ops-r-2xl)!important;box-shadow:var(--ops-shadow)!important;}
 .shell-nav::before,.nav::before{content:'MCN 客服工具';display:block;margin:0 8px 18px;padding:0 0 16px;border-bottom:1px solid var(--ops-border);color:#111827;font-size:18px;line-height:1.12;font-weight:760;letter-spacing:-.035em;}
 .shell-nav a,.nav a{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:10px!important;min-height:40px!important;padding:11px 14px!important;border-radius:15px!important;background:transparent!important;border:0!important;color:var(--ops-muted)!important;text-decoration:none!important;font-size:14px!important;line-height:18px!important;font-weight:620!important;letter-spacing:-.01em!important;white-space:nowrap!important;box-shadow:none!important;transition:background .16s ease,color .16s ease,transform .16s ease;}
 .shell-nav a::before,.nav a::before{content:'';width:8px;height:8px;border-radius:999px;background:#cbd5e1;flex:0 0 auto;transition:background .16s ease;}
@@ -25466,14 +26304,19 @@ body *{box-sizing:border-box;}
 .shell-nav a.is-active,.nav a.is-active{background:var(--ops-blue)!important;color:#fff!important;box-shadow:0 12px 24px rgba(47,107,255,.22)!important;}
 .shell-nav a.is-active::before,.nav a.is-active::before{background:#fff!important;}
 .page-shell>:not(.shell-nav),body>.page>:not(.nav){grid-column:2!important;min-width:0!important;}
-.hero{padding:24px 26px!important;margin:0 0 16px!important;min-height:84px;border-radius:26px!important;background:linear-gradient(135deg,#fff 0%,#f8fbff 56%,#eef5ff 100%)!important;border:1px solid var(--ops-border)!important;box-shadow:var(--ops-shadow-card)!important;color:var(--ops-text)!important;}
+.hero{padding:20px 24px!important;margin:0!important;min-height:var(--ops-hero-min-height)!important;border-radius:24px!important;background:var(--ops-panel)!important;border:1px solid var(--ops-border)!important;box-shadow:var(--ops-shadow-card)!important;color:var(--ops-text)!important;}
+.hero h1{margin-bottom:4px!important;}
+.hero p,.hero .subtitle,.hero .muted,.hero .hint,.hero .help,.hero small{color:#475569!important;font-size:13px!important;line-height:1.5!important;font-weight:500!important;max-width:920px!important;}
+.hero + .card,.hero + .summary-grid,.hero + .grid,.hero + .stats-grid,.hero + .config-workspace,.hero + .mini-tools,.hero + .ga-notice,.hero + .toolbar,.hero + .filter-card,body>.page>.hero + *,.page-shell>.hero + *{margin-top:0!important;}
+.page-shell>.card:first-of-type,body>.page>.card:first-of-type{margin-top:0!important;}
+.page-shell>.hero:first-of-type,body>.page>.hero:first-of-type{margin-top:0!important;}
 .card,.summary-item,.executor-card,.account-card,.binding-card,.advanced-fields,.qr-modal-card,.modal-card,.status-card,.group-card,.mini-note,fieldset{background:var(--ops-panel)!important;border:1px solid var(--ops-border)!important;color:var(--ops-text)!important;border-radius:var(--ops-r-xl)!important;box-shadow:var(--ops-shadow-card)!important;}
-.card{padding:20px!important;margin-top:16px!important;}
-.card + .card,.group-card + .group-card,.account-card + .account-card{margin-top:16px!important;}
+.card{padding:20px!important;margin-top:0!important;}
+.card + .card,.section-card + .section-card,.group-card + .group-card,.account-card + .account-card,.executor-card + .executor-card,.guild-card + .guild-card{margin-top:16px!important;}
 .summary-item,.status-card,.account-status-item{padding:16px!important;border-radius:var(--ops-r-lg)!important;background:linear-gradient(180deg,#fff 0%,#fbfdff 100%)!important;}
 .account-card,.binding-card{padding:18px!important;}
 .group-card,.mini-note{padding:14px!important;}
-.grid,.mini-tools,.editor-grid,.field-grid,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid,.toolbar-actions,.inline-actions{gap:14px!important;}
+.grid,.mini-tools,.editor-grid,.field-grid,.compact-grid,.account-card-grid,.account-status-grid,.group-card-grid,.toolbar-actions,.inline-actions{gap:12px!important;}
 h1,h2,h3,p{margin-top:0;}
 h1{font-size:28px!important;line-height:1.16!important;letter-spacing:-.045em!important;color:#111827!important;font-weight:780!important;margin-bottom:6px!important;}
 h2{font-size:19px!important;line-height:1.28!important;letter-spacing:-.03em!important;color:var(--ops-text)!important;font-weight:740!important;margin-bottom:12px!important;}
@@ -25495,7 +26338,7 @@ button.switch-off{background:var(--ops-red-soft)!important;border-color:#fecdd3!
 button:disabled{opacity:.58!important;cursor:not-allowed!important;transform:none!important;}
 table{width:100%!important;background:#fff!important;border-collapse:separate!important;border-spacing:0!important;border-radius:18px!important;overflow:hidden!important;box-shadow:var(--ops-shadow-soft)!important;font-size:13px!important;}
 th{background:#f5f8ff!important;color:#526178!important;border-bottom:1px solid var(--ops-border)!important;font-size:12px!important;line-height:1.35!important;font-weight:720!important;text-align:left!important;padding:11px 12px!important;}
-td{color:var(--ops-text-2)!important;border-bottom:1px solid var(--ops-border-soft)!important;padding:11px 12px!important;vertical-align:top!important;}
+td{color:var(--ops-text-2)!important;border-bottom:1px solid var(--ops-border-soft)!important;padding:var(--ops-table-row-padding-y) 12px!important;vertical-align:top!important;}
 tr:hover td{background:#f8fbff!important;}
 #batchMembersTable th{text-align:left!important;vertical-align:middle!important;}
 #batchMembersTable td{vertical-align:middle!important;}
@@ -25507,7 +26350,21 @@ tr:hover td{background:#f8fbff!important;}
 .badge.pending,.pill.orange,.pill.yellow,.pill.amber{background:var(--ops-amber-soft)!important;color:#c2410c!important;border-color:#fed7aa!important;}
 .status-line.success,.pill.green,.badge.green{color:#166534!important;background:var(--ops-green-soft)!important;border-color:#bbf7d0!important;}
 .status-line.error{color:#be123c!important;}
-.toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:14px!important;margin-bottom:14px!important;}
+.toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin-bottom:12px!important;}
+:root{--crm-card-gap:var(--ops-card-gap);--crm-layout-gap:var(--ops-content-left-gap);}
+.page-shell,body>.page{gap:var(--crm-card-gap) var(--crm-layout-gap)!important;}
+.page-shell>.hero,.page-shell>.card,.page-shell>.section-card,.page-shell>.summary,.page-shell>.summary-grid,.page-shell>.stats-grid,.page-shell>.top-overview-grid,.page-shell>.ga-stats,.page-shell>.ga-prototype-board,body>.page>.hero,body>.page>.card,body>.page>.section-card,body>.page>.summary,body>.page>.summary-grid,body>.page>.stats-grid,body>.page>.top-overview-grid{margin-top:0!important;}
+.page-shell>.card + .card,body>.page>.card + .card,.page-shell>.section-card + .section-card,body>.page>.section-card + .section-card{margin-top:0!important;}
+.page-shell .top-overview-grid > .card.card,body>.page .top-overview-grid > .card.card{margin-top:0!important;}
+.grid > .card,.summary-grid > .summary-item,.stats-grid > .summary-item,.stats-grid > .card,.ga-stats > .card,.executor-card-grid > .executor-card,.account-card-grid > .account-card,.guild-grid > .guild-card,.executor-grid > .executor-card{margin-top:0!important;}
+.summary,.summary-grid,.stats-grid,.top-overview-grid,.account-grid,.guild-grid,.executor-grid,.account-card-grid,.ga-stats,.ga-board-grid,.ga-board-col,.ga-prototype-board{gap:var(--crm-card-gap)!important;}
+body[data-ops-shell-page="production-ops"]>.page-shell>.hero,body[data-ops-shell-page="intake-submit"]>.page-shell>.hero,body[data-ops-shell-page="registration-group-approval-batch-members"]>.page-shell>.hero,body[data-ops-shell-page="bind-failed-users"]>.page-shell>.hero,body[data-ops-shell-page="accounts"]>.page-shell>.hero,.page-shell[data-ops-shell-page="production-ops"]>.hero,.page-shell[data-ops-shell-page="intake-submit"]>.hero,.page-shell[data-ops-shell-page="registration-group-approval-batch-members"]>.hero,.page-shell[data-ops-shell-page="bind-failed-users"]>.hero,.page-shell[data-ops-shell-page="accounts"]>.hero{border-bottom-left-radius:0!important;border-bottom-right-radius:0!important;border-bottom-color:transparent!important;box-shadow:none!important;}
+body[data-ops-shell-page="production-ops"]>.page-shell>.top-overview-grid,body[data-ops-shell-page="intake-submit"]>.page-shell>.summary,body[data-ops-shell-page="registration-group-approval-batch-members"]>.page-shell>.batch-members-summary,body[data-ops-shell-page="bind-failed-users"]>.page-shell>.summary,body[data-ops-shell-page="accounts"]>.page-shell>.summary,.page-shell[data-ops-shell-page="production-ops"]>.top-overview-grid,.page-shell[data-ops-shell-page="intake-submit"]>.summary,.page-shell[data-ops-shell-page="registration-group-approval-batch-members"]>.batch-members-summary,.page-shell[data-ops-shell-page="bind-failed-users"]>.summary,.page-shell[data-ops-shell-page="accounts"]>.summary{margin-top:calc(-1 * var(--ops-card-gap))!important;padding:0 20px 20px!important;background:var(--ops-panel)!important;border:1px solid var(--ops-border)!important;border-top:0!important;border-radius:0 0 24px 24px!important;box-shadow:var(--ops-shadow-card)!important;}
+body[data-ops-shell-page="production-ops"]>.page-shell>.top-overview-grid>.card,body[data-ops-shell-page="intake-submit"]>.page-shell>.summary>.summary-card,body[data-ops-shell-page="registration-group-approval-batch-members"]>.page-shell>.batch-members-summary>.item,body[data-ops-shell-page="accounts"]>.page-shell>.summary>.summary-item,.page-shell[data-ops-shell-page="production-ops"]>.top-overview-grid>.card,.page-shell[data-ops-shell-page="intake-submit"]>.summary>.summary-card,.page-shell[data-ops-shell-page="registration-group-approval-batch-members"]>.batch-members-summary>.item,.page-shell[data-ops-shell-page="accounts"]>.summary>.summary-item{box-shadow:none!important;}
+.ga-proto-page .ga-page-head{border-bottom-left-radius:0!important;border-bottom-right-radius:0!important;border-bottom-color:transparent!important;box-shadow:none!important;margin-bottom:0!important;}
+.ga-proto-page .ga-page-head ~ .ga-workbench-stats{margin:0 0 16px!important;padding:0 20px 20px!important;background:var(--ops-panel)!important;border:1px solid var(--ops-border)!important;border-top:0!important;border-radius:0 0 24px 24px!important;box-shadow:var(--ops-shadow-card)!important;}
+.ga-proto-page .ga-workbench-stats ~ .ga-proto-stack{margin-top:var(--crm-card-gap,16px)!important;}
+.ga-proto-page .ga-page-head ~ .ga-workbench-stats>.card{box-shadow:none!important;}
 details{border-radius:var(--ops-r-lg)!important;border:1px solid var(--ops-border)!important;background:#fbfdff!important;padding:12px 14px!important;}
 summary{cursor:pointer;color:var(--ops-text)!important;font-weight:700!important;}
 pre,code{font-family:var(--ops-mono)!important;font-size:12px!important;line-height:1.55!important;}
@@ -25568,7 +26425,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         if current_role == OPS_AUTH_ROLE_CUSTOMER_SERVICE:
             return RedirectResponse(url='/ops/intake-submit', status_code=303)
         _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
-        return HTMLResponse(_with_ops_shell_style(_ops_page_html(current_role), current_role))
+        return HTMLResponse(_with_ops_shell_style(_ops_page_html(current_role), current_role, page='dashboard'))
 
     @app.get('/ops', response_class=HTMLResponse)
     def ops_page(request: Request) -> str:
@@ -25581,7 +26438,11 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     @app.get('/ops/accounts', response_class=HTMLResponse)
     def ops_accounts_page(request: Request) -> str:
         user = _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
-        return _with_ops_shell_style(_ops_accounts_page_html(str(user.get('role') or '').strip()), str(user.get('role') or '').strip())
+        return _with_ops_shell_style(
+            _ops_accounts_page_html(str(user.get('role') or '').strip()),
+            str(user.get('role') or '').strip(),
+            page='accounts',
+        )
 
     @app.get('/api/ops/accounts')
     def ops_accounts_list(request: Request) -> Dict[str, Any]:
@@ -25682,12 +26543,12 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     def ops_intake_submit_page(request: Request) -> str:
         user = _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
         html = OPS_INTAKE_SUBMIT_PAGE_HTML.replace('__OPS_USER_ROLE__', str(user.get('role') or '').strip())
-        return _with_ops_shell_style(html, str(user.get('role') or '').strip())
+        return _with_ops_shell_style(html, str(user.get('role') or '').strip(), page='intake-submit')
 
     @app.get('/ops/bind-failed-users', response_class=HTMLResponse)
     def ops_bind_failed_users_page(request: Request) -> str:
         user = _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
-        return _with_ops_shell_style(OPS_BIND_FAILED_USERS_PAGE_HTML, str(user.get('role') or '').strip())
+        return _with_ops_shell_style(OPS_BIND_FAILED_USERS_PAGE_HTML, str(user.get('role') or '').strip(), page='bind-failed-users')
 
     @app.post('/api/ops/intake-submit')
     def ops_intake_submit(request: Request, payload: OpsIntakeSubmitRequest) -> Dict[str, Any]:
@@ -25773,24 +26634,29 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         return service.mark_ops_intake_feedback_done(item_id=item_id, user=user, force=payload.force, reason=payload.reason)
 
     @app.get('/ops/intake-bot-presets', response_class=HTMLResponse)
-    def intake_bot_presets_page(request: Request) -> Response:
-        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
-        return RedirectResponse(url='/ops/intake-submit', status_code=303)
+    def intake_bot_presets_page(request: Request) -> str:
+        user = _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        html = INTAKE_BOT_PRESETS_PAGE_HTML.replace('__OPS_USER_ROLE__', str(user.get('role') or '').strip())
+        return _with_ops_shell_style(html, str(user.get('role') or '').strip(), page='intake-bot-presets')
 
     @app.get('/ops/production-ops', response_class=HTMLResponse)
     def production_ops_page(request: Request) -> str:
         user = _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
-        return _with_ops_shell_style(PRODUCTION_OPS_PAGE_HTML, str(user.get('role') or '').strip())
+        return _with_ops_shell_style(PRODUCTION_OPS_PAGE_HTML, str(user.get('role') or '').strip(), page='production-ops')
 
     @app.get('/ops/group-atmosphere', response_class=HTMLResponse)
     def group_atmosphere_page(request: Request) -> str:
         user = _require_ops_user(request, role=OPS_AUTH_ROLE_OPERATOR)
-        return _with_ops_shell_style(_group_atmosphere_page_html(str(user.get('role') or '').strip()), str(user.get('role') or '').strip())
+        return _with_ops_shell_style(_group_atmosphere_page_html(str(user.get('role') or '').strip()), str(user.get('role') or '').strip(), page='group-atmosphere')
 
     @app.get('/ops/registration-group-approval-batch-members', response_class=HTMLResponse)
     def registration_group_approval_batch_members_page(request: Request) -> str:
         user = _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
-        return _with_ops_shell_style(_registration_group_approval_batch_members_page_html(), str(user.get('role') or '').strip())
+        return _with_ops_shell_style(
+            _registration_group_approval_batch_members_page_html(),
+            str(user.get('role') or '').strip(),
+            page='registration-group-approval-batch-members',
+        )
 
     def _official_group_bridge_base_url() -> str:
         bridge_url = str(official_group_approval_webhook_url or '').strip()
@@ -26427,6 +27293,15 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     def ops_whatsapp_approval_binding_probe_refresh(account_key: str, binding_index: int, request: Request):
         service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
         return service.refresh_whatsapp_approval_binding_probe(account_key, binding_index)
+
+    @app.get('/api/ops/mcn-region-options')
+    def ops_mcn_region_options(include_disabled: bool = False):
+        return service.list_mcn_region_options(include_disabled=include_disabled)
+
+    @app.put('/api/ops/mcn-region-options')
+    def ops_mcn_region_options_update(payload: McnRegionOptionsUpdateRequest, request: Request):
+        _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        return service.update_mcn_region_options(payload)
 
     @app.get('/api/ops/whatsapp-approval-area-options')
     def ops_whatsapp_approval_area_options():

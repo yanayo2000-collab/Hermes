@@ -7,8 +7,8 @@ class FakeCmsExecutor(LiveChromeBindExecutor):
         self.responses = list(responses)
         self.calls = []
 
-    def _cms_request_json(self, *, method, url, authorization, body=None):
-        self.calls.append({"method": method, "url": url, "authorization": authorization, "body": body})
+    def _cms_request_json(self, *, method, url, authorization, body=None, proxy_url=''):
+        self.calls.append({"method": method, "url": url, "authorization": authorization, "body": body, "proxy_url": proxy_url})
         assert authorization == "Bearer secret-token"
         if not self.responses:
             raise AssertionError("unexpected CMS call")
@@ -63,6 +63,7 @@ def test_cms_id_bind_calls_add_anchor_and_requires_post_bind_verification():
         "url": "https://cms.linke.ai/api/admin/linky/industrial/streamer_detail/addAnchor",
         "authorization": "Bearer secret-token",
         "body": {"sids": [12123121], "guild_id": 3432},
+        "proxy_url": "",
     }]
 
 
@@ -236,3 +237,24 @@ def test_cms_id_bind_classifies_add_anchor_invalid_arguments_when_sid_stays_miss
     assert result["status"] == "failed"
     assert result["result_code"] == "cms_add_anchor_invalid_arguments"
     assert result["raw_result"]["postcheck"] == "sid_not_found_or_not_anchor"
+
+
+def test_cms_id_bind_sends_cms_requests_through_executor_proxy_url():
+    executor = FakeCmsExecutor([
+        [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "3432", "guild_name": "Carote"}]}},
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+        "executor_proxy_url": "http://proxy-xa:8080",
+        "executor_proxy_region": "西安",
+    })
+
+    assert result["status"] == "success"
+    assert executor.calls
+    assert {call["proxy_url"] for call in executor.calls} == {"http://proxy-xa:8080"}
