@@ -999,6 +999,10 @@ async function fetchGroupMessagesWithClient(activeClient, payload) {
     throw new Error('resolved group does not support fetchMessages');
   }
   const messages = await group.fetchMessages({ limit });
+  const afterMessageId = safeString(payload && (payload.after_message_id || payload.afterMessageId));
+  const afterTimestampRaw = safeString(payload && (payload.after_timestamp || payload.afterTimestamp));
+  const afterTimestampMs = afterTimestampRaw ? Date.parse(afterTimestampRaw) : NaN;
+  let seenAfterMessage = !afterMessageId;
   const records = (Array.isArray(messages) ? messages : [])
     .map((message) => ({
       message_id: safeString(message && message.id),
@@ -1006,7 +1010,22 @@ async function fetchGroupMessagesWithClient(activeClient, payload) {
       text: String((message && (message.body || message.text || message.caption)) || '').trim(),
       created_at: message && message.timestamp ? new Date(Number(message.timestamp) * 1000).toISOString() : new Date().toISOString(),
     }))
-    .filter((record) => record.text);
+    .filter((record) => {
+      if (!record.text) return false;
+      if (afterMessageId) {
+        if (!seenAfterMessage) {
+          if (record.message_id === afterMessageId) seenAfterMessage = true;
+          return false;
+        }
+        return true;
+      }
+      if (Number.isFinite(afterTimestampMs)) {
+        const recordTimestampMs = Date.parse(record.created_at || '');
+        return Number.isFinite(recordTimestampMs) ? recordTimestampMs > afterTimestampMs : true;
+      }
+      return true;
+    });
+  const lastRecord = records.length ? records[records.length - 1] : null;
   return {
     status: 'success',
     result_code: 'messages_fetched',
@@ -1015,6 +1034,10 @@ async function fetchGroupMessagesWithClient(activeClient, payload) {
     group_name: group.name || targetGroup,
     fetched_count: records.length,
     records,
+    next_cursor: lastRecord ? {
+      last_message_id: lastRecord.message_id || '',
+      last_message_at: lastRecord.created_at || '',
+    } : null,
   };
 }
 

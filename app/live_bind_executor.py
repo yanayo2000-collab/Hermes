@@ -184,19 +184,41 @@ class LiveChromeBindExecutor:
                 'result_reason': 'CMS Authorization is not configured for this guild executor',
                 'raw_result': raw_result,
             }
+        configured_guild_id = str(context.get('executor_cms_guild_id') or '').strip()
+        configured_guild_sid = str(context.get('executor_cms_guild_sid') or '').strip()
+        if not configured_guild_id or not configured_guild_sid:
+            default_locks = {
+                'carote': ('3432', '43536425'),
+                'permata': ('413', '25400979'),
+                'nova': ('1423', '31350499'),
+            }
+            default_lock = default_locks.get(target_guild.strip().lower())
+            if default_lock:
+                configured_guild_id = configured_guild_id or default_lock[0]
+                configured_guild_sid = configured_guild_sid or default_lock[1]
+                raw_result['cms_guild_lock_source'] = 'builtin_default'
+            else:
+                return {
+                    'status': 'failed',
+                    'result_code': 'cms_target_guild_lock_missing',
+                    'result_reason': 'CMS guild ID/SID lock is required for automatic CMS bind',
+                    'raw_result': raw_result,
+                }
         try:
+            request_timeout_seconds = min(8.0, max(2.0, float(context.get('executor_request_timeout_seconds') or 8.0)))
             guild = self._cms_find_target_guild(
                 base_url=base_url,
                 authorization=authorization,
                 proxy_url=proxy_url,
                 target_guild=target_guild,
-                configured_guild_id=str(context.get('executor_cms_guild_id') or '').strip(),
-                configured_guild_sid=str(context.get('executor_cms_guild_sid') or '').strip(),
+                configured_guild_id=configured_guild_id,
+                configured_guild_sid=configured_guild_sid,
+                timeout_seconds=request_timeout_seconds,
             )
             raw_result['cms_guild_id'] = guild.get('id')
             raw_result['cms_guild_name'] = guild.get('guild_name')
             raw_result['cms_guild_sid'] = guild.get('sid')
-            before = self._cms_query_sid(base_url=base_url, authorization=authorization, proxy_url=proxy_url, sid=account_id)
+            before = self._cms_query_sid(base_url=base_url, authorization=authorization, proxy_url=proxy_url, sid=account_id, timeout_seconds=request_timeout_seconds)
             before_match = self._cms_match_target_guild(before, guild)
             if before_match == 'target':
                 raw_result['precheck'] = 'already_in_target_guild'
@@ -216,14 +238,23 @@ class LiveChromeBindExecutor:
                     'result_reason': 'The streamer was in another agency',
                     'raw_result': raw_result,
                 }
-            submit = self._cms_add_anchor(base_url=base_url, authorization=authorization, proxy_url=proxy_url, sid=account_id, guild_id=str(guild.get('id') or ''))
+            if not before:
+                raw_result['precheck'] = 'sid_not_found'
+                return {
+                    'status': 'failed',
+                    'result_code': 'cms_sid_not_found',
+                    'result_reason': 'SID not found or not available as anchor',
+                    'raw_result': raw_result,
+                }
+            raw_result['precheck'] = 'sid_found_without_guild'
+            submit = self._cms_add_anchor(base_url=base_url, authorization=authorization, proxy_url=proxy_url, sid=account_id, guild_id=str(guild.get('id') or ''), timeout_seconds=request_timeout_seconds)
             raw_result['cms_submit_code'] = submit.get('code')
             raw_result['cms_submit_success'] = submit.get('success')
             submit_message = str(submit.get('message') or submit.get('msg') or submit.get('error') or '').strip()
             after: list[dict[str, Any]] = []
             after_match = 'none'
             for attempt in range(1, self.cms_postcheck_max_attempts + 1):
-                after = self._cms_query_sid(base_url=base_url, authorization=authorization, proxy_url=proxy_url, sid=account_id)
+                after = self._cms_query_sid(base_url=base_url, authorization=authorization, proxy_url=proxy_url, sid=account_id, timeout_seconds=request_timeout_seconds)
                 after_match = self._cms_match_target_guild(after, guild)
                 raw_result['postcheck_attempts'] = attempt
                 if after_match == 'target':
@@ -290,14 +321,14 @@ class LiveChromeBindExecutor:
             'referer': 'https://cms.linke.ai/',
         }
 
-    def _cms_request_json(self, *, method: str, url: str, authorization: str, body: Optional[dict[str, Any]] = None, proxy_url: str = '') -> Any:
+    def _cms_request_json(self, *, method: str, url: str, authorization: str, body: Optional[dict[str, Any]] = None, proxy_url: str = '', timeout_seconds: float = 8.0) -> Any:
         data = None if body is None else json.dumps(body).encode('utf-8')
         req = urllib.request.Request(url, data=data, headers=self._cms_headers(authorization), method=method)
         opener = urllib.request.build_opener()
         normalized_proxy = str(proxy_url or '').strip()
         if normalized_proxy:
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({'http': normalized_proxy, 'https': normalized_proxy}))
-        with opener.open(req, timeout=15) as resp:
+        with opener.open(req, timeout=max(2.0, min(float(timeout_seconds or 8.0), 8.0))) as resp:
             text = resp.read().decode('utf-8', errors='replace')
         return json.loads(text) if text else {}
 
@@ -310,9 +341,10 @@ class LiveChromeBindExecutor:
         proxy_url: str = '',
         configured_guild_id: str = '',
         configured_guild_sid: str = '',
+        timeout_seconds: float = 8.0,
     ) -> dict[str, Any]:
         url = f'{base_url}/api/admin/linky/industrial/industrial/getGuildIdAndName'
-        data = self._cms_request_json(method='GET', url=url, authorization=authorization, proxy_url=proxy_url)
+        data = self._cms_request_json(method='GET', url=url, authorization=authorization, proxy_url=proxy_url, timeout_seconds=timeout_seconds)
         rows = data.get('data') if isinstance(data, dict) else data
         if not isinstance(rows, list):
             rows = []
@@ -374,7 +406,7 @@ class LiveChromeBindExecutor:
             normalized.append(dict(row))
         return normalized
 
-    def _cms_query_sid(self, *, base_url: str, authorization: str, proxy_url: str = '', sid: str) -> list[dict[str, Any]]:
+    def _cms_query_sid(self, *, base_url: str, authorization: str, proxy_url: str = '', sid: str, timeout_seconds: float = 8.0) -> list[dict[str, Any]]:
         url = f'{base_url}/api/admin/linky/industrial/streamer_detail/page'
         candidates = [
             {'page': 1, 'size': 10, 'sid': sid},
@@ -384,7 +416,7 @@ class LiveChromeBindExecutor:
         seen: set[str] = set()
         saw_unmatched_rows = False
         for body in candidates:
-            data = self._cms_request_json(method='POST', url=url, authorization=authorization, body=body, proxy_url=proxy_url)
+            data = self._cms_request_json(method='POST', url=url, authorization=authorization, body=body, proxy_url=proxy_url, timeout_seconds=timeout_seconds)
             rows = self._cms_extract_rows_from_detail_response(data)
             for row in rows:
                 row_sid = str(row.get('sid') or row.get('user_id') or '').strip()
@@ -409,20 +441,28 @@ class LiveChromeBindExecutor:
         target_id = str(guild.get('id') or '').strip()
         target_name = str(guild.get('guild_name') or '').strip().lower()
         found_known_other = False
+        def meaningful(value: Any) -> str:
+            normalized = str(value or '').strip()
+            return '' if normalized.lower() in {'', '0', '0.0', 'none', 'null', 'undefined'} else normalized
         for row in rows:
-            guild_id = str(row.get('guild_id') or row.get('industrial_id') or '').strip()
-            guild_name = str(row.get('guild_name') or row.get('industrial_name') or '').strip().lower()
+            join_record = row.get('joinRecord') if isinstance(row.get('joinRecord'), dict) else {}
+            primary_guild_id = meaningful(row.get('guild_id') or row.get('industrial_id'))
+            primary_guild_name = meaningful(row.get('guild_name') or row.get('industrial_name')).lower()
+            join_guild_id = meaningful(join_record.get('guild_id'))
+            join_guild_name = meaningful(join_record.get('guild_name')).lower()
+            guild_id = join_guild_id or primary_guild_id
+            guild_name = join_guild_name or primary_guild_name
             if (target_id and guild_id == target_id) or (target_name and guild_name == target_name):
                 return 'target'
             if guild_id or guild_name:
                 found_known_other = True
         return 'other' if found_known_other else 'none'
 
-    def _cms_add_anchor(self, *, base_url: str, authorization: str, proxy_url: str = '', sid: str, guild_id: str) -> dict[str, Any]:
+    def _cms_add_anchor(self, *, base_url: str, authorization: str, proxy_url: str = '', sid: str, guild_id: str, timeout_seconds: float = 8.0) -> dict[str, Any]:
         if not guild_id:
             raise RuntimeError('CMS target guild_id is missing')
         url = f'{base_url}/api/admin/linky/industrial/streamer_detail/addAnchor'
-        data = self._cms_request_json(method='POST', url=url, authorization=authorization, body={'sids': [int(sid)], 'guild_id': int(guild_id)}, proxy_url=proxy_url)
+        data = self._cms_request_json(method='POST', url=url, authorization=authorization, body={'sids': [int(sid)], 'guild_id': int(guild_id)}, proxy_url=proxy_url, timeout_seconds=timeout_seconds)
         return data if isinstance(data, dict) else {'data': data}
 
     def _pick_free_port(self) -> int:

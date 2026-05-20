@@ -62,6 +62,18 @@ class StubCrmDropdownAdapter:
         return list(self.depts)
 
 
+class SyncingCrmDeptAdapter(StubCrmDropdownAdapter):
+    def __init__(self, apps=None, depts=None, error=None):
+        super().__init__(apps=apps, depts=depts, error=error)
+        self.created_depts = []
+
+    def create_dept(self, *, name, pid=0, sort=0):
+        self.created_depts.append({'name': name, 'pid': pid, 'sort': sort})
+        next_id = str(1000 + len(self.depts) + len(self.created_depts))
+        self.depts.append({'id': next_id, 'name': name, 'deptName': name, 'pid': pid, 'sort': sort})
+        return {'code': 0, 'msg': 'success', 'data': None}
+
+
 def make_client(settings=None):
     cfg = {"DB_PATH": ":memory:", "AUTO_LARK_REPLY": False}
     if settings:
@@ -78,6 +90,43 @@ def bootstrap_admin_and_login(client, *, username='admin01', password='secret123
     })
     assert response.status_code == 200
     return response.json()['user']
+
+
+def test_guild_executor_creation_creates_missing_crm_guild_dept():
+    crm = SyncingCrmDeptAdapter(depts=[{'id': '1', 'name': 'Carote'}])
+    client = make_client({'AUTH_ENABLED': True, 'CRM_ADAPTER': crm})
+    bootstrap_admin_and_login(client)
+
+    response = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'enabled': True,
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['saved'] is True
+    assert body['crm_guild_sync']['status'] == 'created'
+    assert body['crm_guild_sync']['deptName'] == 'Permata'
+    assert crm.created_depts == [{'name': 'Permata', 'pid': 0, 'sort': 0}]
+
+
+def test_guild_executor_creation_reuses_existing_crm_guild_dept_without_duplicate_create():
+    crm = SyncingCrmDeptAdapter(depts=[{'id': '2', 'name': 'Permata'}])
+    client = make_client({'AUTH_ENABLED': True, 'CRM_ADAPTER': crm})
+    bootstrap_admin_and_login(client)
+
+    response = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'enabled': True,
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['crm_guild_sync']['status'] == 'existing'
+    assert body['crm_guild_sync']['deptId'] == '2'
+    assert crm.created_depts == []
 
 
 def test_whatsapp_approval_session_refresh_handles_stale_dedicated_runtime(monkeypatch):
@@ -113,6 +162,99 @@ def test_whatsapp_approval_session_refresh_handles_stale_dedicated_runtime(monke
     assert body['runtime']['status'] == 'unavailable'
     assert body['session']['login_check_status'] == 'runtime_unavailable'
     assert '重新生成二维码' in body['session']['login_check_message']
+
+
+def test_whatsapp_approval_account_list_uses_lightweight_snapshot_without_runtime_health(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO whatsapp_approval_accounts (
+                account_key, account_name, responsible_type, group_links, area, notify_profile_name,
+                approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker,
+                schedule_windows, enabled, verification_status, notes, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'wa-fast-list', 'WA 快速列表', 'registration_group', '[]', 'ID', 'wa-approval-broadcast',
+                'count_or_timeout', 1, 5, 1, '[]', 1, 'ready', '', '2026-05-19T10:00:00+00:00'
+            ),
+        )
+        conn.commit()
+
+    def fail_health(*_args, **_kwargs):
+        raise AssertionError('account list should not synchronously call whatsapp runtime health')
+
+    monkeypatch.setattr(service, '_current_whatsapp_approval_worker_health', fail_health)
+    monkeypatch.setattr(service, '_official_group_bridge_summary_payload', fail_health)
+
+    response = client.get('/api/ops/whatsapp-approval-accounts')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['list_mode'] == 'lightweight'
+    assert body['rows'][0]['account_key'] == 'wa-fast-list'
+    assert body['rows'][0]['list_mode'] == 'lightweight'
+
+
+def test_whatsapp_approval_binding_probe_requires_matching_account_key():
+    production_ops = {
+        'runtime': {
+            'status': {
+                'registration_group_cycles': [
+                    {
+                        'monitor_target': {
+                            'account_key': 'registration-a',
+                            'registration_group': 'group-a',
+                            'binding_link': 'https://chat.whatsapp.com/A',
+                        },
+                        'decision_group_state': {
+                            'payload': {
+                                'group_id': 'group-a',
+                                'group_name': 'Group A',
+                                'pending_count': 12,
+                            },
+                            'source': 'production_ops_daemon',
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+    wrong_account_probe = Service._binding_probe_from_production_ops_status(
+        production_ops,
+        responsible_type='registration_group',
+        account_key='registration-b',
+        binding={'link': 'https://chat.whatsapp.com/A', 'group_id': 'group-a', 'group_name': 'Group A'},
+    )
+    assert wrong_account_probe == {}
+
+    matched_probe = Service._binding_probe_from_production_ops_status(
+        production_ops,
+        responsible_type='registration_group',
+        account_key='registration-a',
+        binding={'link': 'https://chat.whatsapp.com/A', 'group_id': 'group-a', 'group_name': 'Group A'},
+    )
+    assert matched_probe['pending_count'] == 12
+
+
+def test_whatsapp_approval_binding_probe_does_not_query_unverified_runtime(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+
+    def fail_group_state(*_args, **_kwargs):
+        raise AssertionError('unverified login must not be used for live group-state probing')
+
+    monkeypatch.setattr(service, '_request_whatsapp_approval_group_state_with_retry', fail_group_state)
+    probe = service._probe_whatsapp_binding_group_state(
+        responsible_type='registration_group',
+        binding={'link': 'https://chat.whatsapp.com/Target', 'group_name': 'Target'},
+        runtime_state={'active': True, 'source': 'dedicated', 'base_url': 'http://127.0.0.1:59999'},
+        session_state={'login_verified': False, 'authenticated': False, 'status': 'awaiting_qr'},
+        allow_shared_fallback=False,
+    )
+    assert probe == {}
 
 
 def test_ops_page_redirects_to_login_when_auth_enabled_and_no_session():
@@ -154,6 +296,14 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
     assert '/ops/accounts' in production_ops_page.text
     assert '账号设置' in production_ops_page.text
     assert "function approvalRoleCanManage(role)" in production_ops_page.text
+    assert "applyApprovalAccountsPayload(data, canManageApprovalAccounts)" in production_ops_page.text
+    assert 'scheduleApprovalAccountsTruthRefresh(data.rows || [])' in production_ops_page.text
+    assert 'window.__approvalTruthRefreshAttemptCountByAccount' in production_ops_page.text
+    assert 'currentCount >= 3' in production_ops_page.text
+    assert 'window.__approvalTruthRefreshQueuedByAccount' in production_ops_page.text
+    assert 'refreshCount >= 5' in production_ops_page.text
+    assert "include_qr_ascii=false" in production_ops_page.text
+    assert "正在刷新真实状态" in production_ops_page.text
     assert "approvalRoleCanManage(currentRole)" in production_ops_page.text
     assert "currentRole === 'admin'" not in production_ops_page.text
     assert "String(window.__opsUserRole || '').trim() === 'admin'" not in production_ops_page.text
@@ -173,7 +323,7 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
     assert '.ga-proto-page .ga-page-head{border-bottom-left-radius:0!important;border-bottom-right-radius:0!important;border-bottom-color:transparent!important;box-shadow:none!important;margin-bottom:0!important;}' in production_ops_page.text
     assert '.ga-proto-page .ga-page-head ~ .ga-workbench-stats{margin:0 0 16px!important;padding:0 20px 20px!important;background:var(--ops-panel)!important;border:1px solid var(--ops-border)!important;border-top:0!important;border-radius:0 0 24px 24px!important;box-shadow:var(--ops-shadow-card)!important;}' in production_ops_page.text
     assert '.page-shell .top-overview-grid > .card.card,body>.page .top-overview-grid > .card.card{margin-top:0!important;}' in production_ops_page.text
-    assert '.grid > .card,.summary-grid > .summary-item,.stats-grid > .summary-item,.stats-grid > .card,.ga-stats > .card,.executor-card-grid > .executor-card,.account-card-grid > .account-card,.guild-grid > .guild-card,.executor-grid > .executor-card{margin-top:0!important;}' in production_ops_page.text
+    assert '.grid > .card,.grid-2 > .card,.grid-4 > .card,.page-grid > .card,.top-overview-grid > .card,.summary-grid > .summary-item,.summary-grid > .summary-card,.stats-grid > .summary-item,.stats-grid > .card,.status-grid > .status-card,.ga-stats > .card,.ga-stats > .ga-stat,.ga-workbench-stats > .ga-stat,.ga-proto-card-grid > .card,.ga-proto-card-grid > .account-card,.ga-proto-card-grid > .group-card,.ga-proto-script-grid > .ga-script-card,.ga-learn-grid > .ga-script-card,.ga-generation-grid > .card,.account-grid > .account-card,.account-card-grid > .account-card,.account-status-grid > .account-card,.group-card-grid > .group-card,.executor-card-grid > .executor-card,.account-card-grid > .account-card,.guild-grid > .guild-card,.executor-grid > .executor-card,.preset-card-grid > .preset-card{margin-top:0!important;}' in production_ops_page.text
     assert 'data-ops-shell-page=\"production-ops\"' in production_ops_page.text
     assert '.top-overview-grid .status-card { flex:1; display:flex; align-items:stretch; padding:10px!important; }' in production_ops_page.text
     assert '.top-overview-grid .status-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); gap:8px 12px; }' in production_ops_page.text
@@ -270,6 +420,10 @@ def test_ops_auth_bootstrap_login_and_accounts_flow():
         assert '--crm-card-gap:16px' in page.text or '--ops-card-gap:16px' in page.text
         assert 'gap:var(--crm-card-gap) var(--crm-layout-gap)!important' in page.text or 'gap:var(--ops-card-gap) var(--ops-layout-gap)!important' in page.text
         assert '.card + .card,.section-card + .section-card,.group-card + .group-card,.account-card + .account-card,.executor-card + .executor-card,.guild-card + .guild-card{margin-top:16px!important;}' in page.text
+        assert '.account-grid > .account-card' in page.text
+        assert '.preset-card-grid > .preset-card' in page.text
+        assert '.group-card-grid > .group-card' in page.text
+        assert '.ga-proto-script-grid > .ga-script-card' in page.text
 
     create_operator = client.post('/api/ops/accounts', json={
         'username': 'ops01',
@@ -445,6 +599,19 @@ def test_ops_intake_workbench_generates_guild_sections_by_executor_assignment():
     assert [row['guild_name'] for row in guilds.json()['rows']] == ['Permata']
 
 
+def test_ops_intake_executor_modal_embeds_customer_service_assignment_picker():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    page = client.get('/ops/intake-submit')
+    assert page.status_code == 200
+    html = page.text
+    assert 'id="executorAssigneeDropdownButton"' in html
+    assert 'id="executorAssigneeOptions"' in html
+    assert 'function renderExecutorAssigneeOptions' in html
+    assert 'selectedExecutorAssigneeIds()' in html
+    assert '/api/ops/intake-workbench/guilds/${encodeURIComponent(guild)}/assignees' in html
+
+
 def test_ops_intake_workbench_guild_tabs_highlight_only_selected_guild():
     client = make_client({'AUTH_ENABLED': True})
     bootstrap_admin_and_login(client)
@@ -601,7 +768,7 @@ def test_external_app_intake_tugao_submit_latest_and_feedback_guard():
         'linky_account_id': '44898989',
         'guild': '',
         'code': 'ABC0O1',
-        'raw_text': 'Phone: +62 898978979\nID: 44898989\nCode: ABC0O1',
+        'raw_text': 'Saya ingin mendaftar\nKak 😊\n085766797127\nPhone: +62 898978979\nID: 44898989\nCode: ABC0O1',
     }
 
     unauthorized = client.post('/api/external/app-intake/submissions', json=payload, headers={'X-Source': 'tugao_app'})
@@ -619,7 +786,7 @@ def test_external_app_intake_tugao_submit_latest_and_feedback_guard():
     submission_id = body['submission_id']
 
     with client.app.state.service.db.connect() as conn:
-        row = conn.execute('SELECT source, external_user_id, external_session_id, external_message_id, external_customer_service_id, external_customer_service_name, parsed_code, guild_name FROM ops_intake_items WHERE item_id=?', (submission_id,)).fetchone()
+        row = conn.execute('SELECT source, external_user_id, external_session_id, external_message_id, external_customer_service_id, external_customer_service_name, parsed_code, parsed_group, guild_name, reply_text FROM ops_intake_items WHERE item_id=?', (submission_id,)).fetchone()
         assert row['source'] == 'tugao_app'
         assert row['external_user_id'] == 'tugao-user-001'
         assert row['external_session_id'] == 'im-session-001'
@@ -627,7 +794,9 @@ def test_external_app_intake_tugao_submit_latest_and_feedback_guard():
         assert row['external_customer_service_id'] == 'system001'
         assert row['external_customer_service_name'] == 'Tugao客服A'
         assert row['parsed_code'] == ''
+        assert row['parsed_group'] == '其他渠道'
         assert row['guild_name'] == 'Carote'
+        assert '**❌ Failed**' not in str(row['reply_text'] or '')
 
     latest = client.get('/api/external/app-intake/users/tugao-user-001/latest', headers=headers)
     assert latest.status_code == 200
@@ -739,6 +908,25 @@ def test_ops_intake_workbench_cms_other_channel_without_code_queues_bind_not_man
     assert 'Code: -' not in body['result'].get('submitted_text', '')
 
 
+def test_lark_reply_template_prefers_cms_manual_check_code_over_english_substring():
+    client = make_client({})
+    service = client.app.state.service
+
+    reply = service._format_lark_reply_text({
+        'accepted': True,
+        'reason': 'bind_check_failed',
+        'result_code': 'cms_precheck_untrusted',
+        'result_reason': 'CMS row mentioned another agency but detail was not trusted',
+        'reply_phone': '+62 898978979',
+        'reply_id': '44898989',
+        'reply_group': '其他渠道',
+        'reply_code_display': '-',
+    })
+
+    assert reply.startswith('**❌ Bind failed: CMS verification requires manual check**')
+    assert 'The streamer was in another agency' not in reply
+
+
 def test_lark_reply_template_for_accepted_bind_failure_uses_specific_reason():
     client = make_client({})
     service = client.app.state.service
@@ -840,6 +1028,41 @@ def test_ops_intake_workbench_generic_failed_reply_is_enhanced_from_latest_bind_
     assert row['item_id'] == 'intake_item_enhance_card'
     assert row['reply_text'].startswith('**❌ Bind failed: Invalid or unavailable Linky ID**')
     assert '**❌ Failed**' not in row['reply_text']
+
+
+def test_ops_intake_workbench_processing_item_with_stale_requeue_code_is_not_rendered_as_failed():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    cs = client.post('/api/ops/accounts', json={'username': 'cs_processing_card', 'password': 'operator123', 'display_name': '客服处理中', 'role': 'customer_service', 'enabled': True}).json()['user']
+    assert client.post('/api/ops/guild-executors/Carote', json={'oauth_token': 'guild-oauth-token', 'oauth_token_secret': 'guild-oauth-secret', 'enabled': True}).status_code == 200
+    assert client.post('/api/ops/intake-workbench/guilds/Carote/assignees', json={'user_ids': [cs['user_id']]}).status_code == 200
+    service = client.app.state.service
+    now = datetime.now(timezone.utc).isoformat()
+    with service.db.connect() as conn:
+        conn.execute("""
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at,
+                status, result_code, result_reason, started_at, raw_result
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, ('task_processing_card', 'lead_processing_card', 'bind_check', 'P0', '{}', 'bind-check:processing-card', 'test', now, 'processing', 'bind_auto_requeued_stale_processing', 'stale bind processing task requeued after worker interruption', now, '{}'))
+        conn.execute("""
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, ('intake_item_processing_card', 'Carote', cs['user_id'], '客服处理中', 'raw', '+62 85766797127', '51177360', '其他渠道', '', 'Linky', 'Carote', 'bind_queued', 'not_feedbackable', '**❌ Failed**\nPhone: +62 85766797127\nID: 51177360\nGroup: 其他渠道\nCode: -', '', '', '{"lead_id":"lead_processing_card"}', now, now))
+        conn.commit()
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'cs_processing_card', 'password': 'operator123'}).status_code == 200
+    body = client.get('/api/ops/intake-workbench/items?guild_name=Carote').json()
+    row = body['rows'][0]
+    assert row['item_id'] == 'intake_item_processing_card'
+    assert row['reply_text'].startswith('**⏳ Processing**')
+    assert '**❌ Failed**' not in row['reply_text']
+    assert 'bind_auto_requeued_stale_processing' not in row['reply_text']
 
 
 def test_ops_intake_submit_success_copy_template_button_is_removed():
@@ -1116,6 +1339,352 @@ def test_ops_intake_workbench_keeps_queued_bind_out_of_pending_feedback_until_fu
     updated = client.app.state.service._get_ops_intake_item(item['item_id'])
     assert updated['system_status'] == 'fully_success'
     assert updated['feedback_status'] == 'pending_feedback'
+
+
+def test_ops_intake_workbench_page_formats_duplicate_pending_without_raw_json():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+
+    page = client.get('/ops/intake-submit')
+
+    assert page.status_code == 200
+    assert 'function duplicatePendingMessage(detail)' in page.text
+    assert '该用户已有绑定记录处理中，请勿重复提交' in page.text
+    assert "JSON.stringify(data.detail||data)" not in page.text
+
+
+
+def test_bind_scheduler_fast_lanes_fresh_manual_submission_before_old_pending_task():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+    })
+    service = client.app.state.service
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+        'bind_concurrency': 2,
+    }).status_code == 200
+
+    old_text = 'Phone: +62 81632216931\nID: 53232361\nGroup: 24\nCode: -'
+    new_text = 'Phone: +62 81632216932\nID: 53232362\nGroup: 24\nCode: -'
+    old_parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': old_text}).json()
+    old_submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': old_text, 'fields': old_parsed['fields']})
+    assert old_submit.status_code == 200
+    old_task_id = old_submit.json()['result']['task_id']
+    with service.db.connect() as conn:
+        conn.execute("UPDATE automation_tasks SET created_at='2000-01-01T00:00:00+00:00' WHERE task_id=?", (old_task_id,))
+        conn.commit()
+
+    new_parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': new_text}).json()
+    new_submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': new_text, 'fields': new_parsed['fields']})
+    assert new_submit.status_code == 200
+    new_task_id = new_submit.json()['result']['task_id']
+
+    selected = service._select_next_bind_task()
+
+    assert selected is not None
+    assert selected['task_id'] == new_task_id
+    with service.db.connect() as conn:
+        old_status = conn.execute('SELECT status FROM automation_tasks WHERE task_id=?', (old_task_id,)).fetchone()['status']
+        new_status = conn.execute('SELECT status FROM automation_tasks WHERE task_id=?', (new_task_id,)).fetchone()['status']
+    assert old_status == 'pending'
+    assert new_status == 'processing'
+
+
+def test_ingress_worker_default_count_supports_parallel_bind_slots_without_env_override():
+    client = make_client({'INGRESS_ASYNC_DEFAULT': True, 'INGRESS_WORKER_ENABLED': False})
+    service = client.app.state.service
+
+    assert service.ingress_worker_count == 8
+    assert service.ingress_worker_poll_interval == 0.5
+
+
+def test_bind_task_wakeup_happens_after_task_commit_so_worker_sees_new_task(tmp_path):
+    import sqlite3
+
+    db_path = str(tmp_path / 'bind-latency.db')
+    client = make_client({
+        'DB_PATH': db_path,
+        'INGRESS_WORKER_ENABLED': False,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+    })
+    service = client.app.state.service
+    lead = service.upsert_lead(main_module.LeadUpsertRequest(
+        trace_id='trace-bind-wakeup-commit',
+        source_platform='manual_cs',
+        source_campaign='ops',
+        source_page_id='ops',
+        country='Indonesia',
+        area_code=62,
+        mobile='81632216990',
+        yw_id='53232390',
+        app_name='Linky',
+        dept_name='Carote',
+        pendaftaran_group='24',
+        occurred_at='2026-05-19T10:00:00Z',
+    ))
+    visible_task_ids_at_wakeup = []
+
+    def capture_committed_pending_tasks():
+        conn = sqlite3.connect(db_path, timeout=1.0)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT task_id FROM automation_tasks WHERE task_type='bind_check' AND status='pending' ORDER BY created_at"
+        ).fetchall()
+        conn.close()
+        visible_task_ids_at_wakeup.append([row['task_id'] for row in rows])
+
+    service._notify_worker_new_work = capture_committed_pending_tasks
+
+    created = service.submit_account(main_module.AccountSubmissionRequest(
+        lead_id=lead['lead_id'],
+        submission_type='account_id',
+        account_id='53232390',
+        account_id_type='platform_uid',
+        source_channel='ops_intake_workbench',
+        expected_guild='Carote',
+        submitted_by='latency-test',
+        submitted_at='2026-05-19T10:00:01Z',
+    ))
+
+    assert visible_task_ids_at_wakeup == [[created['task_id']]]
+
+
+def test_crm_sync_log_records_stage_timestamps_and_elapsed_seconds():
+    crm = StubCrmAdapter()
+    crm.apps = [{'id': 'app_1', 'name': 'Linky'}]
+    crm.depts = [{'deptId': 'dept_1', 'deptName': 'Piso'}]
+    client = make_client({
+        'CRM_ADAPTER': crm,
+        'AUTO_BIND_SIMULATION': True,
+        'BIND_SIMULATOR': lambda context: {
+            'status': 'success',
+            'result_code': 'bind_ok_simulated',
+            'result_reason': 'simulated bind success',
+            'raw_result': {'guild_code': context['dept_name'], 'deptName': context['dept_name']},
+        },
+    })
+
+    response = client.post('/api/intake/manual-cs-submissions', json={
+        'mobile': '+62 81234567001',
+        'registration_group': 'Piso-5',
+        'app_name': 'Linky',
+        'dept_name': 'Piso',
+        'submission_type': 'account_id',
+        'account_id': '45670001',
+        'submitted_by': 'dewi01',
+        'source_channel': 'manual_cs_lark',
+        'submitted_at': '2026-04-14T18:00:00Z',
+    })
+
+    assert response.status_code == 200
+    with client.app.state.service.db.connect() as conn:
+        row = conn.execute(
+            "SELECT response_snapshot FROM sync_logs WHERE sync_type='customer_upsert' AND target_system='crm' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+    snapshot = json.loads(row['response_snapshot'])
+    assert snapshot['crm_write_started_at']
+    assert snapshot['crm_write_finished_at']
+    assert snapshot['crm_verify_finished_at']
+    assert isinstance(snapshot['crm_write_elapsed_seconds'], float)
+    assert isinstance(snapshot['crm_verify_elapsed_seconds'], float)
+    assert isinstance(snapshot['crm_total_elapsed_seconds'], float)
+
+
+def test_bind_metrics_clean_samples_exclude_historical_long_tail_outliers():
+    client = make_client({'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Carote'})
+    service = client.app.state.service
+    now = datetime.now(timezone.utc)
+
+    def iso_after(seconds: int) -> str:
+        return (now + main_module.timedelta(seconds=seconds)).isoformat()
+
+    with service.db.connect() as conn:
+        for lead_id, mobile in [('lead_clean_a', '81000000001'), ('lead_clean_b', '81000000002'), ('lead_outlier', '81000000003'), ('lead_reconciled', '81000000004')]:
+            conn.execute(
+                """
+                INSERT INTO leads (
+                    lead_id, trace_id, source_platform, source_page_id, country, area_code, mobile,
+                    yw_id, app_name, dept_name, pendaftaran_group, current_status, matched_customer_id,
+                    created_at, updated_at
+                ) VALUES (?, ?, 'manual_cs', 'ops', 'Indonesia', 62, ?, ?, 'Linky', 'Carote', '24', 'bind_success', ?, ?, ?)
+                """,
+                (lead_id, f'trace_{lead_id}', mobile, mobile[-8:], f'cust_{lead_id}', iso_after(0), iso_after(0)),
+            )
+        task_rows = [
+            ('task_clean_a', 'lead_clean_a', iso_after(0), iso_after(1), iso_after(4), 'bind_success'),
+            ('task_clean_b', 'lead_clean_b', iso_after(10), iso_after(12), iso_after(17), 'bind_success'),
+            ('task_outlier', 'lead_outlier', iso_after(20), iso_after(1820), iso_after(7220), 'bind_success'),
+            ('task_reconciled', 'lead_reconciled', iso_after(30), iso_after(1830), iso_after(7230), 'bind_auto_reconciled_success'),
+        ]
+        for task_id, lead_id, created_at, started_at, finished_at, result_code in task_rows:
+            conn.execute(
+                """
+                INSERT INTO automation_tasks (
+                    task_id, lead_id, task_type, priority, payload, dedupe_key, created_by,
+                    created_at, status, result_code, result_reason, started_at, finished_at
+                ) VALUES (?, ?, 'bind_check', 'P0', '{}', ?, 'tester', ?, 'success', ?, 'ok', ?, ?)
+                """,
+                (task_id, lead_id, f'dedupe_{task_id}', created_at, result_code, started_at, finished_at),
+            )
+        conn.commit()
+
+    metrics = service._calculate_bind_metrics()
+
+    assert metrics['recent_completed_count'] == 4
+    assert metrics['avg_queue_wait_seconds'] > 900
+    clean = metrics['fresh_clean_metrics']
+    assert clean['sample_count'] == 2
+    assert clean['excluded_outlier_count'] == 2
+    assert clean['queue_wait_p50_seconds'] == 1.5
+    assert clean['queue_wait_p90_seconds'] == 2.0
+    assert clean['execution_p50_seconds'] == 4.0
+    assert clean['end_to_end_p50_seconds'] == 5.5
+    assert metrics['outlier_metrics']['excluded_count'] == 2
+    assert metrics['outlier_metrics']['reasons']['long_tail'] == 1
+    assert metrics['outlier_metrics']['reasons']['auto_reconciled_or_requeued'] == 1
+
+
+def test_stale_processing_bind_task_is_requeued_and_consumed_by_worker_tick():
+    captured = {}
+
+    def real_bind_executor(context):
+        captured.update(context)
+        return {'status': 'success', 'result_code': 'bind_success', 'result_reason': 'CMS verified SID already in target guild', 'raw_result': {'precheck': 'already_in_target_guild'}}
+
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+        'REAL_BIND_EXECUTOR': real_bind_executor,
+    })
+    service = client.app.state.service
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    text = 'Phone: +62 81632216934\nID: 53232363\nGroup: 24\nCode: -'
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': text}).json()
+    submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed['fields']})
+    assert submit.status_code == 200
+    task_id = submit.json()['result']['task_id']
+    with service.db.connect() as conn:
+        conn.execute("UPDATE automation_tasks SET status='processing', started_at='2000-01-01T00:00:00+00:00' WHERE task_id=?", (task_id,))
+        conn.commit()
+
+    requeued = service.reconcile_task_residue(force=True)
+    assert requeued['bind_requeued_count'] == 1
+    result = service.process_next_worker_tick()
+
+    assert result and result['task_id'] == task_id
+    assert result['lead_status'] == 'bind_success'
+    assert captured['account_id'] == '53232363'
+    with service.db.connect() as conn:
+        row = conn.execute('SELECT status, result_code, finished_at, worker_id, lease_until, heartbeat_at FROM automation_tasks WHERE task_id=?', (task_id,)).fetchone()
+    assert row['status'] == 'success'
+    assert row['result_code'] == 'bind_success'
+    assert row['finished_at']
+    assert row['worker_id']
+    assert row['lease_until'] == ''
+    assert row['heartbeat_at'] == ''
+
+
+def test_expired_bind_task_lease_is_requeued_even_before_started_at_stale_window():
+    client = make_client({'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Carote', 'REQUIRE_INVITE_CODE': True, 'AUTO_BIND_SIMULATION': False})
+    service = client.app.state.service
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    text = 'Phone: +62 81632216935\nID: 53232364\nGroup: 24\nCode: -'
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': text}).json()
+    submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed['fields']})
+    task_id = submit.json()['result']['task_id']
+    with service.db.connect() as conn:
+        columns = [row[1] for row in conn.execute('PRAGMA table_info(automation_tasks)')]
+        assert 'worker_id' in columns
+        assert 'lease_until' in columns
+        assert 'heartbeat_at' in columns
+        conn.execute("""
+            UPDATE automation_tasks
+            SET status='processing', started_at=?, worker_id='dead-worker', lease_until=?, heartbeat_at=?
+            WHERE task_id=?
+        """, ('2999-01-01T00:00:00+00:00', '2000-01-01T00:00:00+00:00', '2000-01-01T00:00:00+00:00', task_id))
+        conn.commit()
+
+    requeued = service.reconcile_task_residue(force=True)
+
+    assert requeued['bind_requeued_count'] == 1
+    with service.db.connect() as conn:
+        row = conn.execute('SELECT status, started_at, worker_id, lease_until, result_code FROM automation_tasks WHERE task_id=?', (task_id,)).fetchone()
+    assert row['status'] == 'pending'
+    assert row['started_at'] is None
+    assert row['worker_id'] == ''
+    assert row['lease_until'] == ''
+    assert row['result_code'] == 'bind_auto_requeued_expired_lease'
+
+
+def test_repeated_manual_bind_submission_reuses_active_bind_task_for_same_lead():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    payload = {
+        'mobile': '+62 81632216936',
+        'registration_group': '24',
+        'app_name': 'Linky',
+        'dept_name': 'Carote',
+        'submission_type': 'account_id',
+        'account_id': '53232365',
+        'invite_code': '',
+        'submitted_by': 'tester',
+        'source_channel': 'manual_cs_lark',
+        'submitted_at': '2026-05-19T10:00:00Z',
+    }
+
+    first = client.post('/api/intake/manual-cs-submissions', json=payload)
+    assert first.status_code == 200
+    first_body = first.json()
+    second_payload = {**payload, 'submitted_at': '2026-05-19T10:01:00Z'}
+    second = client.post('/api/intake/manual-cs-submissions', json=second_payload)
+
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body['task_id'] == first_body['task_id']
+    assert second_body['duplicate_task_reused'] is True
+    with client.app.state.service.db.connect() as conn:
+        task_count = conn.execute(
+            "SELECT COUNT(*) FROM automation_tasks WHERE lead_id=? AND task_type='bind_check' AND status IN ('pending', 'processing')",
+            (first_body['lead_id'],),
+        ).fetchone()[0]
+        submission_task_ids = [row['task_id'] for row in conn.execute(
+            'SELECT task_id FROM account_submissions WHERE lead_id=? ORDER BY created_at ASC',
+            (first_body['lead_id'],),
+        ).fetchall()]
+    assert task_count == 1
+    assert submission_task_ids == [first_body['task_id'], first_body['task_id']]
+
 
 
 def test_ops_intake_workbench_cross_customer_service_duplicate_pending_blocks_new_task():
@@ -3276,6 +3845,11 @@ def test_production_ops_page_loads():
     assert 'setApprovalBindingEnabled' in body
     assert 'manualApproveBinding' in body
     assert '一键通过审批' in body
+    assert 'bindingActionRowHtml' not in body
+    assert 'class="binding-action-row"' not in body
+    assert '<div class="binding-meta-actions">${manualApproveButtonHtml}</div>' in body
+    assert '<div class="binding-meta-actions">${probeRefreshButtonHtml}</div>' in body
+    assert "? { level: 'blue', title: '等待扫码'" not in body
     assert 'bindingVerifierStatusText' in body
     assert 'bindingVerifierReadinessText' in body
     assert 'mapped_live_probe_ready' in body
@@ -3355,6 +3929,8 @@ def test_production_ops_page_loads():
     assert 'data-next-approval-paused' in body
     assert 'const adjustedRemainingSeconds = paused ? null : (Number.isFinite(remainingSeconds) ? Math.max(remainingSeconds - elapsedSeconds, 0) : null);' in body
     assert '.binding-meta-item { display:flex; flex-direction:column; gap:6px; }' in body
+    assert '.binding-meta-actions { display:flex; flex-direction:column; gap:6px; align-items:center; justify-content:center; margin-top:2px; }' in body
+    assert '.binding-meta-actions button { height:38px; margin:0!important; display:inline-flex; align-items:center; justify-content:center; }' in body
     assert '.status-line { display:inline-flex; align-items:center; gap:6px; }' in body
 
 
@@ -3924,6 +4500,106 @@ def test_group_atmosphere_page_uses_unified_region_options_not_hardcoded_selects
     assert 'renderUnifiedRegionOptions' in html
     assert '<option value="印尼">印尼</option><option value="墨西哥">墨西哥</option><option value="巴西">巴西</option>' not in html
 
+
+
+def test_group_atmosphere_role_editor_and_binding_regressions():
+    client = make_client({'AUTH_ENABLED': False})
+
+    first = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': None,
+        'role_name': '印尼活跃角色 A',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'phrases': ['Halo kak A'],
+        'replace_role_phrases': True,
+        'source_type': 'role_save',
+    })
+    second = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': None,
+        'role_name': '印尼活跃角色 B',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'phrases': ['Halo kak B'],
+        'replace_role_phrases': True,
+        'source_type': 'role_save',
+    })
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_key = first.json()['role']['role_key']
+    second_key = second.json()['role']['role_key']
+    assert first_key != second_key
+    roles = client.get('/api/ops/group-atmosphere/roles').json()['rows']
+    assert {row['role_key'] for row in roles} >= {first_key, second_key}
+
+    account = client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_key': 'atmosphere-bind-regression',
+        'account_name': 'Bridge Bot',
+        'region': '印尼',
+        'language': 'id',
+        'groups': [
+            {'target_group': 'https://chat.whatsapp.com/one', 'enabled': True},
+            {'target_group': 'https://chat.whatsapp.com/two', 'enabled': True},
+        ],
+        'enabled': True,
+    })
+    assert account.status_code == 200
+    one = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': first_key,
+        'group_targets': ['https://chat.whatsapp.com/one'],
+        'enabled': True,
+    })
+    two = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': first_key,
+        'group_targets': ['https://chat.whatsapp.com/two'],
+        'enabled': True,
+    })
+    assert one.status_code == 200
+    assert two.status_code == 200
+    bindings = client.get('/api/ops/group-atmosphere/role-bindings').json()
+    targets = {row['target_group'] for row in bindings['rows'] if row['role_key'] == first_key}
+    assert targets == {'https://chat.whatsapp.com/one', 'https://chat.whatsapp.com/two'}
+
+
+def test_group_atmosphere_learning_upload_and_new_account_initial_state():
+    client = make_client({'AUTH_ENABLED': False})
+    upload = client.post('/api/ops/group-atmosphere/chat-records/auto-learn', json={
+        'files': [{
+            'filename': 'wa.txt',
+            'content': '[01/01/24, 10:00] Admin: halo kak selamat datang di grup\n[01/01/24, 10:01] User: kode dimana kak?',
+        }],
+    })
+    assert upload.status_code == 200
+    assert upload.json()['file_count'] == 1
+    assert upload.json()['imported_count'] >= 1
+
+    saved = client.post('/api/ops/group-atmosphere/learning-accounts', json={
+        'learning_account_key': None,
+        'account_name': '学习机器人回归',
+        'region': '印尼',
+        'language': 'id',
+        'groups': [{'target_group': 'https://chat.whatsapp.com/learn', 'enabled': True}],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+    key = saved.json()['account']['learning_account_key']
+    rows = client.get('/api/ops/group-atmosphere/learning-accounts').json()['rows']
+    row = next(item for item in rows if item['learning_account_key'] == key)
+    assert row['login_verified'] is False
+    assert row.get('session', {}) == {} or row['session'].get('login_verified') is False
+
+
+def test_group_atmosphere_page_contains_role_pool_and_bridge_fix_markers():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    page = client.get('/ops/group-atmosphere')
+    assert page.status_code == 200
+    html = page.text
+    assert 'syncRoleEditorSelectedTextsFromDom' in html
+    assert "ga_role_positioning.addEventListener('change',()=>{syncRoleEditorSelectedTextsFromDom();renderRolePhrasePool()})" in html
+    assert 'ga_new_bridge_btn:()=>openBridgeModal()' in html
+    assert 'role_key:roleKey||null' in html
 
 def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
     app = create_app({
@@ -10016,7 +10692,8 @@ def test_lark_reply_templates_include_code_field_for_success_and_failures():
         'reply_group': 'Piso-12',
         'reply_code': 'EKVFGQ',
     })
-    assert pending.startswith('**❌ Failed**')
+    assert pending.startswith('**⏳ Processing**')
+    assert '**❌ Failed**' not in pending
     assert 'Code: EKVFGQ' in pending
 
     final_success = service._format_lark_reply_text({
@@ -10064,6 +10741,12 @@ def test_lark_reply_templates_include_code_field_for_success_and_failures():
         'Group: 其他渠道\n'
         'Code: -'
     )
+    assert service._classify_ops_intake_result_status({
+        'accepted': False,
+        'reason': 'crm_sync_failed',
+        'result_reason': 'Data duplication.',
+        'reply_text': already_registered_crm_failed,
+    }) == 'bind_failed'
 
     bind_failed = service._format_lark_reply_text({
         'accepted': False,
@@ -25111,3 +25794,117 @@ def test_async_lark_ingress_rate_limits_by_sender(tmp_path):
     payload['event']['message']['message_id'] = 'om_async_rate_2'
     second = client.post('/api/intake/lark/events', json=payload)
     assert second.status_code == 429
+
+
+
+def test_single_guild_executor_bind_concurrency_creates_hidden_executor_slots_for_task_selection():
+    client = make_client()
+    service = client.app.state.service
+    now = main_module.utc_now()
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO guild_executors (
+                guild_name, backend_url, login_username, password_secret_ref, platform_backend_url,
+                platform_authorization, enabled, browser_profile_key, bind_concurrency,
+                request_timeout_seconds, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('Nova', 'https://guild.linke.ai/guild', '', '', 'https://cms.linke.ai/', 'configured-token', 1, 'guild-nova', 2, 30, now),
+        )
+        for idx in range(3):
+            lead_id = f'lead_hidden_slot_{idx}'
+            task_id = f'task_hidden_slot_{idx}'
+            conn.execute(
+                """
+                INSERT INTO leads (
+                    lead_id, trace_id, source_platform, source_page_id, country, area_code, mobile,
+                    yw_id, app_name, dept_name, pendaftaran_group, inviter_id, current_status,
+                    matched_customer_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (lead_id, f'trace_{idx}', 'manual', 'ops', 'ID', 62, f'82200000{idx}', f'5318000{idx}',
+                 'Linky', 'Nova', '其他渠道', '', 'account_submitted', '', now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO automation_tasks (
+                    task_id, lead_id, task_type, priority, payload, dedupe_key,
+                    created_by, created_at, status, raw_result
+                ) VALUES (?, ?, 'bind_check', 'normal', ?, ?, 'test', ?, 'pending', '{}')
+                """,
+                (task_id, lead_id, json.dumps({'account_id': f'5318000{idx}'}, ensure_ascii=False), f'dedupe_{idx}', now),
+            )
+        conn.commit()
+
+    first = service._select_next_bind_task()
+    second = service._select_next_bind_task()
+    third = service._select_next_bind_task()
+
+    assert first is not None
+    assert second is not None
+    assert third is None
+
+    first_payload = json.loads(first['payload'])
+    second_payload = json.loads(second['payload'])
+    assert first_payload['executor_slot_key'] == 'Nova#slot-1'
+    assert second_payload['executor_slot_key'] == 'Nova#slot-2'
+    assert first_payload['executor_slot_count'] == 2
+    assert second_payload['executor_slot_count'] == 2
+
+    with service.db.connect() as conn:
+        processing_payloads = [json.loads(row['payload']) for row in conn.execute(
+            "SELECT payload FROM automation_tasks WHERE status = 'processing' ORDER BY task_id"
+        ).fetchall()]
+    assert {payload['executor_slot_key'] for payload in processing_payloads} == {'Nova#slot-1', 'Nova#slot-2'}
+
+
+def test_hidden_executor_slot_is_passed_to_bind_executor_context():
+    captured = {}
+    def fake_executor(context):
+        captured.update(context)
+        return {'status': 'failed', 'result_code': 'test_stop', 'result_reason': 'stop before real bind', 'raw_result': {}}
+
+    client = make_client({'REAL_BIND_EXECUTOR': fake_executor})
+    service = client.app.state.service
+    now = main_module.utc_now()
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO guild_executors (
+                guild_name, backend_url, login_username, password_secret_ref, platform_backend_url,
+                platform_authorization, enabled, browser_profile_key, bind_concurrency,
+                request_timeout_seconds, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('Nova', 'https://guild.linke.ai/guild', '', '', 'https://cms.linke.ai/', 'configured-token', 1, 'guild-nova', 3, 30, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO leads (
+                lead_id, trace_id, source_platform, source_page_id, country, area_code, mobile,
+                yw_id, app_name, dept_name, pendaftaran_group, inviter_id, current_status,
+                matched_customer_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('lead_hidden_context', 'trace_context', 'manual', 'ops', 'ID', 62, '822999999', '53189999',
+             'Linky', 'Nova', '其他渠道', '', 'account_submitted', '', now, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (
+                task_id, lead_id, task_type, priority, payload, dedupe_key,
+                created_by, created_at, status, raw_result
+            ) VALUES (?, ?, 'bind_check', 'normal', ?, ?, 'test', ?, 'pending', '{}')
+            """,
+            ('task_hidden_context', 'lead_hidden_context', json.dumps({'account_id': '53189999'}, ensure_ascii=False), 'dedupe_context', now),
+        )
+        conn.commit()
+
+    processed = service.process_next_automation_task()
+
+    assert processed['task_id'] == 'task_hidden_context'
+    assert captured['executor_slot_key'] == 'Nova#slot-1'
+    assert captured['executor_slot_index'] == 1
+    assert captured['executor_slot_count'] == 3
+    assert captured['executor_slot_hidden'] is True

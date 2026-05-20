@@ -7,8 +7,8 @@ class FakeCmsExecutor(LiveChromeBindExecutor):
         self.responses = list(responses)
         self.calls = []
 
-    def _cms_request_json(self, *, method, url, authorization, body=None, proxy_url=''):
-        self.calls.append({"method": method, "url": url, "authorization": authorization, "body": body, "proxy_url": proxy_url})
+    def _cms_request_json(self, *, method, url, authorization, body=None, proxy_url='', timeout_seconds=8.0):
+        self.calls.append({"method": method, "url": url, "authorization": authorization, "body": body, "proxy_url": proxy_url, "timeout_seconds": timeout_seconds})
         assert authorization == "Bearer secret-token"
         if not self.responses:
             raise AssertionError("unexpected CMS call")
@@ -37,11 +37,10 @@ def test_cms_id_bind_does_not_require_chrome_profile_mapping_when_already_in_tar
     assert all("addAnchor" not in call["url"] for call in executor.calls)
 
 
-def test_cms_id_bind_calls_add_anchor_and_requires_post_bind_verification():
+def test_cms_id_bind_calls_add_anchor_only_when_sid_exists_without_guild_and_requires_post_bind_verification():
     executor = FakeCmsExecutor([
         [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
-        {"code": 1000, "data": {"records": []}},
-        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "user_id": "9007199", "guild_id": "0", "guild_name": ""}]}},
         {"code": 1000, "success": True},
         {"code": 1000, "data": {"records": []}},
         {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "3432", "guild_name": "Carote"}]}},
@@ -64,8 +63,30 @@ def test_cms_id_bind_calls_add_anchor_and_requires_post_bind_verification():
         "authorization": "Bearer secret-token",
         "body": {"sids": [12123121], "guild_id": 3432},
         "proxy_url": "",
+        "timeout_seconds": 8.0,
     }]
 
+
+
+def test_cms_id_bind_caps_cms_request_timeout_for_fast_bind_sla():
+    executor = FakeCmsExecutor([
+        [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "3432", "guild_name": "Carote"}]}},
+        {"code": 1000, "data": {"records": []}},
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+        "executor_request_timeout_seconds": 30,
+    })
+
+    assert result["status"] == "success"
+    assert executor.calls
+    assert {call["timeout_seconds"] for call in executor.calls} == {8.0}
 
 def test_non_cms_route_still_reports_missing_chrome_profile_mapping():
     executor = LiveChromeBindExecutor(profile_map={})
@@ -118,6 +139,24 @@ def test_cms_id_bind_rejects_query_rows_without_matching_sid_as_untrusted():
     assert all("addAnchor" not in call["url"] for call in executor.calls)
 
 
+def test_cms_id_bind_rejects_unknown_target_without_configured_cms_guild_lock():
+    executor = FakeCmsExecutor([
+        [{"id": "9000", "guild_name": "UnknownGuild", "sid": "90000000"}],
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "UnknownGuild",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "cms_target_guild_lock_missing"
+    assert executor.calls == []
+
+
 def test_cms_id_bind_rejects_ambiguous_contains_guild_match():
     executor = FakeCmsExecutor([
         [
@@ -135,7 +174,7 @@ def test_cms_id_bind_rejects_ambiguous_contains_guild_match():
     })
 
     assert result["status"] == "failed"
-    assert result["result_code"] == "cms_target_guild_ambiguous"
+    assert result["result_code"] == "cms_target_guild_mismatch"
     assert all("addAnchor" not in call["url"] for call in executor.calls)
 
 
@@ -189,8 +228,7 @@ def test_cms_id_bind_rejects_configured_guild_id_sid_mismatch():
 def test_cms_id_bind_retries_postcheck_before_success():
     executor = FakeCmsExecutor([
         [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
-        {"code": 1000, "data": {"records": []}},
-        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "0", "guild_name": ""}]}},
         {"code": 1000, "success": True},
         {"code": 1000, "data": {"records": []}},
         {"code": 1000, "data": {"records": []}},
@@ -211,16 +249,53 @@ def test_cms_id_bind_retries_postcheck_before_success():
     assert result["raw_result"]["postcheck_attempts"] == 2
 
 
-def test_cms_id_bind_classifies_add_anchor_invalid_arguments_when_sid_stays_missing():
+def test_cms_id_bind_prefers_join_record_when_top_level_guild_is_empty():
     executor = FakeCmsExecutor([
         [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "user_id": "9007199", "guild_id": "0", "guild_name": "", "joinRecord": {"guild_id": "3432"}}]}},
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+    })
+
+    assert result["status"] == "success"
+    assert result["result_code"] == "bind_success"
+    assert result["raw_result"]["precheck"] == "already_in_target_guild"
+    assert all("addAnchor" not in call["url"] for call in executor.calls)
+
+
+def test_cms_id_bind_treats_zero_empty_guild_as_unbound_not_other_agency():
+    executor = FakeCmsExecutor([
+        [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "user_id": "9007199", "guild_id": "0", "guild_name": ""}]}},
         {"code": 1000, "data": {"records": []}},
-        {"code": 1000, "data": {"records": []}},
-        {"code": 1001, "message": "状态码: 400, 错误信息: invalid arguments"},
-        {"code": 1000, "data": {"records": []}},
-        {"code": 1000, "data": {"records": []}},
-        {"code": 1000, "data": {"records": []}},
-        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "success": True},
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "3432", "guild_name": "Carote"}]}},
+    ])
+    executor.cms_postcheck_retry_delay_seconds = 0
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+    })
+
+    assert result["status"] == "success"
+    assert result["result_code"] == "bind_success"
+    assert result["raw_result"]["cms_submit_code"] == 1000
+    assert any("addAnchor" in call["url"] for call in executor.calls)
+
+
+def test_cms_id_bind_reports_invalid_sid_without_calling_add_anchor_when_sid_is_not_found():
+    executor = FakeCmsExecutor([
+        [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
         {"code": 1000, "data": {"records": []}},
         {"code": 1000, "data": {"records": []}},
     ])
@@ -235,8 +310,9 @@ def test_cms_id_bind_classifies_add_anchor_invalid_arguments_when_sid_stays_miss
     })
 
     assert result["status"] == "failed"
-    assert result["result_code"] == "cms_add_anchor_invalid_arguments"
-    assert result["raw_result"]["postcheck"] == "sid_not_found_or_not_anchor"
+    assert result["result_code"] == "cms_sid_not_found"
+    assert result["raw_result"]["precheck"] == "sid_not_found"
+    assert all("addAnchor" not in call["url"] for call in executor.calls)
 
 
 def test_cms_id_bind_sends_cms_requests_through_executor_proxy_url():

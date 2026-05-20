@@ -120,6 +120,21 @@ def test_get_apps_can_lazy_login_before_first_request():
     assert session.calls[1]["headers"]["token"] == "***"
 
 
+def test_create_dept_posts_to_crm_dept_endpoint_with_token_header():
+    session = FakeSession()
+    session.add("POST", "http://example.com/enterprise-admin/sys/dept", {"code": 0, "msg": "success", "data": None})
+    adapter = LiveCrmAdapter(base_url="http://example.com/enterprise-admin", username="u", password="p", session=session)
+    adapter.token = "tok123"
+
+    body = adapter.create_dept(name="Permata", pid=0, sort=0)
+
+    assert body["code"] == 0
+    last = session.calls[-1]
+    assert last["url"].endswith("/sys/dept")
+    assert last["json"] == {"pid": 0, "name": "Permata", "sort": 0}
+    assert last["headers"]["token"] == "tok123"
+
+
 def test_create_customer_retries_once_after_auth_error_by_relogging():
     session = FakeSession()
     session.add("POST", "http://example.com/enterprise-admin/login", {"code": 0, "msg": "success", "data": {"token": "***", "expire": 43200}})

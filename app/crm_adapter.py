@@ -158,6 +158,24 @@ class LiveCrmAdapter:
         )
         return body.get('data') or []
 
+    def create_dept(self, *, name: str, pid: int = 0, sort: int = 0) -> Dict[str, Any]:
+        payload = {
+            'pid': pid,
+            'name': str(name or '').strip(),
+            'sort': sort,
+        }
+        if not payload['name']:
+            raise ValueError('CRM dept name is required')
+        return self._request_with_login_retry(
+            action='create_dept',
+            request_fn=lambda headers: self.session.post(
+                f'{self.base_url}/sys/dept',
+                headers=headers,
+                json=payload,
+                timeout=15,
+            ),
+        )
+
     def find_customer(self, *, yw_id: Optional[str] = None, mobile: Optional[str] = None) -> Optional[dict[str, Any]]:
         params: Dict[str, str] = {}
         if yw_id:

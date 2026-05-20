@@ -24,9 +24,9 @@ def test_login_page_redirects_operator_to_group_atmosphere():
 
     assert 'safeNextUrlForRole' in html
     assert 'const adminOnlyNextTargets = [];' in html
-    assert "'/ops/accounts'" not in html
     assert "'/ops/production-ops'" not in html
     assert "normalizedRole === 'operator'" in html
+    assert "target === '/ops/accounts'" in html
     assert "'/ops/group-atmosphere'" in html
     assert 'safeNextUrlForRole(data.user && data.user.role)' in html
     assert '初始化管理员' not in html
@@ -70,7 +70,8 @@ def test_operator_role_is_limited_to_group_atmosphere_only():
     assert '/ops/intake-bot-presets' not in html
     assert '/ops/production-ops' not in html
     assert '/ops/registration-group-approval-batch-members' not in html
-    assert '/ops/accounts' not in html
+    assert '/ops/accounts' in html
+    assert '账号设置' in html
 
     assert client.get('/api/ops/group-atmosphere/accounts').status_code == 200
     runtime = client.get('/api/ops/runtime-health')
@@ -81,4 +82,13 @@ def test_operator_role_is_limited_to_group_atmosphere_only():
     assert approval_accounts.json()['detail'] == 'ops_customer_service_required'
     assert client.get('/ops/production-ops', follow_redirects=False).status_code == 303
     assert client.get('/ops/intake-bot-presets', follow_redirects=False).status_code == 303
-    assert client.get('/ops/accounts', follow_redirects=False).status_code == 303
+    accounts_page = client.get('/ops/accounts', follow_redirects=False)
+    assert accounts_page.status_code == 200
+    accounts_html = accounts_page.text
+    assert '账号设置' in accounts_html
+    assert '修改我的密码' in accounts_html
+    assert '/api/ops/auth/password' in accounts_html
+    assert '新增账号' not in accounts_html
+    assert '账号列表' not in accounts_html
+    assert '管理员重置密码' not in accounts_html
+    assert '/api/ops/accounts' not in accounts_html

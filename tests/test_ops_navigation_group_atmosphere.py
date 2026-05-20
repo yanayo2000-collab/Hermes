@@ -51,9 +51,9 @@ def test_group_atmosphere_has_visible_ops_page_and_common_nav():
     assert 'ga_upload_chat_btn' in html
     assert html.index('id="ga_role_bridge_card"') < html.index('id="ga_accounts_card"')
     assert 'data-layout="ops-workbench-redesign"' in html
-    assert '桥接操作区' in html
+    assert '发言桥接区' in html
     assert '新增桥接' in html
-    assert 'WhatsApp 账号与群组' in html
+    assert '发言机器人配置' in html
     assert 'ga_editor_card' in html
     assert 'ga_editor_modal' in html
     assert 'modal-card' in html
@@ -68,7 +68,10 @@ def test_group_atmosphere_has_visible_ops_page_and_common_nav():
     assert "selectAtmosphereAccount('${esc(r.account_key)}');startAtmosphereQr(false)" not in html
     assert '账号用途' not in html
     assert '运行状态' not in html
-    assert '登录状态' in html
+    assert '登录状态' not in html
+    assert 'account-title-row' in html
+    assert '已登录·生效中' in html
+    assert '#ga_accounts .group-card{padding:8px 10px!important' in html
     assert 'Runtime' not in html
     assert '当前账号' not in html
     assert '像群审批后台一样管理多个 WhatsApp 账号' not in html

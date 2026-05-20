@@ -58,14 +58,14 @@ def test_group_atmosphere_candidate_pool_exposes_own_account_selector_and_action
     assert '选择投放账号' not in html
     assert '选择发言群</option>' not in html
     assert '群聊天助手' in html
-    assert '桥接操作区' in html
+    assert '发言桥接区' in html
     assert '新增桥接' in html
     assert 'data-layout="ops-workbench-redesign"' in html
     assert 'data-layout-zone="role-group-bridge"' in html
     assert 'data-layout-zone="whatsapp-resource-pool"' in html
     assert 'data-layout-zone="speech-roles"' in html
     assert 'data-layout-zone="phrase-generation"' in html
-    assert 'WhatsApp 账号与群组' in html
+    assert '发言机器人配置' in html
     assert 'ga_bridge_role_select' in html
     assert 'ga_bridge_group_choices' in html
     assert 'ga_mount_role_btn' in html
@@ -77,7 +77,8 @@ def test_group_atmosphere_candidate_pool_exposes_own_account_selector_and_action
     assert '无角色类型冲突' not in html
     assert '话术角色' in html
     assert '学习话术号' not in html
-    assert '手动新增话术' in html
+    assert '新增话术角色' in html
+    assert '手动新增话术' not in html
     assert '/api/ops/group-atmosphere/role-bindings' in html
     assert '/api/ops/group-atmosphere/roles/manual-phrases' in html
     assert '逐群装载' not in html
@@ -88,10 +89,19 @@ def test_group_atmosphere_candidate_pool_exposes_own_account_selector_and_action
     assert 'ga_candidate_result' in html
     assert 'filterCandidateRows' in html
     assert 'speechPlanRows' in html
-    assert "data-ga-enable-candidate" in html
-    assert "candidateButton.dataset.configName" in html
-    assert "正在加入话术方案" in html
-    assert "已加入话术方案" in html
+    assert "data-ga-enable-candidate" not in html
+    assert "candidateButton.dataset.configName" not in html
+    assert "saveSelectedCandidatesToRole" in html
+    assert "ga_candidate_target_role_select" in html
+    assert "ga_batch_add_candidates_to_role_btn" in html
+    assert "新增话术" in html
+    assert "ga-candidate-manual-draft" in html
+    assert "addManualCandidateDraft" in html
+    assert "saveCustomCandidate" in html
+    assert "/api/ops/group-atmosphere/candidate-pool/custom" in html
+    assert "人工写入" in html
+    assert "candidateSourceLabel(item)" in html
+    assert "保存自定义" in html
     assert "未真正发送" in html
 
 
@@ -163,7 +173,8 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert '墨西哥' in html
     assert '巴西' in html
     assert 'ga_role_positioning' in html
-    assert 'ga_randomness_level' in html
+    account_modal = html.split('id="ga_editor_modal"', 1)[1].split('id="ga_role_editor_modal"', 1)[0]
+    assert 'ga_randomness_level' not in account_modal
     assert 'ga_group_rows' in html
     assert 'ga_add_group_btn' in html
     assert '+ 增加发言群' in html
@@ -185,7 +196,7 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert '话术备选区' in html
     assert '自动发言' in html
     assert 'data-layout="ops-workbench-redesign"' in html
-    assert 'WhatsApp 账号与群组' in html
+    assert '发言机器人配置' in html
     assert '已启用账号' not in html
     assert '检查可发送' in html
     assert '后台会按每日上限与间隔自动随机发送' not in html
@@ -214,7 +225,12 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert '账号已启用' not in html
     assert '账号启用中' not in html
     assert '运行状态' not in html
-    assert '登录状态' in html
+    assert '登录状态' not in html
+    assert 'account-title-row' in html
+    assert '已登录·生效中' in html
+    assert '#ga_accounts .group-card{padding:8px 10px!important' in html
+    assert '#ga_accounts .group-card-title{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important' in html
+    assert '${health}' in html
     assert '当前账号' not in html
     assert 'Runtime' not in html
     assert 'startAtmosphereQrForAccount' in html
@@ -228,11 +244,16 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert 'group-card-grid' in html
     assert 'group-card' in html
     assert 'groupAutoSpeakState' in html
-    assert '真实群名' in html
-    assert '群链接' in html
+    account_renderer = html.split('function renderAccounts(rows)', 1)[1].split('function openManualSendModal', 1)[0]
+    assert '真实群名' not in account_renderer
+    assert '群链接' not in account_renderer
+    assert '生效状态' not in account_renderer
+    assert 'group-card-link' in account_renderer
+    assert 'g.target_group' in account_renderer
+    assert '群名待探测' in html
     assert '自动发言已开启' in html
     assert '开启自动发言' in html
-    assert '待登录生效' in html
+    assert '待登录生效' not in html
     assert '允许发言' not in html
     assert '生成二维码' in html
     assert '手动发言' in html
@@ -458,6 +479,56 @@ def test_group_atmosphere_account_list_uses_lightweight_snapshot_without_live_pr
 
     rows_again = client.get('/api/ops/group-atmosphere/accounts').json()['rows']
     assert rows_again[0]['groups'][0]['group_name'] == 'https://chat.whatsapp.com/ABCDEFG'
+
+
+def test_group_atmosphere_account_list_reflects_authenticated_runtime_even_when_account_disabled(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    response = client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_key': 'atmosphere-indo-disabled',
+        'account_name': '印尼发言号禁用但已登录',
+        'region': '印尼',
+        'groups': [{'target_group': 'https://chat.whatsapp.com/DISABLED', 'enabled': True}],
+        'enabled': False,
+    })
+    assert response.status_code == 200
+    account_key = response.json()['account_key']
+    auth_path = str(service._whatsapp_approval_session_auth_path(account_key))
+    client_id = service._whatsapp_approval_session_client_id(account_key)
+    monkeypatch.setattr(service, '_read_whatsapp_approval_runtime_meta', lambda key: {
+        'pid': 43211,
+        'port': 59996,
+        'base_url': 'http://127.0.0.1:59996',
+        'auth_path': auth_path,
+        'client_id': client_id,
+        'started_at': datetime.now(timezone.utc).isoformat(),
+    } if key == account_key else {})
+    monkeypatch.setattr(service, '_pid_running', lambda pid: True)
+    health_calls = []
+    def fake_health(base_url):
+        health_calls.append(base_url)
+        return {
+            'status': 'warm',
+            'ready': True,
+            'authenticated': True,
+            'approval_client': {
+                'status': 'warm',
+                'ready': True,
+                'authenticated': True,
+                'client_id': client_id,
+                'auth_path': auth_path,
+                'auth_strategy': 'LocalAuth',
+            },
+        }
+    monkeypatch.setattr(service, '_request_whatsapp_approval_worker_health', fake_health)
+
+    rows = client.get('/api/ops/group-atmosphere/accounts').json()['rows']
+
+    assert health_calls == ['http://127.0.0.1:59996']
+    assert rows[0]['enabled'] is False
+    assert rows[0]['runtime']['authenticated'] is True
+    assert rows[0]['session']['login_verified'] is True
+    assert rows[0]['session']['login_check_message'] == '账号已登录，可以正常使用。'
 
 
 def test_group_atmosphere_account_list_reflects_authenticated_runtime(monkeypatch):

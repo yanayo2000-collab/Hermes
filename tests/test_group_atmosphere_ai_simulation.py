@@ -270,6 +270,7 @@ def test_group_atmosphere_candidate_pool_can_enable_one_candidate_for_all_enable
     assert {item['json']['target_group'] for item in sent} == {'group-a@g.us', 'group-b@g.us'}
 
 
+
 def test_group_atmosphere_scheduler_ignores_stale_delivery_configs_after_group_plan_switch(monkeypatch):
     client = make_client()
     client.post('/api/ops/group-atmosphere/configs', json={
