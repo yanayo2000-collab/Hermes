@@ -25,7 +25,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 from openpyxl import Workbook
@@ -6723,6 +6723,7 @@ class Service:
         self.group_atmosphere_scheduler_enabled = bool(group_atmosphere_scheduler_enabled)
         self.group_atmosphere_scheduler_poll_interval_seconds = max(5.0, float(group_atmosphere_scheduler_poll_interval_seconds or 30.0))
         self.group_atmosphere_candidate_translator = group_atmosphere_candidate_translator
+        self._group_atmosphere_allow_test_worker_urls = self.db.db_path == ':memory:'
         self._group_atmosphere_scheduler_thread: Optional[threading.Thread] = None
         self._crm_option_cache: Dict[str, Dict[str, Dict[str, Any]]] = {
             'app': {},
