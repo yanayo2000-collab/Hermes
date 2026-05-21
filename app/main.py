@@ -9,6 +9,7 @@ import io
 import json
 import math
 import os
+import platform
 import random
 import re
 import secrets
@@ -31,7 +32,7 @@ import requests
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from fastapi import Body, FastAPI, HTTPException, Request, Response
+from fastapi import Body, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.routing import APIRoute
@@ -51,6 +52,8 @@ from app.production_ops import (
     save_json_state,
 )
 from app.registration_group_truth import build_truth_state
+from app.realtime_approval_state import RealtimeApprovalStateStore
+from app.whatsapp_login_state import enrich_whatsapp_login_state
 
 
 PHONE_PREFIX_COUNTRY_MAP = {
@@ -844,12 +847,12 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
   <div class="card">
     <div class="preset-toolbar">
       <h2 style="margin-top:0; margin-bottom:0;">机器人配置列表</h2>
-      <button type="button" class="admin-only" onclick="openPresetModal(null)">＋ 新增机器人配置</button>
+      <button type="button" class="preset-manage" onclick="openPresetModal(null)">＋ 新增机器人配置</button>
     </div>
     <div id="presetCardGrid" class="preset-card-grid"></div>
   </div>
 
-  <div id="presetConfigModal" class="preset-modal-backdrop admin-only" onclick="if(event.target===this) closePresetModal()">
+  <div id="presetConfigModal" class="preset-modal-backdrop preset-manage-modal" onclick="if(event.target===this) closePresetModal()">
     <div class="preset-modal-card">
       <div class="preset-modal-head">
         <h2 id="presetModalTitle">新增机器人配置</h2>
@@ -961,6 +964,7 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
 window.__opsUserRole = '__OPS_USER_ROLE__';
 window.__presetModalDraft = window.__presetModalDraft || null;
 function isOpsAdmin() { return ['admin', 'super_admin'].includes(String(window.__opsUserRole || '').trim()); }
+function canManageIntakePresets() { return ['admin', 'super_admin', 'customer_service'].includes(String(window.__opsUserRole || '').trim()); }
 async function loadJson(url, options) {
   const res = await fetch(url, options || {});
   if (!res.ok) {
@@ -1025,7 +1029,7 @@ function renderExecutorProxyRegionOptions(selectedValue) {
 function presetCardHtml(row) {
   const title = String(row.robot_name || row.profile_name || '-');
   const enabledText = row.enabled === false || row.enabled === 0 ? '停用' : '启用';
-  const actions = isOpsAdmin() ? `<div class="preset-actions"><button type="button" class="secondary" onclick="openPresetModal('${row.profile_name}')">编辑</button><button type="button" class="danger" onclick="deletePreset('${row.profile_name}')">删除</button></div>` : '';
+  const actions = canManageIntakePresets() ? `<div class="preset-actions"><button type="button" class="secondary" onclick="openPresetModal('${row.profile_name}')">编辑</button><button type="button" class="danger" onclick="deletePreset('${row.profile_name}')">删除</button></div>` : '';
   return `<div class="preset-card" data-profile-name="${row.profile_name}">
     <div class="preset-card-head"><h3>${title}</h3><span class="badge">${enabledText}</span></div>
     <div class="preset-meta">
@@ -1086,7 +1090,7 @@ function fillPresetModalOptions(data, row) {
   saveButton.disabled = disabled;
 }
 function openPresetModal(profileName) {
-  if (!isOpsAdmin()) return;
+  if (!canManageIntakePresets()) return;
   const normalized = String(profileName || '').trim();
   const rows = Array.isArray(window.__intakePresetRows) ? window.__intakePresetRows : [];
   const row = normalized ? rows.find(item => String(item.profile_name || '') === normalized) : null;
@@ -1282,7 +1286,7 @@ async function reloadGuildExecutors() {
   document.getElementById('executorCount').textContent = String(rows.length);
   document.getElementById('executorProxyCount').textContent = String(rows.filter(row => row.proxy_effective_configured === true).length);
   document.getElementById('executorSecretCount').textContent = String(rows.filter(row => row.oauth_configured).length);
-  if (isOpsAdmin()) {
+  if (canManageIntakePresets()) {
     const proxyRegionField = document.getElementById('new_executor_proxy_region');
     refreshExecutorProxyRegionSelect(proxyRegionField ? proxyRegionField.value || '' : '');
   }
@@ -1754,9 +1758,9 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
 @media(max-width:1180px){.ga-workbench-stats,.ga-proto-card-grid,#ga_role_bindings,#ga_accounts .account-card-grid,#ga_role_library,.ga-proto-script-grid{grid-template-columns:1fr!important}.ga-proto-section{padding:18px!important}.ga-proto-head{flex-direction:column!important}.ga-pool-filter-row{max-width:none!important;width:100%!important}#ga_candidate_list_card>.ga-proto-head{flex-direction:row!important;align-items:center!important;justify-content:space-between!important}#ga_candidate_list_card .ga-pool-filter-row{width:auto!important;flex-wrap:nowrap!important}}
 
 
-#ga_candidate_pool .candidate-row-compact{display:grid!important;grid-template-columns:30px 18px auto minmax(0,1fr) auto auto auto auto auto!important;align-items:center!important;gap:7px!important;min-height:34px!important;padding:4px 8px!important;border-radius:10px!important;}
-#ga_candidate_pool .candidate-row-compact.is-unavailable{grid-template-columns:30px 18px auto auto minmax(0,1fr) 30px 64px 76px 42px!important;}
-#ga_candidate_pool .candidate-row-compact input[type="text"]{height:30px!important;min-height:30px!important;padding:4px 8px!important;font-size:13px!important;line-height:20px!important;}
+#ga_candidate_pool .candidate-row-compact{display:grid!important;grid-template-columns:30px 18px auto minmax(0,1fr) minmax(220px,auto)!important;grid-auto-rows:auto!important;align-items:center!important;gap:6px 8px!important;min-height:42px!important;padding:6px 8px!important;border-radius:10px!important;}
+#ga_candidate_pool .candidate-row-compact.is-unavailable{background:#fffaf0!important;border-color:#fed7aa!important;opacity:.96!important;}
+#ga_candidate_pool .candidate-row-compact input[type="text"]{grid-column:4!important;height:30px!important;min-height:30px!important;min-width:0!important;padding:4px 8px!important;font-size:13px!important;line-height:20px!important;}
 #ga_candidate_pool .candidate-role-line{display:flex!important;gap:10px!important;align-items:center!important;flex-wrap:wrap!important;margin-top:8px!important;}
 #ga_candidate_pool .candidate-role-line select{width:auto!important;min-width:220px!important;}
 #ga_learning_result:empty,#ga_candidate_result:empty{display:none!important;}
@@ -1764,6 +1768,12 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
 #ga_candidate_pool .candidate-row-compact>input,#ga_candidate_pool .candidate-row-compact>button{margin:0!important;}
 #ga_candidate_pool .candidate-row-compact>input[type="checkbox"]{width:16px!important;height:16px!important;min-height:16px!important;align-self:center!important;justify-self:center!important;}
 #ga_candidate_pool .candidate-row-compact>button{height:30px!important;min-height:30px!important;padding:4px 8px!important;font-size:12px!important;line-height:20px!important;}
+#ga_candidate_pool .ga-candidate-meta-badges{grid-column:4 / 6!important;display:flex!important;align-items:center!important;gap:5px!important;min-width:0!important;overflow:hidden!important;margin-top:-2px!important;}
+#ga_candidate_pool .ga-candidate-meta-badges:empty{display:none!important;}
+#ga_candidate_pool .ga-candidate-meta-badges .ga-source-badge{max-width:100%!important;overflow:hidden!important;text-overflow:ellipsis!important;}
+#ga_candidate_pool .ga-candidate-actions{grid-column:5!important;display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:6px!important;flex-wrap:wrap!important;min-width:220px!important;max-width:360px!important;}
+#ga_candidate_pool .ga-candidate-actions>button{white-space:nowrap!important;height:30px!important;min-height:30px!important;padding:4px 8px!important;font-size:12px!important;line-height:20px!important;margin:0!important;}
+#ga_candidate_pool .ga-candidate-actions .ga-confirm-candidate-btn{width:64px!important;min-width:64px!important;max-width:64px!important;padding:4px 6px!important;}
 #ga_candidate_pool .ga-candidate-drag-handle{cursor:grab!important;padding:0!important;width:28px!important;color:#64748b!important;font-weight:800!important;}
 #ga_candidate_pool .ga-candidate-row:active .ga-candidate-drag-handle{cursor:grabbing!important;}
 /* Group atmosphere visual cleanup: less instructional copy, no inner separator lines */
@@ -1971,6 +1981,7 @@ input[type=file]::file-selector-button{height:28px!important;margin:0 10px 0 0!i
 <section class="ga-proto-section ga-copy-section" id="ga_candidate_card" data-layout-zone="phrase-generation"><div class="ga-proto-head"><div><h2>话术生成区</h2></div><span class="pill gray" id="ga_candidate_count">0 条</span></div><div class="grid ga-generation-grid ga-generation-stack"><div class="ga-upload-panel" id="ga_learning_upload_card"><h3>话术上传区</h3><div class="ga-upload-action-row"><input type="file" id="ga_chat_file" multiple/><button type="button" id="ga_upload_chat_btn">上传并学习</button><button type="button" class="secondary" id="ga_clear_chat_files_btn">清空文件</button></div><pre id="ga_upload_result" class="muted"></pre></div><div class="ga-upload-panel" id="ga_learning_bot_card"><div class="toolbar"><h3>学习机器人区</h3><button type="button" id="ga_open_learning_bot_modal_btn">新增学习机器人</button></div><pre id="ga_learning_result" class="muted"></pre><div id="ga_learning_accounts" class="ga-learning-card-list is-empty"></div></div></div></section>
 <section class="ga-proto-section ga-copy-list-section" id="ga_candidate_list_card" data-layout-zone="candidate-phrases"><div class="ga-proto-head"><div><h2>话术备选区</h2></div><div class="ga-pool-filter-row"><select id="ga_candidate_language_filter"><option value="">语言/地区</option><option value="id">印尼</option><option value="es">墨西哥</option><option value="pt">巴西</option></select><select id="ga_candidate_role_filter" style="display:none"><option value="community_seed">气氛活跃型</option><option value="faq_helper">解惑答疑型</option><option value="newcomer_guide">教程引导型</option><option value="motivation_admin">激励运营型</option></select><select id="ga_candidate_target_role_select"><option value="">选择话术角色</option></select><button type="button" id="ga_batch_add_candidates_to_role_btn">加入角色</button></div></div><div id="ga_candidate_role_tabs" class="ga-candidate-tabs"></div><div id="ga_candidate_pool" class="muted">暂无备选话术</div><pre id="ga_candidate_result" class="muted"></pre></section>
 </div>
+<!-- 检查可发送</button><button type="button" id="ga_mount_role_btn">保存桥接 -->
 <div class="modal" id="ga_bridge_modal" aria-hidden="true"><div class="card modal-card" id="ga_bridge_modal_card"><div class="modal-head"><h2 id="ga_bridge_modal_title">新增桥接</h2><button type="button" class="modal-close" id="ga_close_bridge_modal_btn" aria-label="关闭">×</button></div><div class="ga-bridge-create" id="ga_bridge_create_panel"><div class="ga-bridge-field-grid"><div class="ga-bridge-field"><label for="ga_bridge_region">国家/地区</label><select id="ga_bridge_region"><option value="">国家</option></select></div><div class="ga-bridge-field"><label for="ga_bridge_role_select">话术角色</label><select id="ga_bridge_role_select"><option value="">选择话术角色</option></select></div><div class="ga-bridge-field"><label for="ga_bridge_auto_speaking">自动发言</label><select id="ga_bridge_auto_speaking"><option value="true">开启自动发言</option><option value="false">暂停自动发言</option></select></div></div><div class="ga-bridge-layout"><div class="ga-bridge-col ga-group-select-col"><h3>目标群组</h3><div id="ga_bridge_group_choices" class="muted">请选择国家和话术角色</div></div><div class="ga-bridge-col"><h3>发言频率</h3><div class="ga-bridge-frequency-grid"><div class="ga-bridge-field"><label for="ga_bridge_daily_max">每日上限</label><input id="ga_bridge_daily_max" inputmode="numeric" placeholder="如 20"/></div><div class="ga-bridge-field"><label for="ga_bridge_min_interval">最小间隔秒</label><input id="ga_bridge_min_interval" inputmode="numeric" placeholder="如 30"/></div><div class="ga-bridge-field"><label for="ga_bridge_max_interval">最大间隔秒</label><input id="ga_bridge_max_interval" inputmode="numeric" placeholder="如 90"/></div><div class="ga-bridge-field"><label for="ga_bridge_randomness_level">话术随机性</label><select id="ga_bridge_randomness_level"><option value="low">稳定</option><option value="medium" selected>适中</option><option value="high">灵活</option></select></div><div class="ga-bridge-field"><label for="ga_bridge_phrase_send_order">发送次序</label><select id="ga_bridge_phrase_send_order"><option value="random" selected>随机发言</option><option value="sorted">按排序发送</option></select></div><div class="ga-bridge-field ga-bridge-time-window"><label>发言时间段</label><div class="ga-time-window-row"><input type="time" id="ga_bridge_window_start" value="00:00"/><span>至</span><input type="time" id="ga_bridge_window_end" value="23:59"/></div><div class="muted">默认全天</div></div></div><pre id="ga_role_bridge_result" class="muted"></pre><pre id="ga_scheduler_result" class="muted"></pre></div></div><div class="ga-bridge-footer"><div class="ga-bridge-footer-status">状态：<span id="ga_scheduler_status" class="muted">就绪</span></div><div class="ga-bridge-footer-actions"><button type="button" id="ga_mount_role_btn">保存桥接</button></div></div></div></div></div>
 
 <div class="modal" id="ga_editor_modal" aria-hidden="true"><div class="card modal-card" id="ga_editor_card"><div class="modal-head"><h2 id="ga_editor_title">账号配置</h2><div class="toolbar-actions"><span class="muted" id="ga_session_status">未选择</span><button type="button" class="modal-close" id="ga_close_editor_btn">关闭</button></div></div><div><div><div class="compact-grid"><input id="ga_account_name_login" placeholder="账号备注"/><select id="ga_region"><option value="">加载地区...</option></select><select id="ga_account_role_positioning"><option value="community_seed">气氛活跃型</option><option value="faq_helper">解惑答疑型</option><option value="newcomer_guide">教程引导型</option><option value="motivation_admin">激励运营型</option></select></div><div class="compact-grid"><select id="ga_account_enabled"><option value="true">账号发言：开</option><option value="false">账号发言：关</option></select><button type="button" class="clear-form-button" id="ga_clear_form_btn">清空表单</button></div><div class="card" style="box-shadow:none;margin-top:8px;padding:12px;"><div class="section-title"><h3 style="margin:0;font-size:15px;">发言群</h3><button type="button" class="secondary" id="ga_add_group_btn">+ 增加发言群</button></div><div id="ga_group_rows"><div class="ga-account-group-row" data-ga-group-row="1" style="display:grid"><input id="ga_group_1_target" placeholder="群1：链接 / 群名 / group_id"/><select id="ga_group_1_enabled"><option value="true">群1：开</option><option value="false">群1：关</option></select></div><div class="ga-account-group-row" data-ga-group-row="2" style="display:none"><input id="ga_group_2_target" placeholder="群2：链接 / 群名 / group_id"/><select id="ga_group_2_enabled"><option value="true">群2：开</option><option value="false">群2：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(2)">删除群组</button></div><div class="ga-account-group-row" data-ga-group-row="3" style="display:none"><input id="ga_group_3_target" placeholder="群3：链接 / 群名 / group_id"/><select id="ga_group_3_enabled"><option value="true">群3：开</option><option value="false">群3：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(3)">删除群组</button></div><div data-ga-group-row="4" style="display:none"><input id="ga_group_4_target" placeholder="群4：链接 / 群名 / group_id"/><select id="ga_group_4_enabled"><option value="true">群4：开</option><option value="false">群4：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(4)">删除群组</button></div><div data-ga-group-row="5" style="display:none"><input id="ga_group_5_target" placeholder="群5：链接 / 群名 / group_id"/><select id="ga_group_5_enabled"><option value="true">群5：开</option><option value="false">群5：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(5)">删除群组</button></div><div data-ga-group-row="6" style="display:none"><input id="ga_group_6_target" placeholder="群6：链接 / 群名 / group_id"/><select id="ga_group_6_enabled"><option value="true">群6：开</option><option value="false">群6：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(6)">删除群组</button></div><div data-ga-group-row="7" style="display:none"><input id="ga_group_7_target" placeholder="群7：链接 / 群名 / group_id"/><select id="ga_group_7_enabled"><option value="true">群7：开</option><option value="false">群7：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(7)">删除群组</button></div><div data-ga-group-row="8" style="display:none"><input id="ga_group_8_target" placeholder="群8：链接 / 群名 / group_id"/><select id="ga_group_8_enabled"><option value="true">群8：开</option><option value="false">群8：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(8)">删除群组</button></div><div data-ga-group-row="9" style="display:none"><input id="ga_group_9_target" placeholder="群9：链接 / 群名 / group_id"/><select id="ga_group_9_enabled"><option value="true">群9：开</option><option value="false">群9：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(9)">删除群组</button></div><div data-ga-group-row="10" style="display:none"><input id="ga_group_10_target" placeholder="群10：链接 / 群名 / group_id"/><select id="ga_group_10_enabled"><option value="true">群10：开</option><option value="false">群10：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(10)">删除群组</button></div></div></div></div><div class="inline-actions"><button type="button" id="ga_save_account_btn">保存</button></div></div></div></div>
@@ -1978,7 +1989,7 @@ input[type=file]::file-selector-button{height:28px!important;margin:0 10px 0 0!i
 
 
 </div>
-<div class="modal" id="ga_learning_account_modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="gaLearningModalTitle"><div class="modal-head"><h2 id="gaLearningModalTitle">学习机器人WhatsApp账号</h2><div class="toolbar-actions"><button type="button" class="modal-close" id="ga_close_learning_bot_modal_btn">关闭</button></div></div><input type="hidden" id="ga_learning_account_key"/><div class="compact-grid"><input id="ga_learning_account_name" placeholder="账号备注，如：印尼学习机器人01"/><select id="ga_learning_region"><option value="印尼">印尼</option><option value="墨西哥">墨西哥</option><option value="巴西">巴西</option></select></div><div style="margin-top:12px;"><div class="section-title"><h3 style="margin:0;font-size:15px;">群链接</h3><button type="button" class="secondary" id="ga_add_learning_group_link_btn">+ 增加群链接</button></div><div id="ga_learning_group_links" class="ga-learning-groups"></div></div><div class="inline-actions"><button type="button" id="ga_save_learning_bot_btn">保存</button><button type="button" class="ghost" id="ga_cancel_learning_bot_btn">取消</button></div></div></div>
+<div class="modal" id="ga_learning_account_modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="gaLearningModalTitle"><div class="modal-head"><h2 id="gaLearningModalTitle">学习机器人WhatsApp账号</h2><div class="toolbar-actions"><button type="button" class="modal-close" id="ga_close_learning_bot_modal_btn">关闭</button></div></div><input type="hidden" id="ga_learning_account_key"/><div class="compact-grid"><input id="ga_learning_account_name" placeholder="账号备注，如：印尼学习机器人01"/><select id="ga_learning_region"></select></div><div style="margin-top:12px;"><div class="section-title"><h3 style="margin:0;font-size:15px;">群链接</h3><button type="button" class="secondary" id="ga_add_learning_group_link_btn">+ 增加群链接</button></div><div id="ga_learning_group_links" class="ga-learning-groups"></div></div><div class="inline-actions"><button type="button" id="ga_save_learning_bot_btn">保存</button><button type="button" class="ghost" id="ga_cancel_learning_bot_btn">取消</button></div></div></div>
 <div class="modal" id="ga_learning_result_modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true"><div class="modal-head"><h2>学习结果</h2><button type="button" class="modal-close" onclick="closeLearningResultModal()">关闭</button></div><div id="ga_learning_result_modal_body" class="muted">暂无学习结果</div></div></div>
 <div id="gaQrModal" class="qr-modal" onclick="dismissAtmosphereQrModal(event)"><div class="qr-modal-card" role="dialog" aria-modal="true" aria-labelledby="gaQrModalTitle" onclick="event.stopPropagation()"><div class="qr-modal-head"><div><h3 id="gaQrModalTitle">账号登录二维码</h3></div><button type="button" class="secondary" onclick="closeAtmosphereQrModal()">关闭</button></div><div class="qr-modal-body"><div id="gaQrModalStatus" class="qr-modal-status muted">正在准备二维码…</div><div id="gaQrModalContent"></div><div class="qr-modal-actions"><button type="button" onclick="retryAtmosphereQrModal()">重新生成二维码</button><button type="button" class="secondary" onclick="refreshAtmosphereQrModal()">刷新状态</button></div></div></div></div></div>
 <div id="gaSendModal" class="modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="gaSendModalTitle"><div class="modal-head"><div><h2 id="gaSendModalTitle">手动发言</h2><div class="muted" id="gaSendModalSubTitle">选择群后发送</div></div><button type="button" class="modal-close" id="ga_close_send_modal_btn">关闭</button></div><textarea id="ga_manual_message_text" placeholder="输入临时发送到群里的消息"></textarea><div class="inline-actions"><button type="button" id="ga_send_message_btn">确认发送</button><button type="button" class="ghost" onclick="fillManualMessage('Halo kak, selamat datang ya 😊')">欢迎语</button><button type="button" class="ghost" onclick="fillManualMessage('Kalau ada pertanyaan, boleh tanya di grup ya kak.')">答疑提醒</button></div><pre id="ga_send_result" class="muted"></pre></div></div>
@@ -1990,14 +2001,15 @@ function renderUnifiedRegionOptions(selectId,currentValue=''){const el=document.
 async function loadUnifiedRegionOptions(){const data=await loadJson('/api/ops/mcn-region-options');window.__mcnRegionOptions=Array.isArray(data.options)?data.options:[];renderUnifiedRegionOptions('ga_region');renderUnifiedRegionOptions('ga_role_region');renderUnifiedRegionOptions('ga_bridge_region');renderUnifiedRegionOptions('ga_learning_region');return data}
 function selectedOperationalAccountKey(){return document.getElementById('ga_account_key_login').value.trim()||document.getElementById('ga_account_key').value.trim()}
 function selectedAccountKey(){return selectedOperationalAccountKey()}
-function showTip(text,type='info'){const tip=document.getElementById('ga_tip_toast');if(!tip)return;if(window.__gaTipTimer)clearTimeout(window.__gaTipTimer);tip.textContent=text||'';tip.style.background=type==='error'?'#991b1b':(type==='success'?'#166534':'#0f172a');tip.classList.toggle('is-open',!!text);window.__gaTipTimer=setTimeout(()=>{tip.classList.remove('is-open');tip.textContent=''},2400)}
+function showTip(text,type='info',options={}){const tip=document.getElementById('ga_tip_toast');if(!tip)return;if(window.__gaTipTimer)clearTimeout(window.__gaTipTimer);tip.textContent=text||'';tip.style.background=type==='error'?'#991b1b':(type==='success'?'#166534':'#0f172a');tip.classList.toggle('is-open',!!text);if(!text||options.sticky)return;window.__gaTipTimer=setTimeout(()=>{tip.classList.remove('is-open');tip.textContent=''},Number(options.duration||2400))}
 function setFeedback(text,type='info'){const el=document.getElementById('ga_action_feedback');if(el){el.textContent='';el.style.display='none'}if(text&&text!=='就绪')showTip(text,type)}
 function setLocalFeedback(id,text,type='info'){const el=document.getElementById(id);if(el){el.textContent='';el.style.display='none'}if(text)showTip(text,type)}
 const gaActionLocalTargets={'保存':'ga_session_status','生成二维码':'ga_session_status','刷新登录态':'ga_session_status','删除':'ga_session_status','切换账号开关':'ga_session_status','切换群开关':'ga_session_status','发送群消息':'ga_send_result','保存文案组名称':'ga_candidate_result','删除文案组':'ga_candidate_result','加入话术方案':'ga_candidate_result','加入话术角色':'ga_candidate_result','删除备选话术':'ga_candidate_result','自动发言检查':'ga_scheduler_result','保存话术角色':'ga_role_editor_result','保存文案':'ga_role_editor_result','保存桥接关系':'ga_role_bridge_result','删除桥接':'ga_role_bridge_result','删除话术角色':'ga_role_bridge_result','保存学习机器人':'ga_learning_result','删除学习机器人':'ga_learning_result','切换学习群':'ga_learning_result','立即一键发言':'ga_role_bridge_result','切换群发言开关':'ga_role_bridge_result'}
 function actionLocalTarget(label){return gaActionLocalTargets[label]||''}
 function runAction(label,fn){const localTarget=actionLocalTarget(label);const localEl=localTarget?document.getElementById(localTarget):null;setFeedback(`${label}中…`);if(localEl)setLocalFeedback(localTarget,`${label}中…`);window.__gaActionInFlight=true;return Promise.resolve().then(fn).then(res=>{if(res&&res.silent){setFeedback('');if(localEl)setLocalFeedback(localTarget,'');return res}setFeedback(`${label}成功`,'success');const currentLocalText=localEl?localEl.textContent:'';if(localEl&&(!currentLocalText||currentLocalText===`${label}中…`))setLocalFeedback(localTarget,`${label}成功`,'success');return res}).catch(err=>{setFeedback(`${label}失败：${err.message||err}`,'error');if(localEl)setLocalFeedback(localTarget,`${label}失败：${err.message||err}`,'error');throw err}).finally(()=>{window.__gaActionInFlight=false})}
 function regionLanguage(region){const value=String(region||'').trim();const row=(window.__mcnRegionOptions||[]).find(r=>[r.label_zh,r.value,r.label,r.code].map(x=>String(x||'').trim()).includes(value));if(row&&row.language)return row.language;return value==='印尼'?'id':(value==='墨西哥'?'es':(value==='巴西'?'pt':''))}
-const GA_MAX_GROUPS=10;
+const GA_MAX_GROUPS=5;
+const GA_LEARNING_MAX_GROUPS=10;
 const GA_BRIDGE_REFRESH_INTERVAL_MS=30000;
 function visibleGroupCount(){return [...document.querySelectorAll('[data-ga-group-row]')].filter(row=>row.style.display!=='none').length}
 function updateGroupAddButton(){const btn=document.getElementById('ga_add_group_btn');if(btn)btn.style.display=visibleGroupCount()>=GA_MAX_GROUPS?'none':'inline-block'}
@@ -2034,7 +2046,8 @@ async function toggleAtmosphereAccountEnabled(key){const r=(window.__gaAccounts|
 async function toggleAtmosphereGroupEnabled(key,idx){const r=(window.__gaAccounts||[]).find(x=>x.account_key===key);if(!r||!r.groups||!r.groups[idx])return;return runAction('切换群开关',async()=>{const payload=payloadFromAccount(r);payload.groups[idx].enabled=!payload.groups[idx].enabled;await loadJson('/api/ops/group-atmosphere/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await reloadAll()})}
 function roleLabel(value){const map={community_seed:'气氛活跃型',newcomer_guide:'教程引导型',faq_helper:'解惑答疑型',motivation_admin:'激励运营型'};return map[value]||value||'-'}
 function runtimeLabel(runtime){const status=String((runtime||{}).status||'').trim();const text=String((runtime||{}).status_text||'').trim();if(status==='running')return text&&text!=='warm'?text:'运行中';if(status==='starting')return '启动中';if(status==='stopped')return '已停止';if(status==='not_started'||!status)return '未启动';return text||status}
-function loginLabel(session,runtime){const s=session||{};if(s.login_verified)return '已登录';const status=String(s.login_check_status||'').trim();if(status==='authenticated'||status==='ready')return '已登录';if(status==='qr_pending'||status==='needs_scan')return '待扫码';if((runtime||{}).status==='running')return '待扫码';return '未登录'}
+function loginLabel(session,runtime){const s=session||{};const rt=runtime||{};const runtimeActive=rt.active===true||['running','warm','recovering'].includes(String(rt.status||'').trim());const runtimeReady=rt.ready===true||rt.authenticated===true||String(rt.status||'').trim()==='warm';const status=String(s.login_check_status||s.login_state||'').trim();const loggedIn=s.login_verified===true||status==='authenticated'||status==='ready'||status==='passed'||status==='runtime_recoverable'||String(s.login_state||'').trim()==='recoverable';if(loggedIn)return `已登录·${runtimeActive&&runtimeReady?'运行中':'未运行'}`;if(['pending_runtime','runtime_starting','initializing','auto_recovering'].includes(status)||['starting','initializing','recovering'].includes(String(rt.status||'').trim()))return '登录中…';return '待登录'}
+function loginPillClass(text){const raw=String(text||'');if(raw.includes('运行中'))return 'green';if(raw.includes('已登录'))return 'blue';if(raw.includes('登录中'))return 'amber';return 'gray'}
 function readableStateText(text){const raw=String(text||'').trim();if(!raw)return '';const rtWord=String.fromCharCode(82,117,110,116,105,109,101);return raw.replace(new RegExp(rtWord,'g'),'运行服务').replace(/runtime/g,'运行服务').replace(/warm/g,'运行中').replace(/not_started/g,'未启动').replace(/running/g,'运行中').replace(/stopped/g,'已停止').replace(/独立\\s+运行服务\\s+/g,'独立运行服务').replace(/独立运行服务运行中/g,'运行中')}
 function groupAutoSpeakState(account,group,session,runtime){if(account.enabled===false)return {enabled:false,effective:false,label:'账号已停用',cls:'red'};if(!group||group.enabled===false)return {enabled:false,effective:false,label:'开启自动发言',cls:'gray'};if(!(group.target_group||'').trim())return {enabled:true,effective:false,label:'缺少群链接',cls:'red'};if(session&&session.login_verified)return {enabled:true,effective:true,label:'自动发言已开启',cls:'green'};if(runtime&&runtime.status==='running')return {enabled:true,effective:false,label:'待扫码后生效',cls:'amber'};return {enabled:true,effective:false,label:'待登录后生效',cls:'amber'}}
 function detectedGroupName(g){const name=String(g.group_name||'').trim();const target=String(g.target_group||'').trim();return name&&name!==target?name:'群名待探测'}
@@ -2042,7 +2055,7 @@ function candidateAccountMatches(row){const language=document.getElementById('ga
 function setOverviewStat(id,value){const el=document.getElementById(id);if(el)el.textContent=String(value)}
 function updateAtmosphereOverview(){const accounts=window.__gaAccounts||[];const roles=window.__gaRoles||[];const relationships=window.__gaRoleRelationships||[];const mounted=relationships.reduce((n,r)=>n+((r.groups||[]).length),0);const auto=relationships.reduce((n,r)=>n+(r.auto_speaking_enabled?((r.groups||[]).filter(g=>g.group_send_permission_enabled!==false).length):0),0);const blocked=relationships.reduce((n,r)=>n+((r.groups||[]).filter(g=>g.group_send_permission_enabled===false).length),0);setOverviewStat('ga_stat_accounts',accounts.length);setOverviewStat('ga_stat_roles',roles.length);setOverviewStat('ga_stat_mounted',mounted);setOverviewStat('ga_stat_auto',auto);setOverviewStat('ga_stat_blocked',blocked)}
 function refreshCandidateGroupSelect(){refreshGroupPlanSelects()}
-function renderAccounts(rows){window.__gaAccounts=rows;refreshGroupPlanSelects();renderBridgeFormOptions();renderLearningAccountOptions();const accountCountEl=document.getElementById('ga_accounts_count');if(accountCountEl)accountCountEl.textContent=`${rows.length} 个账号`;updateAtmosphereOverview();if(!rows.length){ga_accounts.innerHTML='<div class="muted">暂无账号</div>';return}ga_accounts.innerHTML=`<div class="account-card-grid">${rows.map((r,i)=>{const rt=r.runtime||{};const sess=r.session||r.session_state||{};const regionText=r.region||'-';const loginText=loginLabel(sess,rt);const health=loginText==='已登录'?'<span class="pill green">已登录·生效中</span>':'<span class="pill amber">待登录</span>';const groupCards=(r.groups||[]).map((g,idx)=>`<div class="group-card"><div class="group-card-title"><div><div class="group-card-name">${esc(detectedGroupName(g))}</div><div class="group-card-link">${esc(g.target_group||'-')}</div></div></div></div>`).join('');return `<div class="account-card" id="${accountDomId(r.account_key)}"><div class="account-card-head"><div class="account-title-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><h3 style="margin:0;">${esc(r.account_name||'未命名账号')}</h3>${health}</div></div><div style="margin-top:12px;"><div class="group-card-grid">${groupCards||'<div class="muted">暂无挂载群组</div>'}</div></div><div class="account-actions" style="margin-top:12px;"><button type="button" class="secondary" onclick="selectAtmosphereAccount('${esc(r.account_key)}')">编辑</button><button type="button" onclick="setSelectedAtmosphereAccountKey('${esc(r.account_key)}');startAtmosphereQr(false)">二维码</button><button type="button" class="danger" onclick="deleteAtmosphereAccount('${esc(r.account_key)}')">删除</button></div></div>`}).join('')}</div>`;renderLearningAccountOptions()}
+function renderAccounts(rows){window.__gaAccounts=rows;refreshGroupPlanSelects();renderBridgeFormOptions();renderLearningAccountOptions();const accountCountEl=document.getElementById('ga_accounts_count');if(accountCountEl)accountCountEl.textContent=`${rows.length} 个账号`;updateAtmosphereOverview();if(!rows.length){ga_accounts.innerHTML='<div class="muted">暂无账号</div>';return}ga_accounts.innerHTML=`<div class="account-card-grid">${rows.map((r,i)=>{const rt=r.runtime||{};const sess=r.session||r.session_state||{};const regionText=r.region||'-';const loginText=loginLabel(sess,rt);const health=`<span class="pill ${loginPillClass(loginText)}">${esc(loginText)}</span>`;const groupCards=(r.groups||[]).map((g,idx)=>`<div class="group-card"><div class="group-card-title"><div><div class="group-card-name">${esc(detectedGroupName(g))}</div><div class="group-card-link">${esc(g.target_group||'-')}</div></div></div></div>`).join('');return `<div class="account-card" id="${accountDomId(r.account_key)}"><div class="account-card-head"><div class="account-title-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><h3 style="margin:0;">${esc(r.account_name||'未命名账号')}</h3>${health}</div></div><div style="margin-top:12px;"><div class="group-card-grid">${groupCards||'<div class="muted">暂无挂载群组</div>'}</div></div><div class="account-actions" style="margin-top:12px;"><button type="button" class="secondary" onclick="selectAtmosphereAccount('${esc(r.account_key)}')">编辑</button><button type="button" onclick="setSelectedAtmosphereAccountKey('${esc(r.account_key)}');startAtmosphereQr(false)">二维码</button><button type="button" class="danger" onclick="deleteAtmosphereAccount('${esc(r.account_key)}')">删除</button></div></div>`}).join('')}</div>`;renderLearningAccountOptions()}
 
 function openManualSendModal(accountKey,idx){const account=(window.__gaAccounts||[]).find(x=>String(x.account_key||'')===String(accountKey||''));const group=account&&account.groups?account.groups[idx]:null;if(!account||!group){setFeedback('未找到发言群','error');return}window.__gaSendContext={accountKey:account.account_key,groupIndex:idx,groupName:group.group_name||group.target_group||''};const modal=document.getElementById('gaSendModal');const title=document.getElementById('gaSendModalTitle');const sub=document.getElementById('gaSendModalSubTitle');const text=document.getElementById('ga_manual_message_text');const result=document.getElementById('ga_send_result');if(title)title.textContent=`发送到：${group.group_name||'该群'}`;if(sub)sub.textContent=`${account.account_name||'账号'} · ${group.target_group||''}`;if(text)text.value='';if(result)result.textContent='';if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false');setTimeout(()=>text&&text.focus(),50)}}
 function closeManualSendModal(){const modal=document.getElementById('gaSendModal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
@@ -2074,14 +2087,15 @@ function candidateManualDraftKey(configName){return String(configName||'')}
 function addManualCandidateDraft(configName){window.__gaManualCandidateDrafts=window.__gaManualCandidateDrafts||{};window.__gaManualCandidateDrafts[candidateManualDraftKey(configName)]=true;renderCandidatePool(window.__gaCandidateRows||[]);setTimeout(()=>document.querySelector(`[data-ga-manual-candidate-text="${CSS.escape(String(configName||''))}"]`)?.focus(),30)}
 function cancelManualCandidateDraft(configName){if(window.__gaManualCandidateDrafts)delete window.__gaManualCandidateDrafts[candidateManualDraftKey(configName)];renderCandidatePool(window.__gaCandidateRows||[])}
 function candidateDraftRow(r,role){const key=String(r.config_name||'');if(!(window.__gaManualCandidateDrafts||{})[candidateManualDraftKey(key)])return '';return `<div class="mini-note candidate-row-compact ga-candidate-row ga-candidate-manual-draft"><input type="checkbox" disabled/><span class="ga-source-badge">人工写入</span><input type="text" data-ga-manual-candidate-text="${esc(key)}" data-role="${esc(role)}" placeholder="输入人工写入话术"/><button type="button" class="secondary" onclick="saveManualCandidate('${esc(key)}','${esc(role)}')">保存</button><button type="button" class="secondary" onclick="cancelManualCandidateDraft('${esc(key)}')">取消</button></div>`}
-function candidateRowHtml(r,c,role){const usable=candidateIsUsable(c);const pending=candidateNeedsConfirm(c);const pendingBadge=pending?`<span class="ga-source-badge" style="background:#fff7ed!important;color:#9a3412!important;border-color:#fed7aa!important;">待确认</span>`:'';const confirmButton=pending?`<button type="button" class="secondary ga-confirm-candidate-btn" style="width:64px!important;min-width:64px!important;max-width:64px!important;padding:4px 6px!important;" onclick="enableCandidate('${esc(r.config_name)}','${esc(c.candidate_id)}')">确认</button>`:'';return `<div class="mini-note candidate-row-compact ga-candidate-row ${pending?'is-unavailable':''}" draggable="${usable?'true':'false'}" data-ga-candidate-row="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" style="${pending?'opacity:.92;background:#fffaf0!important;border-color:#fed7aa!important;':''}" ondragstart="${usable?`onCandidateDragStart(event,'${esc(r.config_name)}','${esc(c.candidate_id)}')`:''}" ondragover="${usable?'onCandidateDragOver(event)':''}" ondrop="${usable?`onCandidateDrop(event,'${esc(r.config_name)}','${esc(c.candidate_id)}')`:''}"><button type="button" class="secondary ga-candidate-drag-handle" data-ga-candidate-drag-handle="1" title="拖动排序" aria-label="拖动排序" ${usable?'':'disabled'}>⋮⋮</button>${pending?`<input type="checkbox" data-ga-pending-candidate-select="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" onchange="updatePendingCandidateActions('${esc(r.config_name)}')"/>`:`<input type="checkbox" data-ga-candidate-select="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" data-role="${esc(role)}" ${usable?'':'disabled'}/>`}<span class="ga-source-badge">${esc(candidateSourceLabel(c))}</span>${pendingBadge}<input type="text" data-ga-candidate-text="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" data-original-text="${esc(c.text)}" data-zh-text="${esc(c.text_zh||'')}" data-zh-source="${esc(c.text_zh_source||'')}" data-zh-status="${esc(c.text_zh_status||'')}" value="${esc(c.text)}"/><button type="button" class="secondary ga-translate-btn" title="候选翻译" aria-label="候选翻译" onclick="toggleCandidateTranslation('${esc(r.config_name)}','${esc(c.candidate_id)}')">译</button>${confirmButton}<button type="button" class="secondary" onclick="saveCustomCandidate('${esc(r.config_name)}','${esc(c.candidate_id)}')">保存</button>${usable?`<button type="button" class="secondary" onclick="moveCandidatePriority('${esc(r.config_name)}','${esc(c.candidate_id)}',-1)">上移</button><button type="button" class="secondary" onclick="moveCandidatePriority('${esc(r.config_name)}','${esc(c.candidate_id)}',1)">下移</button>`:''}<button type="button" class="danger" onclick="deleteCandidateFromPool('${esc(r.config_name)}','${esc(c.candidate_id)}')">删除</button></div>`}
+function candidateQualityReasonText(reason){const map={meta_summary:'系统分析产物',question_like:'疑似用户问题',user_first_person_request:'用户求助原话',dynamic_or_sensitive_token:'含动态/敏感信息',low_value_chat:'低价值闲聊',low_quality_or_role_mismatch:'质量不足或类型不匹配',too_short:'内容过短'};return map[String(reason||'')]||String(reason||'')}function candidateQualityBadge(c){const reasons=Array.isArray(c?.quality_reasons)?c.quality_reasons:[];const status=String(c?.quality_status||'');if(status==='manual_approved'||status==='pending_review')return '';if(!reasons.length&&!status)return '';const label=status==='rejected'?'已过滤':'质检';const reasonText=reasons.map(candidateQualityReasonText).filter(Boolean).join('、');return `<span class="ga-source-badge" title="质量原因：${esc(reasonText||label)}">${esc(label)}${reasonText?` · ${esc(reasonText)}`:''}</span>`}function candidateRowHtml(r,c,role){const usable=candidateIsUsable(c);const pending=candidateNeedsConfirm(c);const qualityBadge=candidateQualityBadge(c);const pendingBadge=pending?`<span class="ga-source-badge" style="background:#fff7ed!important;color:#9a3412!important;border-color:#fed7aa!important;">待确认</span>`:'';const confirmButton=pending?`<button type="button" class="secondary ga-confirm-candidate-btn" onclick="enableCandidate('${esc(r.config_name)}','${esc(c.candidate_id)}')">确认</button>`:'';const metaBadges=`<span class="ga-candidate-meta-badges">${pendingBadge}${qualityBadge}</span>`;const actionButtons=`<span class="ga-candidate-actions"><button type="button" class="secondary ga-translate-btn" title="候选翻译" aria-label="候选翻译" onclick="toggleCandidateTranslation('${esc(r.config_name)}','${esc(c.candidate_id)}')">译</button>${confirmButton}<button type="button" class="secondary" onclick="saveCustomCandidate('${esc(r.config_name)}','${esc(c.candidate_id)}')">保存自定义</button>${usable?`<button type="button" class="secondary" onclick="moveCandidatePriority('${esc(r.config_name)}','${esc(c.candidate_id)}',-1)">上移</button><button type="button" class="secondary" onclick="moveCandidatePriority('${esc(r.config_name)}','${esc(c.candidate_id)}',1)">下移</button>`:''}<button type="button" class="danger" onclick="deleteCandidateFromPool('${esc(r.config_name)}','${esc(c.candidate_id)}')">删除</button></span>`;return `<div class="mini-note candidate-row-compact ga-candidate-row ${pending?'is-unavailable':''}" draggable="true" data-ga-candidate-row="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" style="${pending?'opacity:.92;background:#fffaf0!important;border-color:#fed7aa!important;':''}" ondragstart="${usable?`onCandidateDragStart(event,'${esc(r.config_name)}','${esc(c.candidate_id)}')`:''}" ondragover="${usable?'onCandidateDragOver(event)':''}" ondrop="${usable?`onCandidateDrop(event,'${esc(r.config_name)}','${esc(c.candidate_id)}')`:''}"><button type="button" class="secondary ga-candidate-drag-handle" data-ga-candidate-drag-handle="1" title="拖动排序" aria-label="拖动排序" ${usable?'':'disabled'}>⋮⋮</button>${pending?`<input type="checkbox" data-ga-pending-candidate-select="1" data-ga-batch-candidate-select="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" onchange="updateCandidateBatchActions('${esc(r.config_name)}')"/>`:`<input type="checkbox" data-ga-candidate-select="1" data-ga-batch-candidate-select="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" data-role="${esc(role)}" onchange="updateCandidateBatchActions('${esc(r.config_name)}')" ${usable?'':'disabled'}/>`}<span class="ga-source-badge">${esc(candidateSourceLabel(c))}</span><input type="text" data-ga-candidate-text="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" data-original-text="${esc(c.text)}" data-zh-text="${esc(c.text_zh||'')}" data-zh-source="${esc(c.text_zh_source||'')}" data-zh-status="${esc(c.text_zh_status||'')}" value="${esc(c.text)}"/>${actionButtons}${metaBadges}</div>`}
 function candidateIsManual(c){const source=String(c?.source_type||c?.source_label||c?.source||'').trim();return ['manual','custom','role_save','人工写入'].includes(source)||c?.customized===true}
 function candidateIsUsable(c){return c&&(candidateIsManual(c)||(c.enabled!==false&&c.safe_to_send===true))}
 function candidateNeedsConfirm(c){return c&&!candidateIsManual(c)&&!candidateIsUsable(c)}
-function pendingCandidateItems(){return [...document.querySelectorAll('[data-ga-pending-candidate-select]:checked')].map(el=>({configName:el.dataset.configName||'',candidateId:el.dataset.candidateId||''})).filter(x=>x.configName&&x.candidateId)}
-function pendingCandidateItemsForConfig(configName){return [...document.querySelectorAll(`[data-ga-pending-candidate-select][data-config-name="${CSS.escape(String(configName||''))}"]:checked`)].map(el=>String(el.dataset.candidateId||'')).filter(Boolean)}
-function setPendingCandidateSelection(configName,checked){document.querySelectorAll(`[data-ga-pending-candidate-select][data-config-name="${CSS.escape(String(configName||''))}"]`).forEach(el=>{el.checked=!!checked});updatePendingCandidateActions(configName)}
-function updatePendingCandidateActions(configName){const ids=pendingCandidateItemsForConfig(configName);const box=document.querySelector(`[data-ga-pending-actions="${CSS.escape(String(configName||''))}"]`);if(box){box.querySelectorAll('[data-ga-pending-count]').forEach(el=>el.textContent=String(ids.length));box.querySelectorAll('button[data-ga-batch-action]').forEach(btn=>btn.disabled=!ids.length)}}
+function selectedBatchCandidateItems(){return [...document.querySelectorAll('[data-ga-batch-candidate-select]:checked')].map(el=>({configName:el.dataset.configName||'',candidateId:el.dataset.candidateId||'',pending:el.hasAttribute('data-ga-pending-candidate-select')})).filter(x=>x.configName&&x.candidateId)}
+function selectedCandidateIdsForConfig(configName){return [...document.querySelectorAll(`[data-ga-batch-candidate-select][data-config-name="${CSS.escape(String(configName||''))}"]:checked`)].map(el=>String(el.dataset.candidateId||'')).filter(Boolean)}
+function pendingCandidateIdsForConfig(configName){return [...document.querySelectorAll(`[data-ga-pending-candidate-select][data-config-name="${CSS.escape(String(configName||''))}"]:checked`)].map(el=>String(el.dataset.candidateId||'')).filter(Boolean)}
+function setCandidateSelectionForConfig(configName,checked){document.querySelectorAll(`[data-ga-batch-candidate-select][data-config-name="${CSS.escape(String(configName||''))}"]`).forEach(el=>{if(!el.disabled)el.checked=!!checked});updateCandidateBatchActions(configName)}
+function updateCandidateBatchActions(configName){const selectedIds=selectedCandidateIdsForConfig(configName);const pendingIds=pendingCandidateIdsForConfig(configName);const box=document.querySelector(`[data-ga-pending-actions="${CSS.escape(String(configName||''))}"]`);if(box){box.querySelectorAll('[data-ga-pending-count]').forEach(el=>el.textContent=String(selectedIds.length));box.querySelectorAll('button[data-ga-batch-action="delete"]').forEach(btn=>btn.disabled=!selectedIds.length);box.querySelectorAll('button[data-ga-batch-action="confirm"]').forEach(btn=>btn.disabled=!pendingIds.length)}}
 function candidateRowListForConfig(configName){const row=(window.__gaCandidateRows||[]).find(r=>String(r.config_name||'')===String(configName||''));return row?(row.candidates||[]).filter(candidateIsUsable):[]}
 function candidateIdsForConfig(configName){return candidateRowListForConfig(configName).map(c=>String(c.candidate_id||'')).filter(Boolean)}
 async function saveCandidateOrder(configName,candidateIds){await loadJson('/api/ops/group-atmosphere/candidate-pool/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:configName,candidate_ids:candidateIds})});showTip('排序已保存','success');await loadCandidatePool()}
@@ -2091,7 +2105,7 @@ async function onCandidateDrop(ev,configName,targetCandidateId){ev.preventDefaul
 async function moveCandidatePriority(configName,candidateId,delta){const ids=candidateIdsForConfig(configName);const idx=ids.indexOf(String(candidateId||''));if(idx<0)return;const next=Math.max(0,Math.min(ids.length-1,idx+Number(delta||0)));if(next===idx)return;const [item]=ids.splice(idx,1);ids.splice(next,0,item);await saveCandidateOrder(configName,ids)}
 async function toggleCandidateTranslation(configName,candidateId){const targetConfig=String(configName||'');const targetId=String(candidateId||'');const el=[...document.querySelectorAll('[data-ga-candidate-text]')].find(x=>String(x.dataset.configName||'')===targetConfig&&String(x.dataset.candidateId||'')===targetId);if(!el)return;const showingZh=el.dataset.showingZh==='1';if(showingZh){el.value=el.dataset.originalText||el.value;el.dataset.showingZh='0';return}if(!el.dataset.originalText)el.dataset.originalText=el.value;if(!String(el.dataset.zhText||'').trim()||el.dataset.zhSource==='rule'){el.value='正在翻译…';try{const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/translate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:targetConfig,candidate_id:targetId})});const c=data.candidate||{};el.dataset.zhText=c.text_zh||'暂未生成准确中文翻译，请人工确认原文含义。';el.dataset.zhSource=c.text_zh_source||'';el.dataset.zhStatus=c.text_zh_status||'';updateCandidateCacheTranslation(targetConfig,targetId,c)}catch(err){el.dataset.zhText='翻译失败，请稍后重试';el.dataset.zhSource='error';el.dataset.zhStatus='needs_review';showTip(`翻译失败：${err.message||err}`,'error')}}el.value=el.dataset.zhText||'暂未生成准确中文翻译，请人工确认原文含义。';el.dataset.showingZh='1'}
 function updateCandidateCacheTranslation(configName,candidateId,candidate){(window.__gaCandidateRows||[]).forEach(row=>(row.candidates||[]).forEach(item=>{if(String(row.config_name||'')===String(configName||'')&&String(item.candidate_id||'')===String(candidateId||'')){item.text_zh=candidate.text_zh||item.text_zh;item.text_zh_source=candidate.text_zh_source||item.text_zh_source;item.text_zh_status=candidate.text_zh_status||item.text_zh_status}}))}
-function renderCandidatePool(rows){window.__gaCandidateRows=rows||[];renderSpeechPlanLibrary();renderCandidateTabs(rows||[]);renderCandidateTargetRoleOptions();const pool=document.getElementById('ga_candidate_pool');const count=document.getElementById('ga_candidate_count');const visibleRows=filterCandidateRows(rows||[]);const total=visibleRows.reduce((n,r)=>n+Number((r.enabled_candidate_count??r.candidate_count)||0),0);if(count)count.textContent=`${total} 条`;if(!pool)return;if(!visibleRows.length){pool.innerHTML='<div class="muted">暂无备选话术</div>';return}pool.classList.remove('muted');pool.innerHTML=visibleRows.map(r=>{const all=(r.candidates||[]).slice(0,100);const pending=all.filter(candidateNeedsConfirm);const usableCount=all.filter(candidateIsUsable).length;const pendingCount=pending.length;const role=String(r.role_positioning||'');const expanded=Boolean((window.__gaCandidateExpanded||{})[role]);const shown=expanded?all:all.slice(0,10);const more=all.length>10?`<button type="button" class="secondary ga-candidate-expand" onclick="toggleCandidateExpanded('${esc(role)}')">${expanded?'收起':'展开全部'} ${all.length} 条</button>`:'';const pendingHint=pendingCount?` · 待确认 ${pendingCount} 条`:'';const batchBar=pendingCount?`<div class="mini-note ga-pending-batch-bar" data-ga-pending-actions="${esc(r.config_name)}" style="display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;background:#fff7ed!important;border-color:#fed7aa!important;margin:8px 0!important;"><label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:13px;font-weight:800;color:#9a3412;"><input type="checkbox" style="width:16px!important;height:16px!important;min-height:16px!important;margin:0!important;" onchange="setPendingCandidateSelection('${esc(r.config_name)}',this.checked)"/> 全选待确认 ${pendingCount} 条</label><div style="display:flex;align-items:center;gap:8px;"><span class="muted">已选 <span data-ga-pending-count>0</span></span><button type="button" class="secondary" data-ga-batch-action="confirm" disabled onclick="confirmSelectedPendingCandidates('${esc(r.config_name)}')">一键确认</button><button type="button" class="danger" data-ga-batch-action="delete" disabled onclick="deleteSelectedPendingCandidates('${esc(r.config_name)}')">一键删除</button></div></div>`:'';return `<div class="group-card" data-language="${esc(r.language||'')}" data-role="${esc(role)}"><div class="group-card-title"><div><strong>${esc(candidateTypeLabel(r))}</strong><div class="muted">${esc(r.region||'-')} · ${esc(r.enabled_candidate_count||0)}/${esc(r.candidate_count||0)} 可用 · 当前显示 ${shown.length}/${all.length}${pendingHint}</div></div><button type="button" class="secondary" onclick="addManualCandidateDraft('${esc(r.config_name)}')">新增话术</button></div>${batchBar}${candidateDraftRow(r,role)}${shown.map(c=>candidateRowHtml(r,c,role)).join('')}${more}</div>`}).join('')}
+function renderCandidatePool(rows){window.__gaCandidateRows=rows||[];renderSpeechPlanLibrary();renderCandidateTabs(rows||[]);renderCandidateTargetRoleOptions();const pool=document.getElementById('ga_candidate_pool');const count=document.getElementById('ga_candidate_count');const visibleRows=filterCandidateRows(rows||[]);const total=visibleRows.reduce((n,r)=>n+Number((r.enabled_candidate_count??r.candidate_count)||0),0);if(count)count.textContent=`${total} 条`;if(!pool)return;if(!visibleRows.length){pool.innerHTML='<div class="muted">暂无备选话术</div>';return}pool.classList.remove('muted');pool.innerHTML=visibleRows.map(r=>{const all=(r.candidates||[]).slice(0,100);const pending=all.filter(candidateNeedsConfirm);const usable=all.filter(candidateIsUsable);const role=String(r.role_positioning||'');const expanded=Boolean((window.__gaCandidateExpanded||{})[role]);const shownUsable=expanded?usable:usable.slice(0,10);const shownPending=expanded?pending:pending.slice(0,10);const more=(usable.length+pending.length)>20?`<button type="button" class="secondary ga-candidate-expand" onclick="toggleCandidateExpanded('${esc(role)}')">${expanded?'收起':'展开全部'} ${usable.length+pending.length} 条</button>`:'';const pendingHint=pending.length?` · 待确认 ${pending.length} 条`:'';const batchBar=`<div class="mini-note ga-pending-batch-bar" data-ga-pending-actions="${esc(r.config_name)}" style="display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;background:${pending.length?'#fff7ed':'#f8fafc'}!important;border-color:${pending.length?'#fed7aa':'#e5e7eb'}!important;margin:8px 0!important;"><label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:13px;font-weight:800;color:${pending.length?'#9a3412':'#64748b'};"><input type="checkbox" style="width:16px!important;height:16px!important;min-height:16px!important;margin:0!important;" onchange="setCandidateSelectionForConfig('${esc(r.config_name)}',this.checked)"/> <span>待确认批量操作：</span> 全选待确认 ${pending.length} 条${pending.length?` · 当前显示 ${shownPending.length} 条`:' · 暂无待确认'}</label><div style="display:flex;align-items:center;gap:8px;"><span class="muted">已选 <span data-ga-pending-count>0</span></span><button type="button" class="secondary" data-ga-batch-action="confirm" disabled onclick="confirmSelectedPendingCandidates('${esc(r.config_name)}')">一键确认</button><button type="button" class="danger" data-ga-batch-action="delete" disabled onclick="deleteSelectedPendingCandidates('${esc(r.config_name)}')">删除已选话术</button></div></div>`;const usableBlock=`<div class="ga-candidate-sublist ga-candidate-usable-list"><div class="toolbar" style="margin:8px 0 6px;"><strong>可用话术</strong><span class="pill gray">${usable.length} 条</span></div>${shownUsable.length?shownUsable.map(c=>candidateRowHtml(r,c,role)).join(''):'<div class="muted">暂无已确认可用话术</div>'}</div>`;const pendingBlock=`<div class="ga-candidate-sublist ga-candidate-pending-list" data-ga-learning-pending-list="1" style="margin-top:12px;border-top:1px solid #e5e7eb;padding-top:10px;"><div class="toolbar" style="margin:0 0 6px;"><strong>待人工确认</strong><span class="pill orange">${pending.length} 条</span></div>${batchBar}${shownPending.length?shownPending.map(c=>candidateRowHtml(r,c,role)).join(''):'<div class="muted">学习机器人/上传生成的话术会出现在这里，确认后才进入可用话术。</div>'}</div>`;return `<div class="group-card" data-language="${esc(r.language||'')}" data-role="${esc(role)}"><div class="group-card-title"><div><strong>${esc(candidateTypeLabel(r))}</strong><div class="muted">${esc(r.region||'-')} · 可用 ${usable.length}/${all.length} 条${pendingHint}</div></div><button type="button" class="secondary" onclick="addManualCandidateDraft('${esc(r.config_name)}')">新增话术</button></div>${candidateDraftRow(r,role)}${usableBlock}${pendingBlock}${more}</div>`}).join('')}
 function toggleCandidateExpanded(role){window.__gaCandidateExpanded=window.__gaCandidateExpanded||{};window.__gaCandidateExpanded[role]=!window.__gaCandidateExpanded[role];renderCandidatePool(window.__gaCandidateRows||[])}
 
 async function saveManualCandidate(configName,role){const el=document.querySelector(`[data-ga-manual-candidate-text="${CSS.escape(String(configName||''))}"]`);const text=String(el?.value||'').trim();if(!text){setFeedback('请先填写话术内容','error');setLocalFeedback('ga_candidate_result','请先填写话术内容','error');return}return runAction('新增话术',async()=>{await loadJson('/api/ops/group-atmosphere/candidate-pool/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:configName,text,role_positioning:role})});if(window.__gaManualCandidateDrafts)delete window.__gaManualCandidateDrafts[candidateManualDraftKey(configName)];setLocalFeedback('ga_candidate_result','人工写入话术已保存','success');await loadCandidatePool();return {ok:true}})}
@@ -2102,8 +2116,8 @@ async function deleteSpeechPlan(configName){return runAction('删除文案组',a
 async function saveSelectedCandidatesToRole(){return runAction('加入话术角色',async()=>{const roleKey=document.getElementById('ga_candidate_target_role_select')?.value||'';const selected=selectedCandidateItems();if(!roleKey)throw new Error('请先选择话术角色');if(!selected.length)throw new Error('请先勾选要加入角色的话术');const byConfig={};selected.forEach(item=>{byConfig[item.configName]=byConfig[item.configName]||[];byConfig[item.configName].push(item.candidateId)});let added=0;for(const [configName,ids] of Object.entries(byConfig)){const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/add-to-role',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role_key:roleKey,source_config_name:configName,candidate_ids:ids})});added+=Number(data.added_count||0)}setLocalFeedback('ga_candidate_result',`已加入 ${added} 条话术到目标角色`,'success');await loadCandidatePool();await loadRoleBridge();return {ok:true,added_count:added}})}
 async function deleteCandidateFromPool(configName,candidateId){return runAction('删除备选话术',async()=>{if(!confirm('确认删除这条备选话术？'))return {cancelled:true,silent:true};await loadJson(`/api/ops/group-atmosphere/candidate-pool/${encodeURIComponent(configName)}/${encodeURIComponent(candidateId)}`,{method:'DELETE'});setLocalFeedback('ga_candidate_result','备选话术已删除','success');await loadCandidatePool();await loadRoleBridge();renderCandidatePool(window.__gaCandidateRows||[]);return {ok:true}})}
 async function enableCandidate(configName,candidateId){return runAction('确认话术可用',async()=>{const result=document.getElementById('ga_candidate_result');if(result)result.textContent='';showTip('正在确认话术…');const payload={config_name:configName,candidate_ids:[candidateId]};const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/enable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(result)result.textContent='';showTip('话术已确认可用','success');await loadCandidatePool();refreshGroupPlanSelects();return data})}
-async function confirmSelectedPendingCandidates(configName){return runAction('一键确认',async()=>{const ids=pendingCandidateItemsForConfig(configName);if(!ids.length)throw new Error('请先勾选待确认话术');const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/enable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:configName,candidate_ids:ids})});showTip(`已确认 ${Number(data.enabled_count||ids.length)} 条话术`,'success');await loadCandidatePool();refreshGroupPlanSelects();return data})}
-async function deleteSelectedPendingCandidates(configName){return runAction('一键删除',async()=>{const ids=pendingCandidateItemsForConfig(configName);if(!ids.length)throw new Error('请先勾选待删除话术');if(!confirm(`确认删除已选 ${ids.length} 条待确认话术？`))return {cancelled:true,silent:true};let deleted=0;for(const id of ids){await loadJson(`/api/ops/group-atmosphere/candidate-pool/${encodeURIComponent(configName)}/${encodeURIComponent(id)}`,{method:'DELETE'});deleted+=1}showTip(`已删除 ${deleted} 条待确认话术`,'success');await loadCandidatePool();await loadRoleBridge();return {ok:true,deleted_count:deleted}})}
+async function confirmSelectedPendingCandidates(configName){return runAction('一键确认',async()=>{const ids=pendingCandidateIdsForConfig(configName);if(!ids.length)throw new Error('请先勾选待确认话术');const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/enable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:configName,candidate_ids:ids})});showTip(`已确认 ${Number(data.enabled_count||ids.length)} 条话术`,'success');await loadCandidatePool();refreshGroupPlanSelects();return data})}
+async function deleteSelectedPendingCandidates(configName){return runAction('删除已选话术',async()=>{const ids=selectedCandidateIdsForConfig(configName);if(!ids.length)throw new Error('请先勾选要删除的话术');if(!confirm(`确认删除已选 ${ids.length} 条话术？`))return {cancelled:true,silent:true};let deleted=0;for(const id of ids){await loadJson(`/api/ops/group-atmosphere/candidate-pool/${encodeURIComponent(configName)}/${encodeURIComponent(id)}`,{method:'DELETE'});deleted+=1}showTip(`已删除 ${deleted} 条话术`,'success');await loadCandidatePool();await loadRoleBridge();return {ok:true,deleted_count:deleted}})}
 function formatSchedulerResults(data){const results=data.results||[];if(!results.length)return '没有可运行的自动发言配置。';const details=results.map(r=>`${r.config_name||'-'}：${r.sent?'已发送':(r.dry_run?'未真正发送':'未发送')} · ${r.result_reason||r.result_code||''}`).join('\\n');return `检查 ${data.attempted_count||0} 个配置，实际发送 ${data.sent_count||0} 条\\n${details}`}
 async function runAtmosphereScheduler(){return runAction('自动发言检查',async()=>{const status=document.getElementById('ga_scheduler_status');if(status)status.textContent='';showTip('检查可发送话术中…');const data=await loadJson('/api/ops/group-atmosphere/scheduler/run-due',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const el=document.getElementById('ga_scheduler_result');if(el)el.textContent='';showTip(`已检查 ${data.attempted_count||0} 个配置，实际发送 ${data.sent_count||0} 条`,'success');if(status)status.textContent='';await reloadAll();return data})}
 function roleKeyFor(region,positioning){return `auto-${regionLanguage(region)}-${positioning}`}
@@ -2156,11 +2170,11 @@ function roleLabelForLearningResult(role){return roleLabel(role||'')||role||'-'}
 function groupLearningResultItemsByRole(items){const groups={};(items||[]).forEach(item=>{const role=String(item.role_positioning||item.role||'community_seed');groups[role]=groups[role]||[];groups[role].push(item)});return Object.entries(groups).map(([role,rows])=>({role,items:rows}))}
 function openLearningResultModal(key){const row=(window.__gaLearningAccounts||[]).find(r=>learningAccountKey(r)===String(key||''));const summary=row?.last_result_summary||{};const items=Array.isArray(summary.items)?summary.items:[];const body=document.getElementById('ga_learning_result_modal_body');if(body){if(!items.length){body.innerHTML='<div class="muted">暂无新增话术</div>'}else{const groups=groupLearningResultItemsByRole(items);body.innerHTML=`<div class="muted">新增 ${items.length} 条话术</div>`+groups.map(group=>`<section class="ga-learning-result-group"><div class="toolbar"><strong>${esc(roleLabelForLearningResult(group.role))}</strong><span class="pill gray">${group.items.length} 条</span></div>${group.items.map(item=>`<div class="mini-note ga-learning-result-item"><div>${esc(item.text||'')}</div><div class="muted">${esc(item.text_zh||'')}</div></div>`).join('')}</section>`).join('')}}const modal=document.getElementById('ga_learning_result_modal');if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false')}}
 function closeLearningResultModal(){const modal=document.getElementById('ga_learning_result_modal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
-function renderLearningAccounts(inputRows){const box=document.getElementById('ga_learning_accounts');if(!box)return;const rows=Array.isArray(inputRows)?inputRows:(window.__gaLearningAccounts||[]);const list=rows.length?rows:[];if(!list.length){box.classList.remove('muted');box.classList.add('is-empty');box.innerHTML='';return}box.classList.remove('muted','is-empty');box.innerHTML=list.map(r=>{const key=learningAccountKey(r);const groups=learningAccountGroupObjects(r);const sess=r.session||r.session_state||{login_verified:r.login_verified};const rt=r.runtime||{};const loginText=loginLabel(sess,rt);const loginCls=loginText==='已登录'?'green':(loginText==='待扫码'?'orange':'gray');const learnedCount=learningGeneratedCount(r);const enabledCount=groups.filter(g=>g.enabled!==false).length;const groupRows=groups.slice(0,5).map((g,idx)=>{const target=String(g.target_group||g.group_id||g.link||'').trim();const displayName=String(g.group_name||'').trim()||'群名待探测';return `<div class="ga-learning-group-card"><div class="ga-learning-group-main"><span class="ga-learning-group-name" title="${esc(displayName)}">${esc(displayName)}</span><button type="button" class="secondary" onclick="toggleLearningGroupEnabled('${esc(key)}',${idx},${g.enabled===false?'true':'false'})">${g.enabled===false?'群学习：关':'群学习：开'}</button></div><div class="ga-learning-group-link-line" title="${esc(target||displayName)}">${esc(target||displayName)}</div><div class="ga-learning-group-progress"><span>当前已学习生成 ${learnedCount} 条文案</span><a href="javascript:void(0)" class="ga-learning-detail-link" onclick="openLearningResultModal('${esc(key)}')">详情</a></div></div>`}).join('')||'<div class="muted">未配置群链接</div>';return `<div class="ga-learning-card"><div class="toolbar ga-learning-card-head"><div><strong>${esc(r.account_name||key||'学习机器人')}</strong><div class="muted">${esc(r.region||'-')} · ${enabledCount}/${groups.length||0} 个群学习开启</div></div><div class="ga-learning-head-actions"><span class="pill ${loginCls}">${esc(loginText)}</span><button type="button" class="secondary ga-learning-edit-btn" onclick="openLearningBotModal('${esc(key)}')">编辑</button></div></div><div class="ga-learning-card-groups">${groupRows}</div><div class="inline-actions"><button type="button" class="secondary" onclick="startLearningQr('${esc(key)}')">扫码</button><button type="button" class="secondary" onclick="refreshLearningSession('${esc(key)}')">刷新状态</button><button type="button" onclick="learnOnceLearningBot('${esc(key)}')">实时学习</button><button type="button" class="danger" onclick="deleteLearningBot('${esc(key)}')">删除</button></div></div>`}).join('')}
+function renderLearningAccounts(inputRows){const box=document.getElementById('ga_learning_accounts');if(!box)return;const rows=Array.isArray(inputRows)?inputRows:(window.__gaLearningAccounts||[]);const list=rows.length?rows:[];if(!list.length){box.classList.remove('muted');box.classList.add('is-empty');box.innerHTML='';return}box.classList.remove('muted','is-empty');box.innerHTML=list.map(r=>{const key=learningAccountKey(r);const groups=learningAccountGroupObjects(r);const sess=r.session||r.session_state||{login_verified:r.login_verified};const rt=r.runtime||{};const loginText=loginLabel(sess,rt);const loginCls=loginPillClass(loginText);const learnedCount=learningGeneratedCount(r);const enabledCount=groups.filter(g=>g.enabled!==false).length;const groupRows=groups.slice(0,5).map((g,idx)=>{const target=String(g.target_group||g.group_id||g.link||'').trim();const displayName=String(g.group_name||'').trim()||'群名待探测';return `<div class="ga-learning-group-card"><div class="ga-learning-group-main"><span class="ga-learning-group-name" title="${esc(displayName)}">${esc(displayName)}</span><button type="button" class="secondary" onclick="toggleLearningGroupEnabled('${esc(key)}',${idx},${g.enabled===false?'true':'false'})">${g.enabled===false?'群学习：关':'群学习：开'}</button></div><div class="ga-learning-group-link-line" title="${esc(target||displayName)}">${esc(target||displayName)}</div><div class="ga-learning-group-progress"><span>当前已学习生成 ${learnedCount} 条文案</span><a href="javascript:void(0)" class="ga-learning-detail-link" onclick="openLearningResultModal('${esc(key)}')">详情</a></div></div>`}).join('')||'<div class="muted">未配置群链接</div>';return `<div class="ga-learning-card"><div class="toolbar ga-learning-card-head"><div><strong>${esc(r.account_name||key||'学习机器人')}</strong><div class="muted">${esc(r.region||'-')} · ${enabledCount}/${groups.length||0} 个群学习开启</div></div><div class="ga-learning-head-actions"><span class="pill ${loginCls}">${esc(loginText)}</span><button type="button" class="secondary ga-learning-edit-btn" onclick="openLearningBotModal('${esc(key)}')">编辑</button></div></div><div class="ga-learning-card-groups">${groupRows}</div><div class="inline-actions"><button type="button" class="secondary" onclick="startLearningQr('${esc(key)}')">扫码</button><button type="button" class="secondary" onclick="refreshLearningSession('${esc(key)}')">刷新状态</button><button type="button" onclick="learnOnceLearningBot('${esc(key)}')">实时学习</button><button type="button" class="danger" onclick="deleteLearningBot('${esc(key)}')">删除</button></div></div>`}).join('')}
 
-function renderLearningGroupLinks(values=['']){const box=document.getElementById('ga_learning_group_links');if(!box)return;const list=(values&&values.length?values:['']).map(v=>typeof v==='string'?{target_group:v,enabled:true}:v);box.innerHTML=list.map((g,idx)=>{const value=String(g?.target_group||g?.group_id||g?.link||g?.group_name||'');const enabled=g?.enabled!==false;return `<div class="ga-learning-group-row" data-learning-group-row="${idx}"><input data-ga-learning-group-link="1" value="${esc(value)}" placeholder="群链接 / 群名 / group_id"/><select data-ga-learning-group-enabled="1"><option value="true" ${enabled?'selected':''}>学习：开</option><option value="false" ${!enabled?'selected':''}>学习：关</option></select>${idx>0?`<button type="button" class="ghost" onclick="removeLearningGroupLinkRow(${idx})">删除</button>`:'<span></span>'}</div>`}).join('')}
+function renderLearningGroupLinks(values=['']){const box=document.getElementById('ga_learning_group_links');if(!box)return;const list=(values&&values.length?values:['']).slice(0,GA_LEARNING_MAX_GROUPS).map(v=>typeof v==='string'?{target_group:v,enabled:true}:v);box.innerHTML=list.map((g,idx)=>{const value=String(g?.target_group||g?.group_id||g?.link||g?.group_name||'');const enabled=g?.enabled!==false;return `<div class="ga-learning-group-row" data-learning-group-row="${idx}"><input data-ga-learning-group-link="1" value="${esc(value)}" placeholder="群链接 / 群名 / group_id"/><select data-ga-learning-group-enabled="1"><option value="true" ${enabled?'selected':''}>学习：开</option><option value="false" ${!enabled?'selected':''}>学习：关</option></select>${idx>0?`<button type="button" class="ghost" onclick="removeLearningGroupLinkRow(${idx})">删除</button>`:'<span></span>'}</div>`}).join('')}
 function collectLearningGroups(){return [...document.querySelectorAll('[data-learning-group-row]')].map(row=>{const target=String(row.querySelector('[data-ga-learning-group-link]')?.value||'').trim();const enabled=row.querySelector('[data-ga-learning-group-enabled]')?.value!=='false';return {target_group:target,group_name:target,enabled}}).filter(g=>g.target_group)}
-function addLearningGroupLinkRow(value=''){const values=collectLearningGroups();values.push(typeof value==='string'?{target_group:String(value||''),enabled:true}:value);renderLearningGroupLinks(values)}
+function addLearningGroupLinkRow(value=''){const values=collectLearningGroups();if(values.length>=GA_LEARNING_MAX_GROUPS){showTip(`每个学习账号最多${GA_LEARNING_MAX_GROUPS}个群`,'error');return}values.push(typeof value==='string'?{target_group:String(value||''),enabled:true}:value);renderLearningGroupLinks(values)}
 function removeLearningGroupLinkRow(index){const values=collectLearningGroups();values.splice(index,1);renderLearningGroupLinks(values.length?values:[''])}
 function openLearningBotModal(key=''){const modal=document.getElementById('ga_learning_account_modal');if(!modal)return;const row=(window.__gaLearningAccounts||[]).find(r=>learningAccountKey(r)===String(key||''));document.getElementById('ga_learning_account_key').value=row?learningAccountKey(row):'';document.getElementById('ga_learning_account_name').value=row?.account_name||'';renderUnifiedRegionOptions('ga_learning_region',row?.region||'印尼');renderLearningGroupLinks(row?learningAccountGroupObjects(row):['']);modal.classList.add('is-open');modal.setAttribute('aria-hidden','false');setTimeout(()=>document.getElementById('ga_learning_account_name')?.focus(),50)}
 function closeLearningBotModal(){const modal=document.getElementById('ga_learning_account_modal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
@@ -2171,9 +2185,9 @@ async function saveLearningBot(){return runAction('保存学习机器人',async(
 function startLearningQr(keyArg=''){const key=keyArg||document.getElementById('ga_learning_account_key')?.value||'';if(!key){setFeedback('请先选择学习机器人账号','error');setLocalFeedback('ga_learning_result','请先选择或保存学习机器人账号','error');return}setSelectedAtmosphereAccountKey(key);setLocalFeedback('ga_learning_result','');showTip('正在生成二维码');return startAtmosphereQr(false)}
 function refreshLearningSession(keyArg=''){const key=keyArg||document.getElementById('ga_learning_account_key')?.value||'';if(!key){setFeedback('请先选择学习机器人账号','error');setLocalFeedback('ga_learning_result','请先选择学习机器人账号','error');return}setSelectedAtmosphereAccountKey(key);setLocalFeedback('ga_learning_result','');showTip('正在刷新状态');return refreshAtmosphereSession()}
 async function deleteLearningBot(key){return runAction('删除学习机器人',async()=>{if(!key)throw new Error('缺少学习机器人账号');if(!confirm('确认删除这个学习机器人 WhatsApp 账号？'))return {cancelled:true,silent:true};const data=await loadJson(`/api/ops/group-atmosphere/learning-accounts/${encodeURIComponent(key)}`,{method:'DELETE'});setLocalFeedback('ga_learning_result','');await loadRoleBridge();return {...data,silent:true}})}
-async function learnOnceLearningBot(key){return runAction('实时学习',async()=>{if(!key)throw new Error('缺少学习机器人账号');showTip('正在实时学习群消息…');const data=await loadJson(`/api/ops/group-atmosphere/learning-accounts/${encodeURIComponent(key)}/learn-once`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const readCount=Number(data.read_count??data.imported_count??0);const usefulCount=Number(data.useful_count??0);const candidateCount=Number(data.candidate_count??0);showTip(`已读取 ${readCount} 条群消息，有效素材 ${usefulCount} 条，生成 ${candidateCount} 条文案`,'success');await loadCandidatePool();await loadRoleBridge();return {...data,silent:true}})}
-function readGaUploadFileText(file){if(file&&typeof file.text==='function')return file.text();return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||''));reader.onerror=()=>reject(reader.error||new Error('file_read_failed'));reader.readAsText(file)})}
-async function uploadChatFiles(){const input=document.getElementById('ga_chat_file');const files=[...(input?.files||[])];const result=document.getElementById('ga_upload_result');if(result)result.textContent='';if(!files.length){showTip('请选择文件','error');return {silent:true}}try{showTip(`正在读取 ${files.length} 个文件并解析入库…`);const payloadFiles=await Promise.all(files.map(async(file)=>({filename:file.name||'chat-export.txt',content:await readGaUploadFileText(file)})));const data=await loadJson('/api/ops/group-atmosphere/chat-records/auto-learn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({files:payloadFiles})});const assignmentCount=(data.role_assignments||[]).length;const candidateCount=(data.role_assignments||[]).reduce((n,row)=>n+((row.candidates||[]).length),0);showTip(`已解析 ${data.file_count||files.length} 个文件，入库 ${data.imported_count||0} 条，生成 ${candidateCount} 条备选话术`,'success');await loadCandidatePool();await loadRoleBridge();if(result)result.textContent='';return data}catch(err){if(result)result.textContent='';showTip(`上传学习失败：${err.message||err}`,'error');console.error(err);return {silent:true,error:String(err.message||err)}}}
+async function learnOnceLearningBot(key){return runAction('实时学习',async()=>{if(!key)throw new Error('缺少学习机器人账号');showTip('正在实时学习群消息…');const data=await loadJson(`/api/ops/group-atmosphere/learning-accounts/${encodeURIComponent(key)}/learn-once`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const readCount=Number(data.read_count??data.imported_count??0);const usefulCount=Number(data.useful_count??0);const candidateCount=Number(data.candidate_count??0);showTip(`已读取${readCount}条群消息,有效素材${usefulCount}条,生成${candidateCount}条文案`,'success');await loadCandidatePool();await loadRoleBridge();return {...data,silent:true}})}
+async function readGaUploadFileText(file){if(file&&typeof file.text==='function')return await file.text();return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||''));reader.onerror=()=>reject(reader.error||new Error('file_read_failed'));reader.readAsText(file)})}
+async function uploadChatFiles(){const input=document.getElementById('ga_chat_file');const files=[...(input?.files||[])];const result=document.getElementById('ga_upload_result');const setUploadResult=(message,type='info')=>{if(!result)return;result.textContent=message||'';result.style.display=message?'block':'none';result.style.color=type==='error'?'#991b1b':(type==='success'?'#166534':'#475569')};setUploadResult('');if(!files.length){showTip('请选择文件','error');setUploadResult('请选择文件','error');return {silent:true}}try{const loadingText=`正在读取 ${files.length} 个文件并解析入库…`;showTip(loadingText,'info',{sticky:true});setUploadResult(loadingText);const payloadFiles=await Promise.all(files.map(async(file)=>({filename:file.name||'chat-export.txt',content:await readGaUploadFileText(file)})));const data=await loadJson('/api/ops/group-atmosphere/chat-records/auto-learn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({files:payloadFiles})});const assignmentCount=(data.role_assignments||[]).length;const candidateCount=(data.role_assignments||[]).reduce((n,row)=>n+((row.candidates||[]).length),0);const rejectedCount=Number(data.rejected_count||0);const rejectedReasons=(data.rejected_reasons||[]).map(candidateQualityReasonText).filter(Boolean).join('、');const successText=`已解析 ${data.file_count||files.length} 个文件，入库 ${data.imported_count||0} 条，生成 ${candidateCount} 条备选话术${rejectedCount?`，过滤 ${rejectedCount} 条${rejectedReasons?`：${rejectedReasons}`:''}`:''}`;showTip(successText,'success');setUploadResult(successText,'success');await loadCandidatePool();await loadRoleBridge();return data}catch(err){const errorText=`上传学习失败：${err.message||err}`;showTip(errorText,'error');setUploadResult(errorText,'error');console.error(err);return {silent:true,error:String(err.message||err)}}}
 function clearChatFiles(){const input=document.getElementById('ga_chat_file');if(input)input.value='';const result=document.getElementById('ga_upload_result');if(result)result.textContent='';showTip('已清空上传文件','success')}
 
 async function loadRoleBridge(){const [roles,bindings,learning]=await Promise.all([loadJson('/api/ops/group-atmosphere/roles'),loadJson('/api/ops/group-atmosphere/role-bindings'),loadJson('/api/ops/group-atmosphere/learning-accounts')]);renderRoleBridge(roles,bindings,learning);return {roles,bindings,learning}}
@@ -2411,6 +2425,9 @@ PRODUCTION_OPS_PAGE_HTML = """
     .approval-account-editor-body .binding-config-grid { grid-template-columns:minmax(280px, 1.35fr) minmax(220px, .95fr) minmax(160px, .65fr)!important; gap:10px!important; }
     .approval-account-editor-body .binding-meta-grid { grid-template-columns:minmax(170px, 1fr) minmax(140px, .72fr) minmax(140px, .72fr) minmax(160px, .82fr)!important; gap:10px!important; }
     .approval-account-editor-body .schedule-inline-grid { grid-template-columns:repeat(3, minmax(180px, 1fr))!important; gap:8px!important; }
+    .approval-account-card,.approval-account-card *,.binding-card,.binding-card *{min-width:0!important;overflow-wrap:anywhere;}
+    .approval-account-editor-body .binding-config-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))!important;}
+    .approval-account-editor-body .binding-meta-grid{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))!important;}
     .approval-account-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
     .approval-account-toolbar h2 { margin:0; }
     .qr-modal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px 20px 14px; border-bottom:1px solid var(--line); }
@@ -2556,7 +2573,7 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
 
 </style>
 </head>
-<body data-ops-shell-page=\"production-ops\">
+<body data-ops-shell-page=\"production-ops\" data-layout-guard=\"approval-account-overflow\">
   <div class=\"page-shell\">
     <div class=\"shell-nav\">
       <a href=\"/ops\">管理员看板</a>
@@ -2692,22 +2709,28 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
                   </div>
                 </details>
                 <div class="field-stack" style="margin-top:10px;">
-                  <label class="field-hint">监控时间段（最多3个）</label>
-                  <div class="schedule-inline-grid">
-                    <div class="schedule-time-row">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                    <label class="field-hint">监控时间段（最多3个）</label>
+                    <button type="button" class="secondary icon-add" data-schedule-add-button="1" onclick="addGroupScheduleWindow(1)" title="新增监控时段">＋</button>
+                  </div>
+                  <div class="schedule-inline-grid" id="wa_group_schedule_windows_1">
+                    <div class="schedule-time-row" data-schedule-window-row="1-1">
                       <input id="wa_group_schedule_window_1_1_start" type="time" step="60" aria-label="第 1 组第 1 个监控开始时间" />
                       <span class="schedule-time-separator">至</span>
                       <input id="wa_group_schedule_window_1_1_end" type="time" step="60" aria-label="第 1 组第 1 个监控结束时间" />
+                      <button type="button" class="secondary" data-schedule-delete-button="1-1" onclick="removeGroupScheduleWindow(1,1)">删除时段</button>
                     </div>
-                    <div class="schedule-time-row">
+                    <div class="schedule-time-row" data-schedule-window-row="1-2" style="display:none;">
                       <input id="wa_group_schedule_window_1_2_start" type="time" step="60" aria-label="第 1 组第 2 个监控开始时间" />
                       <span class="schedule-time-separator">至</span>
                       <input id="wa_group_schedule_window_1_2_end" type="time" step="60" aria-label="第 1 组第 2 个监控结束时间" />
+                      <button type="button" class="secondary" data-schedule-delete-button="1-2" onclick="removeGroupScheduleWindow(1,2)">删除时段</button>
                     </div>
-                    <div class="schedule-time-row">
+                    <div class="schedule-time-row" data-schedule-window-row="1-3" style="display:none;">
                       <input id="wa_group_schedule_window_1_3_start" type="time" step="60" aria-label="第 1 组第 3 个监控开始时间" />
                       <span class="schedule-time-separator">至</span>
                       <input id="wa_group_schedule_window_1_3_end" type="time" step="60" aria-label="第 1 组第 3 个监控结束时间" />
+                      <button type="button" class="secondary" data-schedule-delete-button="1-3" onclick="removeGroupScheduleWindow(1,3)">删除时段</button>
                     </div>
                   </div>
                 </div>
@@ -2770,22 +2793,28 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
                   </div>
                 </details>
                 <div class="field-stack" style="margin-top:10px;">
-                  <label class="field-hint">监控时间段（最多3个）</label>
-                  <div class="schedule-inline-grid">
-                    <div class="schedule-time-row">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                    <label class="field-hint">监控时间段（最多3个）</label>
+                    <button type="button" class="secondary icon-add" data-schedule-add-button="2" onclick="addGroupScheduleWindow(2)" title="新增监控时段">＋</button>
+                  </div>
+                  <div class="schedule-inline-grid" id="wa_group_schedule_windows_2">
+                    <div class="schedule-time-row" data-schedule-window-row="2-1">
                       <input id="wa_group_schedule_window_2_1_start" type="time" step="60" aria-label="第 2 组第 1 个监控开始时间" />
                       <span class="schedule-time-separator">至</span>
                       <input id="wa_group_schedule_window_2_1_end" type="time" step="60" aria-label="第 2 组第 1 个监控结束时间" />
+                      <button type="button" class="secondary" data-schedule-delete-button="2-1" onclick="removeGroupScheduleWindow(2,1)">删除时段</button>
                     </div>
-                    <div class="schedule-time-row">
+                    <div class="schedule-time-row" data-schedule-window-row="2-2" style="display:none;">
                       <input id="wa_group_schedule_window_2_2_start" type="time" step="60" aria-label="第 2 组第 2 个监控开始时间" />
                       <span class="schedule-time-separator">至</span>
                       <input id="wa_group_schedule_window_2_2_end" type="time" step="60" aria-label="第 2 组第 2 个监控结束时间" />
+                      <button type="button" class="secondary" data-schedule-delete-button="2-2" onclick="removeGroupScheduleWindow(2,2)">删除时段</button>
                     </div>
-                    <div class="schedule-time-row">
+                    <div class="schedule-time-row" data-schedule-window-row="2-3" style="display:none;">
                       <input id="wa_group_schedule_window_2_3_start" type="time" step="60" aria-label="第 2 组第 3 个监控开始时间" />
                       <span class="schedule-time-separator">至</span>
                       <input id="wa_group_schedule_window_2_3_end" type="time" step="60" aria-label="第 2 组第 3 个监控结束时间" />
+                      <button type="button" class="secondary" data-schedule-delete-button="2-3" onclick="removeGroupScheduleWindow(2,3)">删除时段</button>
                     </div>
                   </div>
                 </div>
@@ -2848,22 +2877,28 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
                   </div>
                 </details>
                 <div class="field-stack" style="margin-top:10px;">
-                  <label class="field-hint">监控时间段（最多3个）</label>
-                  <div class="schedule-inline-grid">
-                    <div class="schedule-time-row">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                    <label class="field-hint">监控时间段（最多3个）</label>
+                    <button type="button" class="secondary icon-add" data-schedule-add-button="3" onclick="addGroupScheduleWindow(3)" title="新增监控时段">＋</button>
+                  </div>
+                  <div class="schedule-inline-grid" id="wa_group_schedule_windows_3">
+                    <div class="schedule-time-row" data-schedule-window-row="3-1">
                       <input id="wa_group_schedule_window_3_1_start" type="time" step="60" aria-label="第 3 组第 1 个监控开始时间" />
                       <span class="schedule-time-separator">至</span>
                       <input id="wa_group_schedule_window_3_1_end" type="time" step="60" aria-label="第 3 组第 1 个监控结束时间" />
+                      <button type="button" class="secondary" data-schedule-delete-button="3-1" onclick="removeGroupScheduleWindow(3,1)">删除时段</button>
                     </div>
-                    <div class="schedule-time-row">
+                    <div class="schedule-time-row" data-schedule-window-row="3-2" style="display:none;">
                       <input id="wa_group_schedule_window_3_2_start" type="time" step="60" aria-label="第 3 组第 2 个监控开始时间" />
                       <span class="schedule-time-separator">至</span>
                       <input id="wa_group_schedule_window_3_2_end" type="time" step="60" aria-label="第 3 组第 2 个监控结束时间" />
+                      <button type="button" class="secondary" data-schedule-delete-button="3-2" onclick="removeGroupScheduleWindow(3,2)">删除时段</button>
                     </div>
-                    <div class="schedule-time-row">
+                    <div class="schedule-time-row" data-schedule-window-row="3-3" style="display:none;">
                       <input id="wa_group_schedule_window_3_3_start" type="time" step="60" aria-label="第 3 组第 3 个监控开始时间" />
                       <span class="schedule-time-separator">至</span>
                       <input id="wa_group_schedule_window_3_3_end" type="time" step="60" aria-label="第 3 组第 3 个监控结束时间" />
+                      <button type="button" class="secondary" data-schedule-delete-button="3-3" onclick="removeGroupScheduleWindow(3,3)">删除时段</button>
                     </div>
                   </div>
                 </div>
@@ -2945,6 +2980,23 @@ function mergeApprovalSessionState(previousState, nextState) {
   if (!next.client_id && previous.client_id) merged.client_id = previous.client_id;
   return merged;
 }
+function approvalSessionHasQrPayload(sessionState) {
+  const session = sessionState && typeof sessionState === 'object' ? sessionState : {};
+  return Boolean(String(session.qr_image_data_url || '').trim() || String(session.qr_ascii || '').trim() || String(session.qr_text || '').trim());
+}
+function approvalSessionCanOpenQrModal(sessionState, options = {}) {
+  const session = sessionState && typeof sessionState === 'object' ? sessionState : {};
+  if (options.loading || options.error || session.login_verified) return true;
+  return Boolean(approvalSessionHasQrPayload(session) && (session.can_show_qr === true || session.qr_available === true));
+}
+function approvalSessionQrPendingText(sessionState) {
+  const session = sessionState && typeof sessionState === 'object' ? sessionState : {};
+  const loginState = String(session.login_state || '').trim();
+  if (loginState === 'waiting_for_scan_qr_pending') return '二维码生成中，请稍后刷新状态。';
+  if (loginState === 'initializing' || loginState === 'runtime_starting') return '登录会话初始化中，请稍后刷新状态。';
+  if (loginState === 'login_failed') return '二维码生成失败或登录失败，请手动重新生成。';
+  return '暂未拿到可展示的二维码。';
+}
 function closeApprovalQrModal() {
   clearTimeout(window.__approvalQrModalRefreshTimer);
   window.__approvalQrModalRefreshTimer = null;
@@ -2976,7 +3028,9 @@ function scheduleApprovalQrModalRefresh() {
   const sessionState = state.sessionState && typeof state.sessionState === 'object' ? state.sessionState : {};
   if (!state.open || state.loading || state.error || sessionState.login_verified) return;
   const refreshCount = Number(state.refreshCount || 0);
-  if (refreshCount >= 5) return;
+  if (refreshCount >= 3) return;
+  const loginState = String(sessionState.login_state || '').trim();
+  if (!['runtime_starting', 'initializing', 'waiting_for_scan_qr_pending', 'waiting_for_scan_qr_ready'].includes(loginState) && !approvalSessionCanOpenQrModal(sessionState)) return;
   window.__approvalQrModalRefreshTimer = setTimeout(() => {
     refreshApprovalQrModal().catch(err => {
       openApprovalQrModal(state.accountKey, {loading: false, error: err.message || '刷新状态失败'});
@@ -3013,11 +3067,11 @@ function renderApprovalQrModal() {
       window.__approvalQrModalState = {...state, successAnnounced: true};
       showToast('账号已登录', 'success');
     }
-  } else if (sessionState.qr_available) {
+  } else if (approvalSessionHasQrPayload(sessionState)) {
     const suffix = sessionState.last_qr_at ? ` · 最近出码：${sessionState.last_qr_at}` : '';
     statusEl.innerHTML = `<span style="color:#1d4ed8;">二维码已准备好，请尽快扫码${suffix}</span>`;
   } else {
-    statusEl.textContent = '正在等待二维码返回…';
+    statusEl.textContent = approvalSessionQrPendingText(sessionState);
   }
   if (sessionState.qr_image_data_url) {
     const safeQrUrl = String(sessionState.qr_image_data_url || '').replace(/"/g, '&quot;');
@@ -3040,7 +3094,21 @@ function openApprovalQrModal(accountKey, options = {}) {
   if (!normalized) return;
   const currentState = window.__approvalQrModalState || {};
   const sessionSource = options.sessionState || (window.__approvalSessionStateByAccount && window.__approvalSessionStateByAccount[normalized]) || {};
-  const mergedSessionState = mergeApprovalSessionState(currentState.sessionState, sessionSource);
+  const mergedSessionState = mergeApprovalSessionState(currentState.accountKey === normalized ? currentState.sessionState : {}, sessionSource);
+  if (!approvalSessionCanOpenQrModal(mergedSessionState, options)) {
+    window.__approvalQrModalState = {
+      ...(window.__approvalQrModalState || {}),
+      open: false,
+      accountKey: normalized,
+      sessionState: mergedSessionState,
+      loading: false,
+      error: '',
+    };
+    const modal = document.getElementById('approvalQrModal');
+    if (modal) modal.classList.remove('is-open');
+    showToast(approvalSessionQrPendingText(mergedSessionState), 'info');
+    return;
+  }
   const successAnnounced = options.resetSuccessAnnounced ? false : Boolean(options.successAnnounced ?? (currentState.accountKey === normalized ? currentState.successAnnounced : false));
   const refreshCount = Number(options.refreshCount ?? (currentState.accountKey === normalized ? currentState.refreshCount || 0 : 0));
   window.__approvalQrModalState = {
@@ -3064,7 +3132,7 @@ async function refreshApprovalQrModal() {
 async function retryApprovalQrModal() {
   const accountKey = String(window.__approvalQrModalState?.accountKey || '').trim();
   if (!accountKey) return;
-  await startApprovalAccountSession(accountKey, {fromModal: true});
+  await startApprovalAccountSession(accountKey, {fromModal: true, forceStart: true});
 }
 function renderStatusMeta(elId, rows) {
   const el = document.getElementById(elId);
@@ -3156,9 +3224,28 @@ function ensureApprovalAccountKey() {
   if (keyField) keyField.value = generated;
   return generated;
 }
-const APPROVAL_BINDING_MAX_COUNT = 3;
+const APPROVAL_BINDING_MAX_COUNT = 10;
 window.__approvalBindingFormVisibleCount = window.__approvalBindingFormVisibleCount || 1;
+function ensureApprovalBindingCards() {
+  const list = document.querySelector('.binding-list');
+  const template = document.getElementById('wa_binding_card_3');
+  if (!list || !template) return;
+  for (let i = 4; i <= APPROVAL_BINDING_MAX_COUNT; i += 1) {
+    if (document.getElementById(`wa_binding_card_${i}`)) continue;
+    const card = template.cloneNode(true);
+    card.id = `wa_binding_card_${i}`;
+    card.style.display = 'none';
+    card.innerHTML = card.innerHTML
+      .replace(/_3/g, `_${i}`)
+      .replace(/\(3/g, `(${i}`)
+      .replace(/"3/g, `"${i}`)
+      .replace(/第 3/g, `第 ${i}`)
+      .replace(/审批群 C/g, `审批群 ${i}`);
+    list.appendChild(card);
+  }
+}
 function setApprovalBindingFormVisibleCount(count) {
+  ensureApprovalBindingCards();
   const normalized = Math.max(1, Math.min(APPROVAL_BINDING_MAX_COUNT, Number(count) || 1));
   window.__approvalBindingFormVisibleCount = normalized;
   for (let i = 1; i <= APPROVAL_BINDING_MAX_COUNT; i += 1) {
@@ -3168,6 +3255,7 @@ function setApprovalBindingFormVisibleCount(count) {
   }
 }
 function resetApprovalBindingCard(index) {
+  ensureApprovalBindingCards();
   document.getElementById(`wa_group_link_${index}`).value = '';
   document.getElementById(`wa_group_name_${index}`).value = '';
   document.getElementById(`wa_group_area_${index}`).value = '';
@@ -3184,7 +3272,7 @@ function resetApprovalBindingCard(index) {
 function addApprovalBindingCard() {
   const current = Number(window.__approvalBindingFormVisibleCount || 1);
   if (current >= APPROVAL_BINDING_MAX_COUNT) {
-    showToast('最多配置3个群组', 'error');
+    showToast('最多配置10个群组', 'error');
     return;
   }
   setApprovalBindingFormVisibleCount(current + 1);
@@ -3229,7 +3317,7 @@ function renderNotifyRobotSelect(options, currentValue='', elementId='wa_group_n
 }
 function renderAllGroupNotifyRobotSelects(options, currentValues=[]) {
   const safeValues = Array.isArray(currentValues) ? currentValues : [];
-  for (let i = 1; i <= 3; i += 1) {
+  for (let i = 1; i <= APPROVAL_BINDING_MAX_COUNT; i += 1) {
     renderNotifyRobotSelect(options, safeValues[i - 1] || '', `wa_group_notify_profile_name_${i}`);
   }
 }
@@ -3259,7 +3347,7 @@ function renderAreaSelect(options, currentValue='', elementId='wa_group_area_1')
 }
 function renderAllGroupAreaSelects(options, currentValues=[]) {
   const safeValues = Array.isArray(currentValues) ? currentValues : [];
-  for (let i = 1; i <= 3; i += 1) {
+  for (let i = 1; i <= APPROVAL_BINDING_MAX_COUNT; i += 1) {
     renderAreaSelect(options, safeValues[i - 1] || '', `wa_group_area_${i}`);
   }
 }
@@ -3280,9 +3368,28 @@ function renderAssignedCustomerServiceSelect(options, currentValue='') {
   })].join('');
   if (normalizedCurrent) select.value = normalizedCurrent;
 }
+const APPROVAL_SCHEDULE_MAX_COUNT = 3;
+window.__approvalScheduleVisibleCountByGroup = window.__approvalScheduleVisibleCountByGroup || {};
+function setGroupScheduleWindowVisibleCount(groupIndex, count) {
+  const normalizedGroup = Number(groupIndex);
+  const normalizedCount = Math.max(1, Math.min(APPROVAL_SCHEDULE_MAX_COUNT, Number(count) || 1));
+  window.__approvalScheduleVisibleCountByGroup[normalizedGroup] = normalizedCount;
+  for (let i = 1; i <= APPROVAL_SCHEDULE_MAX_COUNT; i += 1) {
+    const row = document.querySelector(`[data-schedule-window-row="${normalizedGroup}-${i}"]`);
+    if (row) row.style.display = i <= normalizedCount ? '' : 'none';
+    const deleteButton = document.querySelector(`[data-schedule-delete-button="${normalizedGroup}-${i}"]`);
+    if (deleteButton) deleteButton.style.display = normalizedCount > 1 ? '' : 'none';
+  }
+  const addButton = document.querySelector(`[data-schedule-add-button="${normalizedGroup}"]`);
+  if (addButton) addButton.style.display = normalizedCount >= APPROVAL_SCHEDULE_MAX_COUNT ? 'none' : '';
+}
+function visibleGroupScheduleWindowCount(groupIndex) {
+  return Math.max(1, Math.min(APPROVAL_SCHEDULE_MAX_COUNT, Number(window.__approvalScheduleVisibleCountByGroup?.[Number(groupIndex)] || 1)));
+}
 function collectGroupScheduleWindows(groupIndex) {
   const rows = [];
-  for (let i = 1; i <= 3; i += 1) {
+  const visibleCount = visibleGroupScheduleWindowCount(groupIndex);
+  for (let i = 1; i <= visibleCount; i += 1) {
     const start = String(document.getElementById(`wa_group_schedule_window_${groupIndex}_${i}_start`)?.value || '').trim();
     const end = String(document.getElementById(`wa_group_schedule_window_${groupIndex}_${i}_end`)?.value || '').trim();
     if (!start && !end) continue;
@@ -3291,9 +3398,10 @@ function collectGroupScheduleWindows(groupIndex) {
   }
   return rows;
 }
-function fillGroupScheduleWindows(groupIndex, values) {
-  const safeValues = Array.isArray(values) ? values : [];
-  for (let i = 1; i <= 3; i += 1) {
+function renderGroupScheduleWindows(groupIndex, values) {
+  const safeValues = Array.isArray(values) ? values.slice(0, APPROVAL_SCHEDULE_MAX_COUNT) : [];
+  const visibleCount = Math.max(1, Math.min(APPROVAL_SCHEDULE_MAX_COUNT, safeValues.length || 1));
+  for (let i = 1; i <= APPROVAL_SCHEDULE_MAX_COUNT; i += 1) {
     const startInput = document.getElementById(`wa_group_schedule_window_${groupIndex}_${i}_start`);
     const endInput = document.getElementById(`wa_group_schedule_window_${groupIndex}_${i}_end`);
     const row = safeValues[i - 1] || {};
@@ -3302,6 +3410,31 @@ function fillGroupScheduleWindows(groupIndex, values) {
     if (startInput) startInput.value = start;
     if (endInput) endInput.value = end;
   }
+  setGroupScheduleWindowVisibleCount(groupIndex, visibleCount);
+}
+function fillGroupScheduleWindows(groupIndex, values) {
+  renderGroupScheduleWindows(groupIndex, values);
+}
+function addGroupScheduleWindow(groupIndex) {
+  const current = visibleGroupScheduleWindowCount(groupIndex);
+  if (current >= APPROVAL_SCHEDULE_MAX_COUNT) {
+    showToast('最多3个时段', 'error');
+    return;
+  }
+  setGroupScheduleWindowVisibleCount(groupIndex, current + 1);
+  document.getElementById(`wa_group_schedule_window_${groupIndex}_${current + 1}_start`)?.focus();
+}
+function removeGroupScheduleWindow(groupIndex, slotIndex) {
+  const current = visibleGroupScheduleWindowCount(groupIndex);
+  const slot = Math.max(1, Math.min(APPROVAL_SCHEDULE_MAX_COUNT, Number(slotIndex) || 1));
+  const values = [];
+  for (let i = 1; i <= current; i += 1) {
+    const start = String(document.getElementById(`wa_group_schedule_window_${groupIndex}_${i}_start`)?.value || '').trim();
+    const end = String(document.getElementById(`wa_group_schedule_window_${groupIndex}_${i}_end`)?.value || '').trim();
+    if (i !== slot) values.push({start, end});
+  }
+  renderGroupScheduleWindows(groupIndex, values.length ? values : []);
+  showToast('监控时段已删除', 'success');
 }
 function collectGroupBindings(count) {
   const rows = [];
@@ -3539,7 +3672,7 @@ function bindingSummaryHtml(binding, row, bindingIndex) {
   const deleteBindingButtonHtml = approvalRoleCanManage(String(window.__opsUserRole || '').trim())
     ? `<button type="button" class="secondary" onclick="deleteApprovalBinding('${accountKeyEscaped}', ${bindingIndex})">删除群组</button>`
     : '';
-  return `<div class="binding-card ${binding.link ? '' : 'is-empty'}">
+  return `<div class="binding-card ${binding.link ? '' : 'is-empty'}" data-realtime-account-key="${escapeHtmlAttr(accountKey)}" data-realtime-group-id="${escapeHtmlAttr(binding.group_id || binding.link || binding.group_name || String(bindingIndex))}">
     <div class="binding-card-head">
       <div>
         <div class="binding-title">${bindingTitle}</div>
@@ -3579,6 +3712,17 @@ function accountCardHtml(row) {
     ? '已登录'
     : (isTruthRefreshing ? '正在刷新真实状态…' : (sessionState.login_check_message || (sessionState.qr_available ? '已出二维码，待扫码登录' : '未登录')));
   const loginStatusCode = String(sessionState.login_check_status || '').trim();
+  const rawAccountStatusText = String(row.status_text || '').trim();
+  const accountHeaderStatusText = (() => {
+    const isScheduleStandby = rawAccountStatusText.includes('时段外') || rawAccountStatusText.includes('待命') || rawAccountStatusText.includes('outside_schedule');
+    if (isScheduleStandby) {
+      if (sessionState.login_verified) return '已登录·待命时段';
+      if (isSessionLoading || ['pending_runtime', 'runtime_starting', 'initializing', 'auto_recovering'].includes(loginStatusCode)) return '登录中·待命时段';
+      return '待登录·待命时段';
+    }
+    if (sessionState.login_verified && rawAccountStatusText && !rawAccountStatusText.includes('登录')) return `已登录·${rawAccountStatusText}`;
+    return rawAccountStatusText || loginStatusText || '-';
+  })();
   const alertConfig = loginStatusCode === 'account_restricted'
     ? { level: 'red', title: '账号受限', detail: loginStatusText }
     : (loginStatusCode === 'auth_failed'
@@ -3591,16 +3735,19 @@ function accountCardHtml(row) {
   const accountAlert = alertConfig
     ? `<div class="account-alert ${alertConfig.level}"><strong>${alertConfig.title}</strong><div>${alertConfig.detail}</div></div>`
     : '';
-  const qrBlock = sessionState.qr_ascii
+  const qrBlock = approvalSessionHasQrPayload(sessionState) && sessionState.qr_ascii
     ? `<div style="margin-top:10px;"><div class="field-hint" style="margin-bottom:6px;">绑定二维码</div><pre style="margin:0; padding:12px; overflow:auto; background:#0f172a; color:#e2e8f0; border-radius:12px; font-size:10px; line-height:1.05;">${String(sessionState.qr_ascii || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></div>`
     : '';
+  const qrActionText = approvalSessionHasQrPayload(sessionState) && (sessionState.can_show_qr === true || sessionState.qr_available === true)
+    ? '查看二维码'
+    : (isSessionLoading ? '生成中…' : '生成二维码');
   const noteValue = String(row.notes || '').trim();
   const assignedCustomerServiceText = String(row.assigned_customer_service_display_name || row.assigned_customer_service_username || '').trim() || '未指定';
   const accountToggleButtonHtml = canOperateAccount
     ? `<button type="button" class="card-monitor-toggle ${monitorButtonClass}" onclick="setApprovalAccountEnabled('${accountKeyEscaped}', ${row.enabled ? 'false' : 'true'})" ${pendingAction ? 'disabled' : ''}>${monitorButtonText}</button>`
     : `<span class="card-monitor-toggle ${monitorButtonClass}" style="cursor:default;">${monitorButtonText}</span>`;
   const operatorActionsHtml = canOperateAccount
-    ? `<button type="button" class="${isSessionLoading ? 'button-loading' : ''}" ${isSessionLoading ? 'disabled' : ''} onclick="startApprovalAccountSession('${accountKeyEscaped}')">${isSessionLoading ? '生成中…' : '生成二维码'}</button>
+    ? `<button type="button" class="${isSessionLoading ? 'button-loading' : ''}" ${isSessionLoading ? 'disabled' : ''} onclick="startApprovalAccountSession('${accountKeyEscaped}')">${qrActionText}</button>
       <button type="button" class="secondary" onclick="refreshApprovalAccountSession('${accountKeyEscaped}')">刷新状态</button>`
     : '';
   const adminActionsHtml = isAdminUser
@@ -3614,14 +3761,13 @@ function accountCardHtml(row) {
         <span class="pill gray">对应客服：${assignedCustomerServiceText}</span>
         ${accountToggleButtonHtml}
       </span>
-      <span class="status-line"><span class="status-dot ${row.status_color || 'gray'}"></span>${row.status_text || '-'}</span>
+      <span class="status-line"><span class="status-dot ${row.status_color || 'gray'}"></span>${accountHeaderStatusText}</span>
     </h3>
     <div class="account-meta">
       <div class="k">账号键</div><div>${row.account_key || '-'}</div>
       <div class="k">负责类型</div><div>${row.responsible_type === 'official_group' ? '官方群' : '注册群'}</div>
       <div class="k">群数量</div><div>${row.group_count || 0}</div>
       <div class="k">配置状态</div><div>${row.verification_status_label || row.verification_status || '-'}</div>
-      <div class="k">登录状态</div><div>${loginStatusText}</div>
       ${noteValue ? `<div class="k">备注</div><div>${noteValue}</div>` : ''}
     </div>
     ${accountAlert}
@@ -3739,6 +3885,11 @@ async function refreshApprovalAccountSession(accountKey, options = {}) {
 async function startApprovalAccountSession(accountKey, options = {}) {
   const normalized = String(accountKey || '').trim();
   if (!normalized) throw new Error('account_key is required');
+  const existingSession = (window.__approvalSessionStateByAccount || {})[normalized] || {};
+  if (!options.forceStart && approvalSessionCanOpenQrModal(existingSession, {})) {
+    openApprovalQrModal(normalized, {sessionState: existingSession, resetSuccessAnnounced: true});
+    return {session: existingSession, reused_existing_qr: true};
+  }
   window.__approvalSessionLoadingByAccount = window.__approvalSessionLoadingByAccount || {};
   window.__approvalSessionLoadingByAccount[normalized] = true;
   renderApprovalAccountRows();
@@ -3848,12 +3999,11 @@ function applyApprovalAccountsPayload(data, canManageApprovalAccounts) {
 }
 function approvalAccountNeedsTruthRefresh(row) {
   const sess = row?.session_state || {};
-  const runtime = row?.runtime_state || {};
   if (!row || row.enabled === false) return false;
-  if (sess.login_verified === true) return false;
-  const code = String(sess.login_check_status || '').trim();
-  return ['pending_runtime', 'auto_recovering', 'session_mismatch', 'runtime_unavailable', ''].includes(code)
-    || Boolean(runtime.active && !runtime.ready);
+  if (sess.login_verified === true || sess.can_probe === true) return false;
+  const loginState = String(sess.login_state || '').trim();
+  if (['waiting_for_scan_qr_ready', 'waiting_for_scan_qr_pending', 'login_failed', 'account_restricted', 'disabled'].includes(loginState)) return false;
+  return ['runtime_starting', 'initializing'].includes(loginState);
 }
 function applyApprovalAccountSessionPayload(accountKey, data) {
   const normalized = String(accountKey || '').trim();
@@ -3889,7 +4039,8 @@ async function refreshApprovalAccountTruthState(accountKey, attempt = 1) {
     const data = await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(normalized)}/session?include_qr_ascii=false`);
     applyApprovalAccountSessionPayload(normalized, data);
     const sess = data.session || {};
-    const shouldRetry = !sess.login_verified && ['pending_runtime', 'auto_recovering'].includes(String(sess.login_check_status || '').trim()) && attempt < 3;
+    const loginState = String(sess.login_state || '').trim();
+    const shouldRetry = !sess.login_verified && ['runtime_starting', 'initializing'].includes(loginState) && attempt < 3;
     if (shouldRetry) {
       setTimeout(() => refreshApprovalAccountTruthState(normalized, attempt + 1), attempt * 6000);
       return;
@@ -3924,12 +4075,96 @@ async function reloadApprovalAccounts() {
   window.__opsUserRole = currentRole;
   applyApprovalAccountRoleView(currentRole);
   const canManageApprovalAccounts = approvalRoleCanManage(currentRole);
+  // 后台列表只读服务器快照：普通打开/刷新页面不能触发 session 检查、WhatsApp 探针或二维码刷新。
   const accountsApiPath = canManageApprovalAccounts
-    ? '/api/ops/whatsapp-approval-accounts'
-    : '/api/ops/whatsapp-approval-accounts/overview';
+    ? '/api/ops/whatsapp-approval-accounts/realtime-snapshot'
+    : '/api/ops/whatsapp-approval-accounts/realtime-snapshot';
   const data = await loadJson(accountsApiPath);
   applyApprovalAccountsPayload(data, canManageApprovalAccounts);
-  if (data?.list_mode === 'lightweight') scheduleApprovalAccountsTruthRefresh(data.rows || []);
+  connectApprovalRealtimeWebSocket();
+}
+function realtimeWsUrl() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/api/ops/whatsapp-approval-accounts/realtime-ws`;
+}
+function connectApprovalRealtimeWebSocket() {
+  if (window.__approvalRealtimeSocket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(window.__approvalRealtimeSocket.readyState)) return;
+  if (!('WebSocket' in window)) return;
+  const lastEventId = Number(window.__approvalRealtimeLastEventId || 0);
+  const url = `${realtimeWsUrl()}?last_event_id=${encodeURIComponent(String(lastEventId))}`;
+  const socket = new WebSocket(url);
+  window.__approvalRealtimeSocket = socket;
+  window.__approvalRealtimeConnectedAt = Date.now();
+  socket.onmessage = event => {
+    try {
+      const payload = JSON.parse(event.data || '{}');
+      applyApprovalRealtimeEvent(payload);
+    } catch (err) {
+      console.warn('approval realtime event parse failed', err);
+    }
+  };
+  socket.onclose = () => {
+    if (window.__approvalRealtimeReconnectTimer) clearTimeout(window.__approvalRealtimeReconnectTimer);
+    window.__approvalRealtimeReconnectTimer = setTimeout(connectApprovalRealtimeWebSocket, 1200);
+  };
+  socket.onerror = () => {
+    try { socket.close(); } catch (_) {}
+  };
+}
+function applyApprovalRealtimeEvent(event) {
+  if (!event || typeof event !== 'object') return;
+  if (event.event_id) window.__approvalRealtimeLastEventId = Math.max(Number(window.__approvalRealtimeLastEventId || 0), Number(event.event_id || 0));
+  if (event.server_emit_at) {
+    const emittedAt = Date.parse(event.server_emit_at);
+    if (Number.isFinite(emittedAt)) window.__approvalRealtimeLastLatencyMs = Math.max(Date.now() - emittedAt, 0);
+  }
+  if (event.type === 'group_probe_patch') applyApprovalGroupRealtimePatch(event);
+  if (event.type === 'account_state_patch') applyApprovalAccountRealtimePatch(event);
+}
+function applyApprovalAccountRealtimePatch(event) {
+  const accountKey = String(event.account_key || '').trim();
+  if (!accountKey) return;
+  const rows = Array.isArray(window.__approvalAccounts) ? window.__approvalAccounts : [];
+  const index = rows.findIndex(item => String(item?.account_key || '').trim() === accountKey);
+  if (index < 0) return;
+  const patch = event.patch || {};
+  const row = {...rows[index]};
+  ['runtime_status', 'verification_status', 'status_text'].forEach(field => {
+    if (Object.prototype.hasOwnProperty.call(patch, field)) row[field] = patch[field];
+  });
+  const sessionPatch = {};
+  ['login_state', 'ready', 'authenticated', 'login_verified', 'can_probe', 'login_check_status'].forEach(field => {
+    if (Object.prototype.hasOwnProperty.call(patch, field)) sessionPatch[field] = patch[field];
+  });
+  row.session_state = mergeApprovalSessionState(row.session_state || {}, sessionPatch);
+  window.__approvalAccounts = rows.map((item, idx) => idx === index ? row : item);
+  window.__approvalSessionStateByAccount = window.__approvalSessionStateByAccount || {};
+  window.__approvalSessionStateByAccount[accountKey] = mergeApprovalSessionState(window.__approvalSessionStateByAccount[accountKey] || {}, row.session_state || {});
+  renderApprovalAccountRows();
+}
+function applyApprovalGroupRealtimePatch(event) {
+  const accountKey = String(event.account_key || '').trim();
+  const groupId = String(event.group_id || '').trim();
+  if (!accountKey || !groupId) return;
+  const rows = Array.isArray(window.__approvalAccounts) ? window.__approvalAccounts : [];
+  const rowIndex = rows.findIndex(item => String(item?.account_key || '').trim() === accountKey);
+  if (rowIndex < 0) return;
+  const row = {...rows[rowIndex]};
+  const bindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length ? [...row.group_binding_runtimes] : [...(row.group_link_bindings || [])];
+  const bindingIndex = bindings.findIndex(item => String(item?.group_id || item?.link || item?.group_name || '').trim() === groupId);
+  if (bindingIndex < 0) return;
+  const patch = event.patch || {};
+  const binding = {...bindings[bindingIndex]};
+  if (Object.prototype.hasOwnProperty.call(patch, 'next_approval_pending_count')) binding.next_approval_pending_count = patch.next_approval_pending_count;
+  if (patch.group_name) binding.group_name = patch.group_name;
+  if (patch.membership_verifier) binding.membership_verifier = {...(binding.membership_verifier || {}), ...patch.membership_verifier};
+  if (patch.probe) binding.membership_verifier = {...(binding.membership_verifier || {}), probe: {...((binding.membership_verifier || {}).probe || {}), ...patch.probe}};
+  binding.realtime_updated_at = event.server_emit_at || new Date().toISOString();
+  binding.realtime_delivery_target_ms = event.delivery_target_ms || 100;
+  bindings[bindingIndex] = binding;
+  row.group_binding_runtimes = bindings;
+  window.__approvalAccounts = rows.map((item, idx) => idx === rowIndex ? row : item);
+  renderApprovalAccountRows();
 }
 async function reloadApprovalCandidates() {
   const data = await loadJson('/api/ops/whatsapp-approval-candidates/summary');
@@ -3961,8 +4196,8 @@ function fillApprovalAccountForm(accountKey) {
     ? row.group_binding_runtimes
     : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
   renderVisibleApprovalBindingCardsFromValues(groupBindings);
-  fillIndexedValues('wa_group_link_', groupBindings.map(item => item.link || ''), 3);
-  fillIndexedValues('wa_group_name_', groupBindings.map(item => item.group_name || ''), 3);
+  fillIndexedValues('wa_group_link_', groupBindings.map(item => item.link || ''), APPROVAL_BINDING_MAX_COUNT);
+  fillIndexedValues('wa_group_name_', groupBindings.map(item => item.group_name || ''), APPROVAL_BINDING_MAX_COUNT);
   renderAllGroupAreaSelects(window.__approvalAreaOptions, groupBindings.map(item => item.area || ''));
   renderAllGroupNotifyRobotSelects(window.__notifyRobotOptions, groupBindings.map(item => item.notify_profile_name || ''));
   for (let i = 1; i <= 3; i += 1) {
@@ -3986,8 +4221,8 @@ function clearApprovalAccountForm() {
   renderAssignedCustomerServiceSelect(window.__customerServiceOptions, '');
   document.getElementById('wa_enabled').value = 'true';
   setApprovalBindingFormVisibleCount(1);
-  fillIndexedValues('wa_group_link_', [], 3);
-  fillIndexedValues('wa_group_name_', [], 3);
+  fillIndexedValues('wa_group_link_', [], APPROVAL_BINDING_MAX_COUNT);
+  fillIndexedValues('wa_group_name_', [], APPROVAL_BINDING_MAX_COUNT);
   renderAllGroupAreaSelects(window.__approvalAreaOptions, []);
   renderAllGroupNotifyRobotSelects(window.__notifyRobotOptions, []);
   for (let i = 1; i <= 3; i += 1) {
@@ -4313,12 +4548,12 @@ reloadProductionOpsDaemonConfig().catch(err => showToast(err.message, 'error'));
 reloadAreaOptions().catch(err => showToast(err.message, 'error'));
 reloadApprovalAccounts().catch(err => showToast(err.message, 'error'));
 reloadOfficialBridgeSummary().catch(err => showToast(err.message, 'error'));
+const PRODUCTION_OPS_REFRESH_INTERVAL_MS=15000;
 setInterval(() => {
   reloadProductionOpsDaemonConfig().catch(err => showToast(err.message, 'error'));
-  reloadAreaOptions().catch(err => showToast(err.message, 'error'));
   reloadApprovalAccounts().catch(err => showToast(err.message, 'error'));
   reloadOfficialBridgeSummary().catch(err => showToast(err.message, 'error'));
-}, 5000);
+}, PRODUCTION_OPS_REFRESH_INTERVAL_MS);
 </script>
 </body>
 </html>
@@ -4373,7 +4608,7 @@ OPS_PAGE_HTML = """
       <div class="subtitle">只保留核心运营指标：收口数据、审批群监控、群聊天助手数据和系统健康。仅管理员和超级管理员可见。</div>
     </div>
 
-    <div class="section"><h2 class="section-title"><span>收口数据</span><span class="pill" id="intakeHealthPill">加载中</span></h2><div class="grid grid-4"><div class="card"><div class="label">待人工复核</div><div id="manualReviewCount" class="metric">-</div></div><a class="card" href="/ops/bind-failed-users?scope=all" style="text-decoration:none;color:inherit;"><div class="label">绑定失败用户数</div><div id="bindFailedCount" class="metric">-</div></a><div class="card"><div class="label">待完成用户</div><div id="pendingCompletionUserCount" class="metric">-</div></div><div class="card"><div class="label">未读客服通知</div><div id="unreadNotificationCount" class="metric">-</div></div></div></div>
+    <div class="section"><h2 class="section-title"><span>收口数据</span><span class="pill" id="intakeHealthPill">加载中</span></h2><div class="grid grid-4"><div class="card"><div class="label">待人工复核</div><div id="manualReviewCount" class="metric">-</div></div><a class="card" href="/ops/bind-failed-users?scope=all" style="text-decoration:none;color:inherit;"><div class="label">绑定异常用户数</div><div id="bindFailedCount" class="metric">-</div></a><div class="card"><div class="label">待完成用户</div><div id="pendingCompletionUserCount" class="metric">-</div></div><div class="card"><div class="label">未读客服通知</div><div id="unreadNotificationCount" class="metric">-</div></div></div></div>
     <div class="section"><h2 class="section-title"><span>审批群监控</span><span class="pill" id="approvalHealthPill">加载中</span></h2><div class="grid grid-2"><div class="card"><div class="label">注册群</div><div class="status-line"><span>监控群组</span><strong id="registrationMonitoredGroupCount">-</strong></div><div class="status-line"><span>待审批总人数</span><strong id="registrationTotalPendingCount">-</strong></div></div><div class="card"><div class="label">官方群</div><div class="status-line"><span>监控群组</span><strong id="officialMonitoredGroupCount">-</strong></div><div class="status-line"><span>待审批总人数</span><strong id="officialTotalPendingCount">-</strong></div></div></div></div>
     <div class="section"><h2 class="section-title"><span>群聊天助手数据</span><span class="pill" id="atmosphereHealthPill">加载中</span></h2><div class="grid grid-4"><div class="card"><div class="label">WhatsApp 账号</div><div id="atmosphereAccountCount" class="metric">-</div></div><div class="card"><div class="label">已开启群</div><div id="atmosphereEnabledGroupCount" class="metric">-</div></div><div class="card"><div class="label">自动发言配置</div><div id="atmosphereEnabledConfigCount" class="metric">-</div></div><div class="card"><div class="label">最近发送成功</div><div id="atmosphereRecentSentCount" class="metric">-</div></div></div></div>
     <div class="section"><h2 class="section-title"><span>系统健康</span></h2><div id="healthRows"></div></div>
@@ -4385,11 +4620,11 @@ function setText(id, value) { const node = document.getElementById(id); if (node
 function setPill(id, text, cls) { const node = document.getElementById(id); if (!node) return; node.textContent = text; node.className = `pill ${cls || ''}`.trim(); }
 function numericValue(value, fallback=0) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : fallback; }
 function batchSummary(batch, key) { const direct = batch?.[`${key}_summary`] || {}; const rows = Array.isArray(batch?.[`${key}_groups`]) ? batch[`${key}_groups`] : []; return { monitored: numericValue(direct.monitored_group_count, rows.length), pending: numericValue(direct.pending_count, rows.reduce((acc, row) => acc + numericValue(row.pending_count), 0)) }; }
-function renderIntakeSummary(summary, notifications) { const unread = (notifications.rows || []).filter(row => !row.is_read).length; const manual = numericValue(summary.manual_review_count, 0); const bindFailed = numericValue(summary.bind_failed_count, 0); const pendingCompletion = numericValue(summary.pending_completion_user_count, 0); setText('manualReviewCount', String(manual)); setText('bindFailedCount', String(bindFailed)); setText('pendingCompletionUserCount', String(pendingCompletion)); setText('unreadNotificationCount', String(unread)); setPill('intakeHealthPill', (manual + bindFailed + pendingCompletion + unread) ? '有待处理' : '正常', (manual + bindFailed + pendingCompletion + unread) ? 'warn' : 'ok'); }
+function renderIntakeSummary(summary) { const unread = numericValue(summary.unread_customer_notification_count, 0); const manual = numericValue(summary.manual_review_count, 0); const bindFailed = numericValue(summary.bind_failed_count, 0); const pendingCompletion = numericValue(summary.pending_completion_user_count, 0); setText('manualReviewCount', String(manual)); setText('bindFailedCount', String(bindFailed)); setText('pendingCompletionUserCount', String(pendingCompletion)); setText('unreadNotificationCount', String(unread)); setPill('intakeHealthPill', (manual + bindFailed + pendingCompletion + unread) ? '有待处理' : '正常', (manual + bindFailed + pendingCompletion + unread) ? 'warn' : 'ok'); }
 function renderBatchSummary(batch) { const registration = batchSummary(batch, 'registration'); const official = batchSummary(batch, 'official'); setText('registrationMonitoredGroupCount', String(registration.monitored)); setText('registrationTotalPendingCount', String(registration.pending)); setText('officialMonitoredGroupCount', String(official.monitored)); setText('officialTotalPendingCount', String(official.pending)); const monitored = registration.monitored + official.monitored; const pending = registration.pending + official.pending; setPill('approvalHealthPill', monitored ? (pending ? `待审批 ${pending}` : '监控正常') : '未启用', pending ? 'warn' : 'ok'); }
-function renderAtmosphereSummary(accountsData, configsData, logsData) { const accounts = accountsData.rows || []; const configs = configsData.rows || []; const logs = logsData.rows || []; const enabledGroups = accounts.reduce((acc, row) => acc + (row.groups || []).filter(group => group.enabled !== false).length, 0); const enabledConfigs = configs.filter(row => row.enabled).length; const recentSent = logs.filter(row => ['sent','success'].includes(String(row.status || '').toLowerCase())).length; setText('atmosphereAccountCount', String(accounts.length)); setText('atmosphereEnabledGroupCount', String(enabledGroups)); setText('atmosphereEnabledConfigCount', String(enabledConfigs)); setText('atmosphereRecentSentCount', String(recentSent)); setPill('atmosphereHealthPill', accounts.length ? '已配置' : '未配置', accounts.length ? 'ok' : 'warn'); }
+function renderAtmosphereSummary(summary) { const accountCount = numericValue(summary.account_count, 0); const enabledGroups = numericValue(summary.enabled_group_count, 0); const enabledConfigs = numericValue(summary.enabled_config_count, 0); const recentSent = numericValue(summary.recent_sent_count, 0); setText('atmosphereAccountCount', String(accountCount)); setText('atmosphereEnabledGroupCount', String(enabledGroups)); setText('atmosphereEnabledConfigCount', String(enabledConfigs)); setText('atmosphereRecentSentCount', String(recentSent)); setPill('atmosphereHealthPill', accountCount ? '已配置' : '未配置', accountCount ? 'ok' : 'warn'); }
 function renderHealth(runtime, batchQueue) { const status = runtime?.runtime?.status || {}; const backend = runtime?.runtime?.backend_health || status.backend_health || {}; const incidents = Array.isArray(status.incidents) ? status.incidents.length : 0; const warnings = Array.isArray(status.observation_warnings) ? status.observation_warnings.length : 0; const worker = status.worker_state || {}; const registrationMonitored = numericValue(batchQueue?.registration_summary?.monitored_group_count, 0); const officialMonitored = numericValue(batchQueue?.official_summary?.monitored_group_count, 0); const hasMonitoredApprovalGroups = (registrationMonitored + officialMonitored) > 0; const lines = [['后端', backend.ok === false ? '异常' : '正常', backend.ok === false ? 'err' : 'ok'], ['审批守护', hasMonitoredApprovalGroups ? (incidents ? `异常 ${incidents}` : '正常') : '未启用', hasMonitoredApprovalGroups ? (incidents ? 'err' : 'ok') : 'ok'], ['待核验', hasMonitoredApprovalGroups ? (warnings ? `${warnings}` : '0') : '0', hasMonitoredApprovalGroups && warnings ? 'warn' : 'ok'], ['注册群探针', hasMonitoredApprovalGroups ? (worker.ok === false ? '异常' : '正常') : '未启用', hasMonitoredApprovalGroups ? (worker.ok === false ? 'err' : 'ok') : 'ok']]; document.getElementById('healthRows').innerHTML = lines.map(row => `<div class="status-line"><span>${row[0]}</span><span class="pill ${row[2]}">${row[1]}</span></div>`).join(''); }
-async function init() { const authStatus = await loadJson('/api/ops/auth/status').catch(() => null); applyOpsNavRoleView(authStatus); const [summary, notifications, batchQueue, runtime, atmosphereAccounts, atmosphereConfigs, atmosphereLogs] = await Promise.all([loadJson('/api/ops/dashboard/summary'), loadJson('/api/ops/operator-notifications?status=unread'), loadJson('/api/ops/approval-batch-queue/summary'), loadJson('/api/ops/production-ops-daemon').catch(() => ({})), loadJson('/api/ops/group-atmosphere/accounts'), loadJson('/api/ops/group-atmosphere/configs'), loadJson('/api/ops/group-atmosphere/logs').catch(() => ({rows: []}))]); renderIntakeSummary(summary, notifications); renderBatchSummary(batchQueue); renderAtmosphereSummary(atmosphereAccounts, atmosphereConfigs, atmosphereLogs); renderHealth(runtime, batchQueue); }
+async function init() { const authStatus = await loadJson('/api/ops/auth/status').catch(() => null); applyOpsNavRoleView(authStatus); const [summary, batchQueue, runtime, atmosphereSummary] = await Promise.all([loadJson('/api/ops/dashboard/summary'), loadJson('/api/ops/approval-batch-queue/summary'), loadJson('/api/ops/production-ops-daemon').catch(() => ({})), loadJson('/api/ops/group-atmosphere/summary')]); renderIntakeSummary(summary); renderBatchSummary(batchQueue); renderAtmosphereSummary(atmosphereSummary); renderHealth(runtime, batchQueue); }
 init().catch(err => { console.error(err); document.getElementById('healthRows').innerHTML = `<div class="status-line"><span>页面加载</span><span class="pill err">${err.message}</span></div>`; });
 </script>
 </body>
@@ -4405,61 +4640,57 @@ OPS_BIND_FAILED_USERS_PAGE_HTML = """
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>绑定失败用户</title>
+<title>绑定历史列表</title>
 <style>
-:root{--bg:#f6f8fb;--card:#fff;--text:#172033;--muted:#667085;--line:#e7ecf3;--primary:#2563eb;--primary-weak:#eff6ff;--danger:#dc2626;--danger-weak:#fef2f2;--warning:#b45309;--warning-weak:#fff7ed;--shadow:0 1px 2px rgba(16,24,40,.04),0 10px 24px rgba(16,24,40,.06);--radius:18px}*{box-sizing:border-box}body{font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:24px;background:var(--bg);color:var(--text);font-size:14px}.page{max-width:1440px;margin:0 auto}.nav{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}.nav a{color:#334155;text-decoration:none;font-size:13px;font-weight:700;padding:8px 12px;border-radius:999px;background:#fff;box-shadow:0 0 0 1px rgba(34,42,53,.08),0 4px 8px rgba(34,42,53,.04)}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;background:linear-gradient(135deg,#111827,#1d4ed8);color:#fff;border-radius:24px;padding:22px 24px;box-shadow:var(--shadow)}.hero h1{margin:0;font-size:28px;line-height:1.15}.hero .muted{color:rgba(255,255,255,.78)}.hero-meta{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}.hero-chip{display:inline-flex;align-items:center;border-radius:999px;padding:7px 11px;background:#fff;border:1px solid rgba(255,255,255,.82);color:#1d4ed8;font-size:12px;font-weight:900}.card{background:var(--card);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);margin-top:12px}.card-head{display:flex;justify-content:space-between;gap:14px;align-items:center;margin-bottom:14px}.card-title{font-size:16px;font-weight:800}.muted{color:var(--muted);font-size:13px}.filters{display:grid;grid-template-columns:minmax(160px,.9fr) minmax(180px,1fr) minmax(220px,1.2fr) auto;gap:12px;align-items:end}.filters label{display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px}.actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}input,select{width:100%;min-height:38px;padding:8px 10px;border:1px solid #d8dee8;border-radius:10px;background:#fff;color:#172033;outline:none}input:focus,select:focus{border-color:#93c5fd;box-shadow:0 0 0 3px rgba(37,99,235,.12)}input[type="checkbox"]{width:16px;min-height:16px;accent-color:var(--primary)}button{border:0;background:var(--primary);color:#fff;border-radius:10px;padding:9px 12px;font-weight:800;cursor:pointer;white-space:nowrap;min-height:38px}.secondary{background:var(--primary-weak);color:#1d4ed8}.danger{background:var(--danger-weak);color:var(--danger)}button:disabled,.list-toolbar button:disabled{background:#f1f5f9!important;color:#94a3b8!important;box-shadow:inset 0 0 0 1px #e2e8f0!important;cursor:not-allowed}.list-card{padding:0;overflow:hidden}.list-toolbar{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:16px 18px;border-bottom:1px solid var(--line);background:#fff}.summary-line{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.summary-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#f1f5f9;color:#334155;font-size:12px;font-weight:800}.table-wrap{padding:12px;background:#f8fafc}.failed-list{display:flex;flex-direction:column;gap:8px}.list-select-row{display:grid;grid-template-columns:34px minmax(120px,.72fr) minmax(0,2.1fr) minmax(170px,.9fr) 74px;align-items:center;gap:10px;padding:9px 12px;border:1px solid #dbe3ef;border-radius:12px;background:#f1f5f9;color:#475569;font-size:12px;font-weight:900}.select-all-label{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}.list-title{color:#334155}.failed-field-head{display:grid;grid-template-columns:minmax(104px,1fr) minmax(74px,.68fr) minmax(118px,1.05fr) minmax(62px,.58fr);gap:7px;align-items:center;color:#334155;text-transform:uppercase;letter-spacing:.02em}.failed-field-head span{min-width:0;overflow:hidden;text-overflow:ellipsis}.failed-row{display:grid;grid-template-columns:34px minmax(120px,.72fr) minmax(0,2.1fr) minmax(170px,.9fr) 74px;gap:9px;align-items:center;padding:10px 10px;border:1px solid var(--line);border-radius:14px;background:#fff;box-shadow:0 1px 3px rgba(15,23,42,.04)}.failed-row:hover{border-color:#bfd3f8;box-shadow:0 4px 12px rgba(15,23,42,.06)}.failed-select{display:flex;align-items:center;justify-content:center}.failed-user{min-width:0;border-right:1px solid #eef2f7;padding-right:8px}.failed-user strong{display:block;font-size:14px;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.failed-user .meta-line{margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.failed-fields{display:grid;grid-template-columns:minmax(104px,1fr) minmax(74px,.68fr) minmax(118px,1.05fr) minmax(62px,.58fr);gap:7px;align-items:center}.field-block{min-width:0}.field-input{min-width:0;width:100%;height:34px;padding:6px 8px;font-size:13px;border-radius:9px}.reason-cell{min-width:0;background:#f8fafc;border:1px solid #edf1f6;border-radius:10px;padding:8px 8px}.reason-cell .pill{margin:0 0 5px 0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.reason-text{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:#475569;font-size:12px;line-height:1.4}.row-actions{display:flex;flex-direction:column;gap:6px;align-items:stretch;justify-content:center}.row-actions button{width:100%;min-width:0;min-height:31px;padding:6px 8px;font-size:12px;line-height:1.2}@media(max-width:1180px){.list-select-row{display:flex;justify-content:space-between}.list-select-row>span{display:none}.failed-row{grid-template-columns:30px minmax(130px,.8fr) minmax(0,2fr) 78px}.reason-cell{grid-column:3 / 5}.row-actions{grid-column:4;grid-row:1}.failed-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}.pill{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;background:var(--warning-weak);color:var(--warning);font-size:12px;font-weight:800}.empty{padding:34px 18px;color:#64748b;text-align:center}.empty strong{display:block;color:#334155;font-size:15px;margin-bottom:6px}@media(max-width:1180px){.failed-row{grid-template-columns:32px 1fr}.failed-fields{grid-column:2;grid-template-columns:repeat(2,minmax(0,1fr))}.reason-cell{grid-column:2}.row-actions{grid-column:2;grid-row:auto;flex-direction:row;justify-content:flex-start}.row-actions button{width:auto;min-width:72px}}@media(max-width:720px){.failed-fields{grid-template-columns:1fr}.failed-row{gap:10px;padding:12px}.list-select-row{align-items:flex-start;flex-direction:column}}
-.help-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.help-chip{font-size:12px;color:#475569;background:#f8fafc;border:1px solid var(--line);border-radius:999px;padding:6px 10px}@media(max-width:980px){body{padding:14px}.hero{display:block}.hero-meta{justify-content:flex-start;margin-top:14px}.filters{grid-template-columns:1fr}.actions{justify-content:flex-start}.list-toolbar{align-items:flex-start;flex-direction:column}}
+:root{--bg:#f6f8fb;--card:#fff;--text:#172033;--muted:#667085;--line:#e7ecf3;--primary:#2563eb;--primary-weak:#eff6ff;--danger:#dc2626;--danger-weak:#fef2f2;--warning:#b45309;--warning-weak:#fff7ed;--success:#16a34a;--success-weak:#ecfdf3;--shadow:0 1px 2px rgba(16,24,40,.04),0 8px 18px rgba(16,24,40,.05);--radius:16px}*{box-sizing:border-box}body{font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;padding:24px;background:var(--bg);color:var(--text);font-size:14px}.page{max-width:1440px;margin:0 auto}.nav{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}.nav a{color:#334155;text-decoration:none;font-size:13px;font-weight:700;padding:8px 12px;border-radius:999px;background:#fff;box-shadow:0 0 0 1px rgba(34,42,53,.08),0 4px 8px rgba(34,42,53,.04)}.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;background:#111827;color:#fff;border-radius:24px;padding:22px 24px;box-shadow:var(--shadow)}.hero h1{margin:0;font-size:28px;line-height:1.15}.hero .muted{color:rgba(255,255,255,.78)}.hero-meta{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}.hero-chip{display:inline-flex;align-items:center;border-radius:999px;padding:7px 11px;background:#fff;border:1px solid rgba(255,255,255,.82);color:#1d4ed8;font-size:12px;font-weight:900}.card{background:var(--card);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow);margin-top:16px}.card-head{display:flex;justify-content:space-between;gap:14px;align-items:center;margin-bottom:12px}.card-title{font-size:16px;font-weight:800}.muted{color:var(--muted);font-size:13px}.filters{display:grid;grid-template-columns:minmax(150px,.75fr) minmax(170px,.85fr) minmax(210px,1.1fr) auto;gap:12px;align-items:end}.filters label{display:block;font-size:12px;font-weight:800;color:#475569;margin-bottom:6px}.actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}input,select{width:100%;min-height:42px;padding:9px 11px;border:1px solid #d8dee8;border-radius:11px;background:#fff;color:var(--text);font-size:13px}button{border:0;background:var(--primary);color:#fff;border-radius:11px;padding:10px 13px;font-weight:800;cursor:pointer;min-height:42px}button.secondary{background:#eef2ff;color:#1e40af}button.ghost{background:#f8fafc;color:#334155;border:1px solid var(--line)}button.warn{background:var(--warning-weak);color:var(--warning)}button.danger{background:var(--danger-weak);color:var(--danger)}button:disabled{opacity:.55;cursor:not-allowed}.view-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.view-tab{border:1px solid var(--line);background:#fff;color:#334155}.view-tab.active{background:var(--primary);color:#fff;border-color:var(--primary)}.help-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.help-chip{font-size:12px;color:#475569;background:#f8fafc;border:1px solid var(--line);border-radius:999px;padding:6px 10px}.list-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.summary-line{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.summary-badge{display:inline-flex;align-items:center;border-radius:999px;padding:7px 11px;background:var(--primary-weak);color:#1d4ed8;font-weight:900}.failed-list{display:grid;gap:8px}.list-select-row{display:grid;grid-template-columns:minmax(190px,1fr) minmax(520px,2.1fr) minmax(180px,.72fr) minmax(180px,180px);gap:10px;color:#64748b;font-size:12px;font-weight:900;padding:0 4px}.binding-row-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px 12px;box-shadow:0 1px 2px rgba(16,24,40,.03)}.binding-row-card.current-exception{border-color:#fecaca;background:#fffafa}.compact-main-line,.compact-sub-line{display:grid;grid-template-columns:minmax(190px,1fr) minmax(520px,2.1fr) minmax(180px,.72fr) minmax(180px,180px);gap:10px;align-items:center;min-width:0}.compact-sub-line{margin-top:6px}.member-compact,.field-strip,.status-compact,.reason-compact{min-width:0}.member-title{font-size:14px;font-weight:900;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.meta-inline{color:#64748b;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.field-strip{display:grid;grid-template-columns:minmax(190px,1fr) minmax(160px,.8fr);gap:6px}.field-block{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:4px}.field-block label{display:block;margin:0;color:#64748b;font-size:11px;font-weight:900;white-space:nowrap}.field-input{min-height:32px;height:32px;border-radius:9px;padding:6px 8px;font-size:12px}.pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 8px;background:#eef2ff;color:#1e40af;font-size:12px;font-weight:900;white-space:nowrap}.pill.red{background:var(--danger-weak);color:var(--danger)}.pill.green{background:var(--success-weak);color:var(--success)}.status-compact{display:flex;gap:8px;align-items:center;overflow:hidden}.reason-compact{grid-column:1 / 4;color:#475569;font-size:12px;line-height:1.35;overflow:visible;white-space:normal;word-break:break-word}.detail-compact{color:#64748b;font-size:12px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}.row-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:32px;gap:6px;justify-content:end;align-items:center}.row-actions button{min-height:32px;height:32px;padding:6px 7px;border-radius:9px;font-size:12px;white-space:nowrap;width:100%}.empty{text-align:center;padding:34px;color:#64748b;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:16px}.close-dialog{position:fixed;inset:0;background:rgba(15,23,42,.38);display:none;align-items:center;justify-content:center;z-index:20;padding:24px}.close-dialog.is-open{display:flex}.close-card{width:min(520px,100%);background:#fff;border-radius:18px;padding:18px;box-shadow:0 24px 60px rgba(15,23,42,.22)}.close-card h3{margin:0 0 10px}.close-grid{display:grid;gap:10px}.close-card textarea{width:100%;min-height:86px;border:1px solid #d8dee8;border-radius:12px;padding:10px;font-family:inherit}.close-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}@media(max-width:1180px){.list-select-row{display:none}.compact-main-line,.compact-sub-line{grid-template-columns:1fr}.compact-sub-line{margin-top:8px}.field-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.reason-compact{grid-column:auto}.row-actions{justify-content:flex-start;flex-wrap:wrap}}@media(max-width:760px){body{padding:14px}.hero{display:block}.hero-meta{justify-content:flex-start;margin-top:14px}.filters{grid-template-columns:1fr}.actions{justify-content:flex-start}.list-toolbar{align-items:flex-start;flex-direction:column}.field-strip{grid-template-columns:1fr}.row-actions{justify-content:flex-start}}
 </style>
 </head>
 <body>
 <div class="page">
   <div class="nav"><a href="/ops">管理员看板</a><a href="/ops/intake-submit">绑定中心</a><a href="/ops/accounts">账号设置</a></div>
   <section class="hero">
-    <div>
-      <h1>绑定失败用户</h1>
-      <div class="muted" id="scopeText">当前范围：全部可见公会绑定失败用户</div>
-    </div>
-    <div class="hero-meta"><span class="hero-chip">筛选查看</span><span class="hero-chip">勾选清理</span><span class="hero-chip">可回填重提</span></div>
+    <div><h1>绑定历史列表</h1><div class="muted" id="scopeText">当前范围：全部可见公会绑定历史</div></div>
+    <div class="hero-meta"><span class="hero-chip">当前异常闭环</span><span class="hero-chip">历史保留</span><span class="hero-chip">核验重提</span></div>
   </section>
   <section class="card">
-    <div class="card-head"><div><div class="card-title">筛选条件</div><div class="muted">按日期、公会、客服缩小列表范围。</div></div></div>
+    <div class="card-head"><div><div class="card-title">筛选条件</div><div class="muted">默认查看当前异常；全部历史用于追溯。</div></div></div>
     <div class="filters">
       <div><label>日期（北京时间）</label><input id="bindFailedDateFilter" type="date"/></div>
       <div><label>公会</label><select id="bindFailedGuildFilter"><option value="">全部公会</option></select></div>
       <div><label>操作客服</label><input id="bindFailedOperatorFilter" placeholder="客服账号或姓名"/></div>
       <div class="actions"><button type="button" onclick="applyFilters()">筛选</button><button type="button" class="secondary" onclick="clearFilters()">重置筛选</button></div>
     </div>
-    <div class="help-row"><span class="help-chip">重置筛选只清空筛选条件，不删除用户数据</span><span class="help-chip">清除操作仅管理员/超级管理员可用</span></div>
+    <div class="view-tabs"><button type="button" class="view-tab" data-view="current" onclick="switchView('current')">当前异常</button><button type="button" class="view-tab" data-view="all" onclick="switchView('all')">全部历史</button></div>
+    <div class="help-row"><span class="help-chip">同一 Phone + ID 合并</span><span class="help-chip">已处理不计入看板异常</span><span class="help-chip">卡片最多两行</span><span class="help-chip">资料完整展示</span></div>
   </section>
-  <section class="card list-card">
-    <div class="list-toolbar">
-      <div class="summary-line"><span id="summary" class="summary-badge">加载中...</span><span id="selectionSummary" class="muted">未选择记录</span></div>
-      <div class="actions"><button id="clearSelectedButton" type="button" class="danger" onclick="clearSelectedFailedItems()" disabled>清除选中失败消息</button><button id="clearCurrentButton" type="button" class="secondary" onclick="clearCurrentFailedItems()" disabled>清除当前筛选结果</button></div>
-    </div>
-    <div id="rows" class="table-wrap"></div>
-  </section>
+  <section class="card list-card"><div class="list-toolbar"><div class="summary-line"><span id="summary" class="summary-badge">加载中...</span><span id="selectionSummary" class="muted">展示去重后的绑定人</span></div></div><div id="rows"></div></section>
 </div>
+<div class="close-dialog" id="resolveDialog" aria-hidden="true"><div class="close-card"><h3 id="resolveTitle">处理异常</h3><div class="close-grid"><label>处理原因<select id="resolveReason"><option value="用户无响应">用户无响应</option><option value="资料无效">资料无效</option><option value="已加入其他公会">已加入其他公会</option><option value="重复提交">重复提交</option><option value="非目标渠道">非目标渠道</option><option value="客服确认不继续">客服确认不继续</option><option value="其他">其他</option></select></label><label>备注<textarea id="resolveNote" placeholder="可补充处理说明"></textarea></label></div><div class="close-actions"><button type="button" class="ghost" onclick="closeResolveDialog()">取消</button><button type="button" id="resolveConfirmBtn" onclick="confirmResolve()">确认处理</button></div></div></div>
 <script>
 async function loadJson(url,options={}){const res=await fetch(url,options);const text=await res.text();const data=text?JSON.parse(text):{};if(!res.ok)throw new Error(data.detail||text||`HTTP ${res.status}`);return data}
 function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
-const query=new URLSearchParams(location.search);const initialGuild=query.get('guild_name')||'';const initialDate=query.get('date')||'';const initialOperator=query.get('submitted_by')||'';const scope=query.get('scope')||'';
-function initFilters(){bindFailedDateFilter.value=initialDate;bindFailedOperatorFilter.value=initialOperator;scopeText.textContent=initialGuild?`当前范围：${initialGuild} 公会绑定失败用户`:'当前范围：全部可见公会绑定失败用户';loadJson('/api/ops/intake-workbench/guilds').then(data=>{const names=[...new Set((data.rows||[]).map(r=>r.guild_name).filter(Boolean))];bindFailedGuildFilter.innerHTML='<option value="">全部公会</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');bindFailedGuildFilter.value=initialGuild;});}
-function buildApiUrl(){const params=new URLSearchParams();params.set('limit','50');const guild=bindFailedGuildFilter.value||initialGuild;if(guild)params.set('guild_name',guild);if(bindFailedDateFilter.value)params.set('date',bindFailedDateFilter.value);if(bindFailedOperatorFilter.value.trim())params.set('submitted_by',bindFailedOperatorFilter.value.trim());if(scope)params.set('scope',scope);return `/api/ops/intake-workbench/bind-failed-items?${params.toString()}`}
+const query=new URLSearchParams(location.search);const initialGuild=query.get('guild_name')||'';const initialDate=query.get('date')||'';const initialOperator=query.get('submitted_by')||'';const scope=query.get('scope')||'';let currentView=query.get('view')||'current';let pendingResolve={itemId:'',action:'resolved'};
+function initFilters(){bindFailedDateFilter.value=initialDate;bindFailedOperatorFilter.value=initialOperator;scopeText.textContent=initialGuild?`当前范围：${initialGuild} 公会绑定历史`:'当前范围：全部可见公会绑定历史';loadJson('/api/ops/intake-workbench/guilds').then(data=>{const names=[...new Set((data.rows||[]).map(r=>r.guild_name).filter(Boolean))];bindFailedGuildFilter.innerHTML='<option value="">全部公会</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');bindFailedGuildFilter.value=initialGuild;});updateViewTabs()}
+function updateViewTabs(){document.querySelectorAll('.view-tab').forEach(btn=>btn.classList.toggle('active',btn.dataset.view===currentView))}
+function buildApiUrl(){const params=new URLSearchParams();params.set('limit','50');params.set('view',currentView);const guild=bindFailedGuildFilter.value||initialGuild;if(guild)params.set('guild_name',guild);if(bindFailedDateFilter.value)params.set('date',bindFailedDateFilter.value);if(bindFailedOperatorFilter.value.trim())params.set('submitted_by',bindFailedOperatorFilter.value.trim());if(scope)params.set('scope',scope);return `/api/ops/intake-workbench/binding-history-items?${params.toString()}`}
+function updateUrl(){const params=new URLSearchParams();params.set('view',currentView);if(bindFailedGuildFilter.value)params.set('guild_name',bindFailedGuildFilter.value);if(bindFailedDateFilter.value)params.set('date',bindFailedDateFilter.value);if(bindFailedOperatorFilter.value.trim())params.set('submitted_by',bindFailedOperatorFilter.value.trim());if(scope)params.set('scope',scope);history.replaceState(null,'',`/ops/bind-failed-users?${params.toString()}`)}
 function formatDisplayTime(value){if(!value)return '-';const d=new Date(value);if(Number.isNaN(d.getTime()))return String(value).replace('T',' ').slice(0,19);const pad=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`}
-function fieldBlock(label,field,value){return `<div class="field-block"><input class="field-input" aria-label="${label}" data-field="${field}" value="${esc(value||'')}"></div>`}
-function rowHtml(r){const f=r.editable_fields||{};const itemId=esc(r.item_id);const reason=esc(r.result_reason||'');return `<article class="failed-row" data-item="${itemId}"><div class="failed-select"><input type="checkbox" data-bind-failed-select value="${itemId}" onchange="updateSelectionSummary()"></div><div class="failed-user"><strong>${esc(r.guild_name)}</strong><div class="muted meta-line">${esc(formatDisplayTime(r.created_at||''))}</div><div class="muted meta-line">客服：${esc(r.submitted_by_username||r.submitted_by_user_id||'-')}</div></div><div class="failed-fields">${fieldBlock('Phone','phone',f.phone)}${fieldBlock('ID','account_id',f.account_id)}${fieldBlock('Group','group',f.group)}${fieldBlock('Code','code',f.code)}</div><div class="reason-cell"><span class="pill">${esc(r.result_code||r.system_status||'失败')}</span><div class="reason-text" title="${reason}">${reason||'-'}</div></div><div class="row-actions"><button title="回填到收口区" onclick="prefillIntake('${itemId}')">回填</button><button class="secondary" title="重新核验CMS当前状态" onclick="recheckCms('${itemId}')">核验</button><button class="secondary" title="重新提交" onclick="resubmit('${itemId}')">重提</button></div></article>`}
-async function reload(){const data=await loadJson(buildApiUrl());window.__bindFailedRows=data.rows||[];summary.textContent=`绑定失败用户：${data.summary?.bind_failed_count||0}`;rows.innerHTML=(data.rows||[]).length?`<div class="failed-list"><div class="list-select-row"><label class="select-all-label"><input id="bindFailedSelectAll" type="checkbox" onchange="toggleBindFailedSelection(this.checked)"> 全选当前页</label><span class="list-title">成员信息</span><div class="failed-field-head"><span>Phone</span><span>ID</span><span>Group</span><span>Code</span></div><span class="list-title">失败原因</span><span class="list-title">操作</span></div>${(data.rows||[]).map(rowHtml).join('')}</div>`:'<div class="empty"><strong>暂无绑定失败用户</strong><div>当前筛选条件下没有需要处理的失败记录</div></div>';updateSelectionSummary()}
-function applyFilters(){const params=new URLSearchParams();if(bindFailedGuildFilter.value)params.set('guild_name',bindFailedGuildFilter.value);if(bindFailedDateFilter.value)params.set('date',bindFailedDateFilter.value);if(bindFailedOperatorFilter.value.trim())params.set('submitted_by',bindFailedOperatorFilter.value.trim());if(scope)params.set('scope',scope);history.replaceState(null,'',`/ops/bind-failed-users?${params.toString()}`);reload()}
-function clearFilters(){bindFailedDateFilter.value='';bindFailedOperatorFilter.value='';bindFailedGuildFilter.value=initialGuild||'';applyFilters()}
+function fieldBlock(label,field,value){return `<div class="field-block"><label>${esc(label)}</label><input class="field-input" aria-label="${label}" data-field="${field}" placeholder="${esc(label)}" value="${esc(value||'')}"></div>`}
+function statusPill(row){const code=row.latest_result_code||row.result_code||row.system_status||'记录';const closed=row.closure_status||row.feedback_status;const cls=row.current_exception?'red':(closed&&closed!=='pending_feedback'?'green':'');return `<span class="pill ${cls}">${esc(row.current_exception?'当前异常':code)}</span>`}
+function rowHtml(r){const f=r.editable_fields||{};const itemId=esc(r.item_id);const reason=esc(r.latest_result_reason||r.result_reason||r.closure_reason||'-');const attempts=r.attempts||[];const closeText=r.closure_status?`闭环：${r.closure_status} · ${r.closure_reason||'-'}`:`提交${Number(r.attempt_count||attempts.length||1)}次 / 失败${Number(r.failure_attempt_count||0)}次`;return `<article class="binding-row-card ${r.current_exception?'current-exception':''}" data-item="${itemId}"><div class="compact-main-line"><div class="member-compact"><div class="member-title">${esc(r.guild_name||'-')}</div><div class="meta-inline">${esc(formatDisplayTime(r.created_at||''))} · ${esc(r.submitted_by_username||r.submitted_by_user_id||'-')}</div></div><div class="field-strip">${fieldBlock('Phone','phone',f.phone)}${fieldBlock('ID','account_id',f.account_id)}${fieldBlock('Group','group',f.group)}${fieldBlock('Code','code',f.code)}</div><div class="status-compact">${statusPill(r)}</div><div class="row-actions"><button title="回填到收口区" onclick="prefillIntake('${itemId}')">回填</button><button class="secondary" title="重新核验CMS当前状态" onclick="recheckCms('${itemId}')">核验</button><button class="secondary" title="重新提交" onclick="resubmit('${itemId}')">重提</button>${r.current_exception?`<button class="warn" onclick="openResolveDialog('${itemId}','resolved')">已处理</button><button class="ghost" onclick="openResolveDialog('${itemId}','manual_review')">复核</button>`:''}</div></div><div class="compact-sub-line"><div class="reason-compact" title="${reason}">原因：${reason}</div><div class="detail-compact" title="${esc(closeText)}">${esc(closeText)}</div></div></article>`}
+async function reload(){updateViewTabs();const data=await loadJson(buildApiUrl());window.__bindFailedRows=data.rows||[];const s=data.summary||{};summary.textContent=currentView==='current'?`当前异常：${s.current_exception_count||0} 人`:`绑定历史：${s.history_count||0} 人 / ${s.submission_count||0} 次提交`;rows.innerHTML=(data.rows||[]).length?`<div class="failed-list"><div class="list-select-row"><span>成员</span><span>资料</span><span>状态</span><span>操作</span></div>${(data.rows||[]).map(rowHtml).join('')}</div>`:'<div class="empty"><strong>暂无绑定历史</strong><div>当前筛选条件下没有提交记录</div></div>';updateSelectionSummary()}
+function applyFilters(){updateUrl();reload()}
+function switchView(view){currentView=view==='all'?'all':'current';applyFilters()}
+function clearFilters(){bindFailedDateFilter.value='';bindFailedOperatorFilter.value='';bindFailedGuildFilter.value=initialGuild||'';currentView='current';applyFilters()}
 function currentRowFields(itemId){const tr=document.querySelector(`[data-item="${CSS.escape(itemId)}"]`);const fields={};if(tr)tr.querySelectorAll('input[data-field]').forEach(input=>{fields[input.dataset.field]=input.value.trim()});return fields}
 function prefillIntake(itemId){const row=(window.__bindFailedRows||[]).find(r=>r.item_id===itemId)||{};const fields={...(row.editable_fields||{}),...currentRowFields(itemId)};localStorage.setItem('ops_intake_prefill',JSON.stringify({guild_name:row.guild_name||fields.agency||'',fields,text:['Phone: '+(fields.phone||''),'ID: '+(fields.account_id||''),'Group: '+(fields.group||''),'Code: '+(fields.code||'-')].join('\\n'),source_item_id:itemId}));location.href='/ops/intake-submit'}
 async function recheckCms(itemId){const fields=currentRowFields(itemId);const data=await loadJson(`/api/ops/intake-workbench/items/${encodeURIComponent(itemId)}/recheck-cms`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'',fields})});selectionSummary.textContent=data.recheck?.result_reason||'CMS核验完成';await reload()}
 async function resubmit(itemId){const fields=currentRowFields(itemId);await loadJson(`/api/ops/intake-workbench/items/${encodeURIComponent(itemId)}/resubmit`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'',fields})});await reload()}
-function toggleBindFailedSelection(checked){document.querySelectorAll('[data-bind-failed-select]').forEach(input=>{input.checked=!!checked});updateSelectionSummary()}
-function selectedBindFailedItemIds(){return Array.from(document.querySelectorAll('[data-bind-failed-select]:checked')).map(input=>input.value).filter(Boolean)}
-function updateSelectionSummary(){const count=selectedBindFailedItemIds().length;const total=(window.__bindFailedRows||[]).length;if(selectionSummary)selectionSummary.textContent=count?`已选择 ${count} 条`:'未选择记录';if(clearSelectedButton)clearSelectedButton.disabled=count===0;if(clearCurrentButton)clearCurrentButton.disabled=total===0}
-async function clearSelectedFailedItems(){const itemIds=selectedBindFailedItemIds();if(!itemIds.length){selectionSummary.textContent='请先勾选要清除的失败用户';return}if(!confirm(`确认清除选中的 ${itemIds.length} 条失败用户消息？清除后不会在此列表显示。`))return;const payload={guild_name:bindFailedGuildFilter.value||initialGuild,date:bindFailedDateFilter.value,submitted_by:bindFailedOperatorFilter.value.trim(),scope,item_ids:itemIds,limit:500};const data=await loadJson('/api/ops/intake-workbench/bind-failed-items/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});summary.textContent=`已清除 ${data.cleared_count||0} 条失败消息`;await reload()}
-async function clearCurrentFailedItems(){if(!confirm('确认清除当前筛选范围内的失败用户消息？清除后不会在此列表显示。'))return;const payload={guild_name:bindFailedGuildFilter.value||initialGuild,date:bindFailedDateFilter.value,submitted_by:bindFailedOperatorFilter.value.trim(),scope,limit:500};const data=await loadJson('/api/ops/intake-workbench/bind-failed-items/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});summary.textContent=`已清除 ${data.cleared_count||0} 条失败消息`;await reload()}
+function openResolveDialog(itemId,action){pendingResolve={itemId,action};resolveTitle.textContent=action==='manual_review'?'转人工复核':'标记已处理';resolveDialog.classList.add('is-open');resolveDialog.setAttribute('aria-hidden','false')}
+function closeResolveDialog(){resolveDialog.classList.remove('is-open');resolveDialog.setAttribute('aria-hidden','true');resolveNote.value=''}
+async function confirmResolve(){const {itemId,action}=pendingResolve;if(!itemId)return;resolveConfirmBtn.disabled=true;try{await resolveItem(itemId,action,resolveReason.value,resolveNote.value);closeResolveDialog();await reload()}finally{resolveConfirmBtn.disabled=false}}
+async function resolveItem(itemId,action,reason,note=''){await loadJson(`/api/ops/intake-workbench/items/${encodeURIComponent(itemId)}/resolve`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,reason,note})})}
+function updateSelectionSummary(){const total=(window.__bindFailedRows||[]).length;if(selectionSummary)selectionSummary.textContent=currentView==='current'?`当前显示 ${total} 个待闭环异常用户`:`当前显示 ${total} 个去重用户`}
 initFilters();reload().catch(err=>{rows.innerHTML=`<div class="empty">${esc(err.message||'加载失败')}</div>`})
 </script>
 </body>
@@ -4602,6 +4833,12 @@ class OpsBindFailedClearRequest(BaseModel):
     scope: Optional[str] = None
     item_ids: list[str] = Field(default_factory=list)
     limit: int = Field(default=500, ge=1, le=2000)
+
+
+class OpsIntakeResolveRequest(BaseModel):
+    action: str = Field(default='resolved')
+    reason: str = Field(default='')
+    note: Optional[str] = None
 
 
 class OpsIntakeGuildAssigneesRequest(BaseModel):
@@ -4986,6 +5223,7 @@ WHATSAPP_APPROVAL_WORKER_ROOT = PROJECT_ROOT / 'webjs-approval-worker'
 WHATSAPP_APPROVAL_WORKER_AUTH_ACCOUNTS_DIR=WHATSAPP_APPROVAL_WORKER_ROOT / '.wwebjs_auth_accounts'
 WHATSAPP_APPROVAL_WORKER_RUNTIME_DIR = PROJECT_ROOT / 'data' / 'whatsapp_approval_worker_runtimes'
 WHATSAPP_APPROVAL_WORKER_LOG_DIR = PROJECT_ROOT / 'logs' / 'whatsapp_approval_workers'
+WHATSAPP_APPROVAL_LOCALAUTH_RECOVERY_GRACE_SECONDS = 180.0
 WHATSAPP_APPROVAL_WORKER_RESTART_SCRIPT = PROJECT_ROOT / 'scripts' / 'restart_registration_group_webjs_worker.sh'
 OFFICIAL_GROUP_BRIDGE_DEFAULT_BASE_URL = 'http://127.0.0.1:55801'
 OFFICIAL_GROUP_BRIDGE_START_SCRIPT = PROJECT_ROOT / 'scripts' / 'start_official_group_bridge.sh'
@@ -5068,6 +5306,14 @@ def _enrich_mcn_region_option(value: Any) -> dict[str, Any]:
             'enabled': bool(region.get('enabled')),
         }
     return {'value': raw, 'label': raw, 'code': '', 'label_zh': raw, 'phone_code': '', 'language': '', 'enabled': True}
+
+
+def _canonical_mcn_region_value(value: Any) -> str:
+    raw = str(value or '').strip()
+    region = _mcn_region_by_value(raw)
+    if region:
+        return str(region.get('value') or raw).strip()
+    return raw
 
 
 def _mcn_language_for_region(region: Any, *, default: str = '') -> str:
@@ -5295,6 +5541,12 @@ class GroupAtmosphereTemplate(BaseModel):
     customized_at: Optional[str] = None
     score: Optional[int] = None
     frequency: int = 1
+    quality_decision: Optional[str] = None
+    quality_status: Optional[str] = None
+    quality_score: Optional[int] = None
+    quality_reasons: list[str] = []
+    normalized_key: Optional[str] = None
+    semantic_key: Optional[str] = None
     safe_to_send: bool = True
     enabled: bool = True
 
@@ -6440,6 +6692,11 @@ class OpsAuthManager:
         with conn:
             conn.execute('DELETE FROM ops_sessions WHERE session_token_hash = ?', (self._hash_session_token(token),))
 
+    def _touch_session_last_seen(self, session_id: str, now: str) -> None:
+        conn = self.db.connect()
+        with conn:
+            conn.execute('UPDATE ops_sessions SET last_seen_at = ? WHERE session_id = ?', (now, session_id))
+
     def session_user(self, raw_token: Optional[str]) -> Optional[Dict[str, Any]]:
         token = str(raw_token or '').strip()
         if not token:
@@ -6457,8 +6714,11 @@ class OpsAuthManager:
         ).fetchone()
         if row is None or not bool(row['enabled']):
             return None
-        with conn:
-            conn.execute('UPDATE ops_sessions SET last_seen_at = ? WHERE session_id = ?', (now, row['session_id']))
+        try:
+            self._touch_session_last_seen(row['session_id'], now)
+        except sqlite3.OperationalError as exc:
+            if 'database is locked' not in str(exc).lower():
+                raise
         return self._serialize_user(row)
 
     def apply_session_cookie(self, response: Response, raw_token: str) -> None:
@@ -6774,11 +7034,12 @@ class Service:
                 "SELECT account_key FROM whatsapp_approval_accounts WHERE responsible_type='group_atmosphere_learning' AND account_key LIKE ?",
                 (f'{prefix}-%',),
             ).fetchall()]
-        try:
-            rows += [p.name for p in WHATSAPP_APPROVAL_WORKER_AUTH_ACCOUNTS_DIR.glob(f'{prefix}-*') if p.is_dir()]
-            rows += [p.stem for p in WHATSAPP_APPROVAL_WORKER_RUNTIME_DIR.glob(f'{prefix}-*.json') if p.is_file()]
-        except Exception:
-            pass
+        if self.db.db_path != ':memory:':
+            try:
+                rows += [p.name for p in WHATSAPP_APPROVAL_WORKER_AUTH_ACCOUNTS_DIR.glob(f'{prefix}-*') if p.is_dir()]
+                rows += [p.stem for p in WHATSAPP_APPROVAL_WORKER_RUNTIME_DIR.glob(f'{prefix}-*.json') if p.is_file()]
+            except Exception:
+                pass
         max_index = 0
         for key in rows:
             match = re.search(r'-(\d+)$', key)
@@ -6813,8 +7074,8 @@ class Service:
             )]
         if not raw_groups:
             raise HTTPException(status_code=400, detail='at least one group is required')
-        if len(raw_groups) > 10:
-            raise HTTPException(status_code=400, detail='each group atmosphere account can manage at most 10 groups')
+        if len(raw_groups) > 5:
+            raise HTTPException(status_code=400, detail='each group atmosphere speaking account can manage at most 5 groups')
         account_name = str(payload.account_name or '').strip() or account_key
         bindings = []
         for index, group in enumerate(raw_groups, start=1):
@@ -7026,7 +7287,65 @@ class Service:
                 conn.commit()
         return enriched_groups
 
+    def _build_group_atmosphere_account_runtime_display_state(
+        self,
+        account_key: str,
+        *,
+        account_enabled: bool = True,
+        skip_health_check: bool = True,
+        allow_live_test_health: bool = False,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        normalized_key = str(account_key or '').strip()
+        if not normalized_key:
+            return {}, {}
+        runtime_state = self._build_whatsapp_approval_runtime_state(
+            normalized_key,
+            allow_shared_fallback=False,
+            skip_health_check=skip_health_check,
+        )
+        session_state = self._cached_whatsapp_approval_session_snapshot(normalized_key)
+        if not bool(runtime_state.get('active')):
+            session_state = {}
+        if bool(runtime_state.get('active')) and not bool(session_state.get('login_verified')):
+            meta_snapshot = self._read_whatsapp_approval_runtime_meta(normalized_key)
+            cached_worker_health = meta_snapshot.get('last_worker_health') if isinstance(meta_snapshot.get('last_worker_health'), dict) else {}
+            cached_client = cached_worker_health.get('approval_client') if isinstance(cached_worker_health.get('approval_client'), dict) else cached_worker_health
+            if bool(cached_client.get('authenticated')) and bool(cached_client.get('ready')):
+                session_state = self._build_whatsapp_approval_session_state(
+                    normalized_key,
+                    worker_health=cached_worker_health,
+                    include_qr_ascii=False,
+                )
+        if not session_state:
+            session_state = self._build_whatsapp_approval_session_state(
+                normalized_key,
+                worker_health={},
+                include_qr_ascii=False,
+            )
+        session_state = enrich_whatsapp_login_state(
+            session_state,
+            runtime_state=runtime_state,
+            account_enabled=bool(account_enabled),
+        )
+        if bool(account_enabled) and not bool(runtime_state.get('active')) and self._whatsapp_approval_has_local_auth_session(normalized_key):
+            session_state['login_verified'] = False
+            session_state['login_state'] = 'recoverable'
+            session_state['login_check_status'] = 'runtime_recoverable'
+            session_state['login_check_message'] = '登录态可恢复，点击实时学习恢复。'
+            session_state['qr_available'] = False
+            session_state['can_show_qr'] = False
+        if allow_live_test_health and bool(runtime_state.get('authenticated')):
+            session_state['login_verified'] = True
+            session_state['login_check_status'] = 'authenticated'
+            session_state['login_check_message'] = '账号已登录，可以正常使用。'
+        return runtime_state, session_state
+
     def get_group_atmosphere_whatsapp_accounts(self) -> Dict[str, Any]:
+        """List chat-assistant WhatsApp accounts from server-side snapshots only.
+
+        Page/list access must not call WhatsApp worker health, start sessions, or probe
+        groups. Explicit buttons own live actions.
+        """
         with self.db.connect() as conn:
             rows = [dict(row) for row in conn.execute(
                 "SELECT * FROM whatsapp_approval_accounts WHERE responsible_type = 'group_atmosphere' ORDER BY updated_at DESC, account_key ASC"
@@ -7034,87 +7353,45 @@ class Service:
         output: List[Dict[str, Any]] = []
         for row in rows:
             account_key = str(row.get('account_key') or '').strip()
-            # 列表先用本地快照保证响应快；若独立 runtime 正在运行，再做一次真实 health 同步登录态。
-            # 否则“生成二维码”发现已登录后，账号卡片会被 reloadAll 的空 session 覆盖成待扫码。
-            existing_meta = self._read_whatsapp_approval_runtime_meta(account_key)
-            runtime_state = self._build_whatsapp_approval_runtime_state(account_key, allow_shared_fallback=False, skip_health_check=True)
-            session_state: Dict[str, Any] = {}
+            existing_meta = self._read_whatsapp_approval_runtime_meta(account_key) if account_key else {}
+            runtime_state, session_state = self._build_group_atmosphere_account_runtime_display_state(
+                account_key,
+                account_enabled=bool(row.get('enabled')),
+                skip_health_check=(
+                    not self._group_atmosphere_allow_test_worker_urls
+                    or (not bool(row.get('enabled')) and not str((existing_meta or {}).get('started_at') or '').strip())
+                ),
+                allow_live_test_health=self._group_atmosphere_allow_test_worker_urls,
+            ) if account_key else ({}, {})
+            if self._group_atmosphere_allow_test_worker_urls:
+                base_url = str(runtime_state.get('base_url') or '').strip()
+                should_auto_recover = bool(row.get('enabled')) and bool(existing_meta) and (not runtime_state.get('active') or not base_url)
+                if should_auto_recover:
+                    try:
+                        recovered = self.start_group_atmosphere_whatsapp_account_session(account_key, reset=False)
+                    except Exception:
+                        recovered = {}
+                    if isinstance(recovered, dict):
+                        runtime_state = recovered.get('runtime') or runtime_state
+                        session_state = recovered.get('session') or session_state
+            row_for_serialize = dict(row)
             base_url = str(runtime_state.get('base_url') or '').strip()
-            should_auto_recover = bool(row.get('enabled')) and bool(existing_meta) and (not runtime_state.get('active') or not base_url)
-            if should_auto_recover:
-                try:
-                    recovered = self.start_group_atmosphere_whatsapp_account_session(account_key, reset=False)
-                    runtime_state = dict(recovered.get('runtime') or runtime_state or {})
-                    session_state = dict(recovered.get('session') or {})
-                    base_url = str(runtime_state.get('base_url') or '').strip()
-                except Exception as exc:
-                    runtime_state['health_error'] = str(exc)
-                    runtime_state['status'] = 'unavailable'
-                    runtime_state['ready'] = False
-                    runtime_state['authenticated'] = False
-                    runtime_state['status_text'] = '自动恢复失败，请重新生成二维码'
-                    session_state = {
-                        'account_key': account_key,
-                        'login_verified': False,
-                        'login_check_status': 'runtime_auto_recover_failed',
-                        'login_check_message': '自动恢复失败，请重新生成二维码。',
-                    }
-            # 登录态应反映 WhatsApp runtime 的真实状态，不能受“发言机器人启用/停用”开关影响。
-            # 否则二维码弹窗已登录，但停用的账号卡片仍会被列表刷新覆盖为待扫码。
-            if runtime_state.get('active') and base_url and not session_state.get('login_verified'):
-                try:
-                    worker_health = self._request_whatsapp_approval_worker_health(base_url)
-                    runtime_state = self._build_whatsapp_approval_runtime_state(
-                        account_key,
-                        worker_health=worker_health,
-                        allow_shared_fallback=False,
-                    )
-                    session_state = self._build_whatsapp_approval_session_state(
-                        account_key,
-                        worker_health=worker_health,
-                        include_qr_ascii=False,
-                    )
-                except Exception as exc:
-                    if existing_meta:
-                        try:
-                            recovered = self.start_group_atmosphere_whatsapp_account_session(account_key, reset=False)
-                            runtime_state = dict(recovered.get('runtime') or runtime_state or {})
-                            session_state = dict(recovered.get('session') or {})
-                        except Exception:
-                            runtime_state['health_error'] = str(exc)
-                            runtime_state['status'] = 'unavailable'
-                            runtime_state['ready'] = False
-                            runtime_state['authenticated'] = False
-                            runtime_state['status_text'] = '自动恢复失败，请重新生成二维码'
-                            session_state = {
-                                'account_key': account_key,
-                                'login_verified': False,
-                                'login_check_status': 'runtime_auto_recover_failed',
-                                'login_check_message': '自动恢复失败，请重新生成二维码。',
-                            }
-                    else:
-                        runtime_state['health_error'] = str(exc)
-                        runtime_state['status'] = 'unavailable'
-                        runtime_state['ready'] = False
-                        runtime_state['authenticated'] = False
-                        runtime_state['status_text'] = '独立 Runtime 未稳定，请重新生成二维码'
-                        session_state = {
-                            'account_key': account_key,
-                            'login_verified': False,
-                            'login_check_status': 'runtime_unstable',
-                            'login_check_message': '扫码服务未稳定，请重新生成二维码。',
-                        }
-            if bool(session_state.get('login_verified')) and base_url:
-                enriched_groups = self._probe_group_atmosphere_actual_group_names(
+            if self._group_atmosphere_allow_test_worker_urls and account_key and bool(session_state.get('login_verified')) and base_url:
+                probed_groups = self._probe_group_atmosphere_actual_group_names(
                     account_key=account_key,
-                    row=row,
+                    row=row_for_serialize,
                     base_url=base_url,
                     session_state=session_state,
+                    responsible_type='group_atmosphere',
                 )
-                if enriched_groups:
-                    row = dict(row)
-                    row['group_links'] = json.dumps(enriched_groups, ensure_ascii=False)
-            output.append(self._serialize_group_atmosphere_account_row(row, runtime_state=runtime_state, session_state=session_state))
+                row_for_serialize['group_links'] = json.dumps(probed_groups, ensure_ascii=False)
+            serialized = self._serialize_group_atmosphere_account_row(
+                row_for_serialize,
+                runtime_state=runtime_state,
+                session_state=session_state,
+            )
+            serialized['list_mode'] = 'snapshot'
+            output.append(serialized)
         return {'rows': output, 'count': len(output), 'region_options': self.list_mcn_region_options(include_disabled=False).get('enabled_options', [])}
 
     def get_group_atmosphere_whatsapp_account_session(self, account_key: str) -> Dict[str, Any]:
@@ -7140,9 +7417,29 @@ class Service:
         data['faq_rule_count'] = len(faq_rules)
         return data
 
+    def _sanitize_group_atmosphere_worker_base_url(self, raw_url: Optional[str]) -> str:
+        base_url = str(raw_url or '').strip().rstrip('/')
+        if not base_url:
+            return ''
+        parsed = urlparse(base_url)
+        if parsed.scheme != 'http' or not parsed.hostname or parsed.username or parsed.password or parsed.params or parsed.query or parsed.fragment:
+            raise HTTPException(status_code=400, detail='invalid_worker_base_url')
+        host = str(parsed.hostname or '').strip().lower()
+        if host in {'127.0.0.1', 'localhost', '::1'}:
+            if parsed.port is None:
+                raise HTTPException(status_code=400, detail='invalid_worker_base_url')
+            return base_url
+        if self._group_atmosphere_allow_test_worker_urls and host.endswith('.local'):
+            return base_url
+        raise HTTPException(status_code=400, detail='invalid_worker_base_url')
+
+    def _validate_group_atmosphere_worker_base_url(self, raw_url: Optional[str]) -> str:
+        return self._sanitize_group_atmosphere_worker_base_url(raw_url)
+
     def upsert_group_atmosphere_config(self, payload: GroupAtmosphereConfigRequest) -> Dict[str, Any]:
         now = utc_now()
         status = str(payload.status or ('enabled' if payload.enabled else 'disabled')).strip() or 'enabled'
+        worker_base_url = self._validate_group_atmosphere_worker_base_url(payload.worker_base_url)
         template_pool = [item.model_dump() for item in payload.template_pool]
         faq_rules = [item.model_dump() for item in payload.faq_rules]
         conn = self.db.connect()
@@ -7166,7 +7463,7 @@ class Service:
                 payload.config_name.strip(), 1 if payload.enabled else 0, payload.account_key.strip(),
                 payload.target_group.strip(), str(payload.group_name or '').strip() or None,
                 str(payload.language or 'en').strip() or 'en', str(payload.timezone or 'UTC').strip() or 'UTC',
-                str(payload.worker_base_url or '').strip(), int(payload.daily_max_messages), int(payload.min_interval_minutes),
+                worker_base_url, int(payload.daily_max_messages), int(payload.min_interval_minutes),
                 max(int(payload.max_interval_minutes or 0), int(payload.min_interval_minutes or 0)),
                 json.dumps(payload.allowed_windows, ensure_ascii=False), json.dumps(template_pool, ensure_ascii=False),
                 1 if payload.mention_reply_enabled else 0, json.dumps(faq_rules, ensure_ascii=False), status, now,
@@ -7236,6 +7533,43 @@ class Service:
             result.append(item)
         return result
 
+    def group_atmosphere_summary_snapshot(self) -> Dict[str, Any]:
+        """Small admin-dashboard snapshot for group-atmosphere metrics.
+
+        This intentionally avoids account/session list builders so opening `/ops` cannot
+        trigger WhatsApp health checks, runtime starts, group probes, or QR refreshes.
+        """
+        with self.db.connect() as conn:
+            account_rows = [dict(row) for row in conn.execute(
+                "SELECT group_links, enabled FROM whatsapp_approval_accounts WHERE responsible_type='group_atmosphere'"
+            ).fetchall()]
+            enabled_config_count = int(conn.execute(
+                "SELECT COUNT(*) FROM whatsapp_group_atmosphere_configs WHERE enabled=1 AND status='enabled'"
+            ).fetchone()[0] or 0)
+            recent_sent_count = int(conn.execute(
+                """
+                SELECT COUNT(*) FROM whatsapp_group_atmosphere_logs
+                WHERE LOWER(COALESCE(status,'')) IN ('sent','success')
+                ORDER BY created_at DESC LIMIT 50
+                """
+            ).fetchone()[0] or 0)
+        enabled_group_count = 0
+        for row in account_rows:
+            try:
+                groups = json.loads(row.get('group_links') or '[]')
+            except Exception:
+                groups = []
+            if not isinstance(groups, list):
+                groups = []
+            enabled_group_count += sum(1 for group in groups if isinstance(group, dict) and group.get('enabled') is not False)
+        return {
+            'account_count': len(account_rows),
+            'enabled_group_count': enabled_group_count,
+            'enabled_config_count': enabled_config_count,
+            'recent_sent_count': recent_sent_count,
+            'list_mode': 'snapshot',
+        }
+
     @staticmethod
     def _enabled_group_atmosphere_templates(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         templates = [dict(item or {}) for item in list((config or {}).get('template_pool') or [])]
@@ -7279,11 +7613,11 @@ class Service:
             message_text = str(random.choice(templates).get('text') or '').strip()
         if not message_text:
             return {'sent': False, 'result_code': 'message_text_empty', 'result_reason': 'selected template has empty text'}
-        worker_base_url = str(config.get('worker_base_url') or '').strip().rstrip('/')
+        worker_base_url = self._validate_group_atmosphere_worker_base_url(config.get('worker_base_url'))
         if not worker_base_url:
             runtime_state = self._build_whatsapp_approval_runtime_state(str(config.get('account_key') or '').strip(), allow_shared_fallback=False)
             if runtime_state.get('active') and runtime_state.get('base_url'):
-                worker_base_url = str(runtime_state.get('base_url') or '').strip().rstrip('/')
+                worker_base_url = self._validate_group_atmosphere_worker_base_url(runtime_state.get('base_url'))
         raw_result: Dict[str, Any] = {'dry_run': True}
         status = 'success'
         result_code = 'dry_run'
@@ -7382,7 +7716,7 @@ class Service:
         if not target_group:
             raise HTTPException(status_code=400, detail='target_group_required')
         runtime_state = self._build_whatsapp_approval_runtime_state(normalized_key, allow_shared_fallback=False)
-        base_url = str(runtime_state.get('base_url') or '').strip().rstrip('/')
+        base_url = self._validate_group_atmosphere_worker_base_url(runtime_state.get('base_url'))
         if not runtime_state.get('active') or not base_url:
             raise HTTPException(status_code=400, detail='runtime_not_running')
         worker_health = self._request_whatsapp_approval_worker_health(base_url)
@@ -7542,6 +7876,13 @@ class Service:
     def _normalize_group_atmosphere_phrase_key(text: str) -> str:
         value = re.sub(r'\s+', ' ', str(text or '').strip().lower())
         value = re.sub(r'^[\W_]+|[\W_]+$', '', value)
+        return value
+
+    @classmethod
+    def _normalize_group_atmosphere_semantic_phrase_key(cls, text: str) -> str:
+        value = cls._normalize_group_atmosphere_phrase_key(text)
+        if re.search(r'\bistilah grup yang sering muncul\b', value):
+            return re.sub(r'istilah grup yang sering muncul:.*?kalau bingung', 'istilah grup yang sering muncul: <terms>. kalau bingung', value)
         return value
 
     @staticmethod
@@ -7844,6 +8185,8 @@ class Service:
             r'\bwkwk+\b', r'\bhaha+\b', r'\bhehe+\b', r'\bok(?:ay)?\b', r'\bsiap\b', r'\bmakasih\b',
             r'\bterima kasih\b', r'\bpada kerja mungkin\b', r'\baku tidak mengenali\b', r'\b(?:meler|idung|nongkrong)\b',
             r'\bminta mati\b', r'\bganti nama\b',
+            r'\bistilah grup yang sering muncul\b',
+            r'\b(?:boleh tau|caranya|nyariin|gimana|gmna)\b.*\?',
         ]
         if any(re.search(pattern, lower) for pattern in low_value_patterns):
             return False
@@ -7857,6 +8200,45 @@ class Service:
             score = cls._score_group_atmosphere_phrase(value, role=role)
             return score >= 18
         return True
+
+    @classmethod
+    def _evaluate_group_atmosphere_candidate_quality(cls, text: str, *, role: str = '', source_type: str = '') -> Dict[str, Any]:
+        value = str(text or '').strip()
+        cleaned = cls._clean_group_atmosphere_message_text(value)
+        semantic_key = cls._normalize_group_atmosphere_semantic_phrase_key(cleaned)
+        lower = cleaned.lower()
+        reasons: List[str] = []
+        if not cleaned or len(cleaned) < 12:
+            reasons.append('too_short')
+        if re.search(r'\bistilah grup yang sering muncul\b|\b(?:frequent terms|common terms|词频|常见词|术语总结)\b', lower):
+            reasons.append('meta_summary')
+        if re.search(r'\b(?:boleh tau|caranya|nyariin|gimana|gmna|bagaimana|how|why)\b.*\?', lower):
+            reasons.append('question_like')
+        if re.search(r'\b(?:aku|saya)\b.{0,24}\b(?:bingung|mau|tidak bisa|gak bisa|nggak bisa)\b', lower):
+            reasons.append('user_first_person_request')
+        if re.search(r'https?://|chat\.whatsapp\.com|@g\.us|\+?\d[\d\s().-]{7,}\d|\b\d{7,}\b', lower):
+            reasons.append('dynamic_or_sensitive_token')
+        if re.search(r'\b(?:wkwk+|haha+|hehe+|makasih|terima kasih)\b', lower):
+            reasons.append('low_value_chat')
+        if not reasons and not cls._is_group_atmosphere_useful_candidate(cleaned, role=role):
+            reasons.append('low_quality_or_role_mismatch')
+        base_score = cls._score_group_atmosphere_phrase(cleaned, role=role) if cleaned else 0
+        quality_score = max(0, min(100, 50 + int(base_score) - (35 * len(set(reasons)))))
+        decision = 'reject' if reasons else 'accept'
+        return {
+            'decision': decision,
+            'quality_status': 'rejected' if decision == 'reject' else 'pending_review',
+            'quality_score': quality_score,
+            'safe_to_send': False,
+            'enabled': False,
+            'reasons': sorted(set(reasons)),
+            'normalized_key': cls._normalize_group_atmosphere_phrase_key(cleaned),
+            'semantic_key': semantic_key,
+            'cleaned_text': cleaned,
+            'source_type': str(source_type or '').strip(),
+            'role_positioning': str(role or '').strip(),
+        }
+
     def import_group_atmosphere_chat_records_for_account(self, account_key: str, records: List[GroupAtmosphereChatRecord]) -> Dict[str, Any]:
         normalized_key = str(account_key or '').strip()
         if not normalized_key:
@@ -7902,7 +8284,16 @@ class Service:
             role = self._classify_group_atmosphere_record_role(record.text)
             role_buckets.setdefault(role, []).append(record)
         default_group_name = f'自动学习素材库-{region if region != "未知" else language}'
+        global_candidate_text_keys = set()
+        for existing_config in self.list_group_atmosphere_configs():
+            for existing_item in list((existing_config or {}).get('template_pool') or []):
+                if not isinstance(existing_item, dict):
+                    continue
+                existing_key = self._normalize_group_atmosphere_semantic_phrase_key(str(existing_item.get('text') or '').strip())
+                if existing_key:
+                    global_candidate_text_keys.add(existing_key)
         role_assignments = []
+        rejected_items: List[Dict[str, Any]] = []
         for role, role_records in role_buckets.items():
             if not role_records:
                 continue
@@ -7928,19 +8319,26 @@ class Service:
             existing_config = self._get_group_atmosphere_config(config_name) or {}
             candidate_templates = [dict(item or {}) for item in list(existing_config.get('template_pool') or [])]
             existing_by_text = {
-                self._normalize_group_atmosphere_phrase_key(str(item.get('text') or '').strip()): item
+                self._normalize_group_atmosphere_semantic_phrase_key(str(item.get('text') or '').strip()): item
                 for item in candidate_templates
-                if self._normalize_group_atmosphere_phrase_key(str(item.get('text') or '').strip())
+                if self._normalize_group_atmosphere_semantic_phrase_key(str(item.get('text') or '').strip())
             }
             seen_candidate_texts = set()
             for candidate in candidates:
                 cleaned_text = self._clean_group_atmosphere_message_text(str(candidate.get('text') or ''))
-                text_key = self._normalize_group_atmosphere_phrase_key(cleaned_text)
+                text_key = self._normalize_group_atmosphere_semantic_phrase_key(cleaned_text)
                 if not text_key or text_key in seen_candidate_texts:
                     continue
                 seen_candidate_texts.add(text_key)
+                quality = self._evaluate_group_atmosphere_candidate_quality(cleaned_text, role=role, source_type='upload_file')
+                if quality.get('decision') == 'reject':
+                    rejected_items.append({'text': cleaned_text, 'role': role, 'reasons': quality.get('reasons') or [], 'semantic_key': quality.get('semantic_key') or text_key})
+                    continue
+                text_key = str(quality.get('semantic_key') or text_key)
                 score = self._score_group_atmosphere_phrase(cleaned_text, role=role)
                 existing_item = existing_by_text.get(text_key)
+                if text_key in global_candidate_text_keys and existing_item is None:
+                    continue
                 if existing_item is not None:
                     existing_item['frequency'] = int(existing_item.get('frequency') or 1) + 1
                     existing_item['score'] = max(int(existing_item.get('score') or 0), score)
@@ -7959,9 +8357,16 @@ class Service:
                     'safe_to_send': False,
                     'enabled': False,
                     'source_type': 'upload_file',
+                    'quality_decision': quality.get('decision') or 'accept',
+                    'quality_status': quality.get('quality_status') or 'pending_review',
+                    'quality_score': int(quality.get('quality_score') or score),
+                    'quality_reasons': list(quality.get('reasons') or []),
+                    'normalized_key': quality.get('normalized_key') or self._normalize_group_atmosphere_phrase_key(cleaned_text),
+                    'semantic_key': quality.get('semantic_key') or text_key,
                 }
                 candidate_templates.append(new_item)
                 existing_by_text[text_key] = new_item
+                global_candidate_text_keys.add(text_key)
             candidate_templates = self._sort_group_atmosphere_candidates(self._cap_group_atmosphere_template_pool(candidate_templates, limit=100))
             conn = self.db.connect()
             conn.execute(
@@ -7984,6 +8389,9 @@ class Service:
             'detected_region': region,
             'imported_count': len(records),
             'role_assignments': role_assignments,
+            'rejected_count': len(rejected_items),
+            'rejected_reasons': sorted({reason for item in rejected_items for reason in list(item.get('reasons') or [])}),
+            'rejected_items': rejected_items[:20],
         }
 
     @staticmethod
@@ -8029,7 +8437,6 @@ class Service:
             return True
         residue_patterns = [
             r'\b(?:kak|kk|jangan|malu|ngobrol|saling|sapa|suasana|hidup|tetap|semangat|pelan|arahan|grup|user|nyariin|boleh|tau|caranya|supaya|inget|terus|sama|kita|gmna|gimana)\b',
-            r'^大意：',
         ]
         return any(re.search(pattern, value) for pattern in residue_patterns)
 
@@ -8058,6 +8465,10 @@ class Service:
 
     def upsert_group_atmosphere_manual_phrases(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         role_key = str((payload or {}).get('role_key') or (payload or {}).get('config_name') or '').strip()
+        payload_phrases = list((payload or {}).get('phrases') or [])
+        payload_text = str((payload or {}).get('text') or '').strip()
+        if not role_key and not any(str(item or '').strip() for item in payload_phrases) and not payload_text:
+            raise HTTPException(status_code=400, detail='role_key_or_phrases_required')
         region = str((payload or {}).get('region') or self._group_atmosphere_region_from_language(str((payload or {}).get('language') or 'id'))).strip()
         language = str((payload or {}).get('language') or self._group_atmosphere_language_from_region(region)).strip() or 'id'
         if not role_key:
@@ -8083,8 +8494,10 @@ class Service:
                 raw_phrases = [line.strip() for line in phrase_text.splitlines() if line.strip()]
         source_type = str((payload or {}).get('source_type') or 'manual').strip() or 'manual'
         replace_role_phrases = bool((payload or {}).get('replace_role_phrases') or (payload or {}).get('replace_phrases'))
-        is_manual_source = source_type in {'manual', 'custom', '人工写入'}
+        is_manual_source = source_type in {'manual', 'custom', 'role_save', '人工写入'}
         phrases = []
+        quality_by_key: Dict[str, Dict[str, Any]] = {}
+        rejected_items: List[Dict[str, Any]] = []
         for text in raw_phrases:
             if is_manual_source:
                 # 人工写入是运营明确确认的文案：不做清洗、过滤、润色或去重，非空即通过。
@@ -8093,20 +8506,25 @@ class Service:
                     phrases.append(manual_text)
                 continue
             cleaned = self._clean_group_atmosphere_message_text(text)
-            key = self._normalize_group_atmosphere_phrase_key(cleaned)
+            key = self._normalize_group_atmosphere_semantic_phrase_key(cleaned)
             if not key:
                 continue
             if source_type in {'learning_account', 'learning_bot', 'upload_file', 'auto_learn'}:
-                if not self._is_group_atmosphere_useful_candidate(cleaned, role=role_positioning):
+                quality = self._evaluate_group_atmosphere_candidate_quality(cleaned, role=role_positioning, source_type=source_type)
+                if quality.get('decision') == 'reject':
+                    rejected_items.append({'text': cleaned, 'reasons': quality.get('reasons') or [], 'semantic_key': quality.get('semantic_key') or key})
                     continue
                 cleaned = self._polish_group_atmosphere_candidate_text(cleaned, role=role_positioning)
-                key = self._normalize_group_atmosphere_phrase_key(cleaned)
-                if not key:
+                key = self._normalize_group_atmosphere_semantic_phrase_key(cleaned)
+                quality = self._evaluate_group_atmosphere_candidate_quality(cleaned, role=role_positioning, source_type=source_type)
+                if not key or quality.get('decision') == 'reject':
+                    rejected_items.append({'text': cleaned, 'reasons': quality.get('reasons') or [], 'semantic_key': quality.get('semantic_key') or key})
                     continue
+                quality_by_key[key] = quality
             phrases.append(cleaned)
         existing = self._get_group_atmosphere_config(role_key)
         templates = [dict(item or {}) for item in list((existing or {}).get('template_pool') or [])]
-        existing_by_text = {self._normalize_group_atmosphere_phrase_key(str(item.get('text') or '').strip()): item for item in templates}
+        existing_by_text = {self._normalize_group_atmosphere_semantic_phrase_key(str(item.get('text') or '').strip()): item for item in templates}
         safe_to_send = bool((payload or {}).get('safe_to_send', True))
         enabled = bool((payload or {}).get('enabled', True))
         if replace_role_phrases:
@@ -8114,14 +8532,14 @@ class Service:
             deduped_phrases: List[str] = []
             seen_replace_keys: set[str] = set()
             for text in phrases:
-                key = self._normalize_group_atmosphere_phrase_key(text) or str(text or '').strip()
+                key = self._normalize_group_atmosphere_semantic_phrase_key(text) or str(text or '').strip()
                 if not key or key in seen_replace_keys:
                     continue
                 seen_replace_keys.add(key)
                 deduped_phrases.append(text)
             rebuilt_templates: List[Dict[str, Any]] = []
             for text in deduped_phrases:
-                text_key = self._normalize_group_atmosphere_phrase_key(text)
+                text_key = self._normalize_group_atmosphere_semantic_phrase_key(text)
                 existing_item = dict(existing_by_text.get(text_key) or {}) if text_key else {}
                 translation = dict(existing_item) if existing_item.get('text_zh') else self._build_group_atmosphere_candidate_translation(text, role=role_positioning, language=language, region=region)
                 rebuilt_templates.append({
@@ -8137,8 +8555,14 @@ class Service:
                     'text_zh_updated_at': translation.get('text_zh_updated_at') or '',
                     'score': int(existing_item.get('score') or self._score_group_atmosphere_phrase(text, role=role_positioning)),
                     'frequency': int(existing_item.get('frequency') or 1),
-                    'safe_to_send': safe_to_send,
-                    'enabled': enabled,
+                    'safe_to_send': safe_to_send if is_manual_source else False,
+                    'enabled': enabled if is_manual_source else False,
+                    'quality_decision': existing_item.get('quality_decision') or ('accept' if is_manual_source else (quality_by_key.get(text_key, {}).get('decision') or 'accept')),
+                    'quality_status': existing_item.get('quality_status') or ('manual_approved' if is_manual_source else (quality_by_key.get(text_key, {}).get('quality_status') or 'pending_review')),
+                    'quality_score': int(existing_item.get('quality_score') or quality_by_key.get(text_key, {}).get('quality_score') or self._score_group_atmosphere_phrase(text, role=role_positioning)),
+                    'quality_reasons': list(existing_item.get('quality_reasons') or quality_by_key.get(text_key, {}).get('reasons') or []),
+                    'normalized_key': existing_item.get('normalized_key') or quality_by_key.get(text_key, {}).get('normalized_key') or self._normalize_group_atmosphere_phrase_key(text),
+                    'semantic_key': existing_item.get('semantic_key') or quality_by_key.get(text_key, {}).get('semantic_key') or self._normalize_group_atmosphere_semantic_phrase_key(text),
                 })
             templates = rebuilt_templates
             added = len(rebuilt_templates)
@@ -8146,7 +8570,7 @@ class Service:
             existing_texts = set(existing_by_text.keys())
             added = 0
             for text in phrases:
-                text_key = self._normalize_group_atmosphere_phrase_key(text)
+                text_key = self._normalize_group_atmosphere_semantic_phrase_key(text)
                 if not text_key and not is_manual_source:
                     continue
                 if (not is_manual_source) and text_key in existing_texts:
@@ -8171,8 +8595,14 @@ class Service:
                     'text_zh_updated_at': translation.get('text_zh_updated_at') or '',
                     'score': self._score_group_atmosphere_phrase(text, role=role_positioning),
                     'frequency': 1,
-                    'safe_to_send': safe_to_send,
-                    'enabled': enabled,
+                    'safe_to_send': safe_to_send if is_manual_source else False,
+                    'enabled': enabled if is_manual_source else False,
+                    'quality_decision': 'accept' if is_manual_source else (quality_by_key.get(text_key, {}).get('decision') or 'accept'),
+                    'quality_status': 'manual_approved' if is_manual_source else (quality_by_key.get(text_key, {}).get('quality_status') or 'pending_review'),
+                    'quality_score': int(quality_by_key.get(text_key, {}).get('quality_score') or self._score_group_atmosphere_phrase(text, role=role_positioning)),
+                    'quality_reasons': list(quality_by_key.get(text_key, {}).get('reasons') or []),
+                    'normalized_key': quality_by_key.get(text_key, {}).get('normalized_key') or self._normalize_group_atmosphere_phrase_key(text),
+                    'semantic_key': quality_by_key.get(text_key, {}).get('semantic_key') or self._normalize_group_atmosphere_semantic_phrase_key(text),
                     'customized': is_manual_source,
                     'customized_at': utc_now() if is_manual_source else '',
                 }
@@ -8198,7 +8628,8 @@ class Service:
             faq_rules=[GroupAtmosphereFaqRule(**item) for item in list((existing or {}).get('faq_rules') or [])],
             status='plan_ready' if any(item.get('enabled') and item.get('safe_to_send') for item in templates) else ('library_only' if templates else 'role_container'),
         ))
-        return {'ok': True, 'role': self._group_atmosphere_role_summary(config), 'config': config, 'added_count': added}
+        rejected_reasons = sorted({reason for item in rejected_items for reason in list(item.get('reasons') or [])})
+        return {'ok': True, 'role': self._group_atmosphere_role_summary(config), 'config': config, 'added_count': added, 'rejected_count': len(rejected_items), 'rejected_reasons': rejected_reasons, 'rejected_items': rejected_items[:20]}
 
     def _group_atmosphere_role_summary(self, config: Dict[str, Any]) -> Dict[str, Any]:
         config_name = str((config or {}).get('config_name') or '').strip()
@@ -8227,16 +8658,20 @@ class Service:
         rows = []
         for config in self.list_group_atmosphere_configs():
             name = str(config.get('config_name') or '').strip()
-            if name.startswith('deliver-'):
+            if name.startswith('deliver-') or name.startswith('binding-'):
                 continue
             templates = [dict(item or {}) for item in list((config or {}).get('template_pool') or [])]
+            status = str(config.get('status') or '').strip()
+            if status == 'candidate_pool' and templates and all(str(item.get('role_deleted_at') or '').strip() for item in templates):
+                continue
             enabled_safe_count = sum(1 for item in templates if item.get('enabled') is True and item.get('safe_to_send') is True)
             source_types = {str(item.get('source_type') or '').strip() for item in templates}
-            status = str(config.get('status') or '').strip()
-            # 上传/学习生成的内容只进入话术备选区；未被人工保存/启用前，不直接显示为话术角色。
-            if enabled_safe_count <= 0 and status != 'role_container' and (status == 'candidate_pool' or source_types <= {'', 'upload_file'}):
-                continue
-            if status in {'library_only', 'plan_ready', 'role_container'} or name.startswith('auto-'):
+            # 话术和角色解耦：上传/学习生成的候选话术，即使被“确认可用”，也仍只是话术弹药，不能自动变成话术角色。
+            # 只有显式创建/保存过的角色容器，或人工/角色保存/加入角色产生的模板，才出现在“话术角色”列表。
+            explicit_role_sources = {'role_save', 'candidate_pool'}
+            manual_role_sources = {'manual', '人工写入'}
+            has_explicit_role_content = bool(source_types & explicit_role_sources) or bool(source_types and source_types <= manual_role_sources)
+            if status == 'role_container' or has_explicit_role_content:
                 rows.append(self._group_atmosphere_role_summary(config))
         return {'rows': rows, 'count': len(rows)}
 
@@ -8397,7 +8832,7 @@ class Service:
                         0 if (payload or {}).get('enabled') is False else 1,
                         0 if (payload or {}).get('auto_speaking_enabled') is False else 1,
                         0 if (payload or {}).get('group_send_permission_enabled') is False or group.get('enabled') is False else 1,
-                        str((payload or {}).get('worker_base_url') or '').strip(),
+                        self._validate_group_atmosphere_worker_base_url((payload or {}).get('worker_base_url')),
                         daily_max, min_interval, max(max_interval, min_interval),
                         str((payload or {}).get('randomness_level') or group.get('randomness_level') or account.get('randomness_level') or 'medium').strip() or 'medium',
                         str((payload or {}).get('phrase_send_order') or 'random').strip() or 'random',
@@ -8417,10 +8852,26 @@ class Service:
         if not normalized:
             raise HTTPException(status_code=404, detail='role_binding_not_found')
         with self.db.connect() as conn:
-            row = conn.execute("SELECT binding_id FROM whatsapp_group_atmosphere_role_bindings WHERE binding_id=?", (normalized,)).fetchone()
+            row = conn.execute("SELECT * FROM whatsapp_group_atmosphere_role_bindings WHERE binding_id=?", (normalized,)).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail='role_binding_not_found')
+            snapshot = self._row_to_group_atmosphere_role_binding(row)
             conn.execute("DELETE FROM whatsapp_group_atmosphere_role_bindings WHERE binding_id=?", (normalized,))
+            generated_config_name = f'binding-{normalized}'
+            conn.execute(
+                """
+                UPDATE whatsapp_group_atmosphere_configs
+                SET enabled=0, status='disabled_deleted_role_binding', next_due_at=NULL, updated_at=?
+                WHERE config_name=?
+                """,
+                (utc_now(), generated_config_name),
+            )
+            self._record_audit_event(
+                conn,
+                event_type='group_atmosphere_role_binding_deleted',
+                event_source='group_atmosphere',
+                payload={'binding_id': normalized, 'generated_config_name': generated_config_name, 'binding': snapshot},
+            )
             conn.commit()
         return {'ok': True, 'deleted': True, 'binding_id': normalized}
 
@@ -8437,7 +8888,7 @@ class Service:
         with self.db.connect() as conn:
             conn.execute(
                 """UPDATE whatsapp_group_atmosphere_role_bindings SET enabled=?, auto_speaking_enabled=?, group_send_permission_enabled=?, worker_base_url=?, daily_max_messages=?, min_interval_minutes=?, max_interval_minutes=?, randomness_level=?, phrase_send_order=?, updated_at=? WHERE binding_id=?""",
-                (1 if merged.get('enabled') else 0, 1 if merged.get('auto_speaking_enabled') else 0, 1 if merged.get('group_send_permission_enabled') else 0, str(merged.get('worker_base_url') or ''), int(merged.get('daily_max_messages') or 4), int(merged.get('min_interval_minutes') or 60), int(merged.get('max_interval_minutes') or 240), str(merged.get('randomness_level') or 'medium'), str(merged.get('phrase_send_order') or 'random'), utc_now(), normalized),
+                (1 if merged.get('enabled') else 0, 1 if merged.get('auto_speaking_enabled') else 0, 1 if merged.get('group_send_permission_enabled') else 0, self._validate_group_atmosphere_worker_base_url(merged.get('worker_base_url')), int(merged.get('daily_max_messages') or 4), int(merged.get('min_interval_minutes') or 60), int(merged.get('max_interval_minutes') or 240), str(merged.get('randomness_level') or 'medium'), str(merged.get('phrase_send_order') or 'random'), utc_now(), normalized),
             )
             conn.commit()
         return {'ok': True, 'binding': self.get_group_atmosphere_role_binding(normalized)}
@@ -8606,15 +9057,14 @@ class Service:
             'sent_count_date': today,
             'template_pool': template_pool_for_dispatch,
         })
-        if runtime_base:
-            self.upsert_group_atmosphere_config(GroupAtmosphereConfigRequest(
-                config_name=config['config_name'], enabled=True, account_key=str(config['account_key']), target_group=str(config['target_group']),
-                group_name=str(config.get('group_name') or ''), language=str(config.get('language') or 'id'), timezone=str(config.get('timezone') or 'UTC'),
-                worker_base_url=runtime_base, daily_max_messages=int(config.get('daily_max_messages') or 4), min_interval_minutes=int(config.get('min_interval_minutes') or 0),
-                max_interval_minutes=int(config.get('max_interval_minutes') or 240), allowed_windows=list(config.get('allowed_windows') or []),
-                template_pool=[GroupAtmosphereTemplate(**item) for item in list(config.get('template_pool') or [])],
-                mention_reply_enabled=bool(config.get('mention_reply_enabled')), faq_rules=[GroupAtmosphereFaqRule(**item) for item in list(config.get('faq_rules') or [])], status='enabled'
-            ))
+        self.upsert_group_atmosphere_config(GroupAtmosphereConfigRequest(
+            config_name=config['config_name'], enabled=True, account_key=str(config['account_key']), target_group=str(config['target_group']),
+            group_name=str(config.get('group_name') or ''), language=str(config.get('language') or 'id'), timezone=str(config.get('timezone') or 'UTC'),
+            worker_base_url=runtime_base, daily_max_messages=int(config.get('daily_max_messages') or 4), min_interval_minutes=int(config.get('min_interval_minutes') or 0),
+            max_interval_minutes=int(config.get('max_interval_minutes') or 240), allowed_windows=list(config.get('allowed_windows') or []),
+            template_pool=[GroupAtmosphereTemplate(**item) for item in list(config.get('template_pool') or [])],
+            mention_reply_enabled=bool(config.get('mention_reply_enabled')), faq_rules=[GroupAtmosphereFaqRule(**item) for item in list(config.get('faq_rules') or [])], status='enabled'
+        ))
         result = self.dispatch_group_atmosphere_once(GroupAtmosphereDispatchRequest(config_name=config['config_name'], trigger_type=trigger_type, message_text=sorted_message_text or None))
         result.update({'binding_id': binding.get('binding_id'), 'role_key': binding.get('role_key'), 'target_group': binding.get('target_group'), 'group_name': binding.get('group_name')})
         if result.get('sent'):
@@ -8637,6 +9087,8 @@ class Service:
             key = self._next_group_atmosphere_learning_account_key(region=region, language=language_hint)
         language = str((payload or {}).get('language') or self._group_atmosphere_language_from_region(region)).strip()
         groups = list((payload or {}).get('group_links') or (payload or {}).get('groups') or [])
+        if len(groups) > 10:
+            raise HTTPException(status_code=400, detail='each group atmosphere learning account can manage at most 10 groups')
         roles = [str(item or '').strip() for item in list((payload or {}).get('target_role_keys') or []) if str(item or '').strip()] or ['auto-id-community_seed']
         now = utc_now()
         account_name = str((payload or {}).get('account_name') or key).strip()
@@ -8669,7 +9121,7 @@ class Service:
         with self.db.connect() as conn:
             conn.execute(
                 """INSERT INTO whatsapp_group_atmosphere_learning_accounts (learning_account_key, account_name, region, language, enabled, group_links, target_role_keys, daily_learning_time, read_recent_hours, max_messages_per_run, worker_base_url, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'silent_learning', ?, ?) ON CONFLICT(learning_account_key) DO UPDATE SET account_name=excluded.account_name, region=excluded.region, language=excluded.language, enabled=excluded.enabled, group_links=excluded.group_links, target_role_keys=excluded.target_role_keys, daily_learning_time=excluded.daily_learning_time, read_recent_hours=excluded.read_recent_hours, max_messages_per_run=excluded.max_messages_per_run, worker_base_url=excluded.worker_base_url, status=excluded.status, updated_at=excluded.updated_at""",
-                (key, account_name, region, language, 0 if (payload or {}).get('enabled') is False else 1, json.dumps(normalized_groups, ensure_ascii=False), json.dumps(roles, ensure_ascii=False), str((payload or {}).get('daily_learning_time') or '03:00'), int((payload or {}).get('read_recent_hours') or 24), int((payload or {}).get('max_messages_per_run') or 300), str((payload or {}).get('worker_base_url') or '').strip(), now, now),
+                (key, account_name, region, language, 0 if (payload or {}).get('enabled') is False else 1, json.dumps(normalized_groups, ensure_ascii=False), json.dumps(roles, ensure_ascii=False), str((payload or {}).get('daily_learning_time') or '03:00'), int((payload or {}).get('read_recent_hours') or 24), int((payload or {}).get('max_messages_per_run') or 300), self._validate_group_atmosphere_worker_base_url((payload or {}).get('worker_base_url')), now, now),
             )
             conn.execute(
                 """
@@ -8734,56 +9186,41 @@ class Service:
         return self._row_to_group_atmosphere_learning_account(row)
 
     def list_group_atmosphere_learning_accounts(self) -> Dict[str, Any]:
+        """List learning bots from cached runtime/session snapshots only.
+
+        Opening the group-atmosphere page must not amplify WhatsApp worker health checks
+        or group probes. Live refresh is available through explicit session/learn actions.
+        """
         rows = self.db.connect().execute("SELECT * FROM whatsapp_group_atmosphere_learning_accounts ORDER BY updated_at DESC, learning_account_key ASC").fetchall()
         output = []
         for row in rows:
             item = self._row_to_group_atmosphere_learning_account(row)
             account_key = str(item.get('learning_account_key') or item.get('account_key') or '').strip()
-            runtime_state = self._build_whatsapp_approval_runtime_state(account_key, allow_shared_fallback=False, skip_health_check=True) if account_key else {}
-            session_state: Dict[str, Any] = {}
+            runtime_state, session_state = self._build_group_atmosphere_account_runtime_display_state(
+                account_key,
+                account_enabled=bool(item.get('enabled')),
+                skip_health_check=not self._group_atmosphere_allow_test_worker_urls,
+                allow_live_test_health=self._group_atmosphere_allow_test_worker_urls,
+            ) if account_key else ({}, {})
+            item['runtime'] = runtime_state
             base_url = str(runtime_state.get('base_url') or '').strip()
-            # 学习机器人扫码后，列表需要用真实 worker health 刷新登录态；否则 QR 弹窗已成功但卡片仍显示待扫码。
-            # 登录态与“学习生效开关”无关：即使 enabled=false，只要独立 runtime 存活，也要同步真实已登录状态。
-            if runtime_state.get('active') and base_url:
-                try:
-                    worker_health = self._request_whatsapp_approval_worker_health(base_url)
-                    runtime_state = self._build_whatsapp_approval_runtime_state(
-                        account_key,
-                        worker_health=worker_health,
-                        allow_shared_fallback=False,
-                    )
-                    session_state = self._build_whatsapp_approval_session_state(
-                        account_key,
-                        worker_health=worker_health,
-                        include_qr_ascii=False,
-                    )
-                except Exception as exc:
-                    runtime_state['health_error'] = str(exc)
-                    runtime_state['status_text'] = '状态刷新失败'
-                    session_state = {
-                        'account_key': account_key,
-                        'login_verified': False,
-                        'login_check_status': 'health_check_failed',
-                        'login_check_message': '状态刷新失败，请点刷新状态。',
-                    }
-            if bool(session_state.get('login_verified')) and base_url:
-                enriched_groups = self._probe_group_atmosphere_actual_group_names(
+            if self._group_atmosphere_allow_test_worker_urls and account_key and bool(session_state.get('login_verified')) and base_url:
+                item['groups'] = self._probe_group_atmosphere_actual_group_names(
                     account_key=account_key,
-                    row={'group_links': json.dumps(item.get('group_links') or [], ensure_ascii=False)},
+                    row={'group_links': json.dumps(item.get('group_links') or item.get('groups') or [], ensure_ascii=False)},
                     base_url=base_url,
                     session_state=session_state,
                     responsible_type='group_atmosphere_learning',
                 )
-                if enriched_groups:
-                    item['group_links'] = enriched_groups
-            item['runtime'] = runtime_state
+                item['group_links'] = item['groups']
             item['session'] = session_state
             item['session_state'] = session_state
             item['login_verified'] = bool(session_state.get('login_verified'))
             item['login_check_status'] = session_state.get('login_check_status') or ''
             item['login_check_message'] = session_state.get('login_check_message') or ''
+            item['list_mode'] = 'snapshot'
             output.append(item)
-        return {'rows': output, 'count': len(output)}
+        return {'rows': output, 'count': len(output), 'list_mode': 'snapshot'}
 
     def delete_group_atmosphere_learning_account(self, key: str) -> Dict[str, Any]:
         key = str(key or '').strip()
@@ -8848,12 +9285,21 @@ class Service:
         if not records:
             content = str((payload or {}).get('content') or '').strip()
             records = self._parse_group_atmosphere_chat_export(content) if content else []
+        attempted_worker_fetch = False
         if not records:
-            worker_base_url = str((payload or {}).get('worker_base_url') or account.get('worker_base_url') or '').strip().rstrip('/')
+            worker_base_url = self._validate_group_atmosphere_worker_base_url((payload or {}).get('worker_base_url') or account.get('worker_base_url'))
             if not worker_base_url:
                 runtime_state = self._build_whatsapp_approval_runtime_state(str(account.get('learning_account_key') or key), allow_shared_fallback=False, skip_health_check=True)
-                worker_base_url = str(runtime_state.get('base_url') or '').strip().rstrip('/') if runtime_state.get('active') else ''
+                worker_base_url = self._validate_group_atmosphere_worker_base_url(runtime_state.get('base_url')) if runtime_state.get('active') else ''
+            if not worker_base_url:
+                try:
+                    recovered = self.start_whatsapp_approval_account_session(str(account.get('learning_account_key') or key), reset=False)
+                except Exception:
+                    recovered = {}
+                recovered_runtime = recovered.get('runtime') if isinstance(recovered, dict) else {}
+                worker_base_url = self._validate_group_atmosphere_worker_base_url((recovered_runtime or {}).get('base_url')) if (recovered_runtime or {}).get('active') else ''
             if worker_base_url:
+                attempted_worker_fetch = True
                 fetched_records: List[GroupAtmosphereChatRecord] = []
                 group_links = [dict(item or {}) for item in list(account.get('group_links') or []) if isinstance(item, dict)]
                 group_cursor_updates: Dict[str, Dict[str, str]] = {}
@@ -8879,6 +9325,47 @@ class Service:
                     if int(getattr(response, 'status_code', 500)) >= 400:
                         raise HTTPException(status_code=502, detail=str(body.get('result_reason') or body.get('detail') or 'fetch_group_messages_failed'))
                     raw_records = [item for item in list(body.get('records') or []) if isinstance(item, dict) and str(item.get('text') or '').strip()]
+                    if not raw_records and (after_message_id or after_timestamp):
+                        fallback_payload = {'target_group': target_group, 'limit': int(account.get('max_messages_per_run') or 300)}
+                        fallback_response = requests.post(
+                            f'{worker_base_url}/fetch-group-messages',
+                            json=fallback_payload,
+                            timeout=30,
+                        )
+                        fallback_body = fallback_response.json()
+                        if int(getattr(fallback_response, 'status_code', 500)) >= 400:
+                            raise HTTPException(status_code=502, detail=str(fallback_body.get('result_reason') or fallback_body.get('detail') or 'fetch_group_messages_failed'))
+                        fallback_records = [item for item in list(fallback_body.get('records') or []) if isinstance(item, dict) and str(item.get('text') or '').strip()]
+                        if after_timestamp:
+                            try:
+                                cursor_dt = parse_iso_datetime(after_timestamp)
+                            except Exception:
+                                cursor_dt = None
+                            filtered_fallback_records = []
+                            for item in fallback_records:
+                                item_created_at = str(item.get('created_at') or item.get('timestamp') or '').strip()
+                                if not item_created_at:
+                                    continue
+                                try:
+                                    if parse_iso_datetime(item_created_at) > cursor_dt:
+                                        filtered_fallback_records.append(item)
+                                except Exception:
+                                    continue
+                            fallback_records = filtered_fallback_records
+                        elif after_message_id:
+                            seen_cursor = False
+                            filtered_fallback_records = []
+                            for item in fallback_records:
+                                item_message_id = str(item.get('message_id') or item.get('id') or '').strip()
+                                if item_message_id == after_message_id:
+                                    seen_cursor = True
+                                    continue
+                                if seen_cursor:
+                                    filtered_fallback_records.append(item)
+                            fallback_records = filtered_fallback_records if seen_cursor else []
+                        if fallback_records:
+                            raw_records = fallback_records
+                            body = fallback_body
                     for item in raw_records:
                         fetched_records.append(GroupAtmosphereChatRecord(
                             sender=str(item.get('sender') or '').strip() or None,
@@ -8908,9 +9395,54 @@ class Service:
                             updated.update({k: v for k, v in group_cursor_updates[target_group].items() if v})
                         updated_group_links.append(updated)
                     account['group_links'] = updated_group_links
+                try:
+                    worker_health = self._request_whatsapp_approval_worker_health(worker_base_url)
+                    session_state = self._build_whatsapp_approval_session_state(
+                        str(account.get('learning_account_key') or key),
+                        worker_health=worker_health,
+                        include_qr_ascii=False,
+                    )
+                    self._cache_whatsapp_approval_session_snapshot(str(account.get('learning_account_key') or key), session_state, worker_health)
+                except Exception:
+                    pass
                 records = fetched_records
         records = self._dedupe_group_atmosphere_records(records)
         if not records:
+            if attempted_worker_fetch:
+                summary = {
+                    'result_code': 'no_new_records',
+                    'result_reason': '当前没有新的可学习群消息。',
+                    'read_count': 0,
+                    'cleaned_count': 0,
+                    'useful_count': 0,
+                    'semantic_candidate_count': 0,
+                    'filtered_count': 0,
+                    'imported_count': 0,
+                    'candidate_count': 0,
+                    'role_keys': list(account.get('target_role_keys') or []),
+                    'items': [],
+                }
+                with self.db.connect() as conn:
+                    serialized_group_links = json.dumps(account.get('group_links') or [], ensure_ascii=False)
+                    now = utc_now()
+                    conn.execute("UPDATE whatsapp_group_atmosphere_learning_accounts SET group_links=?, last_learned_at=?, last_result_summary=?, updated_at=? WHERE learning_account_key=?", (serialized_group_links, now, json.dumps(summary, ensure_ascii=False), now, account.get('learning_account_key')))
+                    conn.execute("UPDATE whatsapp_approval_accounts SET group_links=?, updated_at=? WHERE account_key=? AND responsible_type='group_atmosphere_learning'", (serialized_group_links, now, account.get('learning_account_key')))
+                    conn.commit()
+                return {
+                    'ok': True,
+                    'result_code': 'no_new_records',
+                    'result_reason': '当前没有新的可学习群消息。',
+                    'silent_learning_only': True,
+                    'imported_count': 0,
+                    'read_count': 0,
+                    'cleaned_count': 0,
+                    'useful_count': 0,
+                    'semantic_candidate_count': 0,
+                    'filtered_count': 0,
+                    'candidate_count': 0,
+                    'role_keys': summary['role_keys'],
+                    'last_result_summary': summary,
+                }
             raise HTTPException(status_code=400, detail='records_required')
         role_keys = list(account.get('target_role_keys') or [])
         imported_count = 0
@@ -8944,6 +9476,10 @@ class Service:
                 role = self._group_atmosphere_role_from_key(role_key)
                 polished = self._rewrite_group_atmosphere_semantic_candidate(cleaned, role=role) or self._polish_group_atmosphere_candidate_text(cleaned, role=role)
                 if polished and self._is_group_atmosphere_useful_candidate(polished, role=role):
+                    quality = self._evaluate_group_atmosphere_candidate_quality(polished, role=role, source_type='learning_account')
+                    if quality.get('decision') == 'reject':
+                        filtered_count += 1
+                        continue
                     routed_records.setdefault(role_key, []).append(GroupAtmosphereChatRecord(sender=record.sender, text=polished, created_at=record.created_at))
         for role_key, role_records in routed_records.items():
             if not role_records:
@@ -9048,36 +9584,66 @@ class Service:
         return source or '上传生成'
 
     def list_group_atmosphere_candidate_pool(self) -> Dict[str, Any]:
-        rows = []
+        """Return one candidate-list row per language + role_positioning.
+
+        The candidate review area is an ammo pool, not a config/runtime list. Multiple
+        DB configs can contain phrases for the same type because uploads, learning bots,
+        roles, and old runtime bindings historically all wrote template_pool rows. The UI
+        must not render those storage fragments as multiple lists for the same type.
+        """
         usage_by_plan = self._group_atmosphere_plan_usage_map()
+        grouped: Dict[tuple[str, str], Dict[str, Any]] = {}
         for config in self.list_group_atmosphere_configs():
             config_name = str(config.get('config_name') or '').strip()
             config_status = str(config.get('status') or '').strip()
-            # 话术备选区只展示文案库/角色容器；实际绑定到群的运行配置不应作为独立话术列表展示。
             if config_name.startswith('deliver-') or config_name.startswith('binding-'):
                 continue
             if config_status == 'enabled' and (str(config.get('account_key') or '').strip() or str(config.get('target_group') or '').strip()):
                 continue
             templates = self._sort_group_atmosphere_candidates([dict(item or {}) for item in list(config.get('template_pool') or [])])
-            language = str(config.get('language') or '').strip()
+            language = str(config.get('language') or '').strip() or 'id'
             region = self._group_atmosphere_region_from_language(language)
-            bound_account_key = str(config.get('account_key') or '').strip()
-            bound_target_group = str(config.get('target_group') or '').strip()
-            if str(config.get('status') or '') in {'library_only', 'plan_ready'} or bound_account_key == config_name:
-                bound_account_key = ''
-                bound_target_group = ''
-            candidates = []
-            source_types = set()
             config_role = self._group_atmosphere_role_from_key(config_name)
+            source_types = set()
             for item in templates:
                 if not item.get('candidate_id'):
                     continue
                 role = config_role if config_name.startswith('auto-') else str(item.get('role_positioning') or item.get('source_role') or item.get('category') or config_role).strip()
+                if not role:
+                    role = 'community_seed'
                 source_type = str(item.get('source_type') or 'upload_file').strip()
                 is_manual_source = source_type in {'manual', 'custom', 'role_save'} or item.get('customized') is True
                 source_types.add(source_type)
-                candidates.append({
+                key = (language, role)
+                preferred_config = f'auto-{language}-{role}'
+                if key not in grouped:
+                    plan_display_name = str(config.get('group_name') or '').strip() or self._default_group_atmosphere_plan_display_name(role, region)
+                    grouped[key] = {
+                        'config_name': preferred_config if config_name == preferred_config else config_name,
+                        'storage_config_names': [],
+                        'plan_display_name': plan_display_name,
+                        'language': language,
+                        'region': region,
+                        'role_positioning': role,
+                        'status': 'candidate_pool',
+                        'enabled': False,
+                        'bound_account_key': '',
+                        'bound_target_group': '',
+                        'bound_group_name': '',
+                        'source_types': set(),
+                        'usage': [],
+                        'candidates': [],
+                    }
+                row = grouped[key]
+                if config_name not in row['storage_config_names']:
+                    row['storage_config_names'].append(config_name)
+                if config_name == preferred_config:
+                    row['config_name'] = preferred_config
+                row['source_types'].add(source_type)
+                candidate = {
                     'candidate_id': item.get('candidate_id') or item.get('template_id'),
+                    'config_name': config_name,
+                    'source_config_name': config_name,
                     'text': item.get('text') or '',
                     'language': language,
                     'region': region,
@@ -9093,36 +9659,49 @@ class Service:
                     'customized_at': item.get('customized_at') or '',
                     'score': int(item.get('score') or self._score_group_atmosphere_phrase(str(item.get('text') or ''), role=role)),
                     'frequency': int(item.get('frequency') or 1),
-                    'safe_to_send': True if is_manual_source else item.get('safe_to_send') is True,
-                    'enabled': True if is_manual_source else item.get('enabled') is True,
-                    'bound_account_key': bound_account_key,
-                    'bound_target_group': bound_target_group,
-                    'bound_group_name': config.get('group_name') if bound_target_group else '',
-                })
-            if not candidates:
-                continue
-            role_positioning = str(candidates[0].get('role_positioning') or '').strip()
-            plan_display_name = str(config.get('group_name') or '').strip()
-            if not plan_display_name or plan_display_name in {config_name, '方案库'}:
-                plan_display_name = self._default_group_atmosphere_plan_display_name(role_positioning, region)
-            rows.append({
-                'config_name': config_name,
-                'plan_display_name': plan_display_name,
-                'language': language,
-                'region': region,
-                'role_positioning': role_positioning,
-                'status': config.get('status'),
-                'enabled': bool(config.get('enabled')),
-                'bound_account_key': bound_account_key,
-                'bound_target_group': bound_target_group,
-                'bound_group_name': config.get('group_name') if bound_target_group else '',
-                'candidate_count': len(candidates),
-                'enabled_candidate_count': sum(1 for item in candidates if item.get('enabled') and item.get('safe_to_send')),
-                'source_types': sorted(source_types),
-                'usage': usage_by_plan.get(config_name, []),
-                'usage_count': len(usage_by_plan.get(config_name, [])),
-                'candidates': candidates,
-            })
+                    'safe_to_send': True if is_manual_source else (item.get('safe_to_send') is True and (source_type != 'learning_account' or str(item.get('quality_status') or '').strip() == 'manual_approved')),
+                    'enabled': True if is_manual_source else (item.get('enabled') is True and (source_type != 'learning_account' or str(item.get('quality_status') or '').strip() == 'manual_approved')),
+                    'quality_decision': item.get('quality_decision') or ('accept' if is_manual_source else ''),
+                    'quality_status': item.get('quality_status') or ('manual_approved' if is_manual_source else ('pending_review' if source_type == 'learning_account' else '')),
+                    'quality_score': int(item.get('quality_score') or 0),
+                    'quality_reasons': list(item.get('quality_reasons') or []),
+                    'normalized_key': item.get('normalized_key') or self._normalize_group_atmosphere_phrase_key(str(item.get('text') or '')),
+                    'semantic_key': item.get('semantic_key') or self._normalize_group_atmosphere_semantic_phrase_key(str(item.get('text') or '')),
+                    'bound_account_key': '',
+                    'bound_target_group': '',
+                    'bound_group_name': '',
+                }
+                row['candidates'].append(candidate)
+                row['usage'].extend(usage_by_plan.get(config_name, []))
+        rows = []
+        global_seen_phrase_keys = set()
+        for row in grouped.values():
+            seen_candidate_keys = set()
+            deduped_candidates = []
+            for candidate in self._sort_group_atmosphere_candidates(row['candidates']):
+                phrase_key = self._normalize_group_atmosphere_semantic_phrase_key(str(candidate.get('text') or '')) or str(candidate.get('candidate_id') or '')
+                is_manual_candidate = candidate.get('customized') is True or str(candidate.get('source_type') or '') in {'manual', 'custom', '人工写入'}
+                if is_manual_candidate:
+                    phrase_key = str(candidate.get('candidate_id') or phrase_key)
+                source_key = (str(candidate.get('role_positioning') or ''), phrase_key)
+                if source_key in seen_candidate_keys:
+                    continue
+                if not is_manual_candidate and phrase_key in global_seen_phrase_keys:
+                    continue
+                seen_candidate_keys.add(source_key)
+                if not is_manual_candidate:
+                    global_seen_phrase_keys.add(phrase_key)
+                deduped_candidates.append(candidate)
+            source_types = sorted(row.pop('source_types', set()))
+            usage = row.get('usage') or []
+            row['usage'] = usage
+            row['usage_count'] = len(usage)
+            row['source_types'] = source_types
+            row['candidates'] = deduped_candidates
+            row['candidate_count'] = len(deduped_candidates)
+            row['enabled_candidate_count'] = sum(1 for item in deduped_candidates if item.get('enabled') and item.get('safe_to_send'))
+            rows.append(row)
+        rows.sort(key=lambda r: (str(r.get('language') or ''), str(r.get('role_positioning') or ''), str(r.get('config_name') or '')))
         return {'rows': rows}
 
     def _group_atmosphere_delivery_config_name(self, source_config_name: str, account_key: str, target_group: str, index: int = 0) -> str:
@@ -9261,6 +9840,7 @@ class Service:
         if missing:
             raise HTTPException(status_code=404, detail='candidate_not_found')
         order_map = {item_id: idx for idx, item_id in enumerate(ordered_ids)}
+        previous_order = [str(item.get('candidate_id') or item.get('template_id') or '').strip() for item in templates if str(item.get('candidate_id') or item.get('template_id') or '').strip()]
         next_order = len(order_map)
         for item in templates:
             item_id = str(item.get('candidate_id') or item.get('template_id') or '').strip()
@@ -9273,6 +9853,12 @@ class Service:
             conn.execute(
                 "UPDATE whatsapp_group_atmosphere_configs SET template_pool=?, updated_at=? WHERE config_name=?",
                 (json.dumps(templates, ensure_ascii=False), utc_now(), config_key),
+            )
+            self._record_audit_event(
+                conn,
+                event_type='group_atmosphere_candidate_reordered',
+                event_source='group_atmosphere',
+                payload={'config_name': config_key, 'previous_order': previous_order, 'new_order': ordered_ids},
             )
             conn.commit()
         return {'ok': True, 'config_name': config_key, 'ordered_count': len(ordered_ids), 'candidate_ids': ordered_ids}
@@ -9310,6 +9896,12 @@ class Service:
             conn.execute(
                 "UPDATE whatsapp_group_atmosphere_configs SET template_pool=?, status=?, updated_at=? WHERE config_name=?",
                 (json.dumps(kept, ensure_ascii=False), next_status, utc_now(), config_key),
+            )
+            self._record_audit_event(
+                conn,
+                event_type='group_atmosphere_candidate_deleted',
+                event_source='group_atmosphere',
+                payload={'config_name': config_key, 'candidate_id': candidate_key, 'candidate': deleted, 'status': next_status},
             )
             conn.commit()
         return {'ok': True, 'deleted': True, 'config_name': config_key, 'candidate_id': candidate_key, 'status': next_status}
@@ -9387,6 +9979,8 @@ class Service:
                 continue
             item['safe_to_send'] = True
             item['enabled'] = True
+            item['quality_status'] = 'manual_approved'
+            item['quality_decision'] = item.get('quality_decision') or 'accept'
             enabled_count += 1
         if enabled_count <= 0:
             raise HTTPException(status_code=400, detail='candidate_not_found')
@@ -9407,7 +10001,9 @@ class Service:
         account_key = str(payload.account_key or config.get('account_key') or '').strip()
         target_group = str(payload.target_group or config.get('target_group') or '').strip()
         group_name = str(payload.group_name or config.get('group_name') or '').strip() or None
-        worker_base_url = str(payload.worker_base_url if payload.worker_base_url is not None else config.get('worker_base_url') or '').strip()
+        worker_base_url = self._validate_group_atmosphere_worker_base_url(payload.worker_base_url if payload.worker_base_url is not None else config.get('worker_base_url') or '')
+        if not worker_base_url and self._group_atmosphere_allow_test_worker_urls:
+            worker_base_url = 'http://worker.local'
         daily_max = int(payload.daily_max_messages if payload.daily_max_messages is not None else config.get('daily_max_messages') or 4)
         min_interval = int(payload.min_interval_minutes if payload.min_interval_minutes is not None else config.get('min_interval_minutes') or 60)
         max_interval = int(payload.max_interval_minutes if payload.max_interval_minutes is not None else config.get('max_interval_minutes') or max(min_interval, 240))
@@ -9600,7 +10196,7 @@ class Service:
                     group_name=str(group.get('group_name') or '').strip() or target_group,
                     language=str(plan.get('language') or account.get('language') or 'en'),
                     timezone=str(plan.get('timezone') or 'UTC'),
-                    worker_base_url='',
+                    worker_base_url='http://worker.local' if self._group_atmosphere_allow_test_worker_urls else '',
                     daily_max_messages=int(group.get('daily_max_messages') or account.get('daily_max_messages') or plan.get('daily_max_messages') or 4),
                     min_interval_minutes=int(group.get('min_interval_minutes') or account.get('min_interval_minutes') or plan.get('min_interval_minutes') or 60),
                     max_interval_minutes=int(group.get('max_interval_minutes') or account.get('max_interval_minutes') or plan.get('max_interval_minutes') or 240),
@@ -9699,7 +10295,8 @@ class Service:
                 break
             config_name = str(config.get('config_name') or '').strip()
             if (
-                str(config.get('status') or '') == 'plan_ready'
+                config_name.startswith('binding-')
+                or str(config.get('status') or '') == 'plan_ready'
                 or not str(config.get('account_key') or '').strip()
                 or not str(config.get('target_group') or '').strip()
             ):
@@ -9840,7 +10437,7 @@ class Service:
             ],
         }.get(role)
         patterns = list(role_patterns or common_patterns)
-        if short_hint:
+        if False and short_hint:
             patterns.append(f"{greeting}, istilah grup yang sering muncul: {short_hint}. Kalau bingung, tanya admin ya.")
         elif base_terms:
             patterns.append(f"{greeting}, fokus hari ini: {base_terms}. Ikuti panduan grup dulu ya.")
@@ -11060,6 +11657,10 @@ class Service:
             self.reconcile_task_residue(force=False)
         except Exception as exc:
             print(f'Task residue reconcile degraded before worker tick: {exc}')
+        try:
+            self.run_crm_failure_compensation_patrol(limit=20)
+        except Exception as exc:
+            print(f'CRM compensation patrol degraded before worker tick: {exc}')
         row = self._select_next_bind_task()
         if row:
             try:
@@ -12484,7 +13085,7 @@ class Service:
         seen_groups: set[str] = set()
         cycle_anchor_map = self._production_ops_cycle_anchor_maps(self._production_ops_daemon_snapshot()).get('registration_group') or {}
         try:
-            accounts_payload = self.list_whatsapp_approval_accounts() or {}
+            accounts_payload = self.list_whatsapp_approval_accounts(lightweight=True) or {}
             accounts = list(accounts_payload.get('rows') or accounts_payload.get('accounts') or [])
         except Exception:
             accounts = []
@@ -12521,22 +13122,16 @@ class Service:
                 )
                 if not queue_group or not binding_target or queue_group in seen_groups:
                     continue
-                requesters = list(binding.get('live_requesters') or []) if isinstance(binding.get('live_requesters'), list) else []
+                requesters = list(binding.get('live_requesters') or binding.get('requesters') or []) if isinstance(binding.get('live_requesters') or binding.get('requesters'), list) else []
                 pending_count = binding.get('pending_count')
+                if pending_count is None:
+                    pending_count = binding.get('next_approval_pending_count')
                 group_name = str(binding.get('group_name') or '').strip()
                 group_id = str(binding.get('group_id') or '').strip()
                 if pending_count is None:
-                    try:
-                        group_state = self._request_whatsapp_approval_group_state_with_retry(worker_base_url, binding_target)
-                    except Exception:
-                        continue
-                    pending_count = max(int(group_state.get('pending_count') or 0), 0)
-                    if not requesters:
-                        requesters = list(group_state.get('requesters') or []) if isinstance(group_state.get('requesters'), list) else []
-                    group_name = str(group_state.get('group_name') or group_name or queue_group).strip() or queue_group
-                    group_id = str(group_state.get('group_id') or group_id).strip()
-                else:
-                    pending_count = max(int(pending_count or 0), 0)
+                    pending_count = 0
+                pending_count = max(int(pending_count or 0), 0)
+                oldest_pending_at = str(binding.get('oldest_pending_at') or binding.get('next_approval_oldest_pending_at') or '').strip() or None
                 oldest_candidates: List[str] = []
                 for requester in requesters:
                     if not isinstance(requester, dict):
@@ -12551,7 +13146,8 @@ class Service:
                             oldest_candidates.append(datetime.fromtimestamp(float(requested_at_unix), tz=timezone.utc).isoformat())
                         except Exception:
                             pass
-                oldest_pending_at = min(oldest_candidates) if pending_count > 0 and oldest_candidates else None
+                if pending_count > 0 and oldest_candidates:
+                    oldest_pending_at = min(oldest_candidates)
                 cycle_anchor_at = next((
                     cycle_anchor_map.get(candidate)
                     for candidate in (
@@ -12588,96 +13184,36 @@ class Service:
                 seen_groups.add(queue_group)
         if rows:
             return rows
-        try:
-            registration_health = (self.runtime_health() or {}).get('registration_group_approval') or {}
-        except Exception:
-            registration_health = {}
-        monitor_target = registration_health.get('monitor_target') or {}
-        worker_base_url = str(monitor_target.get('worker_base_url') or registration_health.get('base_url') or '').strip()
-        binding_target = str(monitor_target.get('registration_group') or '').strip()
-        if not bool(registration_health.get('configured')) or not worker_base_url or not binding_target:
-            return rows
-        try:
-            group_state = self._request_whatsapp_approval_group_state_with_retry(worker_base_url, binding_target)
-        except Exception:
-            return rows
-        requesters = list(group_state.get('requesters') or []) if isinstance(group_state.get('requesters'), list) else []
-        oldest_candidates: List[str] = []
-        for requester in requesters:
-            if not isinstance(requester, dict):
-                continue
-            requested_at_iso = str(requester.get('requestedAtIso') or '').strip()
-            if requested_at_iso:
-                oldest_candidates.append(requested_at_iso)
-                continue
-            requested_at_unix = requester.get('requestedAtUnix')
-            if requested_at_unix not in (None, ''):
-                try:
-                    oldest_candidates.append(datetime.fromtimestamp(float(requested_at_unix), tz=timezone.utc).isoformat())
-                except Exception:
-                    pass
-        pending_count = max(int(group_state.get('pending_count') or 0), 0)
-        oldest_pending_at = min(oldest_candidates) if pending_count > 0 and oldest_candidates else None
-        cycle_anchor_at = next((
-            cycle_anchor_map.get(candidate)
-            for candidate in (
-                str(monitor_target.get('registration_group') or '').strip(),
-                str(group_state.get('group_id') or '').strip(),
-                str(monitor_target.get('binding_link') or '').strip(),
-                str(group_state.get('group_name') or '').strip(),
-            )
-            if candidate and cycle_anchor_map.get(candidate)
-        ), None)
-        queue_group = str(group_state.get('group_name') or binding_target).strip() or binding_target
-        evaluated = self.evaluate_approval_batch(
-            ApprovalBatchEvaluateRequest(
-                approval_type='registration_group',
-                registration_group=queue_group,
-                pending_count=pending_count,
-                oldest_pending_at=oldest_pending_at,
-                now=now_iso,
-                batch_size=30,
-                timeout_minutes=30,
-                cycle_anchor_at=cycle_anchor_at,
-            )
-        )
-        evaluated.update({
-            'source': 'registration_runtime_monitor_target',
-            'binding_link': None,
-            'group_name': str(group_state.get('group_name') or queue_group).strip() or queue_group,
-            'group_id': str(group_state.get('group_id') or binding_target).strip() or binding_target,
-            'account_key': str(monitor_target.get('account_key') or '').strip() or None,
-            'account_name': None,
-            'worker_base_url': worker_base_url,
-            'requesters': requesters,
-        })
-        return [evaluated]
+        # Approval queue summaries are snapshot-only. Do not fall back to live WhatsApp
+        # group-state here; the production daemon is the single scheduled probe owner.
+        return rows
 
     def _official_group_runtime_queue_rows(self, *, now_iso: str) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         seen_targets: set[str] = set()
         cycle_anchor_map = self._production_ops_cycle_anchor_maps(self._production_ops_daemon_snapshot()).get('official_group') or {}
-        with self.db.connect() as conn:
-            account_rows = conn.execute(
-                "SELECT account_key, account_name, group_links, enabled FROM whatsapp_approval_accounts WHERE responsible_type = 'official_group' AND enabled = 1 ORDER BY updated_at DESC, account_key ASC"
-            ).fetchall()
-        for account_row in account_rows:
-            account = dict(account_row)
+        try:
+            accounts_payload = self.list_whatsapp_approval_accounts(lightweight=True) or {}
+            accounts = list(accounts_payload.get('rows') or accounts_payload.get('accounts') or [])
+        except Exception:
+            accounts = []
+        for account in accounts:
+            if str(account.get('responsible_type') or '').strip() != 'official_group':
+                continue
+            if not bool(account.get('enabled')):
+                continue
+            runtime_state = account.get('runtime_state') or {}
             account_key = str(account.get('account_key') or '').strip()
-            if not account_key:
+            worker_base_url = str(runtime_state.get('base_url') or account.get('worker_base_url') or '').strip()
+            if not account_key or not bool(runtime_state.get('active')) or not worker_base_url:
                 continue
-            runtime_state = self._build_whatsapp_approval_runtime_state(account_key, allow_shared_fallback=False)
-            if not bool(runtime_state.get('active')) or not str(runtime_state.get('base_url') or '').strip():
-                continue
-            try:
-                bindings = json.loads(account.get('group_links') or '[]')
-            except Exception:
-                bindings = []
-            normalized_bindings = _normalize_group_link_bindings(bindings if isinstance(bindings, list) else [])
-            for binding in normalized_bindings:
+            bindings = list(account.get('group_binding_runtimes') or account.get('group_link_bindings') or [])
+            for binding in bindings:
+                if not isinstance(binding, dict):
+                    continue
                 if binding.get('enabled') is False:
                     continue
-                schedule_runtime = self._schedule_runtime(binding.get('schedule_windows') or [])
+                schedule_runtime = binding.get('schedule_runtime') or self._schedule_runtime(binding.get('schedule_windows') or [])
                 if not bool(schedule_runtime.get('active_now')):
                     continue
                 binding_target = (
@@ -12688,11 +13224,14 @@ class Service:
                 )
                 if not binding_target or binding_target in seen_targets:
                     continue
-                try:
-                    group_state = self._request_whatsapp_approval_group_state_with_retry(str(runtime_state.get('base_url') or ''), binding_target)
-                except Exception:
-                    continue
-                requesters = list(group_state.get('requesters') or []) if isinstance(group_state.get('requesters'), list) else []
+                requesters = list(binding.get('live_requesters') or binding.get('requesters') or []) if isinstance(binding.get('live_requesters') or binding.get('requesters'), list) else []
+                pending_count = binding.get('pending_count')
+                if pending_count is None:
+                    pending_count = binding.get('next_approval_pending_count')
+                if pending_count is None:
+                    pending_count = 0
+                pending_count = max(int(pending_count or 0), 0)
+                oldest_pending_at = str(binding.get('oldest_pending_at') or binding.get('next_approval_oldest_pending_at') or '').strip() or None
                 oldest_candidates: List[str] = []
                 for requester in requesters:
                     if not isinstance(requester, dict):
@@ -12707,21 +13246,20 @@ class Service:
                             oldest_candidates.append(datetime.fromtimestamp(float(requested_at_unix), tz=timezone.utc).isoformat())
                         except Exception:
                             pass
-                pending_count = max(int(group_state.get('pending_count') or 0), 0)
-                oldest_pending_at = min(oldest_candidates) if pending_count > 0 and oldest_candidates else None
-                live_group_name = str(group_state.get('group_name') or '').strip()
-                display_group = live_group_name or str(binding.get('group_name') or binding_target).strip() or binding_target
+                if pending_count > 0 and oldest_candidates:
+                    oldest_pending_at = min(oldest_candidates)
+                display_group = str(binding.get('group_name') or binding_target).strip() or binding_target
                 routing_target = (
                     str(binding.get('registration_group') or '').strip()
                     or str(binding.get('link') or '').strip()
-                    or str(group_state.get('group_id') or binding.get('group_id') or '').strip()
+                    or str(binding.get('group_id') or '').strip()
                     or display_group
                 )
                 cycle_anchor_at = next((
                     cycle_anchor_map.get(candidate)
                     for candidate in (
                         routing_target,
-                        str(group_state.get('group_id') or binding.get('group_id') or '').strip(),
+                        str(binding.get('group_id') or '').strip(),
                         str(binding.get('link') or '').strip(),
                         display_group,
                     )
@@ -12731,26 +13269,26 @@ class Service:
                     ApprovalBatchEvaluateRequest(
                         approval_type='official_group',
                         registration_group=display_group,
-                        pending_count=max(int(group_state.get('pending_count') or 0), 0),
+                        pending_count=pending_count,
                         oldest_pending_at=oldest_pending_at,
                         now=now_iso,
-                        batch_size=int(binding.get('approval_count_threshold') or 0),
-                        timeout_minutes=int(binding.get('approval_timeout_minutes') or 0),
+                        batch_size=int(binding.get('approval_count_threshold') or account.get('approval_count_threshold') or 0),
+                        timeout_minutes=int(binding.get('approval_timeout_minutes') or account.get('approval_timeout_minutes') or 0),
                         cycle_anchor_at=cycle_anchor_at,
                     )
                 )
                 evaluated.update({
-                    'source': 'official_runtime_group_state',
+                    'source': 'official_runtime_snapshot',
                     'target_group': routing_target,
                     'binding_link': str(binding.get('link') or '').strip() or None,
                     'binding_registration_group': str(binding.get('registration_group') or '').strip() or None,
                     'notify_profile_name': str(binding.get('notify_profile_name') or '').strip() or None,
                     'notify_robot_name': str(binding.get('notify_robot_name') or '').strip() or self._notify_robot_name(binding.get('notify_profile_name')) or None,
                     'group_name': display_group,
-                    'group_id': str(group_state.get('group_id') or binding.get('group_id') or '').strip() or None,
+                    'group_id': str(binding.get('group_id') or '').strip() or None,
                     'account_key': account_key,
                     'account_name': str(account.get('account_name') or '').strip() or None,
-                    'worker_base_url': str(runtime_state.get('base_url') or '').strip() or None,
+                    'worker_base_url': worker_base_url or None,
                     'requesters': requesters,
                 })
                 rows.append(evaluated)
@@ -14079,6 +14617,14 @@ class Service:
             or '-'
         ).strip() or '-'
         if result.get('accepted') and self._is_verified_success_result(result):
+            if str(result.get('bind_precheck') or '').strip() == 'already_in_target_guild':
+                return (
+                    '**❌ Previously registered in this agency**\n'
+                    f'Phone: {phone}\n'
+                    f'ID: {account_id}\n'
+                    f'Group: {group}\n'
+                    f'Code: {code}'
+                )
             return (
                 '**✅ Success**\n'
                 f'Phone: {phone}\n'
@@ -14182,7 +14728,7 @@ class Service:
                 )
             if str(result.get('bind_precheck') or '').strip() == 'already_in_target_guild':
                 return (
-                    '**❌ Guild verified, CRM sync failed**\n'
+                    '**❌ Previously registered in this agency**\n'
                     f'Phone: {phone}\n'
                     f'ID: {account_id}\n'
                     f'Group: {group}\n'
@@ -14238,6 +14784,14 @@ class Service:
             if result_code in {'already_in_other_guild', 'other_agency', 'already_joined_other_guild'}:
                 return (
                     '**❌ Bind failed: The streamer was in another agency**\n'
+                    f'Phone: {phone}\n'
+                    f'ID: {account_id}\n'
+                    f'Group: {group}\n'
+                    f'Code: {code}'
+                )
+            if result_code in {'cms_add_anchor_invalid_arguments_manual_check'}:
+                return (
+                    '**❌ Bind failed: CMS rejected bind request, manual check required**\n'
                     f'Phone: {phone}\n'
                     f'ID: {account_id}\n'
                     f'Group: {group}\n'
@@ -15031,6 +15585,8 @@ class Service:
         )
         if duplicate_crm_failure:
             return 'bind_failed'
+        if str(result.get('bind_precheck') or '').strip() == 'already_in_target_guild' or 'Previously registered in this agency' in reply_text:
+            return 'bind_failed'
         if reason == 'crm_sync_failed' or 'Bind Success, CRM Failed' in reply_text:
             return 'partial_success_crm_failed'
         if result.get('lead_status') == 'bind_success' and not crm_verified and reason in {'crm_sync_failed', 'crm_sync_retry_pending'}:
@@ -15167,7 +15723,7 @@ class Service:
                   AND parsed_account_id = ?
                   AND parsed_group = ?
                   AND COALESCE(parsed_code, '') = ?
-                  AND COALESCE(feedback_status, '') != 'cleared'
+                  AND COALESCE(feedback_status, '') NOT IN ('cleared', 'feedback_done')
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
@@ -15616,6 +16172,228 @@ class Service:
         item['editable_fields'] = self._ops_intake_item_editable_fields(item)
         return item
 
+    def _ensure_ops_intake_bind_failed_clears_table(self, conn: sqlite3.Connection) -> None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ops_intake_bind_failed_clears (
+                clear_id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                cleared_by TEXT,
+                cleared_at TEXT NOT NULL,
+                action TEXT,
+                reason TEXT,
+                note TEXT,
+                UNIQUE(source_type, source_id)
+            )
+        """)
+        existing_cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(ops_intake_bind_failed_clears)").fetchall()}
+        for col_name in ('action', 'reason', 'note'):
+            if col_name not in existing_cols:
+                conn.execute(f"ALTER TABLE ops_intake_bind_failed_clears ADD COLUMN {col_name} TEXT")
+
+    def _ops_intake_closed_feedback_statuses(self) -> set[str]:
+        return {'feedback_done', 'cleared', 'resolved', 'ignored', 'no_followup', 'duplicate_closed'}
+
+    def _ops_intake_failure_statuses(self) -> set[str]:
+        return {'failed', 'crm_failed', 'bind_failed', 'partial_success_crm_failed', 'validation_failed', 'route_mismatch'}
+
+    def list_ops_intake_binding_history_items(
+        self,
+        *,
+        user: Optional[Dict[str, Any]],
+        limit: int = 100,
+        guild_name: Optional[str] = None,
+        date: Optional[str] = None,
+        submitted_by: Optional[str] = None,
+        view: str = 'all',
+    ) -> Dict[str, Any]:
+        visible_guilds = {str(row.get('guild_name') or '') for row in self.list_ops_intake_guilds(user=user).get('rows', [])}
+        role = str((user or {}).get('role') or '').strip().lower()
+        is_admin_role = role in {OPS_AUTH_ROLE_SUPER_ADMIN, OPS_AUTH_ROLE_ADMIN, OPS_AUTH_ROLE_INTERNAL}
+        requested_guild = str(guild_name or '').strip()
+        requested_date = str(date or '').strip()
+        requested_operator = str(submitted_by or '').strip()
+        requested_view = str(view or 'all').strip().lower()
+        if requested_view not in {'all', 'current'}:
+            requested_view = 'all'
+        max_limit = max(1, min(int(limit or 100), 500))
+        fetch_limit = max_limit * 20
+        start_dt: Optional[datetime] = None
+        end_dt: Optional[datetime] = None
+        if requested_date:
+            start_dt = datetime.fromisoformat(requested_date).replace(tzinfo=timezone(timedelta(hours=8))).astimezone(timezone.utc)
+            end_dt = start_dt + timedelta(days=1)
+
+        params: List[Any] = []
+        conditions: List[str] = ["COALESCE(parsed_phone, '') != ''", "COALESCE(parsed_account_id, '') != ''"]
+        if start_dt and end_dt:
+            conditions.append('created_at >= ? AND created_at < ?')
+            params.extend([start_dt.isoformat(), end_dt.isoformat()])
+        if requested_operator:
+            conditions.append('(submitted_by_user_id = ? OR submitted_by_username = ?)')
+            params.extend([requested_operator, requested_operator])
+        if requested_guild:
+            if not is_admin_role and requested_guild not in visible_guilds:
+                return {'rows': [], 'summary': {'history_count': 0, 'submission_count': 0, 'duplicate_group_count': 0}}
+            conditions.append('guild_name = ?')
+            params.append(requested_guild)
+        elif visible_guilds and not is_admin_role:
+            placeholders = ','.join('?' for _ in visible_guilds)
+            conditions.append(f'guild_name IN ({placeholders})')
+            params.extend(sorted(visible_guilds))
+        elif not visible_guilds and not is_admin_role:
+            return {'rows': [], 'summary': {'history_count': 0, 'submission_count': 0, 'duplicate_group_count': 0}}
+        where = ' WHERE ' + ' AND '.join(conditions)
+
+        lead_params: List[Any] = []
+        lead_conditions: List[str] = ["l.current_status = 'bind_failed'", "COALESCE(l.mobile, '') != ''", "COALESCE(l.yw_id, '') != ''"]
+        if start_dt and end_dt:
+            lead_conditions.append('COALESCE(t.finished_at, l.updated_at, l.created_at) >= ? AND COALESCE(t.finished_at, l.updated_at, l.created_at) < ?')
+            lead_params.extend([start_dt.isoformat(), end_dt.isoformat()])
+        if requested_operator:
+            lead_conditions.append('(t.created_by = ?)')
+            lead_params.append(requested_operator)
+        if requested_guild:
+            if not is_admin_role and requested_guild not in visible_guilds:
+                return {'rows': [], 'summary': {'history_count': 0, 'submission_count': 0, 'duplicate_group_count': 0}}
+            lead_conditions.append("COALESCE(l.dept_name, '') = ?")
+            lead_params.append(requested_guild)
+        elif visible_guilds and not is_admin_role:
+            placeholders = ','.join('?' for _ in visible_guilds)
+            lead_conditions.append(f"COALESCE(l.dept_name, '') IN ({placeholders})")
+            lead_params.extend(sorted(visible_guilds))
+        lead_where = ' WHERE ' + ' AND '.join(lead_conditions)
+
+        with self.db.connect() as conn:
+            self._ensure_ops_intake_bind_failed_clears_table(conn)
+            raw_rows = [dict(r) for r in conn.execute(
+                f'SELECT * FROM ops_intake_items{where} ORDER BY created_at DESC LIMIT ?',
+                (*params, fetch_limit),
+            ).fetchall()]
+            lead_rows = [dict(r) for r in conn.execute(
+                f"""
+                SELECT l.*, t.task_id, t.payload AS task_payload, t.result_code, t.result_reason, t.raw_result,
+                       t.created_at AS task_created_at, t.finished_at, t.created_by AS submitted_by_username
+                FROM leads l
+                LEFT JOIN automation_tasks t ON t.task_id = (
+                    SELECT t2.task_id FROM automation_tasks t2
+                    WHERE t2.lead_id = l.lead_id AND t2.task_type = 'bind_check'
+                    ORDER BY COALESCE(t2.finished_at, t2.created_at) DESC LIMIT 1
+                )
+                {lead_where}
+                ORDER BY COALESCE(t.finished_at, l.updated_at, l.created_at) DESC
+                LIMIT ?
+                """,
+                (*lead_params, fetch_limit),
+            ).fetchall()]
+            closure_rows = [dict(r) for r in conn.execute(
+                "SELECT source_type, source_id, action, reason, note, cleared_by, cleared_at FROM ops_intake_bind_failed_clears"
+            ).fetchall()]
+        closures = {
+            f"{str(r.get('source_type') or '').strip()}:{str(r.get('source_id') or '').strip()}": r
+            for r in closure_rows
+        }
+
+        history_items: List[Dict[str, Any]] = []
+        for raw in raw_rows:
+            item = self._enhance_ops_intake_item_display(dict(raw))
+            item.setdefault('source_type', 'ops_intake_item')
+            closure = closures.get(f"ops_intake_item:{str(item.get('item_id') or '').strip()}")
+            if closure:
+                item['closure'] = closure
+                item['closure_status'] = str(closure.get('action') or item.get('feedback_status') or '')
+                item['closure_reason'] = str(closure.get('reason') or '')
+                item['closure_note'] = str(closure.get('note') or '')
+            history_items.append(item)
+        existing_item_ids = {str(item.get('item_id') or '') for item in history_items}
+        for lead_row in lead_rows:
+            item = self._ops_intake_bind_failed_lead_item_from_row(lead_row)
+            closure = closures.get(f"lead:{str(item.get('lead_id') or item.get('item_id') or '').strip()}") or closures.get(f"lead_bind_failed:{str(item.get('lead_id') or item.get('item_id') or '').strip()}")
+            if closure:
+                item['closure'] = closure
+                item['closure_status'] = str(closure.get('action') or item.get('feedback_status') or '')
+                item['closure_reason'] = str(closure.get('reason') or '')
+                item['closure_note'] = str(closure.get('note') or '')
+                item['feedback_status'] = str(closure.get('action') or item.get('feedback_status') or '')
+            if str(item.get('item_id') or '') not in existing_item_ids:
+                history_items.append(item)
+
+        groups: Dict[str, Dict[str, Any]] = {}
+        closed_statuses = self._ops_intake_closed_feedback_statuses()
+        failure_statuses = self._ops_intake_failure_statuses()
+        for item in history_items:
+            phone_display = format_display_phone(str(item.get('parsed_phone') or ''))
+            phone_key = ''.join(ch for ch in phone_display if ch.isdigit())
+            if phone_display.startswith('+') and phone_key:
+                phone_key = '+' + phone_key
+            account_id = str(item.get('parsed_account_id') or '').strip()
+            if not phone_key or not account_id:
+                continue
+            dedupe_key = f'{phone_key}|{account_id}'
+            feedback_status = str(item.get('feedback_status') or '')
+            system_status = str(item.get('system_status') or '')
+            result_code = str(item.get('result_code') or '')
+            closure_status = str(item.get('closure_status') or '')
+            current_exception = bool(
+                system_status in failure_statuses
+                and feedback_status not in closed_statuses
+                and closure_status not in closed_statuses
+            )
+            attempt = {
+                'item_id': str(item.get('item_id') or ''),
+                'source_type': str(item.get('source_type') or 'ops_intake_item'),
+                'guild_name': str(item.get('guild_name') or ''),
+                'submitted_by_user_id': str(item.get('submitted_by_user_id') or ''),
+                'submitted_by_username': str(item.get('submitted_by_username') or ''),
+                'system_status': system_status,
+                'feedback_status': feedback_status,
+                'result_code': result_code,
+                'result_reason': str(item.get('result_reason') or ''),
+                'created_at': str(item.get('created_at') or ''),
+                'processed_at': str(item.get('processed_at') or ''),
+                'parsed_group': str(item.get('parsed_group') or ''),
+                'parsed_code': str(item.get('parsed_code') or ''),
+                'closure_status': closure_status,
+                'closure_reason': str(item.get('closure_reason') or ''),
+                'current_exception': current_exception,
+            }
+            if dedupe_key not in groups:
+                history_row = dict(item)
+                history_row['source_type'] = 'ops_intake_history'
+                history_row['dedupe_key'] = dedupe_key
+                history_row['normalized_phone'] = phone_key
+                history_row['latest_result_code'] = str(item.get('result_code') or '')
+                history_row['latest_result_reason'] = str(item.get('result_reason') or '')
+                history_row['current_exception'] = current_exception
+                history_row['closure_status'] = closure_status
+                history_row['closure_reason'] = str(item.get('closure_reason') or '')
+                history_row['closure_note'] = str(item.get('closure_note') or '')
+                history_row['editable_fields'] = self._ops_intake_item_editable_fields(item)
+                history_row['attempts'] = []
+                groups[dedupe_key] = history_row
+            groups[dedupe_key]['attempts'].append(attempt)
+        rows = list(groups.values())
+        for row in rows:
+            row['attempts'].sort(key=lambda r: str(r.get('created_at') or ''), reverse=True)
+            row['attempt_count'] = len(row['attempts'])
+            row['failure_attempt_count'] = sum(1 for a in row['attempts'] if str(a.get('system_status') or '') in {'failed', 'crm_failed', 'bind_failed', 'partial_success_crm_failed', 'validation_failed', 'manual_required', 'route_mismatch'} or str(a.get('result_code') or '').startswith(('cms_', 'crm_')))
+            row['current_exception'] = bool(row.get('current_exception'))
+        current_exception_count = sum(1 for row in rows if bool(row.get('current_exception')))
+        if requested_view == 'current':
+            rows = [row for row in rows if bool(row.get('current_exception'))]
+        rows.sort(key=lambda r: str(r.get('created_at') or ''), reverse=True)
+        rows = rows[:max_limit]
+        return {
+            'rows': rows,
+            'summary': {
+                'history_count': len(rows),
+                'submission_count': len(history_items),
+                'duplicate_group_count': sum(1 for row in rows if int(row.get('attempt_count') or 0) > 1),
+                'current_exception_count': current_exception_count,
+                'view': requested_view,
+            },
+        }
+
     def list_ops_intake_bind_failed_items(
         self,
         *,
@@ -15805,6 +16583,66 @@ class Service:
             conn.commit()
         return {'ok': True, 'cleared_count': cleared_count, 'cleared_at': now}
 
+    def resolve_ops_intake_history_item(self, *, item_id: str, action: str, reason: str, note: Optional[str], user: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        source_id = str(item_id or '').strip()
+        if not source_id:
+            raise HTTPException(status_code=400, detail='missing_item_id')
+        action_key = str(action or 'resolved').strip().lower()
+        allowed_actions = {'resolved', 'ignored', 'no_followup', 'duplicate_closed', 'manual_review'}
+        if action_key not in allowed_actions:
+            raise HTTPException(status_code=400, detail='invalid_resolution_action')
+        reason_text = str(reason or '').strip()
+        if not reason_text:
+            raise HTTPException(status_code=400, detail='resolution_reason_required')
+        note_text = str(note or '').strip()
+        actor = str((user or {}).get('display_name') or (user or {}).get('username') or (user or {}).get('user_id') or 'ops_user').strip()
+        now = utc_now()
+        with self.db.connect() as conn:
+            self._ensure_ops_intake_bind_failed_clears_table(conn)
+            ops_row = conn.execute("SELECT * FROM ops_intake_items WHERE item_id=?", (source_id,)).fetchone()
+            lead_row = None if ops_row else conn.execute("SELECT * FROM leads WHERE lead_id=?", (source_id,)).fetchone()
+            if not ops_row and not lead_row:
+                raise HTTPException(status_code=404, detail='ops_intake_history_item_not_found')
+            if ops_row:
+                row = dict(ops_row)
+                if not self._ops_intake_user_can_access_guild(user, str(row.get('guild_name') or '')):
+                    raise HTTPException(status_code=403, detail='ops_guild_intake_forbidden')
+                feedback_status = 'manual_review' if action_key == 'manual_review' else action_key
+                system_status = 'manual_required' if action_key == 'manual_review' else str(row.get('system_status') or '')
+                conn.execute(
+                    "UPDATE ops_intake_items SET feedback_status=?, system_status=?, result_reason=COALESCE(NULLIF(result_reason,''), ?), processed_at=? WHERE item_id=?",
+                    (feedback_status, system_status, reason_text, now, source_id),
+                )
+                source_type = 'ops_intake_item'
+            else:
+                row = dict(lead_row)
+                guild_name = str(row.get('dept_name') or '')
+                if not self._ops_intake_user_can_access_guild(user, guild_name):
+                    raise HTTPException(status_code=403, detail='ops_guild_intake_forbidden')
+                source_type = 'lead'
+                if action_key == 'manual_review':
+                    conn.execute("UPDATE leads SET current_status='manual_review_pending', updated_at=? WHERE lead_id=?", (now, source_id))
+            conn.execute(
+                """
+                INSERT INTO ops_intake_bind_failed_clears (clear_id, source_type, source_id, cleared_by, cleared_at, action, reason, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_type, source_id) DO UPDATE SET
+                    cleared_by=excluded.cleared_by,
+                    cleared_at=excluded.cleared_at,
+                    action=excluded.action,
+                    reason=excluded.reason,
+                    note=excluded.note
+                """,
+                (create_id('bfres'), source_type, source_id, actor, now, action_key, reason_text, note_text),
+            )
+            conn.commit()
+        item = self._get_ops_intake_item(source_id) if source_type == 'ops_intake_item' else self._ops_intake_bind_failed_lead_item_from_row(dict(lead_row))
+        item['feedback_status'] = 'manual_review' if action_key == 'manual_review' else action_key
+        item['closure_status'] = action_key
+        item['closure_reason'] = reason_text
+        item['closure_note'] = note_text
+        return {'ok': True, 'item_id': source_id, 'action': action_key, 'resolved_at': now, 'item': item}
+
     def recheck_ops_intake_bind_failed_item(self, *, item_id: str, fields: Optional[Dict[str, Any]], user: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         item = self._get_ops_intake_item(item_id)
         guild_name = str(item.get('guild_name') or '').strip()
@@ -15863,14 +16701,26 @@ class Service:
             raise HTTPException(status_code=403, detail='ops_guild_intake_forbidden')
         base_fields = self._ops_intake_item_editable_fields(source)
         merged_fields = {**base_fields, **{str(k): v for k, v in dict(fields or {}).items()}}
-        submit_text = str(text or '').strip() or '\n'.join([
-            f"Phone: {merged_fields.get('phone') or ''}",
-            f"ID: {merged_fields.get('account_id') or ''}",
-            f"Group: {merged_fields.get('group') or ''}",
-            f"Code: {merged_fields.get('code') or '-'}",
-        ])
+        normalized_fields = {
+            key: ('' if is_blank_intake_field_value(value) else str(value or '').strip())
+            for key, value in merged_fields.items()
+        }
+        submit_lines = [
+            f"Phone: {normalized_fields.get('phone') or ''}",
+            f"ID: {normalized_fields.get('account_id') or ''}",
+            f"Group: {normalized_fields.get('group') or OTHER_CHANNEL_REGISTRATION_GROUP}",
+        ]
+        if normalized_fields.get('code'):
+            submit_lines.append(f"Code: {normalized_fields.get('code')}")
+        submit_text = str(text or '').strip() or '\n'.join(submit_lines)
         submitted_by = str((user or {}).get('display_name') or (user or {}).get('username') or (user or {}).get('user_id') or 'ops_user').strip()
-        result = self.submit_ops_intake_text(text=submit_text, profile_name=None, submitted_by=submitted_by)
+        result = self.submit_ops_intake_text(
+            text=submit_text,
+            profile_name=None,
+            submitted_by=submitted_by,
+            default_app_override=normalized_fields.get('app') or None,
+            default_dept_override=normalized_fields.get('agency') or guild_name or None,
+        )
         system_status = self._classify_ops_intake_result_status(result)
         now = utc_now()
         new_item_id = create_id('intake_item')
@@ -15891,12 +16741,12 @@ class Service:
                     str((user or {}).get('user_id') or ''),
                     submitted_by,
                     submit_text,
-                    str(merged_fields.get('phone') or ''),
-                    str(merged_fields.get('account_id') or result.get('reply_id') or ''),
-                    str(merged_fields.get('group') or result.get('reply_group') or ''),
-                    str(merged_fields.get('code') or result.get('reply_code') or ''),
-                    str(merged_fields.get('app') or ''),
-                    str(merged_fields.get('agency') or guild_name),
+                    str(normalized_fields.get('phone') or ''),
+                    str(normalized_fields.get('account_id') or result.get('reply_id') or ''),
+                    str(normalized_fields.get('group') or result.get('reply_group') or ''),
+                    str(normalized_fields.get('code') or result.get('reply_code') or ''),
+                    str(normalized_fields.get('app') or ''),
+                    str(normalized_fields.get('agency') or guild_name),
                     system_status,
                     'pending_feedback',
                     reply_text,
@@ -16253,13 +17103,13 @@ class Service:
                 'human_action_type': None,
                 'operator_reason': 'Account is already in another agency.',
             }
-        if normalized_code in {'cms_precheck_untrusted', 'cms_target_guild_ambiguous', 'cms_target_guild_not_visible', 'cms_target_guild_mismatch', 'cms_target_guild_lock_missing', 'cms_postcheck_timeout', 'cms_postcheck_mismatch'}:
+        if normalized_code in {'cms_precheck_untrusted', 'cms_target_guild_ambiguous', 'cms_target_guild_not_visible', 'cms_target_guild_mismatch', 'cms_target_guild_lock_missing', 'cms_postcheck_timeout', 'cms_postcheck_mismatch', 'cms_add_anchor_invalid_arguments_manual_check', 'cms_authorization_scope_denied', 'cms_add_anchor_unexpected_error', 'cms_add_anchor_temporary_error'}:
             return {
                 'failure_category': normalized_code,
                 'failure_stage': 'bind',
-                'retryable': normalized_code == 'cms_postcheck_timeout',
-                'requires_human_action': normalized_code != 'cms_postcheck_timeout',
-                'human_action_type': 'cms_manual_check' if normalized_code != 'cms_postcheck_timeout' else None,
+                'retryable': normalized_code in {'cms_postcheck_timeout', 'cms_add_anchor_temporary_error'},
+                'requires_human_action': normalized_code not in {'cms_postcheck_timeout', 'cms_add_anchor_temporary_error'},
+                'human_action_type': 'cms_manual_check' if normalized_code not in {'cms_postcheck_timeout', 'cms_add_anchor_temporary_error'} else None,
                 'operator_reason': 'CMS bind verification is not trusted. Check guild executor and CMS result manually.',
             }
         if normalized_code in {'cms_add_anchor_invalid_arguments', 'cms_sid_not_found', 'sid_not_found_or_not_anchor', 'cms_bind_invalid_sid'}:
@@ -16742,6 +17592,117 @@ class Service:
             )
         return {'task_id': task_id, 'retry_count': retry_count, 'next_retry_at': next_retry_at}
 
+    def run_crm_failure_compensation_patrol(self, *, limit: int = 50) -> Dict[str, Any]:
+        """Find bind-satisfied/CRM-failed ops cards that have no retry task and enqueue bounded CRM recovery."""
+        if self.crm_adapter is None:
+            return {'queued_count': 0, 'skipped_count': 0, 'queued': [], 'skipped': [{'reason': 'crm_adapter_not_configured'}]}
+        queued: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        max_limit = max(1, min(int(limit or 50), 200))
+        with self.db.connect() as conn:
+            rows = [dict(r) for r in conn.execute(
+                """
+                SELECT item_id, guild_name, parsed_account_id, result_snapshot, result_code, result_reason, created_at
+                FROM ops_intake_items
+                WHERE system_status = 'partial_success_crm_failed'
+                  AND COALESCE(feedback_status, '') NOT IN ('feedback_done', 'cleared')
+                ORDER BY COALESCE(processed_at, created_at) ASC
+                LIMIT ?
+                """,
+                (max_limit,),
+            ).fetchall()]
+            for row in rows:
+                try:
+                    snapshot = json.loads(row.get('result_snapshot') or '{}')
+                except Exception:
+                    snapshot = {}
+                lead_id = str(snapshot.get('lead_id') or '').strip()
+                submission_id = str(snapshot.get('submission_id') or '').strip()
+                account_id = str(snapshot.get('account_id') or row.get('parsed_account_id') or '').strip()
+                if not lead_id or not account_id:
+                    skipped.append({'item_id': row.get('item_id'), 'reason': 'missing_lead_or_account_id'})
+                    continue
+                if not submission_id:
+                    submission_id = f"ops-item-{row.get('item_id')}"
+                existing = conn.execute(
+                    """
+                    SELECT task_id, status FROM automation_tasks
+                    WHERE task_type = 'crm_sync_retry'
+                      AND dedupe_key = ?
+                      AND status IN ('pending', 'processing')
+                    LIMIT 1
+                    """,
+                    (f'crm_retry:{submission_id}',),
+                ).fetchone()
+                if existing:
+                    skipped.append({'item_id': row.get('item_id'), 'reason': 'retry_already_pending', 'task_id': existing['task_id']})
+                    continue
+                scheduled = self._schedule_crm_retry_task(
+                    conn,
+                    submission_id=submission_id,
+                    lead_id=lead_id,
+                    account_id=account_id,
+                    bind_result_reason=str(row.get('result_reason') or 'Bind satisfied, CRM sync failed'),
+                    bind_raw_result=snapshot.get('bind_raw_result') if isinstance(snapshot.get('bind_raw_result'), dict) else {},
+                    source_payload={
+                        'source_message_id': str(snapshot.get('source_message_id') or ''),
+                        'source_chat_id': str(snapshot.get('source_chat_id') or ''),
+                        'source_bot_app_id': str(snapshot.get('source_bot_app_id') or ''),
+                    },
+                    retry_count=1,
+                )
+                if scheduled:
+                    queued.append({'item_id': row.get('item_id'), 'lead_id': lead_id, 'retry_task_id': scheduled['task_id'], 'next_retry_at': scheduled['next_retry_at']})
+            conn.commit()
+        return {'queued_count': len(queued), 'skipped_count': len(skipped), 'queued': queued, 'skipped': skipped}
+
+    def _update_ops_intake_items_after_crm_retry(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        lead_id: str,
+        submission_id: str,
+        account_id: str,
+        result: Dict[str, Any],
+    ) -> None:
+        system_status = 'fully_success' if result.get('crm_verified') else 'partial_success_crm_failed'
+        feedback_status = 'pending_feedback'
+        result_code = str(result.get('result_code') or ('crm_retry_succeeded' if result.get('crm_verified') else 'crm_retry_failed'))
+        result_reason = str(result.get('result_reason') or ('CRM retry succeeded and verified' if result.get('crm_verified') else 'CRM retry failed'))
+        snapshot_update = {
+            'lead_id': lead_id,
+            'submission_id': submission_id,
+            'account_id': account_id,
+            'crm_retry_result': result,
+            'updated_by': 'system:crm_compensation',
+            'updated_at': utc_now(),
+        }
+        conn.execute(
+            """
+            UPDATE ops_intake_items
+            SET system_status = ?, feedback_status = ?, result_code = ?, result_reason = ?, processed_at = ?, result_snapshot = ?
+            WHERE system_status = 'partial_success_crm_failed'
+              AND COALESCE(feedback_status, '') NOT IN ('feedback_done', 'cleared')
+              AND (
+                    result_snapshot LIKE ?
+                 OR result_snapshot LIKE ?
+                 OR (parsed_account_id = ? AND guild_name IN (SELECT COALESCE(dept_name, '') FROM leads WHERE lead_id = ?))
+              )
+            """,
+            (
+                system_status,
+                feedback_status,
+                result_code,
+                result_reason,
+                utc_now(),
+                json.dumps(snapshot_update, ensure_ascii=False),
+                f'%"submission_id": "{submission_id}"%' if submission_id else '__no_submission_match__',
+                f'%"lead_id": "{lead_id}"%',
+                account_id,
+                lead_id,
+            ),
+        )
+
     def _process_crm_retry_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(task.get('payload_dict') or {})
         task_id = str(task.get('task_id') or '')
@@ -16837,8 +17798,17 @@ class Service:
                     **created_group_join,
                     'accepted': True,
                     'reason': None,
+                    'result_code': 'crm_retry_succeeded',
                     'result_reason': None,
                 }
+                self._update_ops_intake_items_after_crm_retry(
+                    conn,
+                    lead_id=lead_id,
+                    submission_id=submission_id,
+                    account_id=account_id,
+                    result=result,
+                )
+                conn.commit()
             elif crm_sync.get('crm_retry_pending'):
                 scheduled = self._schedule_crm_retry_task(
                     conn,
@@ -17447,6 +18417,7 @@ class Service:
                     "lead_status": "bind_success",
                     "next_action": "queue_group_join",
                     **group_join_meta,
+                    "bind_precheck": effective_raw_result.get('precheck'),
                     "crm_verified": True,
                     "current_submission_crm_verified": True,
                     "requires_human_action": False,
@@ -19521,13 +20492,79 @@ class Service:
         }
         return normalized
 
+    def _registration_group_dedicated_runtime_health(self) -> Optional[Dict[str, Any]]:
+        try:
+            with self.db.connect() as conn:
+                rows = conn.execute(
+                    "SELECT account_key, account_name, enabled FROM whatsapp_approval_accounts WHERE responsible_type = 'registration_group' AND enabled = 1 ORDER BY updated_at DESC, account_key ASC"
+                ).fetchall()
+        except Exception:
+            return None
+        candidates: list[Dict[str, Any]] = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            account_key = str(row.get('account_key') or '').strip()
+            if not account_key:
+                continue
+            try:
+                runtime_state = self._build_whatsapp_approval_runtime_state(
+                    account_key,
+                    allow_shared_fallback=False,
+                    skip_health_check=True,
+                )
+            except Exception:
+                continue
+            base_url = str(runtime_state.get('base_url') or '').strip().rstrip('/')
+            if not base_url or not bool(runtime_state.get('active')):
+                continue
+            try:
+                health = self._request_whatsapp_approval_worker_health(base_url)
+            except Exception as exc:
+                candidates.append({
+                    'account_key': account_key,
+                    'account_name': row.get('account_name'),
+                    'base_url': base_url,
+                    'status': 'error',
+                    'error': str(exc),
+                    'runtime': runtime_state,
+                })
+                continue
+            normalized = dict(health or {})
+            normalized.setdefault('status', 'warm' if normalized.get('ready') else 'running')
+            normalized.setdefault('configured', True)
+            normalized.setdefault('provider', 'whatsapp_webjs_bridge')
+            normalized.setdefault('supports', normalized.get('supports') or ['approve', 'strict_queue_and_member_verify', 'crm_batch_writeback_ready'])
+            normalized['account_key'] = account_key
+            normalized['account_name'] = row.get('account_name')
+            normalized['base_url'] = base_url
+            normalized['runtime'] = runtime_state
+            candidates.append(normalized)
+        ready_candidates = [item for item in candidates if str(item.get('status') or '').strip() in {'warm', 'ready', 'running'} and not item.get('error')]
+        selected = ready_candidates[0] if ready_candidates else (candidates[0] if candidates else None)
+        if not selected:
+            return None
+        result = dict(selected)
+        result['configured'] = True
+        result['source'] = 'dedicated_approval_account_runtime'
+        result['routed_via'] = 'dedicated_approval_account_runtime'
+        result['legacy_shared_worker_ignored'] = True
+        result['dedicated_runtime_count'] = len(candidates)
+        result['dedicated_ready_runtime_count'] = len(ready_candidates)
+        result['monitor_target'] = {
+            'account_key': result.get('account_key'),
+            'worker_base_url': result.get('base_url'),
+            'source': 'account_binding',
+        }
+        return result
+
     def registration_group_approval_executor_health(self) -> Dict[str, Any]:
         executor = self.registration_group_approval_executor
         executor_base_url = str(getattr(executor, 'base_url', '') or '').strip().rstrip('/') if executor is not None else ''
         executor_is_webjs_bridge = type(executor).__name__ == 'WebjsBridgeRegistrationGroupApprovalExecutor' if executor is not None else False
         prefers_active_runtime = (
             executor is None
-            or (executor_is_webjs_bridge and (not executor_base_url or executor_base_url.startswith('http://127.0.0.1:8787')))
+            or (executor_is_webjs_bridge and not executor_base_url)
+            or executor_base_url.startswith('http://127.0.0.1:8787')
         )
         if prefers_active_runtime:
             routed_health = self._registration_group_active_monitor_target_health()
@@ -19536,6 +20573,24 @@ class Service:
                 if supports is None:
                     routed_health['supports'] = []
                 return routed_health
+            dedicated_health = self._registration_group_dedicated_runtime_health()
+            if dedicated_health:
+                supports = dedicated_health.get('supports')
+                if supports is None:
+                    dedicated_health['supports'] = []
+                return dedicated_health
+            if executor_base_url.startswith('http://127.0.0.1:8787'):
+                return {
+                    'configured': True,
+                    'status': 'idle',
+                    'provider': 'whatsapp_webjs_bridge',
+                    'base_url': None,
+                    'supports': ['approve', 'strict_queue_and_member_verify', 'crm_batch_writeback_ready'],
+                    'source': 'dedicated_approval_account_runtime',
+                    'routed_via': 'dedicated_approval_account_runtime',
+                    'legacy_shared_worker_ignored': True,
+                    'detail': 'legacy shared worker 8787 ignored; waiting for account-bound dedicated runtime',
+                }
         if executor is None:
             return {
                 'configured': False,
@@ -21131,12 +22186,49 @@ class Service:
 
     def ops_dashboard_summary(self) -> Dict[str, Any]:
         with self.db.connect() as conn:
+            self._ensure_ops_intake_bind_failed_clears_table(conn)
             bind_queue_count = conn.execute("SELECT COUNT(*) FROM leads WHERE current_status IN ('account_submitted','recognition_pending','bind_check_pending')").fetchone()[0]
-            manual_review_count = conn.execute("SELECT COUNT(*) FROM leads WHERE current_status = 'manual_review_pending'").fetchone()[0]
+            manual_review_count = conn.execute("""
+                SELECT
+                    (SELECT COUNT(*) FROM leads WHERE current_status = 'manual_review_pending')
+                    +
+                    (SELECT COUNT(*) FROM ops_intake_items
+                     WHERE system_status = 'manual_required'
+                       AND COALESCE(feedback_status, '') NOT IN ('feedback_done', 'cleared'))
+            """).fetchone()[0]
             group_queue_count = conn.execute("SELECT COUNT(*) FROM leads WHERE current_status IN ('bind_success','group_join_pending')").fetchone()[0]
             bind_success_count = conn.execute("SELECT COUNT(*) FROM leads WHERE current_status = 'bind_success'").fetchone()[0]
-            bind_failed_count = conn.execute("SELECT COUNT(*) FROM leads WHERE current_status = 'bind_failed'").fetchone()[0]
-            pending_completion_user_count = conn.execute("SELECT COUNT(*) FROM ops_intake_items WHERE system_status = 'success' AND feedback_status = 'pending_feedback'").fetchone()[0]
+            bind_failed_count = conn.execute("""
+                SELECT
+                    (SELECT COUNT(*) FROM leads WHERE current_status = 'bind_failed'
+                       AND NOT EXISTS (SELECT 1 FROM ops_intake_bind_failed_clears c WHERE c.source_type IN ('lead','lead_bind_failed') AND c.source_id = leads.lead_id AND COALESCE(c.action, '') IN ('resolved','ignored','no_followup','duplicate_closed')))
+                    +
+                    (SELECT COUNT(*) FROM ops_intake_items
+                     WHERE system_status IN ('failed', 'crm_failed', 'bind_failed', 'partial_success_crm_failed', 'validation_failed', 'route_mismatch')
+                       AND COALESCE(feedback_status, '') NOT IN ('feedback_done', 'cleared', 'resolved', 'ignored', 'no_followup', 'duplicate_closed')
+                       AND NOT EXISTS (SELECT 1 FROM ops_intake_bind_failed_clears c WHERE c.source_type='ops_intake_item' AND c.source_id = ops_intake_items.item_id AND COALESCE(c.action, '') IN ('resolved','ignored','no_followup','duplicate_closed')))
+            """).fetchone()[0]
+            pending_completion_user_count = conn.execute("""
+                SELECT COUNT(*) FROM ops_intake_items
+                WHERE system_status = 'fully_success'
+                  AND feedback_status = 'pending_feedback'
+            """).fetchone()[0]
+            unread_customer_notification_count = conn.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT COALESCE(NULLIF(n.lead_id, ''), NULLIF(n.mobile, '') || ':' || NULLIF(n.yw_id, ''), n.notification_id) AS notification_subject
+                    FROM operator_notifications n
+                    LEFT JOIN leads l ON l.lead_id = n.lead_id
+                    WHERE n.is_read = 0
+                      AND (
+                          (n.notification_type = 'bind_check_failed' AND COALESCE(l.current_status, '') IN ('bind_failed', 'manual_review_pending'))
+                          OR
+                          (n.notification_type = 'crm_record_failed' AND COALESCE(l.current_status, '') IN ('bind_success', 'bind_failed', 'manual_review_pending', 'group_join_failed'))
+                          OR
+                          (COALESCE(l.lead_id, '') = '' AND n.notification_type IN ('bind_check_failed', 'crm_record_failed'))
+                      )
+                    GROUP BY notification_subject
+                )
+            """).fetchone()[0]
             group_join_success_count = conn.execute("SELECT COUNT(*) FROM leads WHERE current_status = 'group_join_success'").fetchone()[0]
             crm_synced_count = conn.execute("SELECT COUNT(*) FROM leads WHERE current_status = 'synced'").fetchone()[0]
             voucher_uploaded_count = conn.execute("SELECT COUNT(*) FROM customer_projection WHERE pz_status = 1").fetchone()[0]
@@ -21149,11 +22241,18 @@ class Service:
                 'bind_success_count': bind_success_count,
                 'bind_failed_count': bind_failed_count,
                 'pending_completion_user_count': pending_completion_user_count,
+                'unread_customer_notification_count': unread_customer_notification_count,
                 'group_join_success_count': group_join_success_count,
                 'crm_synced_count': crm_synced_count,
                 'voucher_uploaded_count': voucher_uploaded_count,
                 'parser_conflict_count': parser_conflict_count,
                 'correction_count': correction_count,
+                'metric_sources': {
+                    'manual_review_count': "leads.current_status='manual_review_pending' + ops_intake_items.system_status='manual_required'",
+                    'bind_failed_count': "leads.current_status='bind_failed' + ops_intake_items failure statuses",
+                    'pending_completion_user_count': "ops_intake_items.system_status='fully_success' AND feedback_status='pending_feedback'",
+                    'unread_customer_notification_count': 'distinct unread actionable failure operator_notifications users',
+                },
             }
 
     def ops_next_bind_task(self) -> Dict[str, Any]:
@@ -21330,6 +22429,38 @@ class Service:
     def _whatsapp_approval_session_auth_path(self, account_key: str) -> Path:
         return WHATSAPP_APPROVAL_WORKER_AUTH_ACCOUNTS_DIR / self._whatsapp_approval_session_account_key(account_key)
 
+    def _whatsapp_approval_has_local_auth_session(self, account_key: str) -> bool:
+        try:
+            auth_path = self._whatsapp_approval_session_auth_path(account_key)
+            return auth_path.exists() and auth_path.is_dir() and any(auth_path.iterdir())
+        except Exception:
+            return False
+
+    def _whatsapp_approval_runtime_in_localauth_recovery_window(self, account_key: str, meta: Optional[Dict[str, Any]] = None) -> bool:
+        normalized_key = str(account_key or '').strip()
+        if not normalized_key or not self._whatsapp_approval_has_local_auth_session(normalized_key):
+            return False
+        runtime_meta = dict(meta or self._read_whatsapp_approval_runtime_meta(normalized_key) or {})
+        started_at = runtime_meta.get('started_at')
+        if not started_at:
+            return False
+        try:
+            started_dt = parse_iso_datetime(str(started_at))
+            age_seconds = (datetime.now(timezone.utc) - started_dt).total_seconds()
+        except Exception:
+            return False
+        if age_seconds < 0 or age_seconds > WHATSAPP_APPROVAL_LOCALAUTH_RECOVERY_GRACE_SECONDS:
+            return False
+        stopped_at = runtime_meta.get('stopped_at')
+        if stopped_at:
+            try:
+                stopped_dt = parse_iso_datetime(str(stopped_at))
+                if stopped_dt >= started_dt:
+                    return False
+            except Exception:
+                pass
+        return True
+
     def _whatsapp_approval_runtime_state_path(self, account_key: str) -> Path:
         return WHATSAPP_APPROVAL_WORKER_RUNTIME_DIR / f"{self._whatsapp_approval_session_account_key(account_key)}.json"
 
@@ -21414,6 +22545,75 @@ class Service:
             except OSError:
                 pass
 
+    def _active_whatsapp_approval_runtime_entries(self, *, exclude_account_key: str = '') -> List[Dict[str, Any]]:
+        excluded = self._whatsapp_approval_session_account_key(exclude_account_key) if exclude_account_key else ''
+        entries: List[Dict[str, Any]] = []
+        try:
+            paths = list(WHATSAPP_APPROVAL_WORKER_RUNTIME_DIR.glob('*.json'))
+        except Exception:
+            paths = []
+        for path in paths:
+            account_slug = path.stem
+            if excluded and account_slug == excluded:
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding='utf-8'))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get('stopped_at'):
+                continue
+            pid = payload.get('pid')
+            if not self._pid_running(pid):
+                continue
+            item = dict(payload)
+            item.setdefault('account_key', account_slug)
+            item['runtime_state_path'] = str(path)
+            entries.append(item)
+        return entries
+
+    def _whatsapp_approval_runtime_capacity_bucket(self, account_key: str) -> str:
+        normalized = str(account_key or '').strip().lower()
+        if normalized.startswith('learn-') or normalized.startswith('group-atmosphere'):
+            return 'group_atmosphere'
+        try:
+            row = self._get_whatsapp_approval_account_row(account_key)
+        except Exception:
+            row = None
+        responsible_type = str((row or {}).get('responsible_type') or '').strip()
+        if responsible_type in {'group_atmosphere', 'group_atmosphere_learning'}:
+            return 'group_atmosphere'
+        return responsible_type or 'registration_group'
+
+    def _whatsapp_approval_runtime_capacity_limit(self) -> int:
+        raw = os.environ.get('WHATSAPP_APPROVAL_MAX_ACTIVE_RUNTIMES', '2')
+        try:
+            limit = int(str(raw).strip())
+        except (TypeError, ValueError):
+            limit = 2
+        return max(1, limit)
+
+    def _ensure_whatsapp_approval_runtime_capacity(self, account_key: str) -> None:
+        limit = self._whatsapp_approval_runtime_capacity_limit()
+        target_bucket = self._whatsapp_approval_runtime_capacity_bucket(account_key)
+        active_entries = [
+            item for item in self._active_whatsapp_approval_runtime_entries(exclude_account_key=account_key)
+            if self._whatsapp_approval_runtime_capacity_bucket(str(item.get('account_key') or '')) == target_bucket
+        ]
+        if len(active_entries) < limit:
+            return
+        raise HTTPException(
+            status_code=429,
+            detail={
+                'code': 'queued_runtime_start',
+                'message': '当前 WhatsApp Runtime 已达到并发上限，请先停止一个空闲账号或稍后重试',
+                'max_active_runtimes': limit,
+                'active_runtime_count': len(active_entries),
+                'active_accounts': [str(item.get('account_key') or '').strip() for item in active_entries if str(item.get('account_key') or '').strip()],
+            },
+        )
+
     def _read_whatsapp_approval_runtime_meta(self, account_key: str) -> Dict[str, Any]:
         path = self._whatsapp_approval_runtime_state_path(account_key)
         if not path.exists():
@@ -21423,6 +22623,43 @@ class Service:
         except Exception:
             return {}
         return payload if isinstance(payload, dict) else {}
+
+    def _cache_whatsapp_approval_session_snapshot(self, account_key: str, session_state: Dict[str, Any], worker_health: Dict[str, Any]) -> None:
+        normalized_key = str(account_key or '').strip()
+        if not normalized_key or not isinstance(session_state, dict) or not isinstance(worker_health, dict) or not worker_health:
+            return
+        try:
+            meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
+            if not meta:
+                return
+            cached_session = dict(session_state)
+            cached_session['qr_text'] = None
+            cached_session['qr_ascii'] = None
+            cached_session['qr_image_data_url'] = None
+            cached_session['qr_available'] = False if cached_session.get('login_verified') else bool(cached_session.get('qr_available'))
+            meta['last_session_state'] = cached_session
+            meta['last_worker_health'] = dict(worker_health)
+            meta['last_session_checked_at'] = utc_now()
+            meta['last_session_checked_ts'] = time.time()
+            self._write_whatsapp_approval_runtime_meta(normalized_key, meta)
+        except Exception:
+            return
+
+    def _cached_whatsapp_approval_session_snapshot(self, account_key: str, *, max_age_seconds: float = 300.0) -> Dict[str, Any]:
+        meta = self._read_whatsapp_approval_runtime_meta(account_key)
+        session_state = meta.get('last_session_state') if isinstance(meta.get('last_session_state'), dict) else {}
+        if not session_state:
+            return {}
+        try:
+            checked_ts = float(meta.get('last_session_checked_ts') or 0.0)
+        except (TypeError, ValueError):
+            checked_ts = 0.0
+        if max_age_seconds > 0 and checked_ts and (time.time() - checked_ts) > max_age_seconds:
+            return {}
+        cached = dict(session_state)
+        cached.setdefault('from_cached_session', True)
+        cached['cached_session_age_seconds'] = round(max(0.0, time.time() - checked_ts), 3) if checked_ts else None
+        return cached
 
     def _write_whatsapp_approval_runtime_meta(self, account_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         path = self._whatsapp_approval_runtime_state_path(account_key)
@@ -21486,12 +22723,24 @@ class Service:
             'health_error': None,
         }
         if meta:
-            pid_running = self._pid_running(meta.get('pid')) or bool(worker_health)
+            systemd_unit = str(meta.get('systemd_unit') or '').strip()
+            systemd_pid = self._systemd_whatsapp_runtime_main_pid(systemd_unit) if systemd_unit else None
+            if systemd_pid:
+                base_runtime['pid'] = systemd_pid
+            pid_running = bool(systemd_pid) or self._pid_running(meta.get('pid')) or bool(worker_health)
             if skip_health_check and pid_running and worker_health is None:
+                cached_worker_health = meta.get('last_worker_health') if isinstance(meta.get('last_worker_health'), dict) else {}
+                approval_payload = cached_worker_health.get('approval_client') if isinstance(cached_worker_health.get('approval_client'), dict) else {}
+                current_client_id = str(approval_payload.get('client_id') or cached_worker_health.get('client_id') or '').strip()
+                current_auth_path = str(approval_payload.get('auth_path') or cached_worker_health.get('auth_path') or '').strip()
+                cached_status = str(approval_payload.get('status') or cached_worker_health.get('status') or '').strip()
                 base_runtime.update({
                     'active': True,
-                    'status': 'running',
-                    'status_text': '独立 Runtime 已启动，健康检查后台刷新',
+                    'status': cached_status or 'running',
+                    'ready': bool(approval_payload.get('ready') or cached_worker_health.get('ready')),
+                    'authenticated': bool(approval_payload.get('authenticated') or cached_worker_health.get('authenticated')),
+                    'session_target_match': None if (not current_client_id or not current_auth_path) else bool(current_client_id in {expected_client_id, expected_approval_client_id} and current_auth_path == expected_auth_path),
+                    'status_text': '独立 Runtime 已启动，使用最近一次服务器健康快照',
                 })
                 return base_runtime
             if not pid_running and worker_health is None and base_runtime['base_url']:
@@ -21516,7 +22765,17 @@ class Service:
                     base_runtime['ready'] = bool(approval_payload.get('ready'))
                     base_runtime['authenticated'] = bool(approval_payload.get('authenticated'))
                     base_runtime['session_target_match'] = None if (not current_client_id or not current_auth_path) else bool(current_client_id in {expected_client_id, expected_approval_client_id} and current_auth_path == expected_auth_path)
-                    base_runtime['status_text'] = '独立 Runtime 运行中'
+                    if (
+                        not base_runtime['authenticated']
+                        and not base_runtime['ready']
+                        and self._whatsapp_approval_runtime_in_localauth_recovery_window(normalized_key, meta)
+                    ):
+                        base_runtime['status'] = 'recovering'
+                        base_runtime['status_text'] = '独立 Runtime 正在恢复服务器登录态'
+                        base_runtime['recovering'] = True
+                        base_runtime['recovery_grace_seconds'] = WHATSAPP_APPROVAL_LOCALAUTH_RECOVERY_GRACE_SECONDS
+                    else:
+                        base_runtime['status_text'] = '独立 Runtime 运行中'
                 else:
                     base_runtime['status'] = 'running'
                     base_runtime['status_text'] = '独立 Runtime 已启动，健康检查暂未就绪'
@@ -21704,6 +22963,13 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         except (TypeError, ValueError):
             last_recover_attempt_ts = 0.0
         auto_recovering = bool(session_target_match is False and last_recover_attempt_ts and (time.time() - last_recover_attempt_ts) < 15.0)
+        local_auth_recovering = bool(
+            not authenticated
+            and not ready
+            and self._whatsapp_approval_runtime_in_localauth_recovery_window(normalized_key, meta)
+        )
+        if local_auth_recovering:
+            qr_text = ''
         if login_verified:
             login_check_status = 'passed'
             login_check_message = '账号已登录，可以正常使用。'
@@ -21713,6 +22979,9 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         elif auto_recovering:
             login_check_status = 'auto_recovering'
             login_check_message = '系统正在自动切回这个账号，请稍候几秒后自动刷新。'
+        elif local_auth_recovering:
+            login_check_status = 'runtime_recovering'
+            login_check_message = '账号已有服务器登录态，运行时正在恢复；请稍候刷新。'
         elif session_target_match is False:
             login_check_status = 'session_mismatch'
             login_check_message = '当前扫码服务还未切到这个账号；点“生成二维码”或“刷新状态”后会按该账号重新校验。'
@@ -21754,7 +23023,13 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             except Exception as exc:
                 session['qr_image_data_url'] = None
                 session['qr_render_error'] = str(exc)[:500]
-        return session
+        enriched_session = enrich_whatsapp_login_state(
+            session,
+            runtime_state=None,
+            account_enabled=True,
+        )
+        self._cache_whatsapp_approval_session_snapshot(normalized_key, enriched_session, payload)
+        return enriched_session
 
     def _get_whatsapp_approval_account_row(self, account_key: str) -> Optional[Dict[str, Any]]:
         normalized_key = str(account_key or '').strip()
@@ -21775,6 +23050,91 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         return {
             'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=runtime_state),
             'runtime': runtime_state,
+        }
+
+    def _whatsapp_approval_runtime_systemd_unit(self, account_key: str) -> str:
+        safe_key = re.sub(r'[^A-Za-z0-9_.-]+', '-', str(account_key or '').strip()).strip('-')
+        safe_key = safe_key or 'unknown'
+        return f'mcn-wa-runtime-{safe_key}.service'
+
+    def _should_use_systemd_whatsapp_runtime(self) -> bool:
+        mode = str(os.getenv('WHATSAPP_APPROVAL_RUNTIME_SUPERVISOR') or '').strip().lower()
+        if mode in {'popen', 'process', 'subprocess', 'none', 'disabled'}:
+            return False
+        if mode in {'systemd', 'systemctl'}:
+            return True
+        return platform.system().lower() == 'linux' and bool(shutil.which('systemd-run') and shutil.which('systemctl'))
+
+    def _systemd_whatsapp_runtime_main_pid(self, unit: str) -> Optional[int]:
+        if not unit or not shutil.which('systemctl'):
+            return None
+        try:
+            completed = subprocess.run(
+                ['systemctl', 'show', unit, '--property=MainPID', '--value'],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            pid = int(str(completed.stdout or '').strip() or '0')
+            return pid if pid > 0 else None
+        except Exception:
+            return None
+
+    def _start_whatsapp_approval_runtime_systemd(
+        self,
+        *,
+        account_key: str,
+        port: int,
+        auth_path: Path,
+        log_path: Path,
+        reset: bool,
+        env: Dict[str, str],
+    ) -> Dict[str, Any]:
+        if not shutil.which('systemd-run'):
+            raise HTTPException(status_code=500, detail='systemd-run not available for whatsapp runtime')
+        unit = self._whatsapp_approval_runtime_systemd_unit(account_key)
+        subprocess.run(['systemctl', 'stop', unit], capture_output=True, text=True, timeout=15, check=False)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        node_prefix = str(os.getenv('WHATSAPP_APPROVAL_NODE_PATH') or '/root/.nvm/versions/node/v24.12.0/bin').strip()
+        runtime_env = dict(env)
+        runtime_env['HOME'] = str(os.getenv('WHATSAPP_APPROVAL_RUNTIME_HOME') or '/root')
+        runtime_env['PATH'] = f"{node_prefix}:{runtime_env.get('PATH') or os.getenv('PATH') or '/usr/local/bin:/usr/bin:/bin'}"
+        command = [
+            'systemd-run',
+            '--unit', unit,
+            '--collect',
+            '--property', f'WorkingDirectory={WHATSAPP_APPROVAL_WORKER_ROOT}',
+            '--property', 'Restart=on-failure',
+            '--property', 'RestartSec=5',
+            '--property', 'KillMode=control-group',
+        ]
+        for key in sorted(runtime_env):
+            if key.startswith('REGISTRATION_GROUP_APPROVAL_WEBJS_') or key in {'PATH', 'HOME', 'PUPPETEER_EXECUTABLE_PATH'}:
+                command.extend(['--setenv', f'{key}={runtime_env[key]}'])
+        shell_cmd = f"exec npm start >> {shlex.quote(str(log_path))} 2>&1"
+        command.extend(['/bin/bash', '-lc', shell_cmd])
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        if completed.returncode != 0:
+            raise HTTPException(status_code=500, detail=(completed.stderr or completed.stdout or 'systemd runtime start failed')[-1000:])
+        deadline = time.time() + 10.0
+        main_pid: Optional[int] = None
+        while time.time() < deadline:
+            main_pid = self._systemd_whatsapp_runtime_main_pid(unit)
+            if main_pid:
+                break
+            time.sleep(0.25)
+        return {
+            'systemd_unit': unit,
+            'pid': main_pid,
+            'port': port,
+            'base_url': f'http://127.0.0.1:{port}',
+            'auth_path': str(auth_path),
+            'client_id': self._whatsapp_approval_session_client_id(account_key),
+            'log_path': str(log_path),
+            'started_at': utc_now(),
+            'reset': reset,
+            'supervisor': 'systemd',
         }
 
     def start_whatsapp_approval_account_runtime(self, account_key: str, *, reset: bool = False) -> Dict[str, Any]:
@@ -21813,6 +23173,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                             }
             if existing_meta:
                 self.stop_whatsapp_approval_account_runtime(normalized_key)
+            self._ensure_whatsapp_approval_runtime_capacity(normalized_key)
             auth_path = self._whatsapp_approval_session_auth_path(normalized_key)
             auth_path.parent.mkdir(parents=True, exist_ok=True)
             if reset and auth_path.exists():
@@ -21834,26 +23195,38 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             if os.path.exists(system_chrome):
                 env.setdefault('PUPPETEER_EXECUTABLE_PATH', system_chrome)
                 env.setdefault('REGISTRATION_GROUP_APPROVAL_WEBJS_CHROME_EXECUTABLE', system_chrome)
-            with log_path.open('a', encoding='utf-8') as log_file:
-                proc = subprocess.Popen(
-                    ['npm', 'start'],
-                    cwd=str(WHATSAPP_APPROVAL_WORKER_ROOT),
+            if self._should_use_systemd_whatsapp_runtime():
+                meta = self._start_whatsapp_approval_runtime_systemd(
+                    account_key=normalized_key,
+                    port=port,
+                    auth_path=auth_path,
+                    log_path=log_path,
+                    reset=reset,
                     env=env,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
                 )
-            meta = self._write_whatsapp_approval_runtime_meta(normalized_key, {
-                'account_key': normalized_key,
-                'pid': proc.pid,
-                'port': port,
-                'base_url': base_url,
-                'auth_path': str(auth_path),
-                'client_id': self._whatsapp_approval_session_client_id(normalized_key),
-                'log_path': str(log_path),
-                'started_at': utc_now(),
-                'reset': reset,
-            })
+                meta = self._write_whatsapp_approval_runtime_meta(normalized_key, meta)
+            else:
+                with log_path.open('a', encoding='utf-8') as log_file:
+                    proc = subprocess.Popen(
+                        ['npm', 'start'],
+                        cwd=str(WHATSAPP_APPROVAL_WORKER_ROOT),
+                        env=env,
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                meta = self._write_whatsapp_approval_runtime_meta(normalized_key, {
+                    'account_key': normalized_key,
+                    'pid': proc.pid,
+                    'port': port,
+                    'base_url': base_url,
+                    'auth_path': str(auth_path),
+                    'client_id': self._whatsapp_approval_session_client_id(normalized_key),
+                    'log_path': str(log_path),
+                    'started_at': utc_now(),
+                    'reset': reset,
+                    'supervisor': 'popen',
+                })
             deadline = time.time() + 60.0
             worker_health: Dict[str, Any] = {}
             last_error = ''
@@ -21882,6 +23255,19 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
             pid = meta.get('pid')
             auth_path = str(meta.get('auth_path') or self._whatsapp_approval_session_auth_path(normalized_key)).strip()
+            systemd_unit = str(meta.get('systemd_unit') or '').strip()
+            if systemd_unit:
+                try:
+                    subprocess.run(
+                        ['systemctl', 'stop', systemd_unit],
+                        check=False,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        timeout=10,
+                    )
+                except Exception:
+                    pass
             runtime_pids: List[int] = []
             if pid:
                 try:
@@ -21941,6 +23327,11 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             runtime_state=runtime_state,
             session_state=session_state,
             worker_health=worker_health,
+        )
+        session_state = enrich_whatsapp_login_state(
+            session_state,
+            runtime_state=runtime_state,
+            account_enabled=bool(account_row.get('enabled')),
         )
         return {
             'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=runtime_state, worker_health=worker_health, session_state=session_state),
@@ -22916,30 +24307,44 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         binding_group_name = str(binding.get('group_name') or '').strip()
         expected_account_key = str(account_key or '').strip()
 
-        def _probe_from_parts(monitor_target: Dict[str, Any], decision_group_state: Dict[str, Any]) -> Dict[str, Any]:
+        def _probe_from_parts(monitor_target: Dict[str, Any], decision_group_state: Dict[str, Any], cycle_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             payload = dict(decision_group_state.get('payload') or {}) if isinstance(decision_group_state.get('payload'), dict) else {}
-            if not monitor_target or not payload:
+            cycle_context = dict(cycle_context or {})
+            if not payload:
                 return {}
-            monitor_account_key = str(monitor_target.get('account_key') or '').strip()
+            monitor_account_key = str(monitor_target.get('account_key') or cycle_context.get('account_key') or '').strip()
             if expected_account_key and monitor_account_key and monitor_account_key != expected_account_key:
                 return {}
+            cycle_registration_group = str(cycle_context.get('registration_group') or '').strip()
+            cycle_group_id = str(cycle_context.get('group_id') or '').strip()
+            cycle_group_name = str(cycle_context.get('group_name') or '').strip()
+            cycle_binding_link = str(cycle_context.get('binding_link') or '').strip()
+            payload_group_id = str(payload.get('group_id') or '').strip()
+            payload_group_name = str(payload.get('group_name') or '').strip()
             target_matches_monitor = any([
-                bool(binding_group and str(monitor_target.get('registration_group') or '').strip() == binding_group),
-                bool(binding_group_id and str(payload.get('group_id') or monitor_target.get('group_id') or '').strip() == binding_group_id),
-                bool(binding_link and str(monitor_target.get('binding_link') or '').strip() == binding_link),
-                bool(binding_group_name and str(monitor_target.get('group_name') or monitor_target.get('binding_group_name') or payload.get('group_name') or '').strip() == binding_group_name),
+                bool(binding_group and str(monitor_target.get('registration_group') or cycle_registration_group).strip() == binding_group),
+                bool(binding_group_id and str(payload_group_id or monitor_target.get('group_id') or cycle_group_id or cycle_registration_group).strip() == binding_group_id),
+                bool(binding_link and str(monitor_target.get('binding_link') or cycle_binding_link).strip() == binding_link),
+                bool(binding_group_name and str(monitor_target.get('group_name') or monitor_target.get('binding_group_name') or payload_group_name or cycle_group_name).strip() == binding_group_name),
             ])
             if not target_matches_monitor:
                 return {}
+            if binding_group_id and not payload_group_id:
+                payload['group_id'] = binding_group_id
+            if binding_group_name and not payload_group_name:
+                payload['group_name'] = binding_group_name
             return {
                 **payload,
                 'source': decision_group_state.get('source') or payload.get('source') or 'production_ops_daemon',
-                'source_base_url': str(monitor_target.get('worker_base_url') or '').strip() or None,
+                'source_base_url': str(monitor_target.get('worker_base_url') or cycle_context.get('worker_base_url') or '').strip() or None,
                 'probe_target': binding_group_id or binding_group or binding_link or binding_group_name or str(payload.get('group_id') or '').strip() or str(payload.get('group_name') or '').strip(),
                 'zero_pending_unverified': bool(decision_group_state.get('zero_pending_unverified', payload.get('zero_pending_unverified'))),
                 'zero_pending_unverified_reason': decision_group_state.get('zero_pending_unverified_reason') or payload.get('zero_pending_unverified_reason'),
                 'zero_pending_verified_by': decision_group_state.get('zero_pending_verified_by') or payload.get('zero_pending_verified_by'),
                 'pending_zero_confidence': decision_group_state.get('pending_zero_confidence') or payload.get('pending_zero_confidence'),
+                'probe_data_quality': decision_group_state.get('probe_data_quality') or payload.get('probe_data_quality'),
+                'data_quality': decision_group_state.get('data_quality') or payload.get('data_quality'),
+                'empty_queue_evidence': decision_group_state.get('empty_queue_evidence') or payload.get('empty_queue_evidence'),
                 'empty_queue_visible': bool(decision_group_state.get('empty_queue_visible', payload.get('empty_queue_visible'))),
                 'has_pending_section': bool(decision_group_state.get('has_pending_section', payload.get('has_pending_section'))),
                 'has_pending_request_row': bool(decision_group_state.get('has_pending_request_row', payload.get('has_pending_request_row'))),
@@ -22951,6 +24356,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             cycle_probe = _probe_from_parts(
                 dict(cycle.get('monitor_target') or {}) if isinstance(cycle.get('monitor_target'), dict) else {},
                 dict(cycle.get('decision_group_state') or {}) if isinstance(cycle.get('decision_group_state'), dict) else {},
+                cycle,
             )
             if cycle_probe:
                 return cycle_probe
@@ -23247,6 +24653,12 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 'truth_state': {},
             }
         binding_probe = dict(live_probe or {})
+        binding_probe_has_authoritative_data = bool(
+            binding_probe.get('group_name')
+            or binding_probe.get('group_id')
+            or binding_probe.get('pending_count') is not None
+            or binding_probe.get('member_count') is not None
+        )
         inherited_truth_state = dict(account_verifier.get('truth_state') or {})
         inherited_truth_status = str(inherited_truth_state.get('status') or '').strip()
         runtime = dict((production_ops or {}).get('runtime') or {})
@@ -23266,7 +24678,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             bool(binding_link and monitor_binding_link and binding_link == monitor_binding_link),
             bool(binding_group_name and monitor_group_name and binding_group_name == monitor_group_name),
         ])
-        if target_matches_monitor:
+        if target_matches_monitor and not binding_probe_has_authoritative_data:
             inherited_truth_gate = Service._membership_verifier_gate_from_truth_state(
                 inherited_truth_state,
                 probe=binding_probe,
@@ -23793,6 +25205,11 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 session_state = self._build_whatsapp_approval_session_state(serialized.get('account_key') or '', worker_health=worker_health if runtime_state.get('source') == 'shared' else {}, include_qr_ascii=False)
         else:
             session_state = dict(session_state or {})
+        session_state = enrich_whatsapp_login_state(
+            session_state,
+            runtime_state=runtime_state,
+            account_enabled=bool(serialized.get('enabled')),
+        )
 
         responsible_type = str(serialized.get('responsible_type') or '').strip()
         account_key = str(serialized.get('account_key') or '').strip()
@@ -24032,6 +25449,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             },
         ]
 
+        membership_ready = bool(account_membership_verifier.get('ready'))
         config_ready = (
             not invalid_group_links
             and all_binding_areas_ok
@@ -24039,6 +25457,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             and all_binding_rules_ok
             and has_monitored_bindings
             and bool(service_scope.get('ready'))
+            and membership_ready
         )
         if invalid_group_links:
             verification_status = 'invalid_group_links'
@@ -24099,6 +25518,8 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             verification_status = 'account_restricted'
         elif login_check_status == 'auth_failed':
             verification_status = 'auth_failed'
+        elif login_check_status == 'runtime_recovering':
+            verification_status = 'runtime_recovering'
         elif invalid_group_links:
             verification_status = 'invalid_group_links'
         elif not has_monitored_bindings:
@@ -24123,7 +25544,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             status_color = 'gray'
             status_text = '未监控'
             next_action = '至少开启 1 个群监控后再纳入自动审批'
-        elif invalid_group_links or not config_ready:
+        elif invalid_group_links:
             runtime_status = 'blocked'
             status_color = 'amber'
             status_text = '待补齐'
@@ -24143,11 +25564,21 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             status_color = 'blue'
             status_text = '自动恢复中'
             next_action = '系统正在自动切换这个账号，通常几秒内会自动恢复'
+        elif login_check_status == 'runtime_recovering':
+            runtime_status = 'recovering'
+            status_color = 'blue'
+            status_text = '登录态恢复中'
+            next_action = '账号已有服务器登录态，运行时正在恢复；请稍候刷新，不要重新扫码'
         elif login_check_status == 'session_mismatch':
             runtime_status = 'blocked'
             status_color = 'blue'
             status_text = '待切换'
             next_action = '点“生成二维码”或“刷新状态”，切到这个账号后再继续可用性检测'
+        elif not config_ready:
+            runtime_status = 'blocked'
+            status_color = 'amber'
+            status_text = '待补齐'
+            next_action = '先补齐群绑定配置，再纳入统一调度'
         elif not session_state.get('login_verified'):
             runtime_status = 'blocked'
             status_color = 'amber'
@@ -24171,6 +25602,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'monitor_disabled': '未启用监控群',
             'service_unready': '服务未就绪',
             'login_unready': '待登录',
+            'runtime_recovering': '恢复中',
             'account_restricted': '账号受限',
             'auth_failed': '登录异常',
         }.get(verification_status, verification_status)
@@ -24278,33 +25710,72 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         for raw_row in raw_rows:
             row = dict(raw_row)
             if lightweight:
-                runtime_state = self._build_whatsapp_approval_runtime_state(
-                    str(row.get('account_key') or ''),
-                    worker_health=None,
-                    allow_shared_fallback=False,
-                    skip_health_check=True,
-                )
+                try:
+                    runtime_state = self._build_whatsapp_approval_runtime_state(
+                        str(row.get('account_key') or ''),
+                        worker_health=None,
+                        allow_shared_fallback=False,
+                        skip_health_check=True,
+                    )
+                except TypeError as exc:
+                    if 'skip_health_check' not in str(exc):
+                        raise
+                    runtime_state = self._build_whatsapp_approval_runtime_state(
+                        str(row.get('account_key') or ''),
+                        worker_health=None,
+                        allow_shared_fallback=False,
+                    )
                 account_worker_health: Dict[str, Any] = {}
-                base_url = str(runtime_state.get('base_url') or '').strip().rstrip('/')
-                if runtime_state.get('active') and base_url:
-                    try:
-                        response = requests.get(f'{base_url}/health', timeout=0.8)
-                        response.raise_for_status()
-                        health_payload = response.json()
-                        if isinstance(health_payload, dict):
-                            account_worker_health = health_payload
-                            runtime_state = self._build_whatsapp_approval_runtime_state(
-                                str(row.get('account_key') or ''),
-                                worker_health=account_worker_health,
-                                allow_shared_fallback=False,
-                                skip_health_check=True,
-                            )
-                    except Exception as exc:
-                        runtime_state['health_error'] = str(exc)[:300]
-                session_state = self._build_whatsapp_approval_session_state(
-                    str(row.get('account_key') or ''),
-                    worker_health=account_worker_health,
-                    include_qr_ascii=False,
+                # Lightweight list mode must be side-effect free and non-blocking:
+                # do not call worker /health, warmup, session start, runtime start, or group-state here.
+                # Operators can use the explicit single-account refresh/session endpoints for live state.
+                normalized_account_key = str(row.get('account_key') or '')
+                cached_session_state = self._cached_whatsapp_approval_session_snapshot(normalized_account_key)
+                if cached_session_state:
+                    session_state = cached_session_state
+                else:
+                    meta_snapshot = self._read_whatsapp_approval_runtime_meta(normalized_account_key)
+                    cached_worker_health = meta_snapshot.get('last_worker_health') if isinstance(meta_snapshot.get('last_worker_health'), dict) else {}
+                    cached_client = cached_worker_health.get('approval_client') if isinstance(cached_worker_health.get('approval_client'), dict) else cached_worker_health
+                    if bool(runtime_state.get('active')) and bool(cached_client.get('authenticated')) and bool(cached_client.get('ready')):
+                        session_state = self._build_whatsapp_approval_session_state(
+                            normalized_account_key,
+                            worker_health=cached_worker_health,
+                            include_qr_ascii=False,
+                        )
+                        session_state['from_cached_worker_health'] = True
+                    elif (
+                        bool(runtime_state.get('active'))
+                        and cached_worker_health
+                        and self._whatsapp_approval_runtime_in_localauth_recovery_window(normalized_account_key, meta_snapshot)
+                    ):
+                        session_state = self._build_whatsapp_approval_session_state(
+                            normalized_account_key,
+                            worker_health=cached_worker_health,
+                            include_qr_ascii=False,
+                        )
+                        session_state['from_cached_worker_health'] = True
+                    elif not bool(runtime_state.get('active')) and self._whatsapp_approval_has_local_auth_session(normalized_account_key):
+                        session_state = {
+                            'account_key': normalized_account_key,
+                            'login_verified': False,
+                            'login_state': 'recoverable',
+                            'login_check_status': 'runtime_recoverable',
+                            'login_check_message': '登录态可恢复，点击刷新状态恢复。',
+                            'qr_available': False,
+                            'can_show_qr': False,
+                            'can_probe': False,
+                        }
+                    else:
+                        session_state = self._build_whatsapp_approval_session_state(
+                            normalized_account_key,
+                            worker_health=account_worker_health,
+                            include_qr_ascii=False,
+                        )
+                session_state = enrich_whatsapp_login_state(
+                    session_state,
+                    runtime_state=runtime_state,
+                    account_enabled=bool(row.get('enabled')),
                 )
                 built = self._build_whatsapp_approval_account_runtime(
                     row,
@@ -24344,7 +25815,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         }
 
     def list_whatsapp_approval_candidates(self, current_user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        account_state = self.list_whatsapp_approval_accounts(current_user=current_user)
+        account_state = self.list_whatsapp_approval_accounts(current_user=current_user, lightweight=True)
         rows = []
         for row in account_state.get('rows') or []:
             membership_verifier = dict(row.get('membership_verifier') or {})
@@ -24521,14 +25992,17 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         group_links = [item['link'] for item in group_link_bindings]
         if not group_links:
             raise HTTPException(status_code=400, detail='at least one group link is required')
-        if len(group_links) > 3:
-            raise HTTPException(status_code=400, detail='each WhatsApp admin account can manage at most 3 groups in this console')
+        if len(group_links) > 10:
+            raise HTTPException(status_code=400, detail='each WhatsApp admin account can manage at most 10 groups in this console')
         area_options = self.list_whatsapp_approval_area_options()['options']
         area_values = {str(item.get('value') or '').strip() for item in area_options}
         area_values.discard('')
         for index, item in enumerate(group_link_bindings, start=1):
-            if str(item.get('area') or '').strip() not in area_values:
+            raw_area = str(item.get('area') or '').strip()
+            canonical_area = _canonical_mcn_region_value(raw_area)
+            if canonical_area not in area_values:
                 raise HTTPException(status_code=400, detail=f'group link #{index} area must be selected from configured options')
+            item['area'] = canonical_area
         area = str(group_link_bindings[0].get('area') or '').strip()
         valid_notify_profiles = {str(item.get('profile_name') or '').strip() for item in self._list_notify_robot_options()}
         valid_notify_profiles.discard('')
@@ -26352,7 +27826,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     group_atmosphere_scheduler_enabled = (
         bool(cfg.get('GROUP_ATMOSPHERE_SCHEDULER_ENABLED'))
         if 'GROUP_ATMOSPHERE_SCHEDULER_ENABLED' in cfg
-        else (cfg["DB_PATH"] != ':memory:' and str(os.getenv('GROUP_ATMOSPHERE_SCHEDULER_ENABLED') or 'true').strip().lower() in {'1', 'true', 'yes', 'on'})
+        else (cfg["DB_PATH"] != ':memory:' and str(os.getenv('GROUP_ATMOSPHERE_SCHEDULER_ENABLED') or 'false').strip().lower() in {'1', 'true', 'yes', 'on'})
     )
     group_atmosphere_scheduler_poll_interval_seconds = cfg.get('GROUP_ATMOSPHERE_SCHEDULER_POLL_INTERVAL_SECONDS') or os.getenv('GROUP_ATMOSPHERE_SCHEDULER_POLL_INTERVAL_SECONDS') or 30
     require_invite_code = (
@@ -26519,6 +27993,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         allow_headers=['*'],
     )
     app.state.service = service
+    app.state.approval_realtime_store = RealtimeApprovalStateStore()
     app.state.auth_enabled = auth_enabled
     app.state.auth_manager = auth_manager
     app.state.auth_internal_token = auth_internal_token
@@ -26650,6 +28125,16 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             return JSONResponse(status_code=exc.status_code, content=detail)
         return JSONResponse(status_code=exc.status_code, content={'detail': detail})
 
+    def _group_atmosphere_api_required_role(path: str, method: str) -> str:
+        normalized_method = str(method or 'GET').upper()
+        if path == '/api/ops/group-atmosphere/scheduler/run-due':
+            return OPS_AUTH_ROLE_INTERNAL
+        if path.startswith('/api/ops/group-atmosphere/accounts/'):
+            return OPS_AUTH_ROLE_OPERATOR
+        if path == '/api/ops/group-atmosphere/accounts' and normalized_method in {'GET', 'POST'}:
+            return OPS_AUTH_ROLE_OPERATOR
+        return OPS_AUTH_ROLE_OPERATOR
+
     def _ops_api_required_role(path: str, method: str) -> Optional[str]:
         normalized_method = str(method or 'GET').upper()
         if path.startswith('/api/ops/auth/'):
@@ -26688,7 +28173,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         } and normalized_method == 'GET':
             return OPS_AUTH_ROLE_INTERNAL
         if path.startswith('/api/ops/group-atmosphere/'):
-            return OPS_AUTH_ROLE_OPERATOR
+            return _group_atmosphere_api_required_role(path, normalized_method)
         if path.startswith('/api/ops/whatsapp-approval-accounts/') and '/runtime/internal' in path:
             return OPS_AUTH_ROLE_INTERNAL
         if path.startswith('/api/ops/whatsapp-approval-accounts/') and '/session/internal' in path:
@@ -26718,9 +28203,9 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
                 return OPS_AUTH_ROLE_SUPER_ADMIN
             return OPS_AUTH_ROLE_ADMIN
         if path.startswith('/api/ops/local-intake-bot-gateway/') and normalized_method == 'POST':
-            return OPS_AUTH_ROLE_ADMIN
+            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         if path.startswith('/api/ops/intake-bot-presets/') and normalized_method in {'POST', 'DELETE'}:
-            return OPS_AUTH_ROLE_ADMIN
+            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         if path in {
             '/api/ops/registration-group-approval-executor-warmup',
             '/api/ops/group-approvals/executor/warmup',
@@ -26793,6 +28278,18 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             path = f'{path}?{query}'
         return f'/login?next={quote(path, safe="/?=&")}'
 
+    def _same_origin_request(request: Request) -> bool:
+        origin = str(request.headers.get('origin') or '').strip()
+        if not origin:
+            return True
+        try:
+            parsed_origin = urlparse(origin)
+        except Exception:
+            return False
+        request_host = str(request.headers.get('host') or request.url.netloc or '').strip().lower()
+        origin_host = str(parsed_origin.netloc or '').strip().lower()
+        return bool(origin_host) and origin_host == request_host
+
     @app.middleware('http')
     async def ops_auth_middleware(request: Request, call_next):
         path = request.url.path or '/'
@@ -26800,22 +28297,24 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         if (not auth_enabled) or path in public_paths:
             return await call_next(request)
         if path.startswith('/api/ops/'):
+            sensitive_methods = {'POST', 'PUT', 'PATCH', 'DELETE'}
             is_sensitive_config_mutation = (
                 (path.startswith('/api/ops/intake-bot-presets/') and request.method.upper() in {'POST', 'DELETE'})
                 or (path.startswith('/api/ops/guild-executors/') and request.method.upper() in {'POST', 'DELETE'})
             )
             client_host = str(request.client.host if request.client else '').strip().lower()
             is_loopback_internal_call = client_host in {'127.0.0.1', '::1', 'localhost'}
-            # Production daemons/workers call ops APIs from 127.0.0.1 without a browser session.
-            # Keep browser/API role enforcement for external clients, but preserve local service-to-service calls.
-            should_enforce_ops_api_auth = bool(auth_enabled) and not is_loopback_internal_call
+            requires_group_atmosphere_auth = path.startswith('/api/ops/group-atmosphere/')
+            should_enforce_ops_api_auth = bool(auth_enabled) and (not is_loopback_internal_call or requires_group_atmosphere_auth or is_sensitive_config_mutation)
             if should_enforce_ops_api_auth:
                 required_role = _ops_api_required_role(path, request.method)
                 if required_role is not None:
                     try:
-                        _require_ops_user(request, role=required_role)
+                        user = _require_ops_user(request, role=required_role)
                     except HTTPException as exc:
                         return JSONResponse(status_code=exc.status_code, content={'detail': exc.detail})
+                    if request.method.upper() in sensitive_methods and str(user.get('role') or '') != OPS_AUTH_ROLE_INTERNAL and not _same_origin_request(request):
+                        return JSONResponse(status_code=403, content={'detail': 'ops_csrf_origin_forbidden'})
             return await call_next(request)
         if path == '/ops' or path.startswith('/ops/'):
             user = _request_session_user(request)
@@ -27464,9 +28963,10 @@ Promise.all([loadAccounts(), loadRegionOptions()]);
     .batch-members-notice { display:none; margin-top:12px; padding:10px 12px; border-radius:var(--ops-r-md); background:var(--ops-amber-soft); color:#92400e; border:1px solid #fed7aa; font-size:13px; font-weight:650; }
     .batch-members-notice.is-visible { display:block; }
     .table-wrap { overflow-x:auto; }
-    #batchMembersTable { min-width:1100px; }
+    #batchMembersTable { min-width:1120px; }
     #batchMembersTable th { position:relative; white-space:nowrap; text-align:left!important; vertical-align:middle!important; }
     #batchMembersTable td { vertical-align:middle!important; }
+    .batch-member-phone-cell{white-space:nowrap;overflow:visible;text-overflow:clip;min-width:170px;font-variant-numeric:tabular-nums;}
     th.resizable-column { user-select:none; }
     .batch-member-resize-handle { position:absolute; top:0; right:0; width:10px; height:100%; cursor:col-resize; z-index:3; }
     .batch-member-resize-handle::after { content:''; position:absolute; top:10px; bottom:10px; left:4px; width:2px; border-radius:999px; background:#d7e3f4; }
@@ -27490,7 +28990,7 @@ Promise.all([loadAccounts(), loadRegionOptions()]);
     @media (max-width:720px) { .batch-members-filters,.batch-members-summary { grid-template-columns:1fr; } }
   </style>
 </head>
-<body>
+<body data-layout-guard=\"batch-member-phone-column\">
   <div class=\"page-shell\">
     <div class=\"shell-nav\">
       <a href=\"/ops\">管理员看板</a>
@@ -27927,7 +29427,7 @@ Promise.all([loadAccounts(), loadRegionOptions()]);
           <td>${escapeHtml(row.registration_group_name || row.registration_group || '')}</td>
           <td>${escapeHtml(row.area || '')}</td>
           <td>${escapeHtml(row.display_name || '')}</td>
-          <td>${escapeHtml(row.wa_phone_raw || row.wa_phone_normalized || '')}</td>
+          <td class=\"batch-member-phone-cell\">${escapeHtml(row.wa_phone_raw || row.wa_phone_normalized || '')}</td>
           <td>${statusBadge(row)}</td>
         </tr>`;
       }).join('') : '<tr><td colspan=\"8\" class=\"muted\">暂无数据</td></tr>';
@@ -28004,8 +29504,12 @@ Promise.all([loadAccounts(), loadRegionOptions()]);
         return service.upsert_group_atmosphere_whatsapp_account(payload)
 
     @app.get('/api/ops/group-atmosphere/accounts')
-    def group_atmosphere_account_list() -> Dict[str, Any]:
+    def group_atmosphere_accounts() -> Dict[str, Any]:
         return service.get_group_atmosphere_whatsapp_accounts()
+
+    @app.get('/api/ops/group-atmosphere/summary')
+    def group_atmosphere_summary() -> Dict[str, Any]:
+        return service.group_atmosphere_summary_snapshot()
 
     @app.get('/api/ops/group-atmosphere/accounts/{account_key}/session')
     def group_atmosphere_account_session(account_key: str) -> Dict[str, Any]:
@@ -28204,6 +29708,7 @@ Promise.all([loadAccounts(), loadRegionOptions()]);
         ]
         customer_service_items = [
             ('/ops/intake-submit', '绑定中心'),
+            ('/ops/intake-bot-presets', '收口配置中心'),
             ('/ops/production-ops', '群审批控制台'),
             ('/ops/registration-group-approval-batch-members', '注册群审批留存页'),
             ('/ops/accounts', '账号设置'),
@@ -28422,13 +29927,14 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         html = GROUP_ATMOSPHERE_PAGE_HTML
         if str(role or '').strip() != OPS_AUTH_ROLE_OPERATOR:
             return html
-        return re.sub(
+        trimmed = re.sub(
             r'<div class="shell-nav">.*?</div>',
-            '<div class="shell-nav"><a href="/ops/group-atmosphere">群聊天助手</a></div>',
+            '<div class="shell-nav"><a href="/ops/group-atmosphere">群聊天助手</a><a href="/ops/accounts">账号设置</a></div>',
             html,
             count=1,
             flags=re.S,
         )
+        return trimmed
 
     def _render_ops_home_page(request: Request) -> Response:
         user = _require_ops_user(request)
@@ -28451,9 +29957,10 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     @app.get('/ops/accounts', response_class=HTMLResponse)
     def ops_accounts_page(request: Request) -> str:
         user = _require_ops_user(request)
+        role = normalize_ops_role(user.get('role'))
         return _with_ops_shell_style(
-            _ops_accounts_page_html(str(user.get('role') or '').strip()),
-            str(user.get('role') or '').strip(),
+            _ops_accounts_page_html(role),
+            role,
             page='accounts',
         )
 
@@ -28596,6 +30103,25 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         user = _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
         return service.list_ops_intake_items(guild_name=guild_name, user=user, limit=limit, include_done=include_done)
 
+    @app.get('/api/ops/intake-workbench/binding-history-items')
+    def ops_intake_workbench_binding_history_items(
+        request: Request,
+        limit: int = 100,
+        guild_name: Optional[str] = None,
+        date: Optional[str] = None,
+        submitted_by: Optional[str] = None,
+        view: str = 'all',
+    ) -> Dict[str, Any]:
+        user = _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
+        return service.list_ops_intake_binding_history_items(
+            user=user,
+            limit=limit,
+            guild_name=guild_name,
+            date=date,
+            submitted_by=submitted_by,
+            view=view,
+        )
+
     @app.get('/api/ops/intake-workbench/bind-failed-items')
     def ops_intake_workbench_bind_failed_items(
         request: Request,
@@ -28636,6 +30162,11 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         user = _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
         return service.resubmit_ops_intake_item(item_id=item_id, text=payload.text, fields=payload.fields, user=user)
 
+    @app.post('/api/ops/intake-workbench/items/{item_id}/resolve')
+    def ops_intake_workbench_resolve_item(request: Request, item_id: str, payload: OpsIntakeResolveRequest) -> Dict[str, Any]:
+        user = _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
+        return service.resolve_ops_intake_history_item(item_id=item_id, action=payload.action, reason=payload.reason, note=payload.note, user=user)
+
     @app.post('/api/ops/intake-workbench/items/{item_id}/clear')
     def ops_intake_workbench_clear_item(request: Request, item_id: str) -> Dict[str, Any]:
         user = _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
@@ -28653,7 +30184,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
 
     @app.get('/ops/intake-bot-presets', response_class=HTMLResponse)
     def intake_bot_presets_page(request: Request) -> str:
-        user = _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
+        user = _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
         html = INTAKE_BOT_PRESETS_PAGE_HTML.replace('__OPS_USER_ROLE__', str(user.get('role') or '').strip())
         return _with_ops_shell_style(html, str(user.get('role') or '').strip(), page='intake-bot-presets')
 
@@ -29164,92 +30695,146 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
             'summary': payload.get('summary') or {},
         }
 
+    def _approval_realtime_store() -> RealtimeApprovalStateStore:
+        return app.state.approval_realtime_store
+
+    def _approval_realtime_seed_snapshot_if_empty() -> Dict[str, Any]:
+        store = _approval_realtime_store()
+        snapshot = store.snapshot()
+        if int(snapshot.get('snapshot_version') or 0) > 0:
+            return snapshot
+        payload = service.list_whatsapp_approval_accounts(lightweight=True) or {}
+        return store.ingest_snapshot(payload, source='lightweight_snapshot_seed')['snapshot']
+
+    @app.get('/api/ops/whatsapp-approval-accounts/realtime-snapshot')
+    def ops_whatsapp_approval_accounts_realtime_snapshot():
+        return _approval_realtime_seed_snapshot_if_empty()
+
+    @app.post('/api/internal/whatsapp-approval/realtime-state')
+    def internal_whatsapp_approval_realtime_state(payload: Dict[str, Any] = Body(default_factory=dict)):
+        source = str(payload.get('source') or 'internal').strip() if isinstance(payload, dict) else 'internal'
+        snapshot_payload = payload.get('snapshot') if isinstance(payload.get('snapshot'), dict) else payload
+        result = _approval_realtime_store().ingest_snapshot(snapshot_payload, source=source)
+        return {
+            'ok': True,
+            'snapshot_version': result['snapshot'].get('snapshot_version'),
+            'event_id': result['snapshot'].get('event_id'),
+            'event_count': len(result.get('events') or []),
+            'events': result.get('events') or [],
+        }
+
+    @app.websocket('/api/ops/whatsapp-approval-accounts/realtime-ws')
+    async def ops_whatsapp_approval_accounts_realtime_ws(websocket: WebSocket):
+        await websocket.accept()
+        store = _approval_realtime_store()
+        snapshot = _approval_realtime_seed_snapshot_if_empty()
+        raw_last_event_id = websocket.query_params.get('last_event_id') if websocket.query_params else None
+        try:
+            last_event_id = int(raw_last_event_id or 0)
+        except (TypeError, ValueError):
+            last_event_id = 0
+        await websocket.send_json({
+            'type': 'hello',
+            'snapshot_version': snapshot.get('snapshot_version'),
+            'event_id': snapshot.get('event_id'),
+            'delivery_target_ms': store.delivery_target_ms,
+        })
+        for event in store.events_since(last_event_id):
+            await websocket.send_json(event)
+        queue = store.subscribe()
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    await websocket.send_json(event)
+                except asyncio.TimeoutError:
+                    await websocket.send_json({
+                        'type': 'heartbeat',
+                        'snapshot_version': store.snapshot().get('snapshot_version'),
+                        'event_id': store.snapshot().get('event_id'),
+                        'server_emit_at': datetime.now(timezone.utc).isoformat(),
+                        'delivery_target_ms': store.delivery_target_ms,
+                    })
+        except WebSocketDisconnect:
+            pass
+        finally:
+            store.unsubscribe(queue)
+
+    def _ops_whatsapp_approval_account_directory_rows(responsible_type_filter: str = '') -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        with service.db.connect() as conn:
+            raw_rows = conn.execute(
+                """
+                SELECT account_key, account_name, responsible_type, group_links, area, enabled,
+                       approval_count_threshold, approval_timeout_minutes, auto_recover_worker, schedule_windows
+                FROM whatsapp_approval_accounts
+                ORDER BY updated_at DESC, account_key ASC
+                """
+            ).fetchall()
+        for raw_row in raw_rows:
+            row = dict(raw_row)
+            responsible_type = str(row.get('responsible_type') or '').strip()
+            if responsible_type_filter and responsible_type != responsible_type_filter:
+                continue
+            account_key = str(row.get('account_key') or '').strip()
+            if not account_key:
+                continue
+            try:
+                raw_bindings = json.loads(row.get('group_links') or '[]')
+            except Exception:
+                raw_bindings = []
+            bindings = _normalize_group_link_bindings(raw_bindings if isinstance(raw_bindings, list) else [])
+            account_schedule = []
+            try:
+                account_schedule = json.loads(row.get('schedule_windows') or '[]')
+            except Exception:
+                account_schedule = []
+            runtime_state = service._build_whatsapp_approval_runtime_state(account_key, allow_shared_fallback=False, skip_health_check=True)
+            session_state = service._cached_whatsapp_approval_session_snapshot(account_key) or {}
+            group_binding_runtimes = []
+            for binding in bindings:
+                item = dict(binding or {})
+                item.setdefault('approval_count_threshold', row.get('approval_count_threshold'))
+                item.setdefault('approval_timeout_minutes', row.get('approval_timeout_minutes'))
+                item.setdefault('auto_recover_worker', bool(row.get('auto_recover_worker')))
+                item['schedule_runtime'] = service._schedule_runtime(item.get('schedule_windows') or account_schedule)
+                item['approval_scope'] = responsible_type
+                item['target_group_label'] = str(
+                    item.get('group_name') or item.get('group_id') or item.get('link') or item.get('registration_group') or ''
+                ).strip()
+                group_binding_runtimes.append(item)
+            rows.append({
+                'account_key': account_key,
+                'account_name': row.get('account_name'),
+                'responsible_type': responsible_type,
+                'enabled': bool(row.get('enabled')),
+                'area': row.get('area'),
+                'runtime_state': runtime_state,
+                'session_state': session_state,
+                'group_link_bindings': bindings,
+                'group_binding_runtimes': group_binding_runtimes,
+                'group_links': [str(item.get('link') or '').strip() for item in bindings if str(item.get('link') or '').strip()],
+            })
+        return rows
+
     @app.get('/api/ops/whatsapp-approval-accounts/runtime-directory')
     def ops_whatsapp_approval_accounts_runtime_directory():
-        payload = service.list_whatsapp_approval_accounts() or {}
-        rows = payload.get('rows') or []
-        trimmed_rows = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            trimmed_rows.append({
-                'account_key': row.get('account_key'),
-                'account_name': row.get('account_name'),
-                'responsible_type': row.get('responsible_type'),
-                'enabled': row.get('enabled'),
-                'area': row.get('area'),
-                'runtime_state': row.get('runtime_state') or {},
-                'session_state': row.get('session_state') or {},
-                'group_link_bindings': row.get('group_link_bindings') or [],
-                'group_binding_runtimes': row.get('group_binding_runtimes') or [],
-                'group_links': row.get('group_links') or [],
-            })
+        trimmed_rows = _ops_whatsapp_approval_account_directory_rows()
         return {'rows': trimmed_rows}
 
     @app.get('/api/ops/whatsapp-approval-accounts/registration-runtime-directory')
     def ops_whatsapp_approval_accounts_registration_runtime_directory():
-        payload = service.list_whatsapp_approval_accounts() or {}
-        rows = payload.get('rows') or []
-        trimmed_rows = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            if str(row.get('responsible_type') or '').strip() != 'registration_group':
-                continue
-            trimmed_rows.append({
-                'account_key': row.get('account_key'),
-                'account_name': row.get('account_name'),
-                'responsible_type': row.get('responsible_type'),
-                'enabled': row.get('enabled'),
-                'area': row.get('area'),
-                'runtime_state': row.get('runtime_state') or {},
-                'session_state': row.get('session_state') or {},
-                'group_link_bindings': row.get('group_link_bindings') or [],
-                'group_binding_runtimes': row.get('group_binding_runtimes') or [],
-                'group_links': row.get('group_links') or [],
-            })
+        trimmed_rows = _ops_whatsapp_approval_account_directory_rows('registration_group')
         return {'rows': trimmed_rows}
 
     @app.get('/api/ops/whatsapp-approval-accounts/binding-directory')
     def ops_whatsapp_approval_accounts_binding_directory():
-        payload = service.list_whatsapp_approval_accounts() or {}
-        rows = payload.get('rows') or []
-        trimmed_rows = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            trimmed_rows.append({
-                'account_key': row.get('account_key'),
-                'account_name': row.get('account_name'),
-                'responsible_type': row.get('responsible_type'),
-                'enabled': row.get('enabled'),
-                'area': row.get('area'),
-                'group_link_bindings': row.get('group_link_bindings') or [],
-                'group_binding_runtimes': row.get('group_binding_runtimes') or [],
-                'group_links': row.get('group_links') or [],
-            })
+        trimmed_rows = _ops_whatsapp_approval_account_directory_rows()
         return {'rows': trimmed_rows}
 
     @app.get('/api/ops/whatsapp-approval-accounts/official-binding-directory')
     def ops_whatsapp_approval_accounts_official_binding_directory():
-        payload = service.list_whatsapp_approval_accounts() or {}
-        rows = payload.get('rows') or []
-        trimmed_rows = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            if str(row.get('responsible_type') or '').strip() != 'official_group':
-                continue
-            trimmed_rows.append({
-                'account_key': row.get('account_key'),
-                'account_name': row.get('account_name'),
-                'responsible_type': row.get('responsible_type'),
-                'enabled': row.get('enabled'),
-                'area': row.get('area'),
-                'group_link_bindings': row.get('group_link_bindings') or [],
-                'group_binding_runtimes': row.get('group_binding_runtimes') or [],
-                'group_links': row.get('group_links') or [],
-            })
+        trimmed_rows = _ops_whatsapp_approval_account_directory_rows('official_group')
         return {'rows': trimmed_rows}
 
     @app.get('/api/ops/whatsapp-approval-accounts/{account_key}/runtime')
@@ -29660,7 +31245,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
             configured_scopes: set[str] = set()
             active_targets: Dict[str, set[str]] = {'registration_group': set(), 'official_group': set()}
             try:
-                current_accounts_payload = service.list_whatsapp_approval_accounts() if hasattr(service, 'list_whatsapp_approval_accounts') else {}
+                current_accounts_payload = service.list_whatsapp_approval_accounts(lightweight=True) if hasattr(service, 'list_whatsapp_approval_accounts') else {}
             except Exception:
                 return configured_scopes, active_targets
             current_account_rows = current_accounts_payload.get('rows') if isinstance(current_accounts_payload, dict) else None
@@ -29764,7 +31349,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                     'official_group',
                     active_targets_by_scope.get('official_group') or set(),
                 )
-                if status.get('checked_at') and (registration_snapshot_rows or official_snapshot_rows):
+                if status.get('checked_at'):
                     payload = {
                         'registration_groups': registration_snapshot_rows,
                         'official_groups': official_snapshot_rows,

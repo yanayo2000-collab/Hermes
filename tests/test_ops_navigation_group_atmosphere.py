@@ -70,7 +70,9 @@ def test_group_atmosphere_has_visible_ops_page_and_common_nav():
     assert '运行状态' not in html
     assert '登录状态' not in html
     assert 'account-title-row' in html
-    assert '已登录·生效中' in html
+    assert '已登录·' in html
+    assert "?'运行中':'未运行'" in html
+    assert '登录中…' in html
     assert '#ga_accounts .group-card{padding:8px 10px!important' in html
     assert 'Runtime' not in html
     assert '当前账号' not in html

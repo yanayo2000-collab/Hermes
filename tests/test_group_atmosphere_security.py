@@ -44,24 +44,19 @@ def test_group_atmosphere_loopback_requires_session_or_internal_token(tmp_path):
     assert internal.status_code == 200
 
 
-def test_group_atmosphere_account_mutations_require_admin_role(tmp_path):
+def test_group_atmosphere_account_mutations_are_allowed_for_operator_role(tmp_path):
     operator_client, _ = make_auth_client(tmp_path / 'operator', role='operator')
-    denied = operator_client.post('/api/ops/group-atmosphere/accounts', json={
+    allowed = operator_client.post('/api/ops/group-atmosphere/accounts', json={
         'account_key': 'atmosphere-indo-01',
         'account_name': 'Atmosphere Indo 01',
-        'groups': [],
-        'enabled': True,
-    })
-    assert denied.status_code == 403
-
-    admin_client, _ = make_auth_client(tmp_path / 'admin', role='admin')
-    allowed = admin_client.post('/api/ops/group-atmosphere/accounts', json={
-        'account_key': 'atmosphere-indo-01',
-        'account_name': 'Atmosphere Indo 01',
-        'groups': [],
+        'groups': [{'target_group': '120363000000000000@g.us', 'group_name': 'Test Group', 'enabled': True}],
         'enabled': True,
     })
     assert allowed.status_code == 200
+
+    listed = operator_client.get('/api/ops/group-atmosphere/accounts')
+    assert listed.status_code == 200
+    assert listed.json()['rows'][0]['account_key'] == 'atmosphere-indo-01'
 
 
 def test_group_atmosphere_rejects_untrusted_worker_base_url(tmp_path):

@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.production_ops import build_incidents, build_success_notifications, format_lark_alert
-from scripts.production_ops_daemon import SUCCESS_NOTIFICATION_CODES, _build_formal_approval_command, _build_recovery_notifications, _build_worker_probe_recovery_notifications, _evaluate_release, _fetch_worker_group_state_with_passive_retry, _notification_delivery_summary, _notify_incidents, _run_registration_group_cycle, _session_state, _target_session_key, _worker_probe_timeout_seconds, run_cycle
+from scripts.production_ops_daemon import SUCCESS_NOTIFICATION_CODES, _build_formal_approval_command, _build_recovery_notifications, _build_worker_probe_recovery_notifications, _evaluate_release, _fetch_worker_group_state_with_passive_retry, _notification_delivery_summary, _notify_incidents, _recover_worker_for_target, _resolve_monitor_target, _run_registration_group_cycle, _session_state, _target_session_key, _worker_probe_timeout_seconds, classify_probe_data_quality, collect_empty_queue_evidence, run_cycle
 
 
 class Args:
@@ -33,6 +33,248 @@ class Args:
     worker_probe_recovery_threshold = 2
     worker_probe_failure_threshold = 10
     monitoring_session_id = ''
+
+
+
+def test_registration_cycle_uses_account_runtime_base_url_from_cached_snapshot(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.worker_base_url = ''
+    calls = []
+
+    def fake_fetch_json(url, method='GET', payload=None, timeout=None):
+        calls.append((url, method, payload))
+        assert url == 'http://127.0.0.1:61001/group-state'
+        assert method == 'POST'
+        return {
+            'ok': True,
+            'pending_count': 1,
+            'pending_requesters': [{'requesterId': 'user-1'}],
+            'requesters': [{'requesterId': 'user-1'}],
+            'group_id': 'group-cached-health@g.us',
+            'group_name': 'Cached Health Group',
+        }
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    monkeypatch.setattr('scripts.production_ops_daemon._evaluate_release_with_backend_recovery', lambda *a, **k: {'ok': True, 'payload': {'ready': False}})
+    target = {
+        'source': 'account_binding',
+        'registration_group': 'group-cached-health@g.us',
+        'group_name': 'Cached Health Group',
+        'worker_base_url': 'http://127.0.0.1:61001',
+        'account_key': 'registration-cached-health',
+        'runtime_state': {
+            'active': True,
+            'ready': True,
+            'authenticated': True,
+            'session_target_match': True,
+            'base_url': 'http://127.0.0.1:61001',
+            'status': 'warm',
+        },
+        'session_state': {
+            'login_state': 'logged_in',
+            'login_verified': True,
+            'can_probe': True,
+            'authenticated': True,
+            'ready': True,
+            'session_target_match': True,
+        },
+    }
+
+    cycle = _run_registration_group_cycle(args, {}, target, now=datetime.now(timezone.utc))
+
+    assert calls
+    assert cycle['worker_state']['ok'] is True
+    assert cycle['monitor_target']['worker_base_url'] == 'http://127.0.0.1:61001'
+    assert cycle['worker_state'].get('error') != 'worker_base_url_missing_for_selected_binding'
+
+
+
+def test_recover_worker_skips_account_runtime_rebuild_while_login_state_initializing(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    calls = []
+
+    def fake_fetch_json(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError('initializing login state must not stop/start runtime')
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    recovery = _recover_worker_for_target(
+        args,
+        {
+            'source': 'account_binding',
+            'account_key': 'registration-test',
+            'runtime_state': {'status': 'initializing', 'active': True, 'ready': False},
+            'session_state': {'login_state': 'initializing', 'can_probe': False, 'login_verified': False},
+        },
+        failed_worker_base_url='',
+        error=RuntimeError('worker_base_url_missing_for_selected_binding'),
+        trigger_reason='runtime_unhealthy',
+    )
+
+    assert calls == []
+    assert recovery['attempted'] is False
+    assert recovery['status'] == 'skipped'
+    assert recovery['reason'] == 'runtime_unhealthy_without_verified_session_skip_auto_rebuild'
+
+
+
+def test_recover_worker_skips_account_runtime_start_when_worker_base_url_missing(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    calls = []
+
+    def fake_fetch_json(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError('missing worker base url must not repeatedly start runtime')
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    recovery = _recover_worker_for_target(
+        args,
+        {
+            'source': 'account_binding',
+            'account_key': 'registration-test',
+            'runtime_state': {},
+            'session_state': {},
+        },
+        failed_worker_base_url='',
+        error=RuntimeError('worker_base_url_missing_for_selected_binding'),
+        trigger_reason='worker_base_url_missing',
+    )
+
+    assert calls == []
+    assert recovery['attempted'] is False
+    assert recovery['status'] == 'skipped'
+    assert recovery['reason'] == 'worker_base_url_missing_skip_auto_start'
+
+
+
+def test_recover_worker_skips_account_runtime_rebuild_on_session_mismatch(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    calls = []
+
+    def fake_fetch_json(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError('session mismatch must not stop/start runtime automatically')
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+    recovery = _recover_worker_for_target(
+        args,
+        {
+            'source': 'account_binding',
+            'account_key': 'registration-test',
+            'runtime_state': {'status': 'warm', 'active': True, 'ready': True},
+            'session_state': {'login_state': 'logged_in', 'can_probe': True, 'login_verified': True},
+        },
+        failed_worker_base_url='http://127.0.0.1:50123',
+        error=RuntimeError('session_mismatch'),
+        trigger_reason='session_mismatch',
+    )
+
+    assert calls == []
+    assert recovery['attempted'] is False
+    assert recovery['reason'] == 'session_mismatch_skip_auto_rebuild'
+
+
+def test_resolve_monitor_target_keeps_base_url_when_cached_runtime_ready_is_stale(monkeypatch):
+    def fake_fetch_json(url, timeout=30.0):
+        return {
+            'rows': [
+                {
+                    'responsible_type': 'registration_group',
+                    'enabled': True,
+                    'account_key': 'registration-test',
+                    'account_name': 'WA Admin',
+                    'runtime_state': {
+                        'active': True,
+                        'ready': False,
+                        'authenticated': True,
+                        'base_url': 'http://127.0.0.1:50139',
+                        'session_target_match': True,
+                    },
+                    'session_state': {
+                        'status': 'authenticated',
+                        'ready': False,
+                        'authenticated': True,
+                        'login_verified': True,
+                        'login_check_status': 'passed',
+                        'login_state': 'logged_in',
+                        'can_probe': True,
+                        'session_target_match': True,
+                    },
+                    'group_link_bindings': [
+                        {
+                            'enabled': True,
+                            'group_id': '120363400336474261@g.us',
+                            'group_name': '🇮🇩24-Grup Registrasi Resmi  ✘ Linky 💎',
+                            'link': 'https://chat.whatsapp.com/LGIF0iCDo2D0LzgyfjeV3D',
+                            'schedule_runtime': {'configured': True, 'active_now': True},
+                        }
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+
+    target = _resolve_monitor_target(SimpleNamespace(**Args.__dict__))
+
+    assert target['selection_reason'] == 'account_binding_active'
+    assert target['selected']['worker_base_url'] == 'http://127.0.0.1:50139'
+    assert target['selected']['session_state']['login_state'] == 'logged_in'
+
+
+
+def test_collect_empty_queue_evidence_classifies_confirmed_pending():
+    evidence = collect_empty_queue_evidence({
+        'pending_count': 2,
+        'requester_ids': ['u1', 'u2'],
+        'probe_mode': 'fast',
+    })
+
+    assert evidence['classification'] == 'confirmed_pending'
+    assert evidence['pending_count'] == 2
+    assert evidence['has_pending_evidence'] is True
+    assert classify_probe_data_quality(evidence) == 'confirmed_pending'
+
+
+
+def test_collect_empty_queue_evidence_requires_real_empty_queue_signal_for_zero():
+    evidence = collect_empty_queue_evidence({
+        'pending_count': 0,
+        'requester_ids': [],
+        'zero_pending_unverified': True,
+        'probe_mode': 'fast',
+    })
+
+    assert evidence['classification'] == 'unverified_zero'
+    assert evidence['has_empty_queue_evidence'] is False
+    assert evidence['zero_pending_unverified'] is True
+    assert 'missing_empty_queue_evidence' in evidence['reasons']
+
+
+
+def test_collect_empty_queue_evidence_accepts_empty_queue_visible_as_confirmed_empty():
+    evidence = collect_empty_queue_evidence(
+        {'pending_count': 0, 'requester_ids': [], 'probe_mode': 'full_verify'},
+        review_surface_payload={'review_surface_ready': True, 'empty_queue_visible': True, 'pending_count': 0},
+    )
+
+    assert evidence['classification'] == 'confirmed_empty'
+    assert evidence['has_empty_queue_evidence'] is True
+    assert evidence['zero_pending_unverified'] is False
+    assert classify_probe_data_quality(evidence) == 'confirmed_empty'
+
+
+
+def test_collect_empty_queue_evidence_reports_probe_failed():
+    evidence = collect_empty_queue_evidence(
+        {'pending_count': 0},
+        probe_error='group-state timeout',
+    )
+
+    assert evidence['classification'] == 'probe_failed'
+    assert evidence['data_quality'] == 'probe_failed'
+    assert evidence['error'] == 'group-state timeout'
+
 
 
 def test_fetch_worker_group_state_uses_fast_mode_by_default(monkeypatch):
@@ -855,6 +1097,56 @@ def test_registration_group_cycle_waiting_for_scan_skips_rebuild_and_reports_log
     assert cycle['worker_state']['recovery']['attempted'] is False
     assert cycle['worker_state']['recovery']['reason'] == 'whatsapp_account_waiting_for_scan'
     assert cycle['worker_state']['recovery']['login_check_status'] == 'waiting_for_scan'
+    assert cycle['decision_group_state']['mismatch_reasons'] == ['whatsapp_account_waiting_for_scan']
+
+
+
+def test_registration_group_cycle_unified_login_state_blocks_probe_even_when_base_url_exists(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    target = {
+        'registration_group': 'https://chat.whatsapp.com/new',
+        'group_name': 'https://chat.whatsapp.com/new',
+        'worker_base_url': 'http://127.0.0.1:33157',
+        'account_key': 'registration-639974974871',
+        'account_name': 'WA Admin',
+        'binding_link': 'https://chat.whatsapp.com/new',
+        'binding_group_name': '',
+        'notify_profile_name': 'wa-approval-broadcast-02',
+        'notify_robot_name': '审批bot02',
+        'area': 'Indonesia',
+        'approval_count_threshold': 1000,
+        'approval_timeout_minutes': 900,
+        'auto_recover_worker': True,
+        'schedule_runtime': {'configured': True, 'active_now': True},
+        'schedule_windows': [{'start': '00:00', 'end': '24:00'}],
+        'source': 'account_binding',
+        'runtime_state': {'active': True, 'ready': False, 'authenticated': False, 'base_url': 'http://127.0.0.1:33157'},
+        'session_state': {
+            'login_state': 'waiting_for_scan_qr_ready',
+            'login_verified': False,
+            'can_probe': False,
+            'can_show_qr': True,
+            'qr_available': True,
+            'session_target_match': True,
+        },
+    }
+
+    def fake_probe(*args, **kwargs):
+        raise AssertionError('unified login_state can_probe=false should skip group-state probe')
+
+    def fake_fetch_json(*args, **kwargs):
+        raise AssertionError('unified login_state can_probe=false should not restart runtime')
+
+    monkeypatch.setattr('scripts.production_ops_daemon._fetch_worker_group_state_with_passive_retry', fake_probe)
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+
+    cycle = _run_registration_group_cycle(args, {}, target, now=datetime(2026, 5, 14, 6, 53, 10, tzinfo=timezone.utc))
+
+    assert cycle['worker_state']['ok'] is False
+    assert cycle['worker_state']['error'] == 'whatsapp_account_waiting_for_scan'
+    assert cycle['worker_state']['recovery']['attempted'] is False
+    assert cycle['worker_state']['recovery']['trigger_reason'] == 'login_unready'
+    assert cycle['worker_state']['recovery']['login_state'] == 'waiting_for_scan_qr_ready'
     assert cycle['decision_group_state']['mismatch_reasons'] == ['whatsapp_account_waiting_for_scan']
 
 

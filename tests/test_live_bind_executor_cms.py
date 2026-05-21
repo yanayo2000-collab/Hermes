@@ -1,3 +1,5 @@
+import urllib.request
+
 from app.live_bind_executor import LiveChromeBindExecutor
 
 
@@ -61,7 +63,7 @@ def test_cms_id_bind_calls_add_anchor_only_when_sid_exists_without_guild_and_req
         "method": "POST",
         "url": "https://cms.linke.ai/api/admin/linky/industrial/streamer_detail/addAnchor",
         "authorization": "Bearer secret-token",
-        "body": {"sids": [12123121], "guild_id": 3432},
+        "body": {"sids": ["12123121"], "guild_id": 3432},
         "proxy_url": "",
         "timeout_seconds": 8.0,
     }]
@@ -293,6 +295,36 @@ def test_cms_id_bind_treats_zero_empty_guild_as_unbound_not_other_agency():
     assert any("addAnchor" in call["url"] for call in executor.calls)
 
 
+def test_cms_id_bind_treats_existing_sid_unverified_submit_as_retryable_processing():
+    executor = FakeCmsExecutor([
+        [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
+        {"code": 1000, "data": {"records": [{"sid": "53273321", "user_id": "9007199", "guild_id": "0", "guild_name": ""}]}},
+        {"code": 1001, "message": "状态码: 400, 错误信息: invalid arguments"},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "data": {"records": []}},
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "53273321",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "cms_postcheck_timeout"
+    assert "postcheck did not verify" in result["result_reason"]
+    assert result["raw_result"]["precheck"] == "sid_found_without_guild"
+    assert result["raw_result"]["cms_submit_code"] == 1001
+    assert result["raw_result"]["postcheck_attempts"] == 3
+    assert any("addAnchor" in call["url"] for call in executor.calls)
+
+
 def test_cms_id_bind_reports_invalid_sid_without_calling_add_anchor_when_sid_is_not_found():
     executor = FakeCmsExecutor([
         [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
@@ -334,3 +366,98 @@ def test_cms_id_bind_sends_cms_requests_through_executor_proxy_url():
     assert result["status"] == "success"
     assert executor.calls
     assert {call["proxy_url"] for call in executor.calls} == {"http://proxy-xa:8080"}
+
+
+def test_cms_id_bind_maps_add_anchor_permission_error_to_authorization_scope_failure():
+    executor = FakeCmsExecutor([
+        [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "0", "guild_name": ""}]}},
+        {"code": 1003, "message": "permission denied: guild scope mismatch"},
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "0", "guild_name": ""}]}},
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "0", "guild_name": ""}]}},
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "0", "guild_name": ""}]}},
+    ])
+    executor.cms_postcheck_retry_delay_seconds = 0
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "cms_authorization_scope_denied"
+    assert result["raw_result"]["cms_submit_error_category"] == "authorization_scope_denied"
+
+
+def test_cms_id_bind_maps_add_anchor_invalid_arguments_to_manual_check_not_sid_invalid():
+    executor = FakeCmsExecutor([
+        [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "0", "guild_name": ""}]}},
+        {"code": 1001, "message": "状态码: 400, 错误信息: invalid arguments"},
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "0", "guild_name": ""}]}},
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "0", "guild_name": ""}]}},
+        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "0", "guild_name": ""}]}},
+    ])
+    executor.cms_postcheck_retry_delay_seconds = 0
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "cms_add_anchor_invalid_arguments_manual_check"
+    assert result["raw_result"]["cms_submit_error_category"] == "invalid_arguments_manual_check"
+
+
+def test_cms_request_matches_browser_add_anchor_header_and_payload_parity(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"code":1000,"success":true}'
+
+    class FakeOpener:
+        def open(self, req, timeout=0):
+            captured['url'] = req.full_url
+            captured['method'] = req.get_method()
+            captured['data'] = req.data
+            captured['headers'] = dict(req.header_items())
+            captured['timeout'] = timeout
+            return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *args, **kwargs: FakeOpener())
+
+    executor = LiveChromeBindExecutor(profile_map={})
+    response = executor._cms_request_json(
+        method='POST',
+        url='https://cms.linke.ai/api/admin/linky/industrial/streamer_detail/addAnchor',
+        authorization='cms-jwt-token',
+        body={'sids': ['53279170'], 'guild_id': 3432},
+        timeout_seconds=8,
+    )
+
+    assert response == {'code': 1000, 'success': True}
+    assert captured['method'] == 'POST'
+    assert captured['data'] == b'{"sids":["53279170"],"guild_id":3432}'
+    headers = {k.lower(): v for k, v in captured['headers'].items()}
+    assert headers['authorization'] == 'cms-jwt-token'
+    assert headers['content-type'] == 'application/json'
+    assert headers['accept'] == 'application/json, text/plain, */*'
+    assert headers['origin'] == 'https://cms.linke.ai'
+    assert headers['referer'] == 'https://cms.linke.ai/anchorDetails'
+    assert headers['cookie'] == 'locale=zh-cn'
+    assert headers['accept-language'] == 'zh-CN,zh;q=0.9'
+    assert 'Mozilla/5.0' in headers['user-agent']

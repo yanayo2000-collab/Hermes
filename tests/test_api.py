@@ -92,6 +92,56 @@ def bootstrap_admin_and_login(client, *, username='admin01', password='secret123
     return response.json()['user']
 
 
+def test_approval_batch_summary_uses_daemon_snapshot_without_slow_fallback(monkeypatch):
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    service = client.app.state.service
+
+    monkeypatch.setattr(service, 'list_whatsapp_approval_accounts', lambda *args, **kwargs: {
+        'rows': [{
+            'account_key': 'wa01',
+            'enabled': True,
+            'responsible_type': 'registration_group',
+            'group_link_bindings': [{
+                'enabled': True,
+                'group_name': 'Carote-01',
+                'registration_group': 'Carote-01',
+            }],
+        }],
+    })
+    monkeypatch.setattr(service, '_production_ops_daemon_snapshot', lambda: {
+        'runtime': {'status': {'checked_at': '2026-05-20T12:00:00+00:00', 'registration_group_cycles': []}},
+    })
+
+    def slow_fallback_should_not_run():
+        raise AssertionError('approval_batch_queue fallback should not run when daemon snapshot is fresh')
+
+    monkeypatch.setattr(service, 'approval_batch_queue', slow_fallback_should_not_run)
+
+    response = client.get('/api/ops/approval-batch-queue/summary')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['registration_groups'] == []
+    assert body['registration_summary'] == {'monitored_group_count': 0, 'pending_count': 0}
+
+
+def test_production_ops_and_batch_member_pages_include_overflow_guards():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+
+    production_page = client.get('/ops/production-ops')
+    assert production_page.status_code == 200
+    assert 'data-layout-guard="approval-account-overflow"' in production_page.text
+    assert '.approval-account-editor-body .binding-config-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))!important;' in production_page.text
+    assert '.approval-account-card,.approval-account-card *,.binding-card,.binding-card *{min-width:0!important;' in production_page.text
+
+    batch_members_page = client.get('/ops/registration-group-approval-batch-members')
+    assert batch_members_page.status_code == 200
+    assert 'data-layout-guard="batch-member-phone-column"' in batch_members_page.text
+    assert '.batch-member-phone-cell{white-space:nowrap;overflow:visible;text-overflow:clip;' in batch_members_page.text
+
+
 def test_guild_executor_creation_creates_missing_crm_guild_dept():
     crm = SyncingCrmDeptAdapter(depts=[{'id': '1', 'name': 'Carote'}])
     client = make_client({'AUTH_ENABLED': True, 'CRM_ADAPTER': crm})
@@ -195,6 +245,113 @@ def test_whatsapp_approval_account_list_uses_lightweight_snapshot_without_runtim
     assert body['list_mode'] == 'lightweight'
     assert body['rows'][0]['account_key'] == 'wa-fast-list'
     assert body['rows'][0]['list_mode'] == 'lightweight'
+
+
+def test_whatsapp_approval_account_recent_localauth_restore_window_shows_recovering(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    account_key = 'wa-approval-recovering'
+    auth_path = str(service._whatsapp_approval_session_auth_path(account_key))
+    client_id = service._whatsapp_approval_session_client_id(account_key)
+    group_links = json.dumps([
+        {
+            'link': 'https://chat.whatsapp.com/ABCDEFGHIJKLMNOPQRSTUV',
+            'group_name': 'Recovering Group',
+            'enabled': True,
+            'area': 'Brazil',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'registration_group': 'Recovering Group',
+            'group_id': '120363425215002888@g.us',
+            'approval_count_threshold': 1,
+            'approval_timeout_minutes': 5,
+            'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+        }
+    ], ensure_ascii=False)
+    started_at = datetime.now(timezone.utc).isoformat()
+    idle_health = {
+        'status': 'idle',
+        'approval_client': {
+            'status': 'idle',
+            'ready': False,
+            'authenticated': False,
+            'client_id': f'{client_id}-approval',
+            'auth_path': auth_path,
+            'last_qr': '',
+            'last_error': '',
+        },
+    }
+    runtime_meta = {
+        'account_key': account_key,
+        'pid': 424242,
+        'port': 65001,
+        'base_url': 'http://127.0.0.1:65001',
+        'auth_path': auth_path,
+        'client_id': client_id,
+        'started_at': started_at,
+        'last_worker_health': idle_health,
+    }
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO whatsapp_approval_accounts (
+                account_key, account_name, responsible_type, group_links, area, notify_profile_name,
+                approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker,
+                schedule_windows, enabled, verification_status, notes, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_key, 'WA Recovering', 'registration_group', group_links, 'Brazil', 'wa-approval-broadcast',
+                'count_or_timeout', 1, 5, 1, '[{"start":"00:00","end":"23:59"}]', 1, 'ready', '', started_at,
+            ),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(service, '_read_whatsapp_approval_runtime_meta', lambda key: dict(runtime_meta) if key == account_key else {})
+    monkeypatch.setattr(service, '_write_whatsapp_approval_runtime_meta', lambda key, payload: dict(payload))
+    monkeypatch.setattr(service, '_pid_running', lambda pid: True)
+    monkeypatch.setattr(service, '_whatsapp_approval_has_local_auth_session', lambda key: key == account_key)
+    monkeypatch.setattr(service, '_production_ops_daemon_snapshot', lambda: {
+        'config': {'enabled': True},
+        'runtime': {
+            'launch_agent_installed': True,
+            'status': {'checked_at': started_at, 'registration_group_cycles': []},
+        },
+    })
+    monkeypatch.setattr(service, '_official_group_bridge_summary_payload', lambda: {'configured': False, 'health': {}, 'summary': {}})
+    monkeypatch.setattr(service, '_approval_membership_verifier_state', lambda **kwargs: {
+        'ready': True,
+        'requires_manual_seed': False,
+        'status': 'live_probe_ready',
+        'detail': '测试探针就绪',
+        'source': 'test',
+        'probe': {'pending_count': 0},
+    })
+    monkeypatch.setattr(service, '_binding_membership_verifier_state', lambda *args, **kwargs: {
+        'ready': True,
+        'requires_manual_seed': False,
+        'status': 'live_probe_ready',
+        'detail': '测试绑定探针就绪',
+        'source': 'test',
+        'probe': {'pending_count': 0},
+    })
+
+    response = client.get('/api/ops/whatsapp-approval-accounts/overview')
+    assert response.status_code == 200
+    row = response.json()['rows'][0]
+    session = row['session_state']
+    assert row['account_key'] == account_key
+    assert row['status_text'] == '登录态恢复中'
+    assert row['runtime_status'] == 'recovering'
+    assert row['status_color'] == 'blue'
+    assert row['verification_status'] == 'runtime_recovering'
+    assert row['verification_status_label'] == '恢复中'
+    assert session['login_verified'] is False
+    assert session['login_check_status'] == 'runtime_recovering'
+    assert session['login_state'] in {'initializing', 'runtime_recovering'}
+    assert session['qr_available'] is False
+    assert session['can_show_qr'] is False
+    assert '待扫码' not in row['status_text']
+    assert '待登录' not in row['status_text']
 
 
 def test_whatsapp_approval_binding_probe_requires_matching_account_key():
@@ -934,15 +1091,16 @@ def test_lark_reply_template_for_accepted_bind_failure_uses_specific_reason():
     reply = service._format_lark_reply_text({
         'accepted': True,
         'reason': 'bind_check_failed',
-        'result_code': 'cms_add_anchor_invalid_arguments',
-        'result_reason': '状态码: 400, 错误信息: invalid arguments',
+        'result_code': 'cms_add_anchor_invalid_arguments_manual_check',
+        'result_reason': 'CMS returned invalid arguments while SID still exists without target guild; keep for manual check',
         'reply_phone': '+62 898978979',
         'reply_id': '44898989',
         'reply_group': '其他渠道',
         'reply_code_display': '-',
     })
 
-    assert reply.startswith('**❌ Bind failed: Invalid or unavailable Linky ID**')
+    assert reply.startswith('**❌ Bind failed: CMS rejected bind request, manual check required**')
+    assert 'Invalid or unavailable Linky ID' not in reply
     assert '**❌ Failed**' not in reply
     assert 'Group: 其他渠道' in reply
 
@@ -1165,6 +1323,45 @@ def test_ops_intake_workbench_reuses_recent_duplicate_submission_instead_of_crea
     with client.app.state.service.db.connect() as conn:
         count = conn.execute("SELECT COUNT(*) AS total FROM ops_intake_items WHERE parsed_phone=? AND parsed_account_id=?", ('+62 898978979', '44898989')).fetchone()['total']
     assert count == 1
+
+
+def test_ops_intake_workbench_resubmit_after_feedback_done_creates_visible_card():
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'REQUIRE_INVITE_CODE': True,
+        'AUTO_BIND_SIMULATION': False,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    text = 'Phone: +62 898978979\nID: 44898989\nGroup: 🇮🇩2️⃣4️⃣Grup Registrasi Resmi ✘ Linky 💎\nCode: -'
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': text}).json()
+
+    first = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed['fields']})
+    assert first.status_code == 200
+    first_item_id = first.json()['item']['item_id']
+    with client.app.state.service.db.connect() as conn:
+        conn.execute(
+            "UPDATE ops_intake_items SET feedback_status='feedback_done', feedback_done_at=? WHERE item_id=?",
+            ('2026-05-20T10:00:00+00:00', first_item_id),
+        )
+        conn.commit()
+
+    second = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={'text': text, 'fields': parsed['fields']})
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body.get('duplicate') is not True
+    assert second_body['item']['item_id'] != first_item_id
+
+    visible = client.get('/api/ops/intake-workbench/items?guild_name=Carote&limit=50')
+    assert visible.status_code == 200
+    visible_ids = [row['item_id'] for row in visible.json()['rows']]
+    assert second_body['item']['item_id'] in visible_ids
+    assert first_item_id not in visible_ids
 
 
 
@@ -1924,7 +2121,7 @@ def test_ops_intake_workbench_default_items_excludes_cleared_and_failed_is_not_p
     page = client.get('/ops/intake-submit')
     assert page.status_code == 200
     assert "s==='failed'||s==='bind_failed'" in page.text
-    assert "if(row.feedback_status==='cleared')return pill('已清除')" in page.text
+    assert "if(row.feedback_status==='cleared')return duplicate?pill('❌ 重复提交','red'):pill('已清除')" in page.text
 
 
 def test_ops_intake_workbench_feedback_done_today_counts_only_today():
@@ -1957,14 +2154,15 @@ def test_ops_intake_workbench_feedback_done_today_counts_only_today():
     assert rows['summary']['feedback_done_today'] == 1
 
 
-def test_ops_intake_bind_failed_page_uses_small_default_limit_and_admin_clear_action():
+def test_ops_intake_binding_history_page_uses_small_default_limit_and_history_endpoint():
     client = make_client({'AUTH_ENABLED': True})
     bootstrap_admin_and_login(client)
     page = client.get('/ops/bind-failed-users')
     assert page.status_code == 200
     assert "params.set('limit','50')" in page.text
-    assert '清除当前筛选结果' in page.text
-    assert '/api/ops/intake-workbench/bind-failed-items/clear' in page.text
+    assert '绑定历史列表' in page.text
+    assert '/api/ops/intake-workbench/binding-history-items' in page.text
+    assert '卡片最多两行' in page.text
     assert ".join('\\n')" in page.text
     assert ".join('\n')" not in page.text
 
@@ -2056,41 +2254,153 @@ def test_admin_can_clear_selected_bind_failed_items_without_clearing_all():
     assert [row['item_id'] for row in body['rows']] == ['intake_item_clear_selected_1']
 
 
-def test_ops_intake_bind_failed_page_exposes_selected_clear_controls():
+
+
+def test_binding_history_current_view_and_close_actions_remove_dashboard_exception_but_keep_history():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    service = client.app.state.service
+    now = main_module.utc_now()
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'intake_item_close_current_1', 'Carote', 'cs1', '客服1', 'Phone: +62 81230000000',
+                '+62 81230000000', '11111111', '其他渠道', 'ABC123', 'Linky', 'Carote',
+                'bind_failed', 'pending_feedback', '❌ Bind failed', 'cms_sid_not_found', 'SID not found', '{}', now, now,
+            ),
+        )
+        conn.commit()
+
+    current_before = client.get('/api/ops/intake-workbench/binding-history-items?view=current&guild_name=Carote')
+    assert current_before.status_code == 200
+    assert current_before.json()['summary']['current_exception_count'] == 1
+    assert service.ops_dashboard_summary()['bind_failed_count'] == 1
+
+    closed = client.post('/api/ops/intake-workbench/items/intake_item_close_current_1/resolve', json={
+        'action': 'ignored',
+        'reason': '用户无响应',
+        'note': '客服确认不继续跟进',
+    })
+    assert closed.status_code == 200
+    assert closed.json()['item']['feedback_status'] == 'ignored'
+
+    current_after = client.get('/api/ops/intake-workbench/binding-history-items?view=current&guild_name=Carote')
+    assert current_after.json()['summary']['current_exception_count'] == 0
+    assert current_after.json()['rows'] == []
+    all_history = client.get('/api/ops/intake-workbench/binding-history-items?view=all&guild_name=Carote')
+    assert all_history.json()['summary']['history_count'] == 1
+    row = all_history.json()['rows'][0]
+    assert row['closure_status'] == 'ignored'
+    assert row['closure_reason'] == '用户无响应'
+    assert service.ops_dashboard_summary()['bind_failed_count'] == 0
+
+
+def test_binding_history_legacy_lead_close_removes_current_exception_but_keeps_audit_history():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    service = client.app.state.service
+    now = main_module.utc_now()
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO leads (lead_id, trace_id, source_platform, source_page_id, country, area_code, mobile, yw_id,
+                               app_name, dept_name, pendaftaran_group, current_status, matched_customer_id,
+                               parser_status, review_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('legacy_close_hist', 'trace_legacy_close_hist', 'wa', 'page', 'ID', 62, '81234560009', '76543210',
+             'Linky', 'Carote', 'Carote-001', 'bind_failed', '', 'ok', 'not_needed', now, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at, status, result_code, result_reason, raw_result, finished_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('task_legacy_close_hist', 'legacy_close_hist', 'bind_check', 'P1', '{}', 'legacy-close-hist', '客服1', now, 'failed', 'cms_sid_not_found', 'SID not found', '{}', now),
+        )
+        conn.commit()
+
+    assert service.ops_dashboard_summary()['bind_failed_count'] == 1
+    closed = client.post('/api/ops/intake-workbench/items/legacy_close_hist/resolve', json={
+        'action': 'resolved',
+        'reason': '已加入其他公会',
+        'note': '客服确认关闭',
+    })
+    assert closed.status_code == 200
+    assert service.ops_dashboard_summary()['bind_failed_count'] == 0
+
+    current_after = client.get('/api/ops/intake-workbench/binding-history-items?view=current&guild_name=Carote')
+    assert current_after.json()['rows'] == []
+    all_history = client.get('/api/ops/intake-workbench/binding-history-items?view=all&guild_name=Carote')
+    assert all_history.json()['summary']['history_count'] == 1
+    assert all_history.json()['rows'][0]['closure_status'] == 'resolved'
+
+
+def test_binding_history_page_has_current_all_tabs_resolution_actions_and_roomy_layout():
     client = make_client({'AUTH_ENABLED': True})
     bootstrap_admin_and_login(client)
     page = client.get('/ops/bind-failed-users')
     assert page.status_code == 200
     html = page.text
-    assert 'bindFailedSelectAll' in html
-    assert 'data-bind-failed-select' in html
-    assert '清除选中失败消息' in html
-    assert 'clearSelectedFailedItems' in html
+    assert '当前异常' in html
+    assert '全部历史' in html
+    assert "params.set('view',currentView)" in html
+    assert 'resolveItem' in html
+    assert '标记已处理' in html
+    assert '转人工复核' in html
+    assert 'binding-row-card' in html
+    assert 'compact-main-line' in html
+    assert 'compact-sub-line' in html
+    assert '资料完整展示' in html
+    assert 'grid-template-columns:minmax(190px,1fr) minmax(520px,2.1fr) minmax(180px,.72fr) minmax(180px,180px)' in html
+    assert '.row-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))' in html
+    assert 'min-width:1060px' not in html
+
+
+def test_ops_intake_binding_history_page_exposes_submission_history_controls():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    page = client.get('/ops/bind-failed-users')
+    assert page.status_code == 200
+    html = page.text
+    assert '绑定历史列表' in html
+    assert 'compact-sub-line' in html
+    assert '卡片最多两行' in html
+    assert 'data-bind-failed-select' not in html
+    assert '清除选中失败消息' not in html
     assert '重置筛选' in html
-    assert '重置筛选只清空筛选条件，不删除用户数据' in html
-    assert '清除当前筛选结果' in html
+    assert '同一 Phone + ID 合并' in html
+    assert '已处理不计入看板异常' in html
+    assert '清除当前筛选结果' not in html
     assert '清空</button>' not in html
     assert 'failed-list' in html
-    assert 'failed-row' in html
-    assert '全选当前页' in html
+    assert 'binding-row-card' in html
+    assert '全选当前页' not in html
     assert 'bind-table' not in html
-    assert '.failed-row{display:grid' in html
-    assert '.failed-fields{display:grid' in html
-    assert 'grid-template-columns:34px minmax(120px,.72fr) minmax(0,2.1fr) minmax(170px,.9fr) 74px' in html
-    assert 'grid-template-columns:minmax(104px,1fr) minmax(74px,.68fr) minmax(118px,1.05fr) minmax(62px,.58fr)' in html
-    assert '.failed-user{min-width:0;border-right' in html
-    assert '.reason-cell{min-width:0;background:#f8fafc' in html
-    assert '.reason-text{display:-webkit-box' in html
-    assert '.row-actions{display:flex;flex-direction:column' in html
+    assert '.compact-main-line,.compact-sub-line{display:grid' in html
+    assert '.field-strip{display:grid' in html
+    assert '.field-strip{display:grid;grid-template-columns:minmax(190px,1fr) minmax(160px,.8fr)' in html
+    assert '资料完整展示' in html
+    assert 'grid-template-columns:minmax(190px,1fr) minmax(520px,2.1fr) minmax(180px,.72fr) minmax(180px,180px)' in html
+    assert '.member-compact,.field-strip,.status-compact,.reason-compact{min-width:0}' in html
+    assert '.reason-compact{grid-column:1 / 4' in html
+    assert '.row-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))' in html
+    assert 'grid-auto-rows:32px' in html
     assert '.list-select-row' in html
-    assert 'failed-field-head' in html
-    assert '<span>Phone</span><span>ID</span><span>Group</span><span>Code</span>' in html
-    assert '成员信息' in html
+    assert 'compact-main-line' in html
+    assert '>成员</span>' in html
+    assert '当前异常' in html
+    assert '全部历史' in html
     assert '可直接修正后回填或重提' not in html
-    assert '<label>Phone</label>' not in html
-    assert '<label>ID</label>' not in html
-    assert '<label>Group</label>' not in html
-    assert '<label>Code</label>' not in html
+    assert '<label>${esc(label)}</label>' in html
     assert 'aria-label="${label}"' in html
     assert 'min-width:1060px' not in html
     assert 'title="回填到收口区"' in html
@@ -2098,10 +2408,10 @@ def test_ops_intake_bind_failed_page_exposes_selected_clear_controls():
     assert 'title="重新提交"' in html
     assert '>重提</button>' in html
     assert 'selectionSummary' in html
-    assert 'clearSelectedButton' in html
-    assert 'clearCurrentButton' in html
+    assert 'clearSelectedButton' not in html
+    assert 'clearCurrentButton' not in html
     assert 'button:disabled' in html
-    assert '当前筛选条件下没有需要处理的失败记录' in html
+    assert '当前筛选条件下没有提交记录' in html
     assert 'formatDisplayTime' in html
 
 
@@ -2136,7 +2446,7 @@ def test_ops_intake_bind_failed_items_can_be_edited_and_resubmitted(monkeypatch)
     assert failed_body['rows'][0]['editable_fields']['phone'] == '+62 81230000000'
     assert failed_body['rows'][0]['editable_fields']['account_id'] == '11111111'
 
-    def fake_submit(text, profile_name=None, submitted_by=None):
+    def fake_submit(text, profile_name=None, submitted_by=None, default_app_override=None, default_dept_override=None):
         assert 'ID: 22222222' in text
         return {
             'accepted': True,
@@ -2168,7 +2478,7 @@ def test_ops_intake_bind_failed_items_can_be_edited_and_resubmitted(monkeypatch)
 
     page = client.get('/ops/bind-failed-users')
     assert page.status_code == 200
-    assert '绑定失败用户' in page.text
+    assert '绑定历史列表' in page.text
     assert '日期（北京时间）' in page.text
     assert '公会' in page.text
     assert '操作客服' in page.text
@@ -2178,7 +2488,65 @@ def test_ops_intake_bind_failed_items_can_be_edited_and_resubmitted(monkeypatch)
     assert '回填到收口区' in page.text
     assert '重新提交' in page.text
     assert 'ops_intake_prefill' in page.text
-    assert '/api/ops/intake-workbench/bind-failed-items' in page.text
+    assert '/api/ops/intake-workbench/binding-history-items' in page.text
+
+
+def test_ops_intake_history_resubmit_omits_blank_code_and_preserves_guild_context(monkeypatch):
+    client = make_client({'DB_PATH': ':memory:'})
+    service = client.app.state.service
+    now = datetime.now(timezone.utc).isoformat()
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'intake_item_blank_code_1', 'Carote', 'cs1', 'Mafubo', 'Phone: +62 895635354791',
+                '+62 895635354791', '53279170', '其他渠道', '-', 'Linky', 'Carote',
+                'failed', 'pending_feedback', '❌ Bind failed', 'invalid_invite_code_format', 'invalid code', '{}', now, now,
+            ),
+        )
+        conn.commit()
+
+    captured = {}
+
+    def fake_submit(text, profile_name=None, submitted_by=None, default_app_override=None, default_dept_override=None):
+        captured.update({
+            'text': text,
+            'profile_name': profile_name,
+            'submitted_by': submitted_by,
+            'default_app_override': default_app_override,
+            'default_dept_override': default_dept_override,
+        })
+        return {
+            'accepted': True,
+            'reply_text': '**✅ Success**',
+            'reply_phone': '+62 895635354791',
+            'reply_id': '53279170',
+            'reply_group': '其他渠道',
+            'reply_code': '',
+            'result_code': 'bind_success',
+            'lead_status': 'bind_success',
+            'current_submission_crm_verified': True,
+        }
+
+    monkeypatch.setattr(service, 'submit_ops_intake_text', fake_submit)
+    response = client.post('/api/ops/intake-workbench/items/intake_item_blank_code_1/resubmit', json={
+        'text': '',
+        'fields': {'phone': '+62 895635354791', 'account_id': '53279170', 'group': '其他渠道', 'code': '-'},
+    })
+    assert response.status_code == 200
+    assert 'Code:' not in captured['text']
+    assert 'Phone: +62 895635354791' in captured['text']
+    assert 'ID: 53279170' in captured['text']
+    assert 'Group: 其他渠道' in captured['text']
+    assert captured['default_app_override'] == 'Linky'
+    assert captured['default_dept_override'] == 'Carote'
 
 
 def test_ops_bind_failed_items_support_scope_and_filters_by_guild_date_and_operator():
@@ -2274,7 +2642,7 @@ def test_ops_bind_failed_page_includes_legacy_lead_failures_and_prefill_flow(mon
         'agency': 'Carote',
     }
 
-    def fake_submit(text, profile_name=None, submitted_by=None):
+    def fake_submit(text, profile_name=None, submitted_by=None, default_app_override=None, default_dept_override=None):
         assert 'ID: 44444444' in text
         assert 'Phone: +62 81239990000' in text
         return {
@@ -2476,14 +2844,15 @@ def test_ops_home_is_admin_dashboard_with_core_metrics_only():
     assert '收口数据' in body
     assert '审批群监控' in body
     assert '群聊天助手数据' in body
-    assert '绑定失败用户数' in body
+    assert '绑定异常用户数' in body
     assert '待完成用户' in body
     assert '待 AI 绑定' not in body
     assert '待入官方群' not in body
     assert '/api/ops/dashboard/summary' in body
     assert '/api/ops/approval-batch-queue/summary' in body
-    assert '/api/ops/group-atmosphere/accounts' in body
-    assert '/api/ops/group-atmosphere/configs' in body
+    assert '/api/ops/group-atmosphere/summary' in body
+    assert '/api/ops/group-atmosphere/accounts' not in body
+    assert '/api/ops/group-atmosphere/configs' not in body
     assert '人工待办' not in body
     assert 'AI 下一步处理建议' not in body
     assert '快捷入口' not in body
@@ -2527,7 +2896,7 @@ def test_ops_home_only_admin_and_super_admin_can_view():
     assert operator_page.headers['location'] == '/ops/group-atmosphere'
 
 
-def test_ops_dashboard_summary_counts_bind_failed_and_pending_completion_users():
+def test_ops_dashboard_summary_counts_actionable_intake_metrics_with_clear_sources():
     client = make_client({'DB_PATH': ':memory:'})
     service = client.app.state.service
     now = datetime.now(timezone.utc).isoformat()
@@ -2551,7 +2920,26 @@ def test_ops_dashboard_summary_counts_bind_failed_and_pending_completion_users()
             (
                 'intake_item_success_pending_dash', 'Carote', 'cs1', '客服1', 'Phone: +62 81234560001',
                 '+62 81234560001', '12345678', '其他渠道', '', 'Linky', 'Carote',
-                'success', 'pending_feedback', '✅ Success', 'bind_success', '', '{}', now, now,
+                'fully_success', 'pending_feedback', '✅ Success', 'bind_success', '', '{}', now, now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO leads (lead_id, trace_id, source_platform, source_page_id, country, area_code, mobile, current_status, matched_customer_id, parser_status, review_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('lead_success_notice_dash', 'trace_success_notice_dash', 'wa', 'page', 'ID', 62, '81234560002', 'bind_success', '', 'ok', 'not_needed', now, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO operator_notifications (notification_id, lead_id, notification_type, mobile, yw_id, write_result, reason, is_read, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'notify_dash_1', 'lead_bind_failed_dash', 'bind_check_failed', '81234560000', '12345678', 'failed', 'first', 0, now,
+                'notify_dash_2', 'lead_bind_failed_dash', 'bind_check_failed', '81234560000', '12345678', 'failed', 'duplicate', 0, now,
+                'notify_dash_read', 'lead_bind_failed_dash', 'bind_check_failed', '81234560000', '12345678', 'failed', 'read', 1, now,
+                'notify_dash_success', 'lead_success_notice_dash', 'crm_record_success', '81234560002', '12345679', 'success', None, 0, now,
             ),
         )
         conn.commit()
@@ -2559,6 +2947,10 @@ def test_ops_dashboard_summary_counts_bind_failed_and_pending_completion_users()
     summary = service.ops_dashboard_summary()
     assert summary['bind_failed_count'] == 1
     assert summary['pending_completion_user_count'] == 1
+    assert summary['unread_customer_notification_count'] == 1
+    assert summary['metric_sources']['bind_failed_count'] == "leads.current_status='bind_failed' + ops_intake_items failure statuses"
+    assert summary['metric_sources']['pending_completion_user_count'] == "ops_intake_items.system_status='fully_success' AND feedback_status='pending_feedback'"
+    assert summary['metric_sources']['unread_customer_notification_count'] == 'distinct unread actionable failure operator_notifications users'
 
 
 def test_customer_service_intake_config_center_is_hidden_and_mutations_are_admin_only():
@@ -3807,7 +4199,8 @@ def test_production_ops_page_loads():
     assert '注册群审批留存页' in body
     assert '/api/ops/production-ops-daemon' in body
     assert '/api/ops/whatsapp-approval-accounts' in body
-    assert '/api/ops/whatsapp-approval-accounts/overview' in body
+    assert '/api/ops/whatsapp-approval-accounts/realtime-snapshot' in body
+    assert '/api/ops/whatsapp-approval-accounts/overview' not in body
     assert '/api/ops/whatsapp-approval-candidates/summary' in body
     assert '/api/ops/official-group-bridge-summary/summary' in body
     assert '/api/ops/whatsapp-approval-candidates\'' not in body
@@ -3908,6 +4301,13 @@ def test_production_ops_page_loads():
     assert 'type="time"' in body
     assert 'collectGroupScheduleWindows' in body
     assert 'fillGroupScheduleWindows' in body
+    assert 'renderGroupScheduleWindows' in body
+    assert 'addGroupScheduleWindow' in body
+    assert 'removeGroupScheduleWindow' in body
+    assert 'data-schedule-window-row' in body
+    assert 'data-schedule-add-button' in body
+    assert '删除时段' in body
+    assert '最多3个时段' in body
     assert 'placeholder="09:00-12:00"' not in body
     assert '本群监控' in body
     assert 'wa_group_enabled_1' in body
@@ -10711,6 +11111,32 @@ def test_lark_reply_templates_include_code_field_for_success_and_failures():
     assert 'Phone: +62 81234567890' in final_success
     assert 'Code: EKVFGQ' in final_success
 
+    already_in_target_verified = service._format_lark_reply_text({
+        'accepted': True,
+        'next_action': 'queue_group_join',
+        'lead_status': 'bind_success',
+        'crm_verified': True,
+        'bind_precheck': 'already_in_target_guild',
+        'reply_phone': '+62 8989811289819',
+        'reply_id': '46058697',
+        'reply_group': '其他渠道',
+        'reply_code': '-',
+    })
+    assert already_in_target_verified == (
+        '**❌ Previously registered in this agency**\n'
+        'Phone: +62 8989811289819\n'
+        'ID: 46058697\n'
+        'Group: 其他渠道\n'
+        'Code: -'
+    )
+    assert service._classify_ops_intake_result_status({
+        'accepted': True,
+        'lead_status': 'bind_success',
+        'crm_verified': True,
+        'bind_precheck': 'already_in_target_guild',
+        'reply_text': already_in_target_verified,
+    }) == 'bind_failed'
+
     not_verified_yet = service._format_lark_reply_text({
         'accepted': True,
         'next_action': 'queue_group_join',
@@ -12027,6 +12453,189 @@ def test_process_next_automation_task_retryable_crm_failure_queues_auto_retry_wi
     retry_tasks = [task for task in timeline['tasks'] if task['task_type'] == 'crm_sync_retry']
     assert len(retry_tasks) == 1
     assert retry_tasks[0]['status'] == 'pending'
+
+
+
+def test_binding_history_page_uses_history_copy_and_api_endpoint():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+
+    html = client.get('/ops/bind-failed-users').text
+
+    assert '绑定历史列表' in html
+    assert '/api/ops/intake-workbench/binding-history-items' in html
+    assert '卡片最多两行' in html
+    assert '绑定失败用户：' not in html
+
+
+
+def test_ops_binding_history_dedupes_by_phone_and_id_and_keeps_attempt_records():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    now = main_module.utc_now()
+    with client.app.state.service.db.connect() as conn:
+        rows = [
+            ('hist_success_latest', 'Carote', '+62 81234567890', '53240502', 'Carote-001', 'ABCDEF', 'fully_success', 'pending_feedback', 'bind_success', 'CMS + CRM verified', now),
+            ('hist_fail_old', 'Carote', '+62 81234567890', '53240502', 'Carote-001', 'ABCDEF', 'bind_failed', 'cleared', 'cms_sid_not_found', 'SID not found at first submit', '2026-05-20T01:00:00+00:00'),
+            ('hist_other', 'Carote', '+62 89999999999', '70000001', 'Carote-002', 'QWERTY', 'bind_failed', 'pending_feedback', 'already_in_other_guild', 'Already in another agency', '2026-05-20T02:00:00+00:00'),
+        ]
+        for row in rows:
+            conn.execute(
+                """
+                INSERT INTO ops_intake_items (
+                    item_id, guild_name, raw_text, parsed_phone, parsed_account_id, parsed_group, parsed_code,
+                    system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot, created_at, processed_at
+                ) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, '', ?, ?, '{}', ?, ?)
+                """,
+                (*row, row[-1]),
+            )
+        conn.commit()
+
+    response = client.get('/api/ops/intake-workbench/binding-history-items?guild_name=Carote&limit=20')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['summary']['history_count'] == 2
+    grouped = {row['dedupe_key']: row for row in body['rows']}
+    duplicate_key = '+6281234567890|53240502'
+    assert duplicate_key in grouped
+    duplicate_row = grouped[duplicate_key]
+    assert duplicate_row['item_id'] == 'hist_success_latest'
+    assert duplicate_row['latest_result_code'] == 'bind_success'
+    assert duplicate_row['attempt_count'] == 2
+    assert [a['item_id'] for a in duplicate_row['attempts']] == ['hist_success_latest', 'hist_fail_old']
+    assert duplicate_row['attempts'][1]['result_code'] == 'cms_sid_not_found'
+    assert duplicate_row['attempts'][1]['result_reason'] == 'SID not found at first submit'
+    assert grouped['+6289999999999|70000001']['attempt_count'] == 1
+
+
+
+def test_ops_binding_history_includes_legacy_bind_failed_leads_to_match_dashboard_count():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    now = main_module.utc_now()
+    with client.app.state.service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO leads (lead_id, trace_id, source_platform, source_page_id, country, area_code, mobile, yw_id,
+                               app_name, dept_name, pendaftaran_group, current_status, matched_customer_id,
+                               parser_status, review_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('legacy_bind_failed_hist', 'trace_legacy_bind_failed_hist', 'wa', 'page', 'ID', 62, '81234560009', '76543210',
+             'Linky', 'Carote', 'Carote-001', 'bind_failed', '', 'ok', 'not_needed', now, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO automation_tasks (task_id, lead_id, task_type, priority, payload, dedupe_key, created_by, created_at, status, result_code, result_reason, raw_result, finished_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('task_legacy_bind_failed_hist', 'legacy_bind_failed_hist', 'bind_check', 'P1', '{}', 'legacy-bind-failed-hist', '客服1', now, 'failed', 'cms_sid_not_found', 'SID not found', '{}', now),
+        )
+        conn.commit()
+
+    response = client.get('/api/ops/intake-workbench/binding-history-items?guild_name=Carote&limit=20')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['summary']['history_count'] == 1
+    assert body['summary']['submission_count'] == 1
+    row = body['rows'][0]
+    assert row['source_type'] == 'ops_intake_history'
+    assert row['item_id'] == 'legacy_bind_failed_hist'
+    assert row['dedupe_key'].endswith('|76543210')
+    assert row['normalized_phone'].startswith('+628')
+    assert row['attempt_count'] == 1
+    assert row['attempts'][0]['source_type'] == 'lead_bind_failed'
+    assert row['attempts'][0]['result_code'] == 'cms_sid_not_found'
+    assert row['attempts'][0]['result_reason'] == 'SID not found'
+
+
+def test_crm_compensation_patrol_requeues_partial_success_item_and_marks_success_after_verify():
+    class ExistingCustomerCrmAdapter:
+        def __init__(self):
+            self.apps = [{"id": "app_1", "name": "Linky"}]
+            self.depts = [{"deptId": "dept_1", "deptName": "Piso"}]
+            self.calls = []
+        def get_apps(self):
+            return list(self.apps)
+        def get_depts(self):
+            return list(self.depts)
+        def create_customer(self, payload):
+            self.calls.append(("create_customer", payload))
+            raise AssertionError("compensation retry must verify existing CRM before replaying create_customer")
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(("find_customer", {"yw_id": yw_id, "mobile": mobile}))
+            return {
+                "id": "crm_existing_after_patrol",
+                "ywId": yw_id,
+                "mobile": mobile,
+                "appName": "Linky",
+                "deptName": "Piso",
+                "pendaftaranGroup": "Piso-25",
+            }
+
+    crm = ExistingCustomerCrmAdapter()
+    client = make_client({
+        "CRM_ADAPTER": crm,
+        "LARK_DEFAULT_APP_NAME": "Linky",
+        "LARK_DEFAULT_DEPT_NAME": "Piso",
+        "CRM_RETRY_DELAYS_SECONDS": [0, 0, 0],
+        "CRM_RETRY_MAX_ATTEMPTS": 3,
+    })
+    service = client.app.state.service
+    lead = client.post('/api/leads/upsert', json={
+        'trace_id': 'trace-crm-compensation-patrol',
+        'source_platform': 'manual_cs',
+        'source_page_id': 'page-crm-compensation-patrol',
+        'country': 'Indonesia',
+        'area_code': 62,
+        'mobile': '81234567890',
+        'app_name': 'Linky',
+        'dept_name': 'Piso',
+        'pendaftaran_group': 'Piso-25',
+        'current_status': 'bind_success',
+    }).json()
+    now = main_module.utc_now()
+    snapshot = {
+        'lead_id': lead['lead_id'],
+        'task_id': 'task_bind_compensation_source',
+        'submission_id': 'sub_compensation_1',
+        'account_id': '45678901',
+        'bind_raw_result': {'deptName': 'Piso', 'deptId': 'dept_1'},
+        'result_code': 'crm_sync_failed',
+    }
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, raw_text, parsed_phone, parsed_account_id, parsed_group, parsed_code,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot, created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'item_crm_compensation_1', 'Piso', '+62 81234567890\nPiso-25\n45678901\nCode EKVFGQ',
+                '+62 81234567890', '45678901', 'Piso-25', 'EKVFGQ',
+                'partial_success_crm_failed', 'pending_feedback', '', 'crm_sync_failed',
+                'Bind satisfied, CRM sync failed', json.dumps(snapshot, ensure_ascii=False), now, now,
+            ),
+        )
+        conn.commit()
+
+    patrol = service.run_crm_failure_compensation_patrol(limit=10)
+    assert patrol['queued_count'] == 1
+    assert patrol['queued'][0]['item_id'] == 'item_crm_compensation_1'
+
+    processed = service.process_next_automation_task()
+    assert processed['task_type'] == 'crm_sync_retry'
+    assert processed['crm_verified'] is True
+    with service.db.connect() as conn:
+        item = conn.execute("SELECT system_status, feedback_status, result_code, result_reason FROM ops_intake_items WHERE item_id = ?", ('item_crm_compensation_1',)).fetchone()
+    assert item['system_status'] == 'fully_success'
+    assert item['feedback_status'] == 'pending_feedback'
+    assert item['result_code'] == 'crm_retry_succeeded'
+    assert any(call[0] == 'find_customer' for call in crm.calls)
+    assert all(call[0] != 'create_customer' for call in crm.calls)
 
 
 
@@ -22982,9 +23591,12 @@ def test_ops_page_serves_operational_workbench_html():
     assert 'text/html' in response.headers['content-type']
     body = response.text
     assert '管理员看板' in body
-    assert '今日链路概览' in body
-    assert '人工待办' in body
+    assert '收口数据' in body
+    assert '审批群监控' in body
+    assert '群聊天助手数据' in body
     assert '系统健康' in body
+    assert '今日链路概览' not in body
+    assert '人工待办' not in body
     assert '快捷入口' not in body
     assert '人工兜底' not in body
     assert '监控群组' in body
@@ -22996,7 +23608,8 @@ def test_ops_page_serves_operational_workbench_html():
     assert '批次可释放' not in body
     assert '等待中' not in body
     assert '/api/ops/dashboard/summary' in body
-    assert '/api/ops/operator-notifications' in body
+    assert '/api/ops/operator-notifications' not in body
+    assert 'unread_customer_notification_count' in body
     assert '/api/ops/approval-batch-queue/summary' in body
     assert '/api/ops/production-ops-daemon' in body
     assert 'function renderHealth(runtime, batchQueue)' in body
@@ -25908,3 +26521,172 @@ def test_hidden_executor_slot_is_passed_to_bind_executor_context():
     assert captured['executor_slot_index'] == 1
     assert captured['executor_slot_count'] == 3
     assert captured['executor_slot_hidden'] is True
+
+
+
+def test_group_atmosphere_account_list_is_snapshot_only_without_worker_calls(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO whatsapp_approval_accounts (
+                account_key, account_name, responsible_type, group_links, area, notify_profile_name,
+                approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker,
+                schedule_windows, enabled, verification_status, notes, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'ga-snapshot-01', '群聊天账号', 'group_atmosphere',
+                '[{"target_group":"https://chat.whatsapp.com/demo","group_name":"https://chat.whatsapp.com/demo"}]',
+                'ID', '', 'count_or_timeout', 1, 5, 1, '[]', 1, 'ready', '', '2026-05-20T10:00:00+00:00',
+            ),
+        )
+        conn.commit()
+
+    calls = {'health': 0, 'probe': 0, 'start': 0}
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda *args, **kwargs: {
+        'active': True,
+        'base_url': 'http://127.0.0.1:59999',
+        'status': 'running',
+    })
+
+    def fail_health(*args, **kwargs):
+        calls['health'] += 1
+        raise RuntimeError('list endpoint must not call worker health')
+
+    def fail_probe(*args, **kwargs):
+        calls['probe'] += 1
+        raise RuntimeError('list endpoint must not probe groups')
+
+    def fail_start(*args, **kwargs):
+        calls['start'] += 1
+        raise RuntimeError('list endpoint must not start sessions')
+
+    monkeypatch.setattr(service, '_request_whatsapp_approval_worker_health', fail_health)
+    monkeypatch.setattr(service, '_probe_group_atmosphere_actual_group_names', fail_probe)
+    monkeypatch.setattr(service, 'start_group_atmosphere_whatsapp_account_session', fail_start)
+
+    response = client.get('/api/ops/group-atmosphere/accounts')
+
+    assert response.status_code == 200
+    assert response.json()['rows'][0]['account_key'] == 'ga-snapshot-01'
+    assert calls == {'health': 0, 'probe': 0, 'start': 0}
+
+
+def test_group_atmosphere_learning_account_list_is_snapshot_only_without_worker_calls(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO whatsapp_group_atmosphere_learning_accounts (
+                learning_account_key, account_name, region, language, group_links, daily_learning_time,
+                enabled, last_learned_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'learn-snapshot-01', '学习机器人', '印尼', 'id',
+                '[{"target_group":"https://chat.whatsapp.com/learn","group_name":"https://chat.whatsapp.com/learn"}]',
+                '03:00', 1, None, '2026-05-20T10:00:00+00:00', '2026-05-20T10:00:00+00:00',
+            ),
+        )
+        conn.commit()
+
+    calls = {'health': 0, 'probe': 0}
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda *args, **kwargs: {
+        'active': True,
+        'base_url': 'http://127.0.0.1:59998',
+        'status': 'running',
+    })
+
+    def fail_health(*args, **kwargs):
+        calls['health'] += 1
+        raise RuntimeError('learning list endpoint must not call worker health')
+
+    def fail_probe(*args, **kwargs):
+        calls['probe'] += 1
+        raise RuntimeError('learning list endpoint must not probe groups')
+
+    monkeypatch.setattr(service, '_request_whatsapp_approval_worker_health', fail_health)
+    monkeypatch.setattr(service, '_probe_group_atmosphere_actual_group_names', fail_probe)
+
+    response = client.get('/api/ops/group-atmosphere/learning-accounts')
+
+    assert response.status_code == 200
+    assert response.json()['rows'][0]['learning_account_key'] == 'learn-snapshot-01'
+    assert calls == {'health': 0, 'probe': 0}
+
+
+def test_whatsapp_approval_directory_endpoints_are_pure_db_snapshots(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    calls = {'health': 0, 'start': 0}
+    seen_skip_health = []
+
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO whatsapp_approval_accounts (
+                account_key, account_name, responsible_type, group_links, area, notify_profile_name,
+                approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker,
+                schedule_windows, enabled, verification_status, notes, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'wa-dir-01', 'WA目录', 'registration_group',
+                '[{"link":"https://chat.whatsapp.com/demo","group_name":"演示群"}]',
+                'ID', '', 'count_or_timeout', 1, 5, 1, '[]', 1, 'ready', '', '2026-05-20T10:00:00+00:00',
+            ),
+        )
+        conn.commit()
+
+    original_build = service._build_whatsapp_approval_runtime_state
+
+    def spy_build(account_key, *args, **kwargs):
+        seen_skip_health.append(kwargs.get('skip_health_check'))
+        return original_build(account_key, *args, **kwargs)
+
+    def fail_health(*args, **kwargs):
+        calls['health'] += 1
+        raise RuntimeError('directory must not call worker health')
+
+    def fail_start(*args, **kwargs):
+        calls['start'] += 1
+        raise RuntimeError('directory must not start sessions')
+
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', spy_build)
+    monkeypatch.setattr(service, '_request_whatsapp_approval_worker_health', fail_health)
+    monkeypatch.setattr(service, 'start_whatsapp_approval_account_session', fail_start)
+
+    for endpoint in [
+        '/api/ops/whatsapp-approval-accounts/runtime-directory',
+        '/api/ops/whatsapp-approval-accounts/registration-runtime-directory',
+        '/api/ops/whatsapp-approval-accounts/binding-directory',
+        '/api/ops/whatsapp-approval-accounts/official-binding-directory',
+    ]:
+        response = client.get(endpoint)
+        assert response.status_code == 200
+
+    assert calls == {'health': 0, 'start': 0}
+    assert seen_skip_health and all(value is True for value in seen_skip_health)
+
+
+def test_ops_admin_dashboard_uses_group_atmosphere_summary_not_heavy_account_lists():
+    client = make_client()
+    response = client.get('/ops')
+    assert response.status_code == 200
+    body = response.text
+    assert '/api/ops/group-atmosphere/summary' in body
+    assert '/api/ops/group-atmosphere/accounts' not in body
+    assert '/api/ops/group-atmosphere/configs' not in body
+    assert '/api/ops/group-atmosphere/logs' not in body
+
+
+def test_production_ops_page_uses_slow_snapshot_polling_not_five_second_refresh():
+    client = make_client()
+    response = client.get('/ops/production-ops')
+    assert response.status_code == 200
+    body = response.text
+    assert 'PRODUCTION_OPS_REFRESH_INTERVAL_MS=15000' in body
+    assert '}, 5000);' not in body

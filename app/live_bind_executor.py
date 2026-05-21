@@ -251,6 +251,8 @@ class LiveChromeBindExecutor:
             raw_result['cms_submit_code'] = submit.get('code')
             raw_result['cms_submit_success'] = submit.get('success')
             submit_message = str(submit.get('message') or submit.get('msg') or submit.get('error') or '').strip()
+            submit_error = self._classify_cms_add_anchor_response(submit)
+            raw_result['cms_submit_error_category'] = submit_error.get('category')
             after: list[dict[str, Any]] = []
             after_match = 'none'
             for attempt in range(1, self.cms_postcheck_max_attempts + 1):
@@ -271,18 +273,21 @@ class LiveChromeBindExecutor:
                 if attempt < self.cms_postcheck_max_attempts and self.cms_postcheck_retry_delay_seconds:
                     time.sleep(self.cms_postcheck_retry_delay_seconds)
             message = submit_message or 'CMS bind was not verified'
-            lowered_message = message.lower()
             if after_match == 'none':
                 raw_result['postcheck'] = 'sid_not_found_or_not_anchor'
-                if 'invalid arguments' in lowered_message or submit.get('code') == 1001:
-                    result_code = 'cms_add_anchor_invalid_arguments'
-                    message = message or 'Invalid or unavailable Linky ID'
-                elif submit.get('code') in (1000, '1000') or submit.get('success') is True:
+                submit_category = str(submit_error.get('category') or '').strip()
+                if submit_category == 'authorization_scope_denied':
+                    result_code = 'cms_authorization_scope_denied'
+                    message = submit_message or 'CMS authorization does not allow binding this guild'
+                elif after and submit_category == 'invalid_arguments_manual_check':
+                    result_code = 'cms_add_anchor_invalid_arguments_manual_check'
+                    message = 'CMS returned invalid arguments while SID still exists without target guild; keep for manual check'
+                elif submit_category in {'submitted', 'invalid_arguments_manual_check'} or submit.get('code') in (1000, '1000', 1001, '1001') or submit.get('success') is True:
                     result_code = 'cms_postcheck_timeout'
                     message = 'CMS bind submitted but postcheck did not verify target guild'
                 else:
-                    result_code = 'cms_sid_not_found'
-                    message = message or 'SID not found or not available as anchor'
+                    result_code = 'cms_add_anchor_unexpected_error'
+                    message = submit_message or 'CMS addAnchor returned an unexpected response'
             elif after_match == 'other':
                 result_code = 'cms_postcheck_mismatch'
                 message = message or 'CMS postcheck found another guild after bind submit'
@@ -317,12 +322,15 @@ class LiveChromeBindExecutor:
             'authorization': authorization,
             'content-type': 'application/json',
             'accept': 'application/json, text/plain, */*',
+            'accept-language': 'zh-CN,zh;q=0.9',
             'origin': 'https://cms.linke.ai',
-            'referer': 'https://cms.linke.ai/',
+            'referer': 'https://cms.linke.ai/anchorDetails',
+            'cookie': 'locale=zh-cn',
+            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
         }
 
     def _cms_request_json(self, *, method: str, url: str, authorization: str, body: Optional[dict[str, Any]] = None, proxy_url: str = '', timeout_seconds: float = 8.0) -> Any:
-        data = None if body is None else json.dumps(body).encode('utf-8')
+        data = None if body is None else json.dumps(body, separators=(',', ':')).encode('utf-8')
         req = urllib.request.Request(url, data=data, headers=self._cms_headers(authorization), method=method)
         opener = urllib.request.build_opener()
         normalized_proxy = str(proxy_url or '').strip()
@@ -458,12 +466,56 @@ class LiveChromeBindExecutor:
                 found_known_other = True
         return 'other' if found_known_other else 'none'
 
+    def _classify_cms_add_anchor_response(self, response: dict[str, Any]) -> dict[str, str]:
+        if not isinstance(response, dict):
+            return {
+                'category': 'unexpected_response',
+                'result_code': 'cms_add_anchor_unexpected_error',
+                'result_reason': 'CMS addAnchor returned an unsupported response shape',
+            }
+        code = response.get('code')
+        success = response.get('success')
+        message = str(response.get('message') or response.get('msg') or response.get('error') or '').strip()
+        lowered = message.lower()
+        if code in (1000, '1000') or success is True:
+            return {'category': 'success', 'result_code': '', 'result_reason': ''}
+        if code in (401, 403, '401', '403') or 'token' in lowered or 'authorization' in lowered or 'unauthorized' in lowered or 'forbidden' in lowered:
+            return {
+                'category': 'authorization_invalid',
+                'result_code': 'cms_authorization_invalid',
+                'result_reason': message or 'CMS authorization rejected or expired',
+            }
+        if code in (1003, '1003') or 'permission denied' in lowered or 'scope mismatch' in lowered or 'no permission' in lowered:
+            return {
+                'category': 'authorization_scope_denied',
+                'result_code': 'cms_authorization_scope_denied',
+                'result_reason': message or 'CMS authorization does not allow binding this guild',
+            }
+        if code in (1001, '1001') or 'invalid arguments' in lowered:
+            return {
+                'category': 'invalid_arguments_manual_check',
+                'result_code': 'cms_add_anchor_invalid_arguments_manual_check',
+                'result_reason': 'CMS returned invalid arguments while SID exists; verify CMS parameters/guild scope manually',
+            }
+        if 'timeout' in lowered or 'temporarily' in lowered or 'gateway' in lowered or 'unavailable' in lowered:
+            return {
+                'category': 'temporary_error',
+                'result_code': 'cms_add_anchor_temporary_error',
+                'result_reason': message or 'CMS addAnchor temporary error',
+            }
+        return {
+            'category': 'unexpected_error',
+            'result_code': 'cms_add_anchor_unexpected_error',
+            'result_reason': message or 'CMS addAnchor returned an unexpected error',
+        }
+
     def _cms_add_anchor(self, *, base_url: str, authorization: str, proxy_url: str = '', sid: str, guild_id: str, timeout_seconds: float = 8.0) -> dict[str, Any]:
         if not guild_id:
             raise RuntimeError('CMS target guild_id is missing')
         url = f'{base_url}/api/admin/linky/industrial/streamer_detail/addAnchor'
-        data = self._cms_request_json(method='POST', url=url, authorization=authorization, body={'sids': [int(sid)], 'guild_id': int(guild_id)}, proxy_url=proxy_url, timeout_seconds=timeout_seconds)
+        data = self._cms_request_json(method='POST', url=url, authorization=authorization, body={'sids': [str(sid).strip()], 'guild_id': int(guild_id)}, proxy_url=proxy_url, timeout_seconds=timeout_seconds)
         return data if isinstance(data, dict) else {'data': data}
+
 
     def _pick_free_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

@@ -463,3 +463,67 @@ def test_group_atmosphere_simulation_runs_schedule_faq_and_ai_without_real_send(
     assert replies[1]['safe_to_send'] is False
     assert replies[2]['should_respond'] is False
     assert data['real_send_performed'] is False
+
+
+
+def test_group_atmosphere_candidate_pool_aggregates_one_list_per_language_role_and_excludes_bindings():
+    client = make_client()
+    for config_name, text, source_type in [
+        ('auto-id-community_seed', 'Halo kak, selamat datang di grup.', 'upload_file'),
+        ('role-id-community_seed-manual', 'Kak, ngobrol santai di grup ya.', 'manual'),
+        ('binding-gabind-noise', 'Binding runtime copy must not create a third list.', 'manual'),
+    ]:
+        response = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+            'role_key': config_name,
+            'role_name': '印尼活跃',
+            'region': '印尼',
+            'language': 'id',
+            'role_positioning': 'community_seed',
+            'phrases': [text],
+            'source_type': source_type,
+            'enabled': True,
+        })
+        assert response.status_code == 200
+
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    community_rows = [row for row in pool if row['language'] == 'id' and row['role_positioning'] == 'community_seed']
+
+    assert len(community_rows) == 1
+    row = community_rows[0]
+    assert row['config_name'] == 'auto-id-community_seed'
+    texts = {candidate['text'] for candidate in row['candidates']}
+    assert 'Halo kak, selamat datang di grup.' in texts
+    assert 'Kak, ngobrol santai di grup ya.' in texts
+    assert 'Binding runtime copy must not create a third list.' not in texts
+    assert all(candidate['config_name'] != 'binding-gabind-noise' for candidate in row['candidates'])
+
+
+def test_group_atmosphere_custom_candidate_does_not_auto_create_visible_role():
+    client = make_client()
+    seed = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'auto-id-community_seed',
+        'role_name': '印尼活跃候选池',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'phrases': ['Halo kak, ini候选池基础话术。'],
+        'source_type': 'upload_file',
+        'enabled': False,
+    })
+    assert seed.status_code == 200
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    community = next(row for row in pool if row['language'] == 'id' and row['role_positioning'] == 'community_seed')
+
+    saved = client.post('/api/ops/group-atmosphere/candidate-pool/custom', json={
+        'config_name': community['config_name'],
+        'role_positioning': 'community_seed',
+        'text': '人工新增到备选区，不应该生成角色。',
+    })
+    assert saved.status_code == 200
+
+    roles = client.get('/api/ops/group-atmosphere/roles').json()['rows']
+    assert roles == []
+    refreshed = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    community_rows = [row for row in refreshed if row['language'] == 'id' and row['role_positioning'] == 'community_seed']
+    assert len(community_rows) == 1
+    assert any(candidate['text'] == '人工新增到备选区，不应该生成角色。' for candidate in community_rows[0]['candidates'])

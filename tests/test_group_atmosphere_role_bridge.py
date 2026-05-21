@@ -1,9 +1,17 @@
 import json
 import re
+import time
 
 from fastapi.testclient import TestClient
 
-from app.main import create_app, GoogleTranslateCandidateTranslator
+from app.main import (
+    create_app,
+    GoogleTranslateCandidateTranslator,
+    GroupAtmosphereAiCandidateRequest,
+    GroupAtmosphereChatRecord,
+    GroupAtmosphereConfigRequest,
+    GroupAtmosphereImportChatRecordsRequest,
+)
 
 
 def make_client(settings=None):
@@ -148,6 +156,113 @@ def test_role_binding_delete_removes_bridge_from_listing_and_relationships():
     assert deleted_again.status_code == 404
 
 
+def test_deleted_role_binding_cannot_continue_from_generated_binding_config(monkeypatch):
+    client = make_client()
+    seed_role_and_account(client)
+
+    created = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'auto-id-community_seed',
+        'account_key': 'atmosphere-indo-01',
+        'group_indexes': [0],
+        'enabled': True,
+        'auto_speaking_enabled': True,
+        'group_send_permission_enabled': True,
+        'daily_max_messages': 5,
+        'min_interval_minutes': 0,
+        'worker_base_url': 'http://worker.local',
+    })
+    assert created.status_code == 200
+    binding_id = created.json()['bindings'][0]['binding_id']
+    generated_config_name = f'binding-{binding_id}'
+
+    sent = []
+
+    def fake_post(url, json=None, timeout=None):
+        sent.append({'url': url, 'json': json, 'timeout': timeout})
+        return FakeSendResponse()
+
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+    first_run = client.post('/api/ops/group-atmosphere/scheduler/run-due', json={})
+    assert first_run.status_code == 200
+    assert first_run.json()['sent_count'] == 1
+    assert client.get('/api/ops/group-atmosphere/configs').json()['rows'][0]['config_name'] == generated_config_name
+
+    deleted = client.delete(f'/api/ops/group-atmosphere/role-bindings/{binding_id}')
+    assert deleted.status_code == 200
+    configs = client.get('/api/ops/group-atmosphere/configs').json()['rows']
+    generated = next(row for row in configs if row['config_name'] == generated_config_name)
+    assert generated['enabled'] is False
+    assert generated['next_due_at'] in {'', None}
+
+    sent.clear()
+    second_run = client.post('/api/ops/group-atmosphere/scheduler/run-due', json={})
+    assert second_run.status_code == 200
+    assert second_run.json()['sent_count'] == 0
+    assert sent == []
+
+
+def test_scheduler_never_falls_back_to_stale_generated_binding_configs(monkeypatch):
+    client = make_client()
+    seed_role_and_account(client)
+
+    created = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'auto-id-community_seed',
+        'account_key': 'atmosphere-indo-01',
+        'group_indexes': [0],
+        'enabled': True,
+        'auto_speaking_enabled': True,
+        'group_send_permission_enabled': True,
+        'daily_max_messages': 5,
+        'min_interval_minutes': 0,
+        'worker_base_url': 'http://worker.local',
+    })
+    assert created.status_code == 200
+    binding_id = created.json()['bindings'][0]['binding_id']
+    generated_config_name = f'binding-{binding_id}'
+
+    sent = []
+
+    def fake_post(url, json=None, timeout=None):
+        sent.append({'url': url, 'json': json, 'timeout': timeout})
+        return FakeSendResponse()
+
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+    first_run = client.post('/api/ops/group-atmosphere/scheduler/run-due', json={})
+    assert first_run.status_code == 200
+    assert first_run.json()['sent_count'] == 1
+
+    deleted = client.delete(f'/api/ops/group-atmosphere/role-bindings/{binding_id}')
+    assert deleted.status_code == 200
+    resurrected = client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': generated_config_name,
+        'enabled': True,
+        'account_key': 'atmosphere-indo-01',
+        'target_group': 'group-a@g.us',
+        'group_name': '印尼A群',
+        'language': 'id',
+        'timezone': 'UTC',
+        'worker_base_url': 'http://worker.local',
+        'daily_max_messages': 5,
+        'min_interval_minutes': 0,
+        'max_interval_minutes': 0,
+        'template_pool': [{
+            'template_id': 'tpl-1',
+            'category': 'community_seed',
+            'text': 'Halo kak, stale config should not send.',
+            'enabled': True,
+            'safe_to_send': True,
+        }],
+        'status': 'enabled',
+    })
+    assert resurrected.status_code == 200
+
+    sent.clear()
+    second_run = client.post('/api/ops/group-atmosphere/scheduler/run-due', json={})
+    assert second_run.status_code == 200
+    assert second_run.json()['sent_count'] == 0
+    assert sent == []
+
+
 def test_group_atmosphere_page_delete_bridge_uses_delete_endpoint_instead_of_soft_disable():
     client = make_client()
     page = client.get('/ops/group-atmosphere')
@@ -239,6 +354,20 @@ def test_learning_account_auto_key_does_not_overwrite_existing_learning_bot():
     assert {row['account_name'] for row in rows} == {'学习bot01', '学习bot02'}
     assert len({row['learning_account_key'] for row in rows}) == 2
     assert sorted(row['learning_account_key'] for row in rows) == ['learn-indo-01', 'learn-indo-02']
+
+
+def test_manual_phrases_rejects_empty_role_key_and_empty_phrase_payload():
+    client = make_client()
+
+    response = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': '',
+        'role_name': '',
+        'phrases': [],
+    })
+
+    assert response.status_code == 400
+    assert response.json()['detail'] == 'role_key_or_phrases_required'
+    assert client.get('/api/ops/group-atmosphere/roles').json()['rows'] == []
 
 
 def test_manual_written_phrases_bypass_cleaning_filtering_polishing_and_dedupe():
@@ -524,7 +653,8 @@ def test_ai_candidates_ignore_dirty_terms_from_existing_language_profile():
     assert '雪碧' not in joined
     assert '13/05/26' not in joined
     assert '852' not in joined
-    assert 'gmn' in joined
+    assert 'gmn' not in joined
+    assert 'istilah grup yang sering muncul' not in joined
 
 
 def test_candidate_pool_custom_phrase_is_persisted_and_prioritized():
@@ -701,9 +831,257 @@ def test_learning_account_is_silent_and_updates_candidate_pool_from_chat_records
 
     pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
     role = next(row for row in pool if row['config_name'] == 'auto-id-community_seed')
+    learned_candidates = [candidate for candidate in role['candidates'] if candidate['source_type'] == 'learning_account']
+    assert learned_candidates
     assert role['source_types'] == ['learning_account']
     assert role['enabled_candidate_count'] == 0
-    assert all(candidate['safe_to_send'] is False for candidate in role['candidates'])
+    assert all(candidate['safe_to_send'] is False for candidate in learned_candidates)
+    assert all(candidate['enabled'] is False for candidate in learned_candidates)
+    assert all(candidate['quality_status'] == 'pending_review' for candidate in learned_candidates)
+
+    enabled = client.post('/api/ops/group-atmosphere/candidate-pool/enable', json={
+        'config_name': 'auto-id-community_seed',
+        'candidate_ids': [learned_candidates[0]['candidate_id']],
+    })
+    assert enabled.status_code == 200
+    pool_after_confirm = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    role_after_confirm = next(row for row in pool_after_confirm if row['config_name'] == 'auto-id-community_seed')
+    confirmed = next(candidate for candidate in role_after_confirm['candidates'] if candidate['candidate_id'] == learned_candidates[0]['candidate_id'])
+    assert confirmed['safe_to_send'] is True
+    assert confirmed['enabled'] is True
+    assert confirmed['quality_status'] == 'manual_approved'
+
+
+def test_learning_account_existing_unconfirmed_candidates_remain_pending_in_candidate_pool():
+    client = make_client()
+    created = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'auto-id-community_seed',
+        'role_name': '印尼 · 气氛活跃型',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'phrases': ['Kak, jangan malu ngobrol di grup ya. Saling sapa biar suasana makin hidup.'],
+        'source_type': 'learning_account',
+        'safe_to_send': True,
+        'enabled': True,
+    })
+    assert created.status_code == 200
+
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    role = next(row for row in pool if row['config_name'] == 'auto-id-community_seed')
+    candidate = role['candidates'][0]
+
+    assert candidate['source_type'] == 'learning_account'
+    assert candidate['safe_to_send'] is False
+    assert candidate['enabled'] is False
+    assert candidate['quality_status'] == 'pending_review'
+    assert role['enabled_candidate_count'] == 0
+
+
+def test_learning_account_learn_once_with_no_new_worker_records_returns_empty_success(monkeypatch):
+    client = make_client()
+    created = client.post('/api/ops/group-atmosphere/learning-accounts', json={
+        'learning_account_key': 'learn-empty-01',
+        'account_name': '学习空结果号',
+        'region': '印尼',
+        'language': 'id',
+        'enabled': True,
+        'worker_base_url': 'http://learning-worker.local',
+        'group_links': [{
+            'target_group': 'group-a@g.us',
+            'group_name': '印尼A群',
+            'enabled': True,
+            'last_learned_message_id': 'msg-last',
+            'last_learned_message_at': '2026-05-15T02:59:00Z',
+        }],
+        'target_role_keys': ['auto-id-community_seed'],
+    })
+    assert created.status_code == 200
+
+    fetch_calls = []
+
+    class EmptyFetchResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                'status': 'success',
+                'result_code': 'messages_fetched',
+                'records': [],
+            }
+
+    def fake_post(url, json=None, timeout=None):
+        fetch_calls.append({'url': url, 'json': json, 'timeout': timeout})
+        return EmptyFetchResponse()
+
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+    learned = client.post('/api/ops/group-atmosphere/learning-accounts/learn-empty-01/learn-once', json={})
+
+    assert learned.status_code == 200
+    body = learned.json()
+    assert body['ok'] is True
+    assert body['result_code'] == 'no_new_records'
+    assert body['read_count'] == 0
+    assert body['candidate_count'] == 0
+    assert body['last_result_summary']['result_code'] == 'no_new_records'
+    assert fetch_calls == [
+        {
+            'url': 'http://learning-worker.local/fetch-group-messages',
+            'json': {
+                'target_group': 'group-a@g.us',
+                'limit': 300,
+                'after_message_id': 'msg-last',
+                'after_timestamp': '2026-05-15T02:59:00Z',
+            },
+            'timeout': 30,
+        },
+        {
+            'url': 'http://learning-worker.local/fetch-group-messages',
+            'json': {
+                'target_group': 'group-a@g.us',
+                'limit': 300,
+            },
+            'timeout': 30,
+        },
+    ]
+
+
+def test_learning_account_learn_once_retries_without_cursor_when_worker_misses_new_records(monkeypatch):
+    client = make_client()
+    created = client.post('/api/ops/group-atmosphere/learning-accounts', json={
+        'learning_account_key': 'learn-cursor-gap',
+        'account_name': '学习游标兜底号',
+        'region': '印尼',
+        'language': 'id',
+        'enabled': True,
+        'worker_base_url': 'http://learning-worker.local',
+        'group_links': [{
+            'target_group': 'group-a@g.us',
+            'group_name': '印尼A群',
+            'enabled': True,
+            'last_learned_message_id': 'msg-old-not-in-window',
+            'last_learned_message_at': '2026-05-15T02:59:00Z',
+        }],
+        'target_role_keys': ['auto-id-community_seed'],
+    })
+    assert created.status_code == 200
+
+    fetch_calls = []
+
+    class FetchResponse:
+        status_code = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    def fake_post(url, json=None, timeout=None):
+        fetch_calls.append({'url': url, 'json': json, 'timeout': timeout})
+        if json and json.get('after_message_id'):
+            return FetchResponse({'status': 'success', 'result_code': 'messages_fetched', 'records': [], 'next_cursor': None})
+        return FetchResponse({
+            'status': 'success',
+            'result_code': 'messages_fetched',
+            'records': [
+                {'sender': 'admin', 'text': 'Jgn lupa krm ID dan kode ke admin ya kak.', 'created_at': '2026-05-15T03:01:00Z', 'message_id': 'msg-new-1'},
+                {'sender': 'user', 'text': 'Makasih kak', 'created_at': '2026-05-15T02:40:00Z', 'message_id': 'msg-old-ignored'},
+            ],
+            'next_cursor': {'last_message_id': 'msg-new-1', 'last_message_at': '2026-05-15T03:01:00Z'},
+        })
+
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+    learned = client.post('/api/ops/group-atmosphere/learning-accounts/learn-cursor-gap/learn-once', json={})
+
+    assert learned.status_code == 200
+    body = learned.json()
+    assert body['read_count'] == 1
+    assert body['candidate_count'] >= 1
+    assert [call['json'] for call in fetch_calls] == [
+        {
+            'target_group': 'group-a@g.us',
+            'limit': 300,
+            'after_message_id': 'msg-old-not-in-window',
+            'after_timestamp': '2026-05-15T02:59:00Z',
+        },
+        {
+            'target_group': 'group-a@g.us',
+            'limit': 300,
+        },
+    ]
+    refreshed = client.get('/api/ops/group-atmosphere/learning-accounts').json()['rows'][0]
+    assert refreshed['group_links'][0]['last_learned_message_id'] == 'msg-new-1'
+    assert refreshed['group_links'][0]['last_learned_message_at'] == '2026-05-15T03:01:00Z'
+
+
+def test_learning_account_learn_once_starts_runtime_when_snapshot_is_stopped(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    created = client.post('/api/ops/group-atmosphere/learning-accounts', json={
+        'learning_account_key': 'learn-start-runtime',
+        'account_name': '学习启动Runtime',
+        'region': '印尼',
+        'language': 'id',
+        'enabled': True,
+        'group_links': [{'target_group': 'group-a@g.us', 'group_name': '印尼A群', 'enabled': True}],
+        'target_role_keys': ['auto-id-community_seed'],
+    })
+    assert created.status_code == 200
+
+    starts = []
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda key, **kwargs: {
+        'account_key': key,
+        'active': False,
+        'base_url': '',
+        'source': 'dedicated',
+    })
+
+    def fake_start(account_key, reset=False):
+        starts.append({'account_key': account_key, 'reset': reset})
+        return {
+            'runtime': {'account_key': account_key, 'active': True, 'base_url': 'http://learning-worker.local', 'source': 'dedicated'},
+            'session': {'login_verified': True, 'login_check_status': 'passed'},
+        }
+
+    class FetchResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                'status': 'success',
+                'result_code': 'messages_fetched',
+                'records': [
+                    {'sender': 'admin', 'text': 'Jgn lupa krm ID dan kode ke admin ya kak.', 'created_at': '2026-05-15T03:01:00Z', 'message_id': 'msg-new-1'},
+                ],
+                'next_cursor': {'last_message_id': 'msg-new-1', 'last_message_at': '2026-05-15T03:01:00Z'},
+            }
+
+    fetch_calls = []
+    cached_sessions = []
+
+    def fake_post(url, json=None, timeout=None):
+        fetch_calls.append({'url': url, 'json': json, 'timeout': timeout})
+        return FetchResponse()
+
+    monkeypatch.setattr(service, 'start_whatsapp_approval_account_session', fake_start)
+    monkeypatch.setattr(service, '_request_whatsapp_approval_worker_health', lambda base_url: {
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'approval_client': {'status': 'warm', 'ready': True, 'authenticated': True, 'client_id': service._whatsapp_approval_session_client_id('learn-start-runtime'), 'auth_path': str(service._whatsapp_approval_session_auth_path('learn-start-runtime'))},
+    })
+    monkeypatch.setattr(service, '_cache_whatsapp_approval_session_snapshot', lambda account_key, session_state, worker_health: cached_sessions.append({'account_key': account_key, 'session': dict(session_state), 'health': dict(worker_health)}))
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+
+    learned = client.post('/api/ops/group-atmosphere/learning-accounts/learn-start-runtime/learn-once', json={})
+
+    assert learned.status_code == 200
+    assert starts == [{'account_key': 'learn-start-runtime', 'reset': False}]
+    assert fetch_calls and fetch_calls[0]['url'] == 'http://learning-worker.local/fetch-group-messages'
+    assert cached_sessions and cached_sessions[0]['account_key'] == 'learn-start-runtime'
+    assert cached_sessions[0]['session']['login_verified'] is True
+    assert learned.json()['candidate_count'] >= 1
 
 
 def test_learning_account_filters_polishes_and_routes_useful_phrases_by_role():
@@ -735,10 +1113,10 @@ def test_learning_account_filters_polishes_and_routes_useful_phrases_by_role():
     })
     assert learned.status_code == 200
     body = learned.json()
-    assert body['candidate_count'] == 3
-    assert body['last_result_summary']['candidate_count'] == 3
+    assert body['candidate_count'] == 2
+    assert body['last_result_summary']['candidate_count'] == 2
     learned_items = body['last_result_summary']['items']
-    assert {item['role_positioning'] for item in learned_items} == {'faq_helper', 'newcomer_guide', 'motivation_admin'}
+    assert {item['role_positioning'] for item in learned_items} == {'newcomer_guide', 'motivation_admin'}
     assert all(item['text'] for item in learned_items)
 
     rows = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
@@ -749,10 +1127,11 @@ def test_learning_account_filters_polishes_and_routes_useful_phrases_by_role():
     assert 'pada kerja mungkin' not in all_text
     assert 'jgn' in all_text
     assert 'krm' in all_text
-    assert 'dmn' in all_text
+    assert 'dmn' not in all_text
+    assert 'aku bingung' not in all_text
     assert 'kirim ID dan kode' not in original_case_text
     assert 'krm ID dan kode' in original_case_text
-    assert by_config['auto-id-faq_helper']['candidate_count'] == 1
+    assert 'auto-id-faq_helper' not in by_config
     assert by_config['auto-id-newcomer_guide']['candidate_count'] == 1
     assert by_config['auto-id-motivation_admin']['candidate_count'] == 1
     assert 'auto-id-community_seed' not in by_config
@@ -842,6 +1221,118 @@ def test_learning_account_list_reflects_authenticated_runtime_even_when_learning
     assert row['login_verified'] is True
     assert row['login_check_message'] == '账号已登录，可以正常使用。'
 
+
+def test_learning_account_list_uses_authenticated_cached_worker_health_over_stale_pending_session(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    created = client.post('/api/ops/group-atmosphere/learning-accounts', json={
+        'learning_account_key': 'learn-stale-cache',
+        'account_name': '学习bot缓存登录',
+        'region': '印尼',
+        'enabled': True,
+        'group_links': [{'target_group': 'cache-group@g.us', 'group_name': '缓存学习群'}],
+    })
+    assert created.status_code == 200
+    client_id = service._whatsapp_approval_session_client_id('learn-stale-cache')
+    auth_path = str(service._whatsapp_approval_session_auth_path('learn-stale-cache'))
+    meta = {
+        'pid': 43211,
+        'port': 59998,
+        'base_url': 'http://127.0.0.1:59998',
+        'auth_path': auth_path,
+        'client_id': client_id,
+        'last_session_checked_ts': time.time(),
+        'last_session_state': {
+            'account_key': 'learn-stale-cache',
+            'status': 'idle',
+            'ready': False,
+            'authenticated': False,
+            'login_verified': False,
+            'login_check_status': 'pending_runtime',
+            'login_check_message': '正在准备登录会话，请稍候。',
+        },
+        'last_worker_health': {
+            'status': 'warm',
+            'ready': True,
+            'authenticated': True,
+            'approval_client': {
+                'status': 'warm',
+                'ready': True,
+                'authenticated': True,
+                'client_id': client_id,
+                'auth_path': auth_path,
+                'auth_strategy': 'LocalAuth',
+            },
+        },
+    }
+    monkeypatch.setattr(service, '_read_whatsapp_approval_runtime_meta', lambda key: meta if key == 'learn-stale-cache' else {})
+    monkeypatch.setattr(service, '_write_whatsapp_approval_runtime_meta', lambda key, payload: payload)
+    monkeypatch.setattr(service, '_pid_running', lambda pid: True)
+    monkeypatch.setattr(service, '_group_atmosphere_allow_test_worker_urls', False)
+    health_calls = []
+    monkeypatch.setattr(service, '_request_whatsapp_approval_worker_health', lambda base_url: health_calls.append(base_url) or {})
+
+    rows = client.get('/api/ops/group-atmosphere/learning-accounts').json()['rows']
+
+    assert health_calls == []
+    row = rows[0]
+    assert row['session']['login_verified'] is True
+    assert row['login_verified'] is True
+    assert row['login_check_message'] == '账号已登录，可以正常使用。'
+
+
+def test_learning_account_list_does_not_treat_cached_login_as_active_when_runtime_stopped(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    created = client.post('/api/ops/group-atmosphere/learning-accounts', json={
+        'learning_account_key': 'learn-stopped-cache',
+        'account_name': '学习bot进程已停',
+        'region': '印尼',
+        'enabled': True,
+        'group_links': [{'target_group': 'cache-group@g.us', 'group_name': '缓存学习群'}],
+    })
+    assert created.status_code == 200
+    client_id = service._whatsapp_approval_session_client_id('learn-stopped-cache')
+    auth_path = str(service._whatsapp_approval_session_auth_path('learn-stopped-cache'))
+    monkeypatch.setattr(service, '_read_whatsapp_approval_runtime_meta', lambda key: {
+        'pid': 49999,
+        'port': 59998,
+        'base_url': 'http://127.0.0.1:59998',
+        'auth_path': auth_path,
+        'client_id': client_id,
+        'last_session_checked_ts': time.time(),
+        'last_session_state': {
+            'account_key': 'learn-stopped-cache',
+            'status': 'warm',
+            'ready': True,
+            'authenticated': True,
+            'login_verified': True,
+            'login_check_status': 'passed',
+            'login_check_message': '账号已登录，可以正常使用。',
+        },
+        'last_worker_health': {
+            'status': 'warm',
+            'ready': True,
+            'authenticated': True,
+            'approval_client': {'status': 'warm', 'ready': True, 'authenticated': True, 'client_id': client_id, 'auth_path': auth_path},
+        },
+    } if key == 'learn-stopped-cache' else {})
+    monkeypatch.setattr(service, '_pid_running', lambda pid: False)
+    monkeypatch.setattr(service, '_whatsapp_approval_has_local_auth_session', lambda key: key == 'learn-stopped-cache')
+    monkeypatch.setattr(service, '_group_atmosphere_allow_test_worker_urls', False)
+
+    rows = client.get('/api/ops/group-atmosphere/learning-accounts').json()['rows']
+    row = rows[0]
+
+    assert row['runtime']['active'] is False
+    assert row['session']['login_verified'] is False
+    assert row['login_verified'] is False
+    assert row['session']['login_state'] == 'recoverable'
+    assert row['session']['login_check_status'] == 'runtime_recoverable'
+    assert row['session']['qr_available'] is False
+    assert row['session']['can_show_qr'] is False
+    assert '待扫码' not in row['session']['login_check_message']
+    assert row['session']['login_check_message'] == '登录态可恢复，点击实时学习恢复。'
 
 
 def test_learning_account_list_probes_and_persists_actual_group_name_when_logged_in(monkeypatch):
@@ -1076,7 +1567,7 @@ def test_indonesian_learning_candidates_get_readable_chinese_meanings():
 
     assert translations[phrases[0]] == '请不要不好意思在群里聊天，大家可以互相打招呼，让群里的气氛更活跃。'
     assert translations[phrases[1]] == '请继续保持积极，可以慢慢来，重要的是持续跟着群里的指引走。'
-    assert translations[phrases[2]] == '为什么会有用户主动来找你？可以了解一下怎样做，才能让用户一直记得我们吗？'
+    assert phrases[2] not in translations
     assert all('大意：' not in text_zh for text_zh in translations.values())
     assert all(' gmna' not in text_zh and 'pelan pelan' not in text_zh and 'malu ngobrol' not in text_zh for text_zh in translations.values())
 
@@ -1359,6 +1850,87 @@ def test_group_atmosphere_page_translation_button_requests_backend_endpoint():
     assert 'text_zh_source' in html
 
 
+def test_whatsapp_account_group_limits_match_resource_plan(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    monkeypatch.setattr(service, 'list_whatsapp_approval_area_options', lambda: {'options': [{'value': '印尼', 'label': '印尼'}], 'source_options': []})
+    monkeypatch.setattr(service, '_list_notify_robot_options', lambda: [{'profile_name': 'approval-bot', 'label': '审批bot'}])
+    monkeypatch.setattr(service, '_build_whatsapp_approval_runtime_state', lambda *args, **kwargs: {'active': False})
+
+    approval_groups = [
+        {
+            'link': f'https://chat.whatsapp.com/approval{i:02d}ABCDEFG1234567890',
+            'group_name': f'审批群{i}',
+            'area': '印尼',
+            'notify_profile_name': 'approval-bot',
+            'enabled': True,
+        }
+        for i in range(10)
+    ]
+    approval = client.post('/api/ops/whatsapp-approval-accounts/wa-approval-limit', json={
+        'account_name': '审批账号10群',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': approval_groups,
+        'enabled': True,
+    })
+    assert approval.status_code == 200
+    assert approval.json()['account']['group_count'] == 10
+    approval_over_limit = client.post('/api/ops/whatsapp-approval-accounts/wa-approval-limit-over', json={
+        'account_name': '审批账号11群',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': approval_groups + [{**approval_groups[-1], 'link': 'https://chat.whatsapp.com/approval11'}],
+        'enabled': True,
+    })
+    assert approval_over_limit.status_code == 400
+    assert 'at most 10 groups' in approval_over_limit.text
+
+    learning_groups = [{'target_group': f'learn-{i}@g.us', 'group_name': f'学习群{i}', 'enabled': True} for i in range(10)]
+    learning = client.post('/api/ops/group-atmosphere/learning-accounts', json={
+        'learning_account_key': 'learn-limit-01',
+        'account_name': '学习账号10群',
+        'region': '印尼',
+        'groups': learning_groups,
+        'enabled': True,
+    })
+    assert learning.status_code == 200
+    assert len(learning.json()['account']['group_links']) == 10
+    learning_over_limit = client.post('/api/ops/group-atmosphere/learning-accounts', json={
+        'learning_account_key': 'learn-limit-02',
+        'account_name': '学习账号11群',
+        'region': '印尼',
+        'groups': learning_groups + [{'target_group': 'learn-11@g.us'}],
+        'enabled': True,
+    })
+    assert learning_over_limit.status_code == 400
+    assert 'at most 10 groups' in learning_over_limit.text
+
+    speaking_groups = [{'target_group': f'speak-{i}@g.us', 'group_name': f'发言群{i}', 'enabled': True} for i in range(5)]
+    speaking = client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_key': 'atmosphere-limit-01',
+        'account_name': '发言账号5群',
+        'region': '印尼',
+        'groups': speaking_groups,
+        'enabled': True,
+    })
+    assert speaking.status_code == 200
+    assert speaking.json()['account']['group_count'] == 5
+    speaking_over_limit = client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_key': 'atmosphere-limit-02',
+        'account_name': '发言账号6群',
+        'region': '印尼',
+        'groups': speaking_groups + [{'target_group': 'speak-6@g.us'}],
+        'enabled': True,
+    })
+    assert speaking_over_limit.status_code == 400
+    assert 'at most 5 groups' in speaking_over_limit.text
+
+    production_ops = client.get('/ops/production-ops')
+    assert production_ops.status_code == 200
+    production_html = production_ops.text
+    assert 'APPROVAL_BINDING_MAX_COUNT = 10' in production_html
+    assert '最多配置10个群组' in production_html
+
+
 def test_group_atmosphere_page_keeps_learning_control_single_entry():
     client = make_client()
     page = client.get('/ops/group-atmosphere')
@@ -1376,6 +1948,17 @@ def test_group_atmosphere_page_keeps_learning_control_single_entry():
     assert '<button type="button" class="ga-learning-summary"' not in html
     assert '实时学习</button>' in html
     assert 'learnOnceLearningBot' in html
+    assert '已读取${readCount}条群消息,有效素材${usefulCount}条,生成${candidateCount}条文案' in html
+    assert '已读取 ${readCount} 条群消息，有效素材 ${usefulCount} 条，生成 ${candidateCount} 条文案' not in html
+    assert '待人工确认' in html
+    assert 'data-ga-learning-pending-list="1"' in html
+    assert '学习机器人/上传生成的话术会出现在这里，确认后才进入可用话术。' in html
+    assert '可用话术' in html
+    assert "manual_approved'?'人工确认" not in html
+    assert "status==='manual_approved'||status==='pending_review')return ''" in html
+    assert "?'待质检'" not in html
+    assert 'const GA_MAX_GROUPS=5;' in html
+    assert 'const GA_LEARNING_MAX_GROUPS=10;' in html
     assert '立即学习一次</button>' not in html
     assert '立即学习</button>' not in html
 
@@ -1882,8 +2465,13 @@ def test_group_atmosphere_page_matches_next_product_iteration_requirements():
     assert 'id="ga_upload_chat_btn"' in html
     assert '/api/ops/group-atmosphere/chat-records/auto-learn' in html
     assert 'await file.text()' in html
-    assert 'showTip(`已解析 ${data.file_count||files.length} 个文件，入库 ${data.imported_count||0} 条，生成 ${candidateCount} 条备选话术`' in html
-    assert "setLocalFeedback('ga_upload_result'" not in html
+    assert 'const rejectedCount=Number(data.rejected_count||0)' in html
+    assert '过滤 ${rejectedCount} 条' in html
+    assert "setUploadResult(successText,'success')" in html
+    assert "setUploadResult(errorText,'error')" in html
+    assert "setUploadResult(loadingText)" in html
+    assert "showTip(loadingText,'info',{sticky:true})" in html
+    assert "if(!text||options.sticky)return" in html
     assert '下一步接入解析入库' not in html
     assert '后端学习接口待接入文件解析' not in html
     assert '新增学习机器人' in html
@@ -1973,6 +2561,12 @@ def test_group_atmosphere_iteration_fixes_feedback_learning_isolation_and_candid
     assert 'candidate-row-compact' in html
     assert 'data-ga-candidate-text' in html
     assert '<textarea data-ga-candidate-text' not in html
+    # 质检/待确认徽标不能挤占动作列，按钮必须作为独立动作组横向排布，避免线上出现“删除”竖排/错位。
+    assert 'ga-candidate-meta-badges' in html
+    assert 'ga-candidate-actions' in html
+    assert '#ga_candidate_pool .ga-candidate-meta-badges{grid-column:4 / 6!important;' in html
+    assert '#ga_candidate_pool .ga-candidate-actions{grid-column:5!important;display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:6px!important;flex-wrap:wrap!important;' in html
+    assert '#ga_candidate_pool .ga-candidate-actions>button{white-space:nowrap!important;' in html
     assert 'deleteCandidateFromPool' in html
     delete_candidate_script = html.split('async function deleteCandidateFromPool', 1)[1].split('async function enableCandidate', 1)[0]
     assert 'await loadCandidatePool();await loadRoleBridge();renderCandidatePool(window.__gaCandidateRows||[])' in delete_candidate_script
@@ -2339,6 +2933,9 @@ def test_group_atmosphere_candidate_pool_hides_runtime_bindings_and_manual_needs
     })
     assert created.status_code == 200
 
+    roles_after_binding = client.get('/api/ops/group-atmosphere/roles').json()['rows']
+    assert all(not row['role_key'].startswith('binding-') for row in roles_after_binding)
+
     pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
     assert all(not row['config_name'].startswith('binding-') for row in pool)
     community_rows = [row for row in pool if row['role_positioning'] == 'community_seed']
@@ -2369,9 +2966,263 @@ def test_group_atmosphere_candidate_pool_has_batch_pending_confirmation_ui():
     html = response.text
 
     assert 'data-ga-pending-candidate-select' in html
+    assert 'ga-pending-batch-bar' in html
+    assert '待确认批量操作' in html
     assert '全选待确认' in html
+    assert '全选本列表' not in html
+    assert '暂无待确认' in html
     assert '一键确认' in html
-    assert '一键删除' in html
+    assert '删除已选话术' in html
+    assert '一键删除' not in html
     assert 'candidateIsManual' in html
+    assert 'selectedCandidateIdsForConfig' in html
+    assert 'setCandidateSelectionForConfig' in html
     assert 'confirmSelectedPendingCandidates' in html
     assert 'deleteSelectedPendingCandidates' in html
+
+def test_confirming_candidate_pool_does_not_create_or_expose_role_container():
+    client = make_client()
+    created = client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'auto-id-faq_helper',
+        'enabled': False,
+        'account_key': 'auto-id-faq_helper',
+        'target_group': 'auto-id-faq_helper',
+        'group_name': '印尼 · 解惑答疑话术包',
+        'language': 'id',
+        'timezone': 'UTC',
+        'daily_max_messages': 4,
+        'min_interval_minutes': 60,
+        'template_pool': [
+            {'candidate_id': 'upload-1', 'text': 'Halo kak, kirim ID ke admin ya.', 'source_role': 'faq_helper', 'source_type': 'upload_file', 'safe_to_send': False, 'enabled': False},
+        ],
+        'faq_rules': [],
+        'worker_base_url': '',
+        'status': 'candidate_pool',
+    })
+    assert created.status_code == 200
+
+    before_roles = client.get('/api/ops/group-atmosphere/roles').json()['rows']
+    assert all(row['role_key'] != 'auto-id-faq_helper' for row in before_roles)
+
+    confirmed = client.post('/api/ops/group-atmosphere/candidate-pool/enable', json={
+        'config_name': 'auto-id-faq_helper',
+        'candidate_ids': ['upload-1'],
+    })
+    assert confirmed.status_code == 200
+    assert confirmed.json()['plan_only'] is True
+
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    candidate_row = next(row for row in pool if row['config_name'] == 'auto-id-faq_helper')
+    assert candidate_row['enabled_candidate_count'] == 1
+
+    after_roles = client.get('/api/ops/group-atmosphere/roles').json()['rows']
+    assert all(row['role_key'] != 'auto-id-faq_helper' for row in after_roles)
+
+
+
+def test_auto_learn_dedupes_same_generated_phrase_across_role_types(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+
+    from app.main import GroupAtmosphereChatRecord
+
+    records = [
+        GroupAtmosphereChatRecord(sender='u1', text='halo kak tanya kode ya'),
+        GroupAtmosphereChatRecord(sender='u2', text='halo kak semangat ya'),
+    ]
+    monkeypatch.setattr(service, '_parse_group_atmosphere_chat_export', lambda content: records)
+    monkeypatch.setattr(service, '_detect_group_atmosphere_language_and_region', lambda recs: ('id', '印尼'))
+    roles = iter(['faq_helper', 'community_seed'])
+    monkeypatch.setattr(service, '_classify_group_atmosphere_record_role', lambda text: next(roles))
+    monkeypatch.setattr(service, 'generate_group_atmosphere_ai_candidates', lambda payload: {
+        'candidates': [{'text': 'Halo kak, istilah grup yang sering muncul: kak, ya, yg. Kalau bingung, tanya admin ya.'}]
+    })
+
+    result = client.post('/api/ops/group-atmosphere/chat-records/auto-learn', json={'filename': 'chat.txt', 'content': 'dummy'})
+    assert result.status_code == 200
+
+    payload = result.json()
+    assert payload['rejected_count'] == 2
+    assert 'meta_summary' in payload['rejected_reasons']
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    occurrences = []
+    for row in pool:
+        for candidate in row['candidates']:
+            if candidate['text'] == 'Halo kak, istilah grup yang sering muncul: kak, ya, yg. Kalau bingung, tanya admin ya.':
+                occurrences.append((row['role_positioning'], row['config_name']))
+    assert len(occurrences) == 0
+
+
+def test_candidate_pool_listing_hides_existing_duplicate_phrase_across_role_types():
+    client = make_client()
+    duplicate_text = 'Halo kak, kalau ada yang bingung soal kode, tanya di grup ya. Admin bantu cek.'
+    for config_name, role in [('auto-id-community_seed', 'community_seed'), ('auto-id-faq_helper', 'faq_helper')]:
+        response = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+            'role_key': config_name,
+            'role_name': role,
+            'region': '印尼',
+            'language': 'id',
+            'role_positioning': role,
+            'phrases': [duplicate_text],
+            'source_type': 'upload_file',
+            'safe_to_send': False,
+            'enabled': False,
+        })
+        assert response.status_code == 200
+
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    occurrences = [
+        (row['role_positioning'], candidate['config_name'])
+        for row in pool
+        for candidate in row['candidates']
+        if candidate['text'] == duplicate_text
+    ]
+    assert len(occurrences) == 1
+
+
+def test_enabling_upload_candidate_does_not_create_role():
+    client = make_client()
+    created = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'auto-id-community_seed',
+        'role_name': '上传候选池',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'phrases': ['Halo kak, jangan malu ngobrol di grup ya.'],
+        'source_type': 'upload_file',
+        'safe_to_send': False,
+        'enabled': False,
+    })
+    assert created.status_code == 200
+    candidate_id = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows'][0]['candidates'][0]['candidate_id']
+
+    enabled = client.post('/api/ops/group-atmosphere/candidate-pool/enable', json={
+        'config_name': 'auto-id-community_seed',
+        'candidate_ids': [candidate_id],
+    })
+    assert enabled.status_code == 200
+
+    roles = client.get('/api/ops/group-atmosphere/roles').json()
+    assert roles['count'] == 0
+    assert roles['rows'] == []
+
+
+def test_group_atmosphere_filters_meta_term_variants_as_semantic_duplicates():
+    client = make_client()
+    service = client.app.state.service
+
+    variants = [
+        'Halo kak, istilah grup yang sering muncul: kak, wa, ya. Kalau bingung, tanya admin ya.',
+        'Halo kak, istilah grup yang sering muncul: kak, ya, yg. Kalau bingung, tanya admin ya.',
+        'Halo kak, istilah grup yang sering muncul: kak, ya, aja. Kalau bingung, tanya admin ya.',
+    ]
+
+    semantic_keys = {service._normalize_group_atmosphere_semantic_phrase_key(text) for text in variants}
+    assert len(semantic_keys) == 1
+    assert all(not service._is_group_atmosphere_useful_candidate(text, role='community_seed') for text in variants)
+
+
+def test_group_atmosphere_ai_candidates_do_not_generate_meta_term_summary_copy():
+    client = make_client()
+    service = client.app.state.service
+    service.upsert_group_atmosphere_config(GroupAtmosphereConfigRequest(
+        config_name='auto-id-community_seed',
+        enabled=False,
+        account_key='acct',
+        target_group='group',
+        group_name='group',
+        language='id',
+        template_pool=[],
+        faq_rules=[],
+        worker_base_url='',
+        status='candidate_pool',
+    ))
+    service.import_group_atmosphere_chat_records(GroupAtmosphereImportChatRecordsRequest(
+        config_name='auto-id-community_seed',
+        records=[
+            GroupAtmosphereChatRecord(sender='u1', text='kak wa ya yg aja'),
+            GroupAtmosphereChatRecord(sender='u2', text='kak wa ya admin grup'),
+        ],
+    ))
+
+    data = service.generate_group_atmosphere_ai_candidates(GroupAtmosphereAiCandidateRequest(
+        config_name='auto-id-community_seed',
+        topic='community_seed',
+        count=10,
+    ))
+    texts = [row['text'] for row in data['candidates']]
+    assert texts
+    assert all('istilah grup yang sering muncul' not in text.lower() for text in texts)
+
+
+def test_group_atmosphere_candidate_quality_gate_classifies_rejects_and_semantic_keys():
+    client = make_client()
+    service = client.app.state.service
+
+    meta_a = 'Halo kak, istilah grup yang sering muncul: kak, wa, ya. Kalau bingung, tanya admin ya.'
+    meta_b = 'Halo kak, istilah grup yang sering muncul: kak, ya, aja. Kalau bingung, tanya admin ya.'
+    user_question = 'Kok bisa ada user yang nyariin kak boleh tau caranya supaya usernya inget terus sama kita gmna?'
+    good = 'Kak, jangan malu ngobrol di grup ya. Saling sapa biar suasana makin hidup.'
+
+    meta_quality = service._evaluate_group_atmosphere_candidate_quality(meta_a, role='community_seed', source_type='upload_file')
+    question_quality = service._evaluate_group_atmosphere_candidate_quality(user_question, role='community_seed', source_type='learning_account')
+    good_quality = service._evaluate_group_atmosphere_candidate_quality(good, role='community_seed', source_type='upload_file')
+
+    assert meta_quality['decision'] == 'reject'
+    assert 'meta_summary' in meta_quality['reasons']
+    assert meta_quality['semantic_key'] == service._evaluate_group_atmosphere_candidate_quality(meta_b, role='community_seed', source_type='upload_file')['semantic_key']
+    assert question_quality['decision'] == 'reject'
+    assert 'question_like' in question_quality['reasons']
+    assert good_quality['decision'] == 'accept'
+    assert good_quality['quality_score'] >= 60
+
+
+def test_upload_learning_source_uses_quality_gate_and_keeps_candidates_pending_review():
+    client = make_client()
+    good = 'Kak, jangan malu ngobrol di grup ya. Saling sapa biar suasana makin hidup.'
+    rejected_meta = 'Halo kak, istilah grup yang sering muncul: kak, wa, ya. Kalau bingung, tanya admin ya.'
+    rejected_question = 'Kok bisa ada user yang nyariin kak boleh tau caranya supaya usernya inget terus sama kita gmna?'
+
+    response = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'auto-id-community_seed',
+        'role_name': '印尼气氛活跃',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'phrases': [good, rejected_meta, rejected_question],
+        'source_type': 'upload_file',
+        'safe_to_send': True,
+        'enabled': True,
+    })
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['added_count'] == 1
+    assert payload['rejected_count'] == 2
+    assert {'meta_summary', 'question_like'} <= set(payload['rejected_reasons'])
+
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    row = next(item for item in pool if item['config_name'] == 'auto-id-community_seed')
+    assert len(row['candidates']) == 1
+    candidate = row['candidates'][0]
+    assert candidate['text'] == good
+    assert candidate['enabled'] is False
+    assert candidate['safe_to_send'] is False
+    assert candidate['quality_decision'] == 'accept'
+    assert candidate['quality_status'] == 'pending_review'
+    assert candidate['quality_reasons'] == []
+    assert candidate['semantic_key']
+
+
+def test_group_atmosphere_candidate_cards_show_quality_reason_and_upload_filtered_summary():
+    client = make_client()
+    response = client.get('/ops/group-atmosphere')
+    assert response.status_code == 200
+    html = response.text
+
+    assert 'candidateQualityReasonText' in html
+    assert 'candidateQualityBadge' in html
+    assert '质量原因' in html
+    assert '疑似用户问题' in html
+    assert '系统分析产物' in html
+    assert '过滤 ${rejectedCount} 条' in html
+    assert 'const rejectedCount=Number(data.rejected_count||0)' in html
