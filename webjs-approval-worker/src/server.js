@@ -4,7 +4,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const qrcodeTerminal = require('qrcode-terminal');
-const { Client, LocalAuth, NoAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, NoAuth, MessageMedia } = require('whatsapp-web.js');
 const { createApprovalRunStore } = require('./approval_run_store');
 const { withTimeout } = require('./promise_timeout');
 
@@ -952,11 +952,14 @@ async function resolveGroup(target) {
 async function sendGroupMessageWithClient(activeClient, payload) {
   const targetGroup = String(payload && payload.target_group ? payload.target_group : '').trim();
   const messageText = String(payload && payload.message_text ? payload.message_text : '').trim();
+  const mediaPath = String(payload && payload.media_path ? payload.media_path : '').trim();
+  const mediaMimeType = String(payload && payload.media_mime_type ? payload.media_mime_type : 'image/jpeg').trim();
+  const mediaFilename = String(payload && payload.media_filename ? payload.media_filename : path.basename(mediaPath || 'media')).trim();
   if (!targetGroup) {
     throw new Error('target_group is required');
   }
-  if (!messageText) {
-    throw new Error('message_text is required');
+  if (!messageText && !mediaPath) {
+    throw new Error('message_text or media_path is required');
   }
   const group = await resolveGroupWithClient(activeClient, targetGroup);
   if (!group || !group.isGroup) {
@@ -965,7 +968,18 @@ async function sendGroupMessageWithClient(activeClient, payload) {
   if (typeof group.sendMessage !== 'function') {
     throw new Error('resolved group does not support sendMessage');
   }
-  const sent = await group.sendMessage(messageText);
+  let sent;
+  if (mediaPath) {
+    let media;
+    if (fs.existsSync(mediaPath) && MessageMedia && typeof MessageMedia.fromFilePath === 'function') {
+      media = MessageMedia.fromFilePath(mediaPath);
+    } else {
+      media = new MessageMedia(mediaMimeType, '', mediaFilename);
+    }
+    sent = await group.sendMessage(media, { caption: messageText });
+  } else {
+    sent = await group.sendMessage(messageText);
+  }
   return {
     status: 'success',
     result_code: 'sent',

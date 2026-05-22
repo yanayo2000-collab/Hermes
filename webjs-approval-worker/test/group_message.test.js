@@ -44,6 +44,31 @@ test('sendGroupMessageWithClient rejects empty text before sending', async () =>
 
   await assert.rejects(
     () => sendGroupMessageWithClient(fakeClient, { target_group: 'group@g.us', message_text: '   ' }),
-    /message_text is required/,
+    /message_text or media_path is required/,
   );
+});
+
+test('sendGroupMessageWithClient sends image media with caption when media is provided', async () => {
+  const sent = [];
+  const fakeGroup = {
+    id: { _serialized: '120363000000000000@g.us' },
+    name: 'ID Registration Group 01',
+    isGroup: true,
+    sendMessage: async (message, options) => {
+      sent.push({ message, options });
+      return { id: { _serialized: 'msg-media-1' }, timestamp: 1710000001 };
+    },
+  };
+  const fakeClient = { getChatById: async () => fakeGroup };
+  const result = await sendGroupMessageWithClient(fakeClient, {
+    target_group: '120363000000000000@g.us',
+    message_text: 'Poster baru.',
+    media_path: '/tmp/poster.jpg',
+    media_mime_type: 'image/jpeg',
+  });
+
+  assert.equal(result.status, 'success');
+  assert.equal(result.message_id, 'msg-media-1');
+  assert.equal(sent[0].options.caption, 'Poster baru.');
+  assert.equal(sent[0].message.mimetype, 'image/jpeg');
 });

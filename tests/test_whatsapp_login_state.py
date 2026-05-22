@@ -144,6 +144,11 @@ def test_lightweight_account_list_does_not_call_worker_health_or_live_probe(monk
     assert payload['list_mode'] == 'lightweight'
     assert payload['rows'][0]['list_mode'] == 'lightweight'
     assert payload['rows'][0]['session_state']['login_state'] in {'initializing', 'runtime_starting'}
+    assert payload['rows'][0]['verification_checks'][0]['code'] == 'group_link_format'
+    assert payload['rows'][0]['verification_checks'][0]['ok'] is True
+    assert payload['rows'][0]['verification_status'] != 'invalid_group_links'
+    assert payload['rows'][0]['status_text'] == '待登录'
+    assert payload['rows'][0]['runtime_status'] == 'blocked'
 
 
 
@@ -208,6 +213,82 @@ def test_lightweight_account_list_uses_cached_logged_in_session_without_worker_h
     assert row['session_state']['login_verified'] is True
     assert row['session_state']['from_cached_session'] is True
     assert row['session_state']['can_probe'] is True
+
+
+def test_lightweight_logged_in_account_outside_schedule_keeps_standby_status_without_live_probe(monkeypatch):
+    db = Database(':memory:')
+    service = Service(db)
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO whatsapp_approval_accounts (
+                account_key, account_name, responsible_type, group_links, area, notify_profile_name,
+                approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker,
+                schedule_windows, enabled, verification_status, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'registration-standby', '+639****0005', 'registration_group',
+                json.dumps([{
+                    'link': 'https://chat.whatsapp.com/STANDBY12345',
+                    'area': 'Indonesia',
+                    'enabled': True,
+                    'schedule_windows': [{'start': '09:00', 'end': '10:00'}],
+                }]),
+                'Indonesia', 'wa-approval-broadcast', 'threshold_or_timeout', 100, 200, 1,
+                json.dumps([]), 1, 'pending_verification', datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(service, '_current_local_minutes', lambda: 12 * 60)
+    monkeypatch.setattr(service, '_production_ops_daemon_snapshot', lambda: {'config': {'enabled': True}, 'runtime': {'status': {}, 'launch_agent_installed': True}})
+    monkeypatch.setattr(service, '_list_notify_robot_options', lambda: [])
+    monkeypatch.setattr(service, '_list_customer_service_options', lambda: [])
+    monkeypatch.setattr(service, 'list_whatsapp_approval_area_options', lambda: {'options': [], 'source_options': []})
+    monkeypatch.setattr(
+        service,
+        '_build_whatsapp_approval_runtime_state',
+        lambda *args, **kwargs: {
+            'account_key': 'registration-standby',
+            'configured': True,
+            'active': True,
+            'ready': True,
+            'authenticated': True,
+            'login_verified': True,
+            'status': 'running',
+            'source': 'dedicated',
+            'base_url': 'http://127.0.0.1:59997',
+        },
+    )
+    monkeypatch.setattr(service, '_cached_whatsapp_approval_session_snapshot', lambda *a, **k: {
+        'account_key': 'registration-standby',
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'login_verified': True,
+        'login_check_status': 'passed',
+        'login_state': 'logged_in',
+        'can_probe': True,
+        'can_show_qr': False,
+        'should_auto_rebuild': False,
+        'from_cached_session': True,
+    })
+    monkeypatch.setattr(service, '_request_whatsapp_approval_worker_health', lambda *a, **k: (_ for _ in ()).throw(AssertionError('lightweight list must not call worker health')))
+    monkeypatch.setattr(service, '_current_whatsapp_approval_worker_health', lambda *a, **k: (_ for _ in ()).throw(AssertionError('lightweight list must not call shared worker health')))
+    monkeypatch.setattr(service, '_apply_live_group_identity_to_binding', lambda *a, **k: (_ for _ in ()).throw(AssertionError('lightweight list must not call live probe')))
+
+    payload = service.list_whatsapp_approval_accounts(lightweight=True)
+    row = payload['rows'][0]
+    binding = row['group_binding_runtimes'][0]
+
+    assert row['session_state']['login_state'] == 'logged_in'
+    assert row['schedule_runtime']['status'] == 'outside_window'
+    assert row['runtime_status'] == 'off_schedule'
+    assert row['status_text'] == '已登录·待命时段'
+    assert binding['schedule_runtime']['status'] == 'outside_window'
+    assert binding['monitoring_status_text'] == '已登录·待命时段'
+    assert binding['next_approval_eta_text'] == '待命时段'
 
 
 def test_lightweight_account_list_uses_cached_worker_health_when_session_cache_expired(monkeypatch):

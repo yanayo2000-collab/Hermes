@@ -50,15 +50,81 @@ class RealtimeApprovalStateStore:
     def ingest_snapshot(self, payload: Dict[str, Any], *, source: str = 'backend') -> Dict[str, Any]:
         incoming = self._normalize_snapshot(payload, source=source)
         previous = self._snapshot
+        merged = self._merge_with_previous(previous, incoming)
         self._snapshot_version += 1
-        incoming['snapshot_version'] = self._snapshot_version
-        incoming['generated_at'] = self._now_iso()
+        merged['snapshot_version'] = self._snapshot_version
+        merged['generated_at'] = self._now_iso()
 
-        events = [] if int(previous.get('snapshot_version') or 0) <= 0 else self._diff_snapshots(previous, incoming, source=source)
-        self._snapshot = incoming
+        events = [] if int(previous.get('snapshot_version') or 0) <= 0 else self._diff_snapshots(previous, merged, source=source)
+        self._snapshot = merged
         for event in events:
             self._publish(event)
         return {'snapshot': self.snapshot(), 'events': events}
+
+    def _merge_with_previous(self, previous: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+        """Keep strong live probe facts from being overwritten by weak daemon snapshots.
+
+        The approval page consumes this store as the server-authoritative realtime
+        source. Daemon snapshots may briefly carry unverified/partial WebJS data
+        (for example member_count=None + unverified_zero) while a manual probe has
+        just produced a stronger mapped_live_probe_ready result. Preserve the
+        stronger per-binding verifier until a new snapshot has equal/better probe
+        quality or confirmed pending data.
+        """
+        merged = copy.deepcopy(incoming)
+        previous_accounts = {str(row.get('account_key') or '').strip(): row for row in previous.get('rows') or [] if isinstance(row, dict)}
+        for row in merged.get('rows') or []:
+            if not isinstance(row, dict):
+                continue
+            account_key = str(row.get('account_key') or '').strip()
+            previous_row = previous_accounts.get(account_key)
+            if not previous_row:
+                continue
+            previous_groups = self._groups_by_key(previous_row)
+            group_rows = row.get('group_binding_runtimes') or row.get('group_link_bindings') or []
+            if not isinstance(group_rows, list):
+                continue
+            for index, group in enumerate(group_rows):
+                if not isinstance(group, dict):
+                    continue
+                group_key = str(group.get('group_id') or group.get('link') or group.get('group_name') or index).strip()
+                previous_group = previous_groups.get(group_key) or {}
+                if self._should_preserve_previous_group_probe(previous_group, group):
+                    preserved_verifier = previous_group.get('membership_verifier')
+                    if isinstance(preserved_verifier, dict):
+                        group['membership_verifier'] = copy.deepcopy(preserved_verifier)
+                    if group.get('next_approval_pending_count') is None and previous_group.get('next_approval_pending_count') is not None:
+                        group['next_approval_pending_count'] = previous_group.get('next_approval_pending_count')
+        return merged
+
+    def _should_preserve_previous_group_probe(self, previous_group: Dict[str, Any], incoming_group: Dict[str, Any]) -> bool:
+        previous_verifier = previous_group.get('membership_verifier') if isinstance(previous_group.get('membership_verifier'), dict) else {}
+        incoming_verifier = incoming_group.get('membership_verifier') if isinstance(incoming_group.get('membership_verifier'), dict) else {}
+        if previous_verifier.get('ready') is not True:
+            return False
+        if incoming_verifier.get('ready') is True:
+            return False
+        previous_probe = previous_verifier.get('probe') if isinstance(previous_verifier.get('probe'), dict) else {}
+        incoming_probe = incoming_verifier.get('probe') if isinstance(incoming_verifier.get('probe'), dict) else {}
+        previous_quality = str(previous_probe.get('data_quality') or previous_probe.get('probe_data_quality') or '').strip()
+        incoming_quality = str(incoming_probe.get('data_quality') or incoming_probe.get('probe_data_quality') or '').strip()
+        previous_has_member_count = previous_probe.get('member_count') is not None
+        incoming_missing_member_count = incoming_probe.get('member_count') is None
+        incoming_status = str(incoming_verifier.get('status') or '').strip()
+        weak_incoming = (
+            incoming_status in {'probe_unavailable', 'mapped_live_probe_unavailable', 'unavailable'}
+            or incoming_quality in {'unverified_zero', 'unknown', 'unavailable', ''}
+            or incoming_missing_member_count
+        )
+        strong_previous = (
+            previous_has_member_count
+            or previous_quality in {'verified_zero', 'live_probe_ready', 'mapped_live_probe_ready', 'review_surface_verified_empty'}
+            or str(previous_verifier.get('status') or '').strip() == 'mapped_live_probe_ready'
+        )
+        incoming_pending = incoming_group.get('next_approval_pending_count')
+        if isinstance(incoming_pending, int) and incoming_pending > 0:
+            return False
+        return bool(strong_previous and weak_incoming)
 
     def _normalize_snapshot(self, payload: Dict[str, Any], *, source: str) -> Dict[str, Any]:
         raw_rows = payload.get('rows') if isinstance(payload, dict) else []

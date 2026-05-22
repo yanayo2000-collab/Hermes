@@ -56,6 +56,75 @@ def test_realtime_store_emits_group_patch_when_pending_changes():
     assert event['patch']['previous_pending_count'] == 20
 
 
+def test_realtime_store_preserves_successful_manual_probe_against_weak_daemon_snapshot():
+    store = RealtimeApprovalStateStore()
+    strong = {
+        'rows': [
+            {
+                'account_key': 'registration-a',
+                'session_state': {'login_state': 'logged_in', 'login_verified': True, 'can_probe': True},
+                'group_binding_runtimes': [
+                    {
+                        'binding_index': 1,
+                        'group_id': 'g1@g.us',
+                        'group_name': 'Group 1',
+                        'next_approval_pending_count': 0,
+                        'membership_verifier': {
+                            'ready': True,
+                            'status': 'mapped_live_probe_ready',
+                            'detail': '实时群状态探针可用。',
+                            'probe': {
+                                'pending_count': 0,
+                                'member_count': 529,
+                                'data_quality': 'verified_zero',
+                                'probe_data_quality': 'verified_zero',
+                            },
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    weak = {
+        'rows': [
+            {
+                'account_key': 'registration-a',
+                'session_state': {'login_state': 'logged_in', 'login_verified': True, 'can_probe': True},
+                'group_binding_runtimes': [
+                    {
+                        'binding_index': 1,
+                        'group_id': 'g1@g.us',
+                        'group_name': 'Group 1',
+                        'next_approval_pending_count': 0,
+                        'membership_verifier': {
+                            'ready': False,
+                            'status': 'probe_unavailable',
+                            'detail': '当前未拿到可用的实时群状态探针结果。',
+                            'probe': {
+                                'pending_count': 0,
+                                'member_count': None,
+                                'data_quality': 'unverified_zero',
+                                'probe_data_quality': 'unverified_zero',
+                            },
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+    store.ingest_snapshot(strong, source='manual_probe')
+    result = store.ingest_snapshot(weak, source='daemon')
+
+    group = result['snapshot']['rows'][0]['group_binding_runtimes'][0]
+    verifier = group['membership_verifier']
+    assert verifier['ready'] is True
+    assert verifier['status'] == 'mapped_live_probe_ready'
+    assert verifier['probe']['member_count'] == 529
+    assert verifier['probe']['data_quality'] == 'verified_zero'
+    assert result['events'] == []
+
+
 def test_realtime_internal_ingest_and_snapshot_endpoint_publish_authoritative_state():
     client = TestClient(create_app({'TESTING': True, 'DB_PATH': ':memory:'}))
     payload = {

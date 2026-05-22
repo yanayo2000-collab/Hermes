@@ -188,7 +188,7 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert '<h2>话术学习</h2>' not in html
     assert '上传并学习' in html
     assert '学习机器人区' in html
-    assert '话术上传区' in html
+    assert '话术文件学习' in html
     assert '自动分配到话术库' not in html
     assert '话术方案库' not in html
     assert '话术包名称' not in html
@@ -484,6 +484,31 @@ def test_group_atmosphere_account_list_uses_lightweight_snapshot_without_live_pr
     assert rows_again[0]['groups'][0]['group_name'] == 'https://chat.whatsapp.com/ABCDEFG'
 
 
+def test_group_atmosphere_new_account_without_runtime_shows_not_logged_in(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    response = client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_key': 'atmosphere-new-no-runtime',
+        'account_name': '新发言号未登录',
+        'region': '印尼',
+        'groups': [{'target_group': 'https://chat.whatsapp.com/NEWLOGIN', 'enabled': True}],
+        'enabled': True,
+    })
+    assert response.status_code == 200
+    monkeypatch.setattr(service, '_read_whatsapp_approval_runtime_meta', lambda key: {})
+    monkeypatch.setattr(service, '_pid_running', lambda pid: False)
+    monkeypatch.setattr(service, '_whatsapp_approval_has_local_auth_session', lambda key: False)
+    monkeypatch.setattr(service, '_request_whatsapp_approval_worker_health', lambda base_url: (_ for _ in ()).throw(AssertionError('list must not call worker health')))
+
+    row = client.get('/api/ops/group-atmosphere/accounts').json()['rows'][0]
+
+    assert row['runtime']['active'] is False
+    assert row['session']['login_verified'] is False
+    assert row['session']['login_check_status'] == 'not_logged_in'
+    assert row['session']['login_check_message'] == '未登录，请点击二维码登录。'
+    assert row['session']['qr_available'] is False
+
+
 def test_group_atmosphere_account_list_reflects_authenticated_runtime_even_when_account_disabled(monkeypatch):
     client = make_client()
     service = client.app.state.service
@@ -748,7 +773,99 @@ def test_group_atmosphere_account_list_persists_actual_group_name_after_login(mo
     assert rows[0]['groups'][0]['group_id'] == '120363000000000000@g.us'
 
 
-def test_group_atmosphere_account_list_auto_recovers_stopped_dedicated_runtime(monkeypatch):
+def test_group_atmosphere_session_start_persists_probed_group_name_to_account_and_bridge(monkeypatch, tmp_path):
+    client = make_client({'DB_PATH': str(tmp_path / 'automation.db'), 'AUTH_INTERNAL_TOKEN': 'dev-internal-token'})
+    service = client.app.state.service
+    headers = {'x-ops-internal-token': 'dev-internal-token'}
+    client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'auto-hk-community_seed',
+        'role_name': '香港活跃BOT',
+        'region': '香港',
+        'language': 'zh',
+        'role_positioning': 'community_seed',
+        'phrases': ['大家可以多交流。'],
+        'enabled': True,
+    }, headers=headers)
+    account = client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_key': 'atmosphere-hk-01',
+        'account_name': '+852 4456 8277',
+        'region': '香港',
+        'language': 'zh',
+        'role_positioning': 'community_seed',
+        'groups': [{'target_group': 'https://chat.whatsapp.com/probeInvite', 'enabled': True}],
+        'enabled': True,
+    }, headers=headers)
+    assert account.status_code == 200
+    binding = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'auto-hk-community_seed',
+        'account_key': 'atmosphere-hk-01',
+        'group_indexes': [0],
+        'auto_speaking_enabled': True,
+    }, headers=headers)
+    assert binding.status_code == 200
+    auth_path = str(service._whatsapp_approval_session_auth_path('atmosphere-hk-01'))
+    client_id = service._whatsapp_approval_session_client_id('atmosphere-hk-01')
+    meta = {
+        'pid': 4456,
+        'port': 59992,
+        'base_url': 'http://127.0.0.1:59992',
+        'auth_path': auth_path,
+        'client_id': client_id,
+        'started_at': datetime.now(timezone.utc).isoformat(),
+    }
+    monkeypatch.setattr(service, 'start_whatsapp_approval_account_runtime', lambda key, reset=False: {'runtime': meta})
+    monkeypatch.setattr(service, '_read_whatsapp_approval_runtime_meta', lambda key: meta if key == 'atmosphere-hk-01' else {})
+    monkeypatch.setattr(service, '_pid_running', lambda pid: True)
+    probe_calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    def fake_post(url, json=None, timeout=None):
+        if url.endswith('/warmup'):
+            return FakeResponse({
+                'status': 'warm',
+                'ready': True,
+                'authenticated': True,
+                'approval_client': {
+                    'status': 'warm',
+                    'ready': True,
+                    'authenticated': True,
+                    'client_id': client_id,
+                    'auth_path': auth_path,
+                    'auth_strategy': 'LocalAuth',
+                },
+            })
+        probe_calls.append({'url': url, 'json': json, 'timeout': timeout})
+        return FakeResponse({'group_name': '香港创作者群', 'group_id': '12036344568277@g.us'})
+
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+
+    started = client.post('/api/ops/group-atmosphere/accounts/atmosphere-hk-01/session/start', headers=headers)
+
+    assert started.status_code == 200
+    assert probe_calls == [{
+        'url': 'http://127.0.0.1:59992/probe-group-state',
+        'json': {'registration_group': 'https://chat.whatsapp.com/probeInvite'},
+        'timeout': 8.0,
+    }]
+    listed = client.get('/api/ops/group-atmosphere/accounts', headers=headers).json()['rows'][0]
+    assert listed['groups'][0]['group_name'] == '香港创作者群'
+    assert listed['groups'][0]['group_id'] == '12036344568277@g.us'
+    rels = client.get('/api/ops/group-atmosphere/role-bindings', headers=headers).json()
+    bridge_group = rels['relationships'][0]['groups'][0]
+    assert bridge_group['group_name'] == '香港创作者群'
+    assert bridge_group['target_group'] == 'https://chat.whatsapp.com/probeInvite'
+
+
+def test_group_atmosphere_account_list_does_not_auto_recover_stopped_dedicated_runtime(monkeypatch):
     client = make_client()
     service = client.app.state.service
     response = client.post('/api/ops/group-atmosphere/accounts', json={
@@ -761,6 +878,7 @@ def test_group_atmosphere_account_list_auto_recovers_stopped_dedicated_runtime(m
     auth_path = str(service._whatsapp_approval_session_auth_path(account_key))
     client_id = service._whatsapp_approval_session_client_id(account_key)
     starts = []
+    probes = []
 
     monkeypatch.setattr(service, '_read_whatsapp_approval_runtime_meta', lambda key: {
         'pid': 43210,
@@ -781,14 +899,16 @@ def test_group_atmosphere_account_list_auto_recovers_stopped_dedicated_runtime(m
         }
 
     monkeypatch.setattr(service, 'start_group_atmosphere_whatsapp_account_session', fake_start)
+    monkeypatch.setattr(service, '_probe_group_atmosphere_actual_group_names', lambda **kwargs: probes.append(kwargs) or [])
 
     rows = client.get('/api/ops/group-atmosphere/accounts').json()['rows']
 
-    assert starts == [{'key': account_key, 'reset': False}]
-    assert rows[0]['runtime']['status'] == 'warm'
-    assert rows[0]['runtime']['authenticated'] is True
-    assert rows[0]['session']['login_verified'] is True
-    assert rows[0]['session']['login_check_status'] == 'authenticated'
+    assert starts == []
+    assert probes == []
+    assert rows[0]['runtime']['status'] in {'recovering', 'stopped', 'warm'}
+    assert rows[0]['runtime']['authenticated'] is False
+    assert rows[0]['session']['login_verified'] is False
+    assert rows[0]['session']['login_check_status'] in {'runtime_recovering', 'runtime_recoverable', 'not_logged_in'}
 
 
 def test_group_atmosphere_chat_record_file_upload_updates_language_profile():
@@ -1132,3 +1252,49 @@ def test_stop_whatsapp_approval_systemd_runtime_stops_unit_before_killing_pids(m
     assert ('terminate', [111, 222]) in calls
     assert written and written[-1]['stopped_at']
     assert result['stopped'] is True
+
+
+def test_whatsapp_runtime_identity_is_isolated_for_all_account_types():
+    client = make_client()
+    service = client.app.state.service
+
+    keys = [
+        'registration-639974974871',
+        'learn-indo-01',
+        'group-atmosphere-indo-01',
+    ]
+    identities = [service._whatsapp_approval_runtime_identity(key) for key in keys]
+
+    assert [item['account_key'] for item in identities] == keys
+    assert len({item['slug'] for item in identities}) == len(keys)
+    assert len({item['systemd_unit'] for item in identities}) == len(keys)
+    assert len({str(item['auth_path']) for item in identities}) == len(keys)
+    assert len({str(item['state_path']) for item in identities}) == len(keys)
+    assert len({item['port'] for item in identities}) == len(keys)
+    for key, identity in zip(keys, identities):
+        slug = service._whatsapp_approval_session_account_key(key)
+        assert identity['slug'] == slug
+        assert identity['client_id'] == f'wa-approval-{slug}'
+        assert identity['systemd_unit'] == f'mcn-wa-runtime-{slug}.service'
+        assert str(identity['auth_path']).endswith(f'.wwebjs_auth_accounts/{slug}')
+        assert str(identity['state_path']).endswith(f'data/whatsapp_approval_worker_runtimes/{slug}.json')
+        assert str(identity['log_path']).endswith(f'logs/whatsapp_approval_workers/{slug}.log')
+        assert identity['base_url'] == f"http://127.0.0.1:{identity['port']}"
+
+
+def test_whatsapp_runtime_identity_reuses_existing_persisted_port(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    account_key = 'learn-indo-01'
+    persisted = {
+        'account_key': account_key,
+        'port': 61234,
+        'base_url': 'http://127.0.0.1:61234',
+    }
+
+    monkeypatch.setattr(service, '_read_whatsapp_approval_runtime_meta', lambda key: dict(persisted) if key == account_key else {})
+
+    identity = service._whatsapp_approval_runtime_identity(account_key)
+
+    assert identity['port'] == 61234
+    assert identity['base_url'] == 'http://127.0.0.1:61234'

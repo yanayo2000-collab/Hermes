@@ -33,7 +33,39 @@ class Args:
     worker_probe_recovery_threshold = 2
     worker_probe_failure_threshold = 10
     monitoring_session_id = ''
+    registration_auto_approval_enabled = True
 
+
+
+def test_recover_worker_skips_false_zero_runtime_rebuild(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.auto_recover_worker = True
+    calls = []
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        calls.append(url)
+        raise AssertionError(f'false-zero recovery must not call runtime/session endpoints: {url}')
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+
+    recovery = _recover_worker_for_target(
+        args,
+        {
+            'source': 'account_binding',
+            'account_key': 'registration-a',
+            'runtime_state': {'status': 'warm', 'active': True, 'base_url': 'http://worker-1'},
+            'session_state': {'login_state': 'logged_in', 'can_probe': True, 'login_verified': True},
+        },
+        failed_worker_base_url='http://worker-1',
+        error=RuntimeError('0 pending without empty queue evidence'),
+        trigger_reason='healthy_false_zero_stale_session',
+    )
+
+    assert calls == []
+    assert recovery['attempted'] is False
+    assert recovery['status'] == 'skipped'
+    assert recovery['reason'] == 'false_zero_observe_only_skip_runtime_rebuild'
+    assert recovery['auto_recover_blocked'] is True
 
 
 def test_registration_cycle_uses_account_runtime_base_url_from_cached_snapshot(monkeypatch):
@@ -388,6 +420,49 @@ def test_group_cycle_records_probe_duration_and_marks_slow_without_incident(monk
     assert second['worker_state']['probe_timeout_seconds'] >= 90.0
     assert build_incidents({'backend_health': {'ok': True}, 'worker_state': second['worker_state']}) == []
     assert captured[0] == 90.0
+
+
+def test_registration_group_auto_approval_is_disabled_even_when_release_ready(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.registration_auto_approval_enabled = False
+    state = {}
+    target = {
+        'registration_group': 'RG',
+        'group_name': '注册群',
+        'worker_base_url': 'http://worker-1',
+        'account_key': 'registration-test',
+        'source': 'account_binding',
+        'auto_recover_worker': True,
+        'runtime_state': {'active': True, 'ready': True, 'authenticated': True},
+        'session_state': {'session_target_match': True, 'login_verified': True},
+    }
+
+    monkeypatch.setattr('scripts.production_ops_daemon._fetch_worker_group_state_with_passive_retry', lambda *a, **k: {
+        'ok': True,
+        'duration_seconds': 0.2,
+        'payload': {'group_id': 'RG', 'group_name': '注册群', 'pending_count': 3, 'member_count': 10, 'requester_ids': ['u1', 'u2', 'u3']},
+        'attempts': [],
+        'retry_count': 0,
+        'total_attempts': 1,
+    })
+    monkeypatch.setattr('scripts.production_ops_daemon._evaluate_release_with_backend_recovery', lambda *a, **k: {
+        'ok': True,
+        'payload': {'ready': True, 'release_count': 3, 'reason_code': 'batch_threshold_reached', 'pending_count': 3},
+    })
+
+    def fail_if_formal_approval_runs(*_args, **_kwargs):
+        raise AssertionError('registration-group auto approval must stay disabled; only manual one-click approval may run')
+
+    monkeypatch.setattr('scripts.production_ops_daemon.run_formal_approval_command', fail_if_formal_approval_runs)
+
+    cycle = _run_registration_group_cycle(args, state, target, now=datetime(2026, 5, 14, 1, 0, tzinfo=timezone.utc))
+
+    assert cycle['release_evaluation']['skipped'] is True
+    assert cycle['release_evaluation']['reason'] == 'registration_auto_approval_disabled'
+    assert cycle['formal_approval']['triggered'] is False
+    assert cycle['formal_approval']['auto_approval_disabled'] is True
+    assert cycle['formal_approval']['pending_count'] == 3
+
 
 
 def test_worker_probe_timeout_retries_then_restarts_and_escalates_after_ten_rounds(monkeypatch):
@@ -1698,7 +1773,7 @@ def test_run_cycle_account_binding_ignores_suspected_review_surface_positive_res
     assert cycle_row['decision_group_state']['payload']['pending_count'] == 0
 
 
-def test_run_cycle_account_binding_false_zero_restarts_runtime_and_uses_recovered_pending(monkeypatch):
+def test_run_cycle_account_binding_false_zero_observes_only_without_runtime_restart(monkeypatch):
     args = SimpleNamespace(**Args.__dict__)
     args.monitoring_session_id = 'session-false-zero-recover'
     args.worker_recovery_rebuild_threshold = 1
@@ -1801,21 +1876,24 @@ def test_run_cycle_account_binding_false_zero_restarts_runtime_and_uses_recovere
     cycle = run_cycle(args, {})
     cycle_row = cycle['registration_group_cycles'][0]
 
-    assert calls['worker_zero'] >= 2
-    assert calls['stop'] == 1
-    assert calls['start'] == 1
-    assert calls['session'] == 1
-    assert calls['recovered'] >= 1
-    assert cycle_row['worker_state']['recovered_after_restart'] is True
-    assert cycle_row['worker_state']['recovery']['mode'] == 'account_runtime_rebuild'
-    assert cycle_row['worker_state']['recovery']['trigger_reason'] == 'healthy_false_zero_stale_session'
-    assert cycle_row['decision_group_state']['payload']['pending_count'] == 4
-    assert cycle_row['truth_state']['status'] == 'confirmed_pending'
-    assert calls['formal'] == 1
+    assert calls['worker_zero'] >= 1
+    assert calls['stop'] == 0
+    assert calls['start'] == 0
+    assert calls['session'] == 0
+    assert calls['recovered'] == 0
+    recovery = cycle_row['worker_state']['recovery']
+    assert recovery['status'] == 'skipped'
+    assert recovery['reason'] == 'false_zero_observe_only_skip_runtime_rebuild'
+    assert recovery['auto_recover_blocked'] is True
+    assert recovery['trigger_reason'] == 'healthy_false_zero_stale_session'
+    assert cycle_row['decision_group_state']['payload']['pending_count'] == 0
+    assert cycle_row['decision_group_state']['zero_pending_unverified'] is True
+    assert cycle_row['truth_state']['status'] == 'empty_unverified'
+    assert calls['formal'] == 0
 
 
 
-def test_run_cycle_account_binding_false_zero_waits_for_ten_consecutive_signals(monkeypatch):
+def test_run_cycle_account_binding_false_zero_observe_gate_tracks_ten_consecutive_signals(monkeypatch):
     args = SimpleNamespace(**Args.__dict__)
     args.monitoring_session_id = 'session-false-zero-threshold-10'
     invite_link = 'RG'
@@ -1917,14 +1995,17 @@ def test_run_cycle_account_binding_false_zero_waits_for_ten_consecutive_signals(
     tenth_cycle = run_cycle(args, state)
     cycle_row = tenth_cycle['registration_group_cycles'][0]
 
-    assert calls['stop'] == 1
-    assert calls['start'] == 1
-    assert calls['session'] == 1
-    assert cycle_row['worker_state']['recovery']['trigger_reason'] == 'healthy_false_zero_stale_session'
-    assert cycle_row['worker_state']['recovery']['mode'] == 'account_runtime_rebuild'
+    assert calls['stop'] == 0
+    assert calls['start'] == 0
+    assert calls['session'] == 0
+    recovery = cycle_row['worker_state']['recovery']
+    assert recovery['status'] == 'skipped'
+    assert recovery['reason'] == 'false_zero_observe_only_skip_runtime_rebuild'
+    assert recovery['auto_recover_blocked'] is True
+    assert recovery['trigger_reason'] == 'healthy_false_zero_stale_session'
 
 
-def test_run_cycle_account_binding_false_zero_rebuild_keeps_recovered_unverified_zero_fail_closed(monkeypatch):
+def test_run_cycle_account_binding_false_zero_observe_only_keeps_unverified_zero_fail_closed(monkeypatch):
     args = SimpleNamespace(**Args.__dict__)
     args.monitoring_session_id = 'session-false-zero-recovered-still-zero'
     args.worker_recovery_rebuild_threshold = 1
@@ -2028,13 +2109,15 @@ def test_run_cycle_account_binding_false_zero_rebuild_keeps_recovered_unverified
     cycle = run_cycle(args, {})
     cycle_row = cycle['registration_group_cycles'][0]
 
-    assert calls['stop'] == 1
-    assert calls['start'] == 1
-    assert calls['session'] == 1
-    assert calls['recovered'] >= 1
+    assert calls['stop'] == 0
+    assert calls['start'] == 0
+    assert calls['session'] == 0
+    assert calls['recovered'] == 0
     assert calls['formal'] == 0
-    assert cycle_row['worker_state']['recovery']['status'] == 'ok'
-    assert cycle_row['worker_state']['false_zero_recovery']['recovered_pending_count'] == 0
+    recovery = cycle_row['worker_state']['recovery']
+    assert recovery['status'] == 'skipped'
+    assert recovery['reason'] == 'false_zero_observe_only_skip_runtime_rebuild'
+    assert recovery['auto_recover_blocked'] is True
     assert cycle_row['decision_group_state']['zero_pending_unverified'] is True
     assert cycle_row['truth_state']['status'] == 'empty_unverified'
     assert build_success_notifications(cycle) == []

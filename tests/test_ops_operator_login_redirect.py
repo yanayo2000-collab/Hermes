@@ -30,10 +30,36 @@ def _bootstrap_admin_and_create_user(client, *, username, role, display_name):
 def _assert_limited_self_password_page(html):
     assert '账号设置' in html
     assert '修改我的密码' in html
+    assert '退出登录' in html
+    assert 'onclick="logoutCurrentAccount()"' in html
+    assert "async function logoutCurrentAccount()" in html
+    assert "fetch('/api/ops/auth/logout'" in html
+    assert "window.location.replace('/login')" in html
     assert '账号列表' not in html
     assert '创建账号' not in html
     assert '角色' not in html
     assert '/api/ops/auth/password' in html
+
+def _assert_admin_account_settings_logout_action(html):
+    assert '<div class="accounts-hero-actions"><button class="secondary" type="button" onclick="openChangeOwnPassword()">修改我的密码</button><button class="ghost" type="button" onclick="logoutCurrentAccount()">退出登录</button></div>' in html
+    assert "async function logoutCurrentAccount()" in html
+    assert "fetchJson('/api/ops/auth/logout', {method:'POST'})" in html
+    assert "window.location.replace('/login')" in html
+
+
+def test_admin_account_settings_shows_logout_next_to_change_password():
+    client = make_client()
+    admin = client.post('/api/ops/auth/bootstrap', json={
+        'username': 'admin01',
+        'password': 'secret123',
+        'display_name': 'Admin',
+    })
+    assert admin.status_code == 200
+
+    accounts_page = client.get('/ops/accounts')
+
+    assert accounts_page.status_code == 200
+    _assert_admin_account_settings_logout_action(accounts_page.text)
 
 
 def test_login_page_allows_operator_next_to_accounts_or_group_atmosphere():

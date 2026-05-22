@@ -1,6 +1,7 @@
 import urllib.request
 
 from app.live_bind_executor import LiveChromeBindExecutor
+from app.main import Database, Service
 
 
 class FakeCmsExecutor(LiveChromeBindExecutor):
@@ -14,10 +15,13 @@ class FakeCmsExecutor(LiveChromeBindExecutor):
         assert authorization == "Bearer secret-token"
         if not self.responses:
             raise AssertionError("unexpected CMS call")
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
-def test_cms_id_bind_does_not_require_chrome_profile_mapping_when_already_in_target_guild():
+def test_cms_id_bind_does_not_treat_already_in_target_guild_as_success():
     executor = FakeCmsExecutor([
         [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
         {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "3432", "guild_name": "Carote"}]}},
@@ -33,9 +37,11 @@ def test_cms_id_bind_does_not_require_chrome_profile_mapping_when_already_in_tar
         "executor_browser_profile_key": "guild-carote",
     })
 
-    assert result["status"] == "success"
-    assert result["result_code"] == "bind_success"
+    assert result["status"] == "failed"
+    assert result["result_code"] == "already_in_target_guild"
+    assert result["result_reason"] == "Previously registered in this agency"
     assert result["raw_result"]["executor_mode"] == "cms_id"
+    assert result["raw_result"]["precheck"] == "already_in_target_guild"
     assert all("addAnchor" not in call["url"] for call in executor.calls)
 
 
@@ -86,9 +92,55 @@ def test_cms_id_bind_caps_cms_request_timeout_for_fast_bind_sla():
         "executor_request_timeout_seconds": 30,
     })
 
-    assert result["status"] == "success"
+    assert result["status"] == "failed"
+    assert result["result_code"] == "already_in_target_guild"
     assert executor.calls
     assert {call["timeout_seconds"] for call in executor.calls} == {8.0}
+
+def test_live_bind_http_html_error_is_normalized_before_reaching_customer_card():
+    html_404 = """<html> <head><title>404 Not Found</title></head>
+    <body bgcolor=\"white\"><center><h1>404 Not Found</h1></center>
+    <hr><center>nginx/1.14.1</center></body></html>
+    <!-- a padding to disable MSIE and Chrome friendly error page -->"""
+    executor = LiveChromeBindExecutor(profile_map={})
+
+    result = executor._interpret_result(
+        context={"dept_name": "Carote"},
+        invite_code="",
+        guild_name="Carote",
+        retained_before="",
+        retained_after="",
+        requests=[{"status": 404, "body": html_404}],
+        final_page={"title": "404 Not Found", "url": "https://example.invalid/missing", "body": html_404},
+    )
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "bind_backend_http_error"
+    assert result["result_reason"] == "Binding upstream returned HTTP 404 Not Found; check executor URL or nginx route."
+    assert "<html" not in result["result_reason"].lower()
+    assert "nginx/1.14.1" not in result["result_reason"]
+
+
+def test_lark_reply_never_surfaces_raw_html_error_to_customer_service():
+    service = Service(Database(':memory:'))
+    html_404 = """HTTP 404: <html> <head><title>404 Not Found</title></head>
+    <body bgcolor=\"white\"><center><h1>404 Not Found</h1></center>
+    <hr><center>nginx/1.14.1</center></body></html>"""
+
+    reply = service._format_lark_reply_text({
+        "reason": "bind_check_failed",
+        "result_code": "bind_backend_http_error",
+        "result_reason": html_404,
+        "reply_phone": "+62 877-2209-0497",
+        "reply_id": "53322723",
+        "reply_group": "-",
+        "reply_code_display": "-",
+    })
+
+    assert "<html" not in reply.lower()
+    assert "nginx/1.14.1" not in reply
+    assert "Binding upstream returned HTTP 404 Not Found" in reply
+
 
 def test_non_cms_route_still_reports_missing_chrome_profile_mapping():
     executor = LiveChromeBindExecutor(profile_map={})
@@ -199,10 +251,74 @@ def test_cms_id_bind_uses_configured_guild_id_and_sid_to_disambiguate_same_name(
         "executor_cms_guild_sid": "43536425",
     })
 
-    assert result["status"] == "success"
-    assert result["result_code"] == "bind_success"
+    assert result["status"] == "failed"
+    assert result["result_code"] == "already_in_target_guild"
     assert result["raw_result"]["cms_guild_id"] == "3432"
     assert result["raw_result"]["cms_guild_sid"] == "43536425"
+
+
+def test_cms_id_bind_uses_configured_guild_lock_when_guild_list_endpoint_is_forbidden():
+    executor = FakeCmsExecutor([
+        urllib.error.HTTPError(
+            url="https://cms.linke.ai/api/admin/linky/industrial/industrial/getGuildIdAndName",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=None,
+        ),
+        {"code": 1000, "data": {"records": [{"sid": "53367380", "guild_id": "1423", "guild_name": "Nova"}]}},
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "53367380",
+        "dept_name": "Nova",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+        "executor_cms_guild_id": "1423",
+        "executor_cms_guild_sid": "31350499",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "already_in_target_guild"
+    assert result["raw_result"]["cms_guild_id"] == "1423"
+    assert result["raw_result"]["cms_guild_sid"] == "31350499"
+    assert all("addAnchor" not in call["url"] for call in executor.calls)
+
+
+def test_cms_id_bind_classifies_add_anchor_403_as_scope_denied_after_sid_precheck():
+    executor = FakeCmsExecutor([
+        urllib.error.HTTPError(
+            url="https://cms.linke.ai/api/admin/linky/industrial/industrial/getGuildIdAndName",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=None,
+        ),
+        {"code": 1000, "data": {"records": [{"sid": "53367380", "guild_id": "0", "guild_name": ""}]}},
+        urllib.error.HTTPError(
+            url="https://cms.linke.ai/api/admin/linky/industrial/streamer_detail/addAnchor",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=None,
+        ),
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "53367380",
+        "dept_name": "Nova",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+        "executor_cms_guild_id": "1423",
+        "executor_cms_guild_sid": "31350499",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "cms_authorization_scope_denied"
+    assert result["raw_result"]["precheck"] == "sid_found_without_guild"
+    assert result["raw_result"]["cms_submit_http_status"] == 403
 
 
 def test_cms_id_bind_rejects_configured_guild_id_sid_mismatch():
@@ -265,8 +381,8 @@ def test_cms_id_bind_prefers_join_record_when_top_level_guild_is_empty():
         "executor_platform_authorization": "Bearer secret-token",
     })
 
-    assert result["status"] == "success"
-    assert result["result_code"] == "bind_success"
+    assert result["status"] == "failed"
+    assert result["result_code"] == "already_in_target_guild"
     assert result["raw_result"]["precheck"] == "already_in_target_guild"
     assert all("addAnchor" not in call["url"] for call in executor.calls)
 
@@ -363,7 +479,8 @@ def test_cms_id_bind_sends_cms_requests_through_executor_proxy_url():
         "executor_proxy_region": "西安",
     })
 
-    assert result["status"] == "success"
+    assert result["status"] == "failed"
+    assert result["result_code"] == "already_in_target_guild"
     assert executor.calls
     assert {call["proxy_url"] for call in executor.calls} == {"http://proxy-xa:8080"}
 

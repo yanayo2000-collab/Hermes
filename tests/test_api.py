@@ -354,6 +354,47 @@ def test_whatsapp_approval_account_recent_localauth_restore_window_shows_recover
     assert '待登录' not in row['status_text']
 
 
+def test_whatsapp_approval_recovery_window_does_not_hide_real_qr(monkeypatch):
+    client = make_client()
+    service = client.app.state.service
+    account_key = 'atmosphere-qr-recovery'
+    auth_path = str(service._whatsapp_approval_session_auth_path(account_key))
+    client_id = service._whatsapp_approval_session_client_id(account_key)
+    runtime_meta = {
+        'account_key': account_key,
+        'started_at': datetime.now(timezone.utc).isoformat(),
+        'auth_path': auth_path,
+        'client_id': client_id,
+    }
+    worker_health = {
+        'status': 'awaiting_qr',
+        'ready': False,
+        'authenticated': False,
+        'approval_client': {
+            'status': 'awaiting_qr',
+            'ready': False,
+            'authenticated': False,
+            'client_id': f'{client_id}-approval',
+            'auth_path': auth_path,
+            'last_qr': 'qr-token-ready',
+            'last_qr_at': '2026-05-21T07:38:20Z',
+            'last_error': '',
+        },
+    }
+    monkeypatch.setattr(service, '_read_whatsapp_approval_runtime_meta', lambda key: dict(runtime_meta) if key == account_key else {})
+    monkeypatch.setattr(service, '_whatsapp_approval_has_local_auth_session', lambda key: key == account_key)
+    monkeypatch.setattr(service, '_render_whatsapp_approval_qr_image_data_url', lambda qr_text: 'data:image/png;base64,TESTQR')
+
+    session = service._build_whatsapp_approval_session_state(account_key, worker_health=worker_health, include_qr_ascii=True)
+
+    assert session['login_check_status'] == 'waiting_for_scan'
+    assert session['login_state'] == 'waiting_for_scan_qr_ready'
+    assert session['qr_available'] is True
+    assert session['can_show_qr'] is True
+    assert session['qr_text'] == 'qr-token-ready'
+    assert session['qr_image_data_url'] == 'data:image/png;base64,TESTQR'
+
+
 def test_whatsapp_approval_binding_probe_requires_matching_account_key():
     production_ops = {
         'runtime': {
@@ -783,6 +824,69 @@ def test_ops_intake_workbench_guild_tabs_highlight_only_selected_guild():
     assert html.index('button { border:0') < html.index('.tabs .tab{background:#fff!important') < html.index('.tabs .tab.active{background:#2563eb!important')
 
 
+def test_ops_intake_submit_page_compacts_cards_and_shows_owner_time_and_history_copy():
+    client = make_client({'AUTH_ENABLED': False})
+    page = client.get('/ops/intake-submit')
+    assert page.status_code == 200
+    html = page.text
+    assert '绑定历史' in html
+    assert '绑定失败用户' not in html
+    assert 'INTAKE_VISIBLE_CARD_LIMIT=3' in html
+    assert 'renderItemList(guild,rows)' in html
+    assert '更多记录' in html
+    assert 'submitted_by_username' in html
+    assert 'formatBeijingTime' in html
+    assert 'scheduleItemRefresh' in html
+    assert 'bindIntakeAutoParseInputs' in html
+    assert "document.addEventListener('input'" in html
+    assert '等待输入' not in html
+    assert "setParseState(guild,'',false)" in html
+    assert '<span class="muted" id="parse_${esc(g.guild_name)}"></span>' in html
+    assert '/api/ops/intake-workbench/items/${encodeURIComponent(itemId)}/fields' in html
+    assert "prompt('更正 Phone'" in html
+    assert "prompt('更正 ID / SID'" in html
+    assert "prompt('更正 Group'" in html
+    assert "prompt('更正 Code'" in html
+
+
+def test_ops_intake_item_fields_can_be_corrected_in_place_and_task_payload_updates():
+    client = make_client({'AUTH_ENABLED': False, 'AUTO_BIND_SIMULATION': False})
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    submit = client.post('/api/ops/intake-workbench/guilds/Carote/submit', json={
+        'text': 'Phone: +62 811111111\nID: 44898989\nGroup: other\nCode: -',
+        'fields': {'phone': '+62 811111111', 'account_id': '44898989', 'group': 'other', 'code': '-'},
+    })
+    assert submit.status_code == 200
+    item = submit.json()['item']
+    task_id = submit.json()['result']['task_id']
+
+    update = client.patch(f"/api/ops/intake-workbench/items/{item['item_id']}/fields", json={
+        'text': '',
+        'fields': {'phone': '+62 822222222', 'account_id': '99999999', 'group': 'new group', 'code': 'ABC123'},
+    })
+
+    assert update.status_code == 200
+    body = update.json()
+    assert body['item']['parsed_phone'] == '+62 822222222'
+    assert body['item']['parsed_group'] == 'new group'
+    assert body['item']['parsed_account_id'] == '99999999'
+    assert body['item']['parsed_code'] == 'ABC123'
+    assert body['correction_mode'] == 'in_place'
+    with client.app.state.service.db.connect() as conn:
+        payload = conn.execute('SELECT payload FROM automation_tasks WHERE task_id=?', (task_id,)).fetchone()['payload']
+    assert '+62 822222222' in payload
+    assert '+62 811111111' not in payload
+    assert 'new group' in payload
+    assert '99999999' in payload
+    assert '44898989' not in payload
+    assert 'ABC123' in payload
+
+
 def test_ops_accounts_page_admin_region_management_updates_unified_source():
     client = make_client({'AUTH_ENABLED': True})
     bootstrap_admin_and_login(client)
@@ -1024,6 +1128,84 @@ def test_ops_intake_workbench_updates_item_reply_after_async_bind_failure():
     assert item['result_code'] == 'cms_add_anchor_invalid_arguments'
     assert '**❌ Bind failed: Invalid or unavailable Linky ID**' in item['reply_text']
     assert '**❌ Failed**' not in item['reply_text']
+
+
+
+def test_ops_intake_workbench_bind_success_avoids_crm_cache_writes_and_lark_reply_in_result_path(monkeypatch):
+    class FastCrmAdapter:
+        def __init__(self):
+            self.calls = []
+            self.record = None
+            self.apps = [{'id': 'app_linky', 'name': 'Linky'}]
+            self.depts = [{'deptId': 'dept_carote', 'deptName': 'Carote'}]
+
+        def get_apps(self):
+            self.calls.append(('get_apps', {}))
+            return list(self.apps)
+
+        def get_depts(self):
+            self.calls.append(('get_depts', {}))
+            return list(self.depts)
+
+        def create_customer(self, payload):
+            self.calls.append(('create_customer', dict(payload)))
+            self.record = dict(payload)
+            return {'code': 0, 'msg': 'success', 'data': None}
+
+        def find_customer(self, *, yw_id=None, mobile=None):
+            self.calls.append(('find_customer', {'yw_id': yw_id, 'mobile': mobile}))
+            return dict(self.record) if self.record else None
+
+    crm = FastCrmAdapter()
+
+    def real_bind_executor(context):
+        return {
+            'status': 'success',
+            'result_code': 'bind_success',
+            'result_reason': 'CMS bind verified',
+            'raw_result': {'executor_mode': 'cms_id', 'deptName': context['dept_name'], 'guild_code': context['dept_name']},
+        }
+
+    client = make_client({
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Carote',
+        'CRM_ADAPTER': crm,
+        'AUTO_LARK_REPLY': True,
+        'AUTO_BIND_SIMULATION': False,
+        'REAL_BIND_EXECUTOR': real_bind_executor,
+    })
+    assert client.post('/api/ops/guild-executors/Carote', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'platform_authorization': 'Bearer cms-carote-token',
+        'enabled': True,
+    }).status_code == 200
+    service = client.app.state.service
+    monkeypatch.setattr(service, '_persist_crm_option_row', lambda **_: (_ for _ in ()).throw(AssertionError('crm option persistence must not run in bind result path')))
+    monkeypatch.setattr(service, '_should_emit_lark_reply', lambda envelope: True)
+    monkeypatch.setattr(service, '_reply_lark_message', lambda **_: (_ for _ in ()).throw(AssertionError('ops intake synthetic message must not call Lark reply')))
+
+    text = 'Phone: +62 898978979\nID: 44898989\nGroup: 其他渠道\nCode: -'
+    parsed = client.post('/api/ops/intake-workbench/guilds/Carote/parse', json={'text': text}).json()
+    submit = service.submit_ops_intake_guild_item(
+        guild_name='Carote',
+        text=text,
+        fields=parsed['fields'],
+        user={'user_id': 'ops_user_mafubo', 'username': 'mafubo', 'display_name': '马富波', 'role': 'admin'},
+    )
+    item_id = submit['item']['item_id']
+
+    processed = service.process_next_automation_task()
+
+    assert processed['crm_verified'] is True
+    assert processed['next_action'] == 'queue_group_join'
+    item = service._get_ops_intake_item(item_id)
+    assert item['system_status'] == 'fully_success'
+    assert item['feedback_status'] == 'pending_feedback'
+    assert item['result_code'] == 'bind_success'
+    assert '**✅ Success**' in item['reply_text']
+    assert [name for name, _payload in crm.calls].count('create_customer') == 1
+    assert crm.record['creatorName'] == 'mafubo'
 
 
 
@@ -1750,7 +1932,7 @@ def test_bind_metrics_clean_samples_exclude_historical_long_tail_outliers():
     assert metrics['outlier_metrics']['reasons']['auto_reconciled_or_requeued'] == 1
 
 
-def test_stale_processing_bind_task_is_requeued_and_consumed_by_worker_tick():
+def test_stale_processing_bind_task_already_in_target_is_not_marked_success_after_worker_tick():
     captured = {}
 
     def real_bind_executor(context):
@@ -1785,12 +1967,14 @@ def test_stale_processing_bind_task_is_requeued_and_consumed_by_worker_tick():
     result = service.process_next_worker_tick()
 
     assert result and result['task_id'] == task_id
-    assert result['lead_status'] == 'bind_success'
+    assert result['lead_status'] == 'bind_failed'
+    assert result['reason'] == 'already_in_target_guild'
     assert captured['account_id'] == '53232363'
     with service.db.connect() as conn:
-        row = conn.execute('SELECT status, result_code, finished_at, worker_id, lease_until, heartbeat_at FROM automation_tasks WHERE task_id=?', (task_id,)).fetchone()
-    assert row['status'] == 'success'
-    assert row['result_code'] == 'bind_success'
+        row = conn.execute('SELECT status, result_code, result_reason, finished_at, worker_id, lease_until, heartbeat_at FROM automation_tasks WHERE task_id=?', (task_id,)).fetchone()
+    assert row['status'] == 'failed'
+    assert row['result_code'] == 'already_in_target_guild'
+    assert row['result_reason'] == 'Previously registered in this agency'
     assert row['finished_at']
     assert row['worker_id']
     assert row['lease_until'] == ''
@@ -1912,7 +2096,7 @@ def test_ops_intake_workbench_cross_customer_service_duplicate_pending_blocks_ne
     detail = second.json()['detail']
     assert detail['reason'] == 'duplicate_pending'
     assert detail['existing_item_id'] == first.json()['item']['item_id']
-    assert detail['existing_owner'] == '客服A'
+    assert detail['existing_owner'] == 'cs_dup_a'
 
 
 def test_ops_intake_workbench_route_snapshot_is_saved_to_item_and_bind_task_payload():
@@ -2162,7 +2346,7 @@ def test_ops_intake_binding_history_page_uses_small_default_limit_and_history_en
     assert "params.set('limit','50')" in page.text
     assert '绑定历史列表' in page.text
     assert '/api/ops/intake-workbench/binding-history-items' in page.text
-    assert '卡片最多两行' in page.text
+    assert '卡片最多两行' not in page.text
     assert ".join('\\n')" in page.text
     assert ".join('\n')" not in page.text
 
@@ -2344,24 +2528,31 @@ def test_binding_history_legacy_lead_close_removes_current_exception_but_keeps_a
     assert all_history.json()['rows'][0]['closure_status'] == 'resolved'
 
 
-def test_binding_history_page_has_current_all_tabs_resolution_actions_and_roomy_layout():
+def test_binding_history_page_defaults_to_all_history_without_view_tabs_and_uses_two_column_actions():
     client = make_client({'AUTH_ENABLED': True})
     bootstrap_admin_and_login(client)
     page = client.get('/ops/bind-failed-users')
     assert page.status_code == 200
     html = page.text
-    assert '当前异常' in html
-    assert '全部历史' in html
-    assert "params.set('view',currentView)" in html
+    assert '绑定历史列表' in html
+    assert '当前异常</button>' not in html
+    assert '全部历史</button>' not in html
+    assert 'class="view-tabs"' not in html
+    assert 'function switchView' not in html
+    assert "const currentView='all'" in html
+    assert "params.set('view','all')" in html
+    assert '<option value="exception">异常</option>' in html
+    assert '<option value="failed">失败</option>' in html
     assert 'resolveItem' in html
     assert '标记已处理' in html
     assert '转人工复核' in html
     assert 'binding-row-card' in html
     assert 'compact-main-line' in html
     assert 'compact-sub-line' in html
-    assert '资料完整展示' in html
-    assert 'grid-template-columns:minmax(190px,1fr) minmax(520px,2.1fr) minmax(180px,.72fr) minmax(180px,180px)' in html
-    assert '.row-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))' in html
+    assert '资料完整展示' not in html
+    assert 'grid-template-columns:minmax(190px,1fr) minmax(520px,2.1fr) minmax(180px,.72fr) minmax(188px,188px)' in html
+    assert '.row-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))' in html
+    assert '.row-actions button{display:inline-flex;align-items:center;justify-content:center' in html
     assert 'min-width:1060px' not in html
 
 
@@ -2373,12 +2564,22 @@ def test_ops_intake_binding_history_page_exposes_submission_history_controls():
     html = page.text
     assert '绑定历史列表' in html
     assert 'compact-sub-line' in html
-    assert '卡片最多两行' in html
+    assert '卡片最多两行' not in html
+    assert 'help-row' not in html
+    assert '当前异常闭环' not in html
+    assert '默认查看当前异常；全部历史用于追溯。' not in html
+    assert 'bindHistoryKeywordFilter' in html
+    assert 'bindHistoryStatusFilter' in html
+    assert "params.set('q',keyword)" in html
+    assert 'formatHistoryStatusLabel' in html
+    assert 'formatHistoryReason' in html
+    assert 'function normalizeDisplayField(field,value)' in html
+    assert 'const display=normalizeDisplayField(field,value)' in html
     assert 'data-bind-failed-select' not in html
     assert '清除选中失败消息' not in html
-    assert '重置筛选' in html
-    assert '同一 Phone + ID 合并' in html
-    assert '已处理不计入看板异常' in html
+    assert '>重置</button>' in html
+    assert '同一 Phone + ID 合并' not in html
+    assert '已处理不计入看板异常' not in html
     assert '清除当前筛选结果' not in html
     assert '清空</button>' not in html
     assert 'failed-list' in html
@@ -2388,17 +2589,18 @@ def test_ops_intake_binding_history_page_exposes_submission_history_controls():
     assert '.compact-main-line,.compact-sub-line{display:grid' in html
     assert '.field-strip{display:grid' in html
     assert '.field-strip{display:grid;grid-template-columns:minmax(190px,1fr) minmax(160px,.8fr)' in html
-    assert '资料完整展示' in html
-    assert 'grid-template-columns:minmax(190px,1fr) minmax(520px,2.1fr) minmax(180px,.72fr) minmax(180px,180px)' in html
+    assert '资料完整展示' not in html
+    assert 'grid-template-columns:minmax(190px,1fr) minmax(520px,2.1fr) minmax(180px,.72fr) minmax(188px,188px)' in html
     assert '.member-compact,.field-strip,.status-compact,.reason-compact{min-width:0}' in html
     assert '.reason-compact{grid-column:1 / 4' in html
-    assert '.row-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))' in html
+    assert '.row-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))' in html
     assert 'grid-auto-rows:32px' in html
+    assert '.row-actions button{display:inline-flex;align-items:center;justify-content:center' in html
     assert '.list-select-row' in html
     assert 'compact-main-line' in html
     assert '>成员</span>' in html
-    assert '当前异常' in html
-    assert '全部历史' in html
+    assert '当前异常</button>' not in html
+    assert '全部历史</button>' not in html
     assert '可直接修正后回填或重提' not in html
     assert '<label>${esc(label)}</label>' in html
     assert 'aria-label="${label}"' in html
@@ -2407,12 +2609,83 @@ def test_ops_intake_binding_history_page_exposes_submission_history_controls():
     assert '>回填</button>' in html
     assert 'title="重新提交"' in html
     assert '>重提</button>' in html
+    assert '更正资料' in html
+    assert 'id="correctionDialog"' in html
+    assert 'openHistoryCorrectionDialog' in html
+    assert 'submitHistoryCorrection' in html
+    assert 'correction_phone' in html
+    assert 'correction_account_id' in html
+    assert 'id="correction_account_id" autocomplete="off" readonly disabled' in html
+    assert 'correction_group' in html
+    assert 'correction_code' in html
+    assert 'id="correction_code" autocomplete="off" readonly disabled' in html
+    assert 'class="locked-field"' in html
+    assert 'correction_account_id.disabled=true' in html
+    assert 'correction_code.disabled=true' in html
+    assert "fields={phone:correction_phone.value.trim(),group:correction_group.value.trim()}" in html
+    assert 'save-correction' not in html
+    assert '/api/ops/intake-workbench/items/${encodeURIComponent(itemId)}/fields' in html
+    assert "fieldBlock('ID','account_id'" in html
+    assert "fieldBlock('Code','code'" in html
     assert 'selectionSummary' in html
     assert 'clearSelectedButton' not in html
     assert 'clearCurrentButton' not in html
     assert 'button:disabled' in html
     assert '当前筛选条件下没有提交记录' in html
     assert 'formatDisplayTime' in html
+
+
+def test_ops_intake_binding_history_supports_keyword_status_filter_and_hides_placeholder_code():
+    client = make_client({'DB_PATH': ':memory:', 'AUTH_ENABLED': True})
+    service = client.app.state.service
+    bootstrap_admin_and_login(client)
+    now = datetime.now(timezone.utc).isoformat()
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'intake_item_history_filter_1', 'Carote', 'cs1', 'Mafubo', 'raw',
+                '+62 87722090497', '53322723', '其他渠道', 'Code', 'Linky', 'Carote',
+                'bind_failed', 'not_feedbackable', 'failed', 'crm_sync_failed', 'Data duplication.', '{}', now, now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO ops_intake_items (
+                item_id, guild_name, submitted_by_user_id, submitted_by_username, raw_text,
+                parsed_phone, parsed_account_id, parsed_group, parsed_code, parsed_app, parsed_agency,
+                system_status, feedback_status, reply_text, result_code, result_reason, result_snapshot,
+                created_at, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'intake_item_history_filter_2', 'Permata', 'cs2', 'Other', 'raw',
+                '+62 81100000000', '11112222', '其他渠道', '', 'Linky', 'Permata',
+                'fully_success', 'pending_feedback', 'success', 'bind_success', 'ok', '{}', now, now,
+            ),
+        )
+        conn.commit()
+
+    response = client.get('/api/ops/intake-workbench/binding-history-items?view=all&q=53322723&status=duplicate')
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body['rows']) == 1
+    row = body['rows'][0]
+    assert row['item_id'] == 'intake_item_history_filter_1'
+    assert row['editable_fields']['code'] == ''
+    assert row['latest_result_code'] == 'crm_sync_failed'
+
+    failed_response = client.get('/api/ops/intake-workbench/binding-history-items?view=all&status=failed')
+    assert failed_response.status_code == 200
+    failed_rows = failed_response.json()['rows']
+    assert [row['item_id'] for row in failed_rows] == ['intake_item_history_filter_1']
 
 
 def test_ops_intake_bind_failed_items_can_be_edited_and_resubmitted(monkeypatch):
@@ -2479,9 +2752,9 @@ def test_ops_intake_bind_failed_items_can_be_edited_and_resubmitted(monkeypatch)
     page = client.get('/ops/bind-failed-users')
     assert page.status_code == 200
     assert '绑定历史列表' in page.text
-    assert '日期（北京时间）' in page.text
+    assert '日期' in page.text
     assert '公会' in page.text
-    assert '操作客服' in page.text
+    assert '客服' in page.text
     assert 'bindFailedGuildFilter' in page.text
     assert 'bindFailedDateFilter' in page.text
     assert 'bindFailedOperatorFilter' in page.text
@@ -3495,6 +3768,21 @@ def test_parse_manual_cs_message_extracts_bare_multiline_invite_code():
 
 
 
+def test_parse_manual_cs_message_treats_tab_as_field_separator_between_phone_and_id():
+    parsed = parse_manual_cs_message(
+        text='+62 877-6289-0159\t53321395',
+        image_ocr_text=None,
+    )
+
+    assert parsed['mobile'] == '87762890159'
+    assert parsed['area_code'] == 62
+    assert parsed['country'] == 'Indonesia'
+    assert parsed['account_id'] == '53321395'
+    assert 'phone' not in parsed['missing_fields']
+    assert 'account_id' not in parsed['missing_fields']
+
+
+
 def test_parse_manual_cs_message_extracts_bare_multiline_all_letter_invite_code():
     parsed = parse_manual_cs_message(
         text='+62 12312966899\n89008911\nPERMATA-88\nGMJHJK',
@@ -4237,10 +4525,11 @@ def test_production_ops_page_loads():
     assert 'setApprovalAccountEnabled' in body
     assert 'setApprovalBindingEnabled' in body
     assert 'manualApproveBinding' in body
-    assert '一键通过审批' in body
+    assert '一键审批' in body
+    assert '一键通过审批' not in body
     assert 'bindingActionRowHtml' not in body
     assert 'class="binding-action-row"' not in body
-    assert '<div class="binding-meta-actions">${manualApproveButtonHtml}</div>' in body
+    assert '<div class="binding-meta-actions">${manualApproveButtonHtml || \'<span class="muted">—</span>\'}</div>' in body
     assert '<div class="binding-meta-actions">${probeRefreshButtonHtml}</div>' in body
     assert "? { level: 'blue', title: '等待扫码'" not in body
     assert 'bindingVerifierStatusText' in body
@@ -4293,21 +4582,20 @@ def test_production_ops_page_loads():
     assert 'renderAssignedCustomerServiceSelect' in body
     assert 'assigned_customer_service_user_id' in body
     assert 'wa_group_notify_profile_name_1' in body
-    assert 'wa_group_approval_count_threshold_1' in body
-    assert 'wa_group_approval_timeout_minutes_1' in body
-    assert 'wa_group_auto_recover_worker_1' in body
-    assert 'wa_group_schedule_window_1_1_start' in body
-    assert 'wa_group_schedule_window_1_1_end' in body
-    assert 'type="time"' in body
-    assert 'collectGroupScheduleWindows' in body
-    assert 'fillGroupScheduleWindows' in body
-    assert 'renderGroupScheduleWindows' in body
-    assert 'addGroupScheduleWindow' in body
-    assert 'removeGroupScheduleWindow' in body
-    assert 'data-schedule-window-row' in body
-    assert 'data-schedule-add-button' in body
-    assert '删除时段' in body
-    assert '最多3个时段' in body
+    assert 'wa_group_approval_count_threshold_1' not in body
+    assert 'wa_group_approval_timeout_minutes_1' not in body
+    assert 'wa_group_auto_recover_worker_1' not in body
+    assert 'wa_group_schedule_window_1_1_start' not in body
+    assert 'wa_group_schedule_window_1_1_end' not in body
+    assert 'collectGroupScheduleWindows' not in body
+    assert 'fillGroupScheduleWindows' not in body
+    assert 'renderGroupScheduleWindows' not in body
+    assert 'addGroupScheduleWindow' not in body
+    assert 'removeGroupScheduleWindow' not in body
+    assert 'data-schedule-window-row' not in body
+    assert 'data-schedule-add-button' not in body
+    assert '删除时段' not in body
+    assert '最多3个时段' not in body
     assert 'placeholder="09:00-12:00"' not in body
     assert '本群监控' in body
     assert 'wa_group_enabled_1' in body
@@ -4317,20 +4605,44 @@ def test_production_ops_page_loads():
     assert 'deleteApprovalBinding' in body
     assert '删除群组' in body
     assert '确认删除这个群组配置吗' in body
-    assert '实时刷新探针' in body
+    assert '实时刷新' in body
+    assert '实时刷新探针' not in body
     assert 'refreshApprovalBindingProbe' in body
     assert '/probe-refresh' in body
     assert '群探针状态已实时刷新' in body
-    assert '距离下次审批' in body
-    assert 'formatApprovalCountdownText' in body
-    assert 'startApprovalCountdownTicker' in body
-    assert 'data-next-approval-countdown' in body
-    assert 'data-next-approval-rendered-at-ms' in body
-    assert 'data-next-approval-paused' in body
-    assert 'const adjustedRemainingSeconds = paused ? null : (Number.isFinite(remainingSeconds) ? Math.max(remainingSeconds - elapsedSeconds, 0) : null);' in body
-    assert '.binding-meta-item { display:flex; flex-direction:column; gap:6px; }' in body
-    assert '.binding-meta-actions { display:flex; flex-direction:column; gap:6px; align-items:center; justify-content:center; margin-top:2px; }' in body
+    assert '距离下次审批' not in body
+    assert 'formatApprovalCountdownText' not in body
+    assert 'startApprovalCountdownTicker' not in body
+    assert 'data-next-approval-countdown' not in body
+    assert 'data-next-approval-rendered-at-ms' not in body
+    assert 'data-next-approval-paused' not in body
+    assert 'const adjustedRemainingSeconds = paused ? null : (Number.isFinite(remainingSeconds) ? Math.max(remainingSeconds - elapsedSeconds, 0) : null);' not in body
+    assert '审批条件' not in body
+    assert '自动恢复 worker' not in body
+    assert '<div class="binding-action-label-row"><div>本群监控</div><div>人工审批</div><div>真实校验·${bindingVerifierReadinessText(verifier)}</div></div>' in body
+    assert '<div class="binding-action-control-row">' in body
+    assert '<div class="binding-action-cell monitor-cell"><button type="button" class="card-monitor-toggle ${monitorButtonClass}"' in body
+    assert '<div class="binding-action-cell manual-cell"><div class="binding-meta-actions">${manualApproveButtonHtml || \'<span class="muted">—</span>\'}</div></div>' in body
+    assert '<div class="binding-action-cell verifier-cell"><div class="binding-meta-actions">${probeRefreshButtonHtml}</div></div>' in body
+    assert '<div class="binding-action-cell verifier-cell"><div class="status-line">${bindingVerifierStatusText(verifier)}</div><div class="binding-meta-actions">${probeRefreshButtonHtml}</div></div>' not in body
+    assert '${bindingVerifierReadinessText(verifier)} · ${bindingVerifierStatusText(verifier)}' not in body
+    assert '.binding-action-strip { display:flex; flex-direction:column; gap:4px; margin-top:8px; }' in body
+    assert '.binding-action-label-row > div { min-height:20px;' in body
+    assert '.binding-action-cell { min-height:38px;' in body
+    assert '.binding-meta-actions { display:flex; flex-direction:column; gap:4px; align-items:center; justify-content:flex-start; margin-top:0; }' in body
+    assert '.binding-action-label-row,.binding-action-control-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; align-items:center; }' in body
+    assert '.binding-action-label-row > div,.binding-action-cell { min-height:42px;' not in body
+    assert '.binding-action-cell { gap:8px; }' not in body
+    assert '.binding-action-cell.verifier-cell { flex-wrap:wrap; }' in body
+    assert '<div class="binding-meta-item manual-approval-meta">' not in body
+    assert '<div class="binding-meta-item"><div class="field-hint">本群监控</div>' not in body
+    assert '.binding-meta-actions { display:flex; flex-direction:column; gap:6px; align-items:center; justify-content:center; margin-top:2px; }' not in body
     assert '.binding-meta-actions button { height:38px; margin:0!important; display:inline-flex; align-items:center; justify-content:center; }' in body
+    assert '.card-monitor-toggle { display:inline-flex; align-items:center; justify-content:center; min-width:96px; white-space:nowrap!important; word-break:keep-all!important; overflow-wrap:normal!important;' in body
+    assert '.binding-card .card-monitor-toggle{min-width:96px!important;flex:0 0 auto!important;white-space:nowrap!important;word-break:keep-all!important;overflow-wrap:normal!important;text-align:center!important;}' in body
+    assert '.binding-card .binding-badge{min-width:64px!important;flex:0 0 auto!important;white-space:nowrap!important;word-break:keep-all!important;overflow-wrap:normal!important;text-align:center!important;justify-content:center!important;}' in body
+    assert '.delete-binding-button { height:38px; min-width:88px; display:inline-flex!important; align-items:center!important; justify-content:center!important;' in body
+    assert 'class="secondary delete-binding-button" onclick="deleteApprovalBinding' in body
     assert '.status-line { display:inline-flex; align-items:center; gap:6px; }' in body
 
 
@@ -4998,8 +5310,91 @@ def test_group_atmosphere_page_contains_role_pool_and_bridge_fix_markers():
     html = page.text
     assert 'syncRoleEditorSelectedTextsFromDom' in html
     assert "ga_role_positioning.addEventListener('change',()=>{syncRoleEditorSelectedTextsFromDom();renderRolePhrasePool()})" in html
+    assert 'roleEditorAvailablePhrases' in html
+    assert 'window.__gaRoleEditorExistingPhrases=existing.map' in html
+    assert 'window.__gaRoleEditorSelectedTexts=new Set(existing)' in html
+    assert "document.getElementById('ga_role_phrases').value=''" in html
+    assert "accountLogin.startsWith('已登录')" in html
+    assert "accountLogin==='已登录'" not in html
+    assert 'bridgeGroupOccupiedByOtherRelationship' in html
+    assert 'data-ga-bridge-group-occupied="${occupied?\'1\':\'0\'}"' in html
+    assert '该群已在其他桥接关系中使用' in html
+    assert 'bridgeGroupProductionState' in html
+    assert '自动发言关闭' not in html
     assert 'ga_new_bridge_btn:()=>openBridgeModal()' in html
     assert 'role_key:roleKey||null' in html
+
+
+def test_group_atmosphere_scheduler_defaults_on_for_persistent_db(tmp_path, monkeypatch):
+    monkeypatch.delenv('GROUP_ATMOSPHERE_SCHEDULER_ENABLED', raising=False)
+    app = create_app({'DB_PATH': str(tmp_path / 'automation.db'), 'AUTO_LARK_REPLY': False})
+    try:
+        assert app.state.service.group_atmosphere_scheduler_enabled is True
+    finally:
+        app.state.service._worker_stop.set()
+
+
+def test_operator_group_atmosphere_sees_same_core_data_as_admin():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    role = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'op-visible-role',
+        'role_name': '运营可见角色',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'phrases': ['Halo kak operator visible.'],
+        'enabled': True,
+        'replace_role_phrases': True,
+        'source_type': 'role_save',
+    })
+    assert role.status_code == 200
+    account = client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_key': 'atmosphere-operator-visible',
+        'account_name': '运营可见发言号',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'groups': [{'target_group': 'https://chat.whatsapp.com/operator-visible', 'group_name': '运营可见群', 'enabled': True}],
+        'enabled': True,
+    })
+    assert account.status_code == 200
+    binding = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'op-visible-role',
+        'account_key': 'atmosphere-operator-visible',
+        'group_indexes': [0],
+        'auto_speaking_enabled': True,
+        'group_send_permission_enabled': True,
+    })
+    assert binding.status_code == 200
+    admin_accounts = client.get('/api/ops/group-atmosphere/accounts').json()
+    admin_roles = client.get('/api/ops/group-atmosphere/roles').json()
+    admin_bindings = client.get('/api/ops/group-atmosphere/role-bindings').json()
+
+    create_operator = client.post('/api/ops/accounts', json={
+        'username': 'operator_ga_same',
+        'password': 'operator123',
+        'display_name': '群助手运营',
+        'role': 'operator',
+        'enabled': True,
+    })
+    assert create_operator.status_code == 200
+    client.post('/api/ops/auth/logout')
+    login = client.post('/api/ops/auth/login', json={'username': 'operator_ga_same', 'password': 'operator123'})
+    assert login.status_code == 200
+
+    region_options = client.get('/api/ops/mcn-region-options')
+    assert region_options.status_code == 200
+    operator_accounts = client.get('/api/ops/group-atmosphere/accounts')
+    operator_roles = client.get('/api/ops/group-atmosphere/roles')
+    operator_bindings = client.get('/api/ops/group-atmosphere/role-bindings')
+    assert operator_accounts.status_code == 200
+    assert operator_roles.status_code == 200
+    assert operator_bindings.status_code == 200
+    assert operator_accounts.json()['count'] == admin_accounts['count'] == 1
+    assert operator_roles.json()['count'] == admin_roles['count'] == 1
+    assert operator_bindings.json()['relationship_count'] == admin_bindings['relationship_count'] == 1
+
 
 def test_whatsapp_approval_accounts_can_be_saved_and_listed(monkeypatch):
     app = create_app({
@@ -12464,7 +12859,7 @@ def test_binding_history_page_uses_history_copy_and_api_endpoint():
 
     assert '绑定历史列表' in html
     assert '/api/ops/intake-workbench/binding-history-items' in html
-    assert '卡片最多两行' in html
+    assert '卡片最多两行' not in html
     assert '绑定失败用户：' not in html
 
 
@@ -22764,6 +23159,300 @@ def test_manual_registration_group_approval_from_binding_executes_and_resets_cou
     rows = client.get('/api/ops/registration-group-approval-batch-members', params={'approval_run_id': body['approval_run_id']}).json()['rows']
     assert [row['display_name'] for row in rows] == ['alpha', 'beta']
     assert [row['wa_phone_raw'] for row in rows] == ['+62 8111111111', '+62 8222222222']
+
+
+def test_manual_whatsapp_approval_records_operator_request_audit_context(tmp_path, monkeypatch):
+    from app.main import create_app
+
+    sent_messages = []
+
+    class StubReplyAdapter:
+        def __init__(self, *, app_id, app_secret, domain='lark'):
+            self.app_id = app_id
+            self.app_secret = app_secret
+            self.domain = domain
+
+        def send_text(self, *, chat_id, text):
+            sent_messages.append({'chat_id': chat_id, 'text': text})
+            return {'message_id': 'msg-manual-audit-1'}
+
+    def fake_load_profile_env_map(self, profile_name):
+        if profile_name == 'wa-approval-broadcast':
+            return {
+                'FEISHU_APP_ID': 'cli_bot01',
+                'FEISHU_APP_SECRET': 'bot01-secret',
+                'FEISHU_HOME_CHANNEL': 'chat-id-01',
+            }
+        return {}
+
+    monkeypatch.setattr('app.main.Service._load_profile_env_map', fake_load_profile_env_map)
+    monkeypatch.setattr('app.main.LiveLarkReplyAdapter', StubReplyAdapter)
+
+    crm = StubCrmAdapter()
+    executor = StubRegistrationGroupApprovalExecutor(
+        result={
+            'status': 'success',
+            'verified': True,
+            'crm_recorded': True,
+            'result_code': 'approved',
+            'result_reason': 'verified',
+            'approval_run_id': 'manual-audit-run-1',
+            'approved_count': 2,
+            'raw_result': {'pending_before': 2, 'pending_after': 0, 'member_count_after': 12},
+        },
+        group_state_result={
+            'group_name': '审计测试群',
+            'group_id': 'rg-audit-group-id',
+            'pending_count': 2,
+            'member_count': 10,
+            'requester_ids': ['audit-req-1@lid', 'audit-req-2@lid'],
+            'requesters': [
+                {'requesterId': 'audit-req-1@lid', 'requestedAtUnix': 1746594300, 'displayName': 'alpha'},
+                {'requesterId': 'audit-req-2@lid', 'requestedAtUnix': 1746594360, 'displayName': 'beta'},
+            ],
+        },
+    )
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTH_ENABLED': True,
+        'CRM_ADAPTER': crm,
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+    bootstrap_admin_and_login(client)
+    cs = client.post('/api/ops/accounts', json={
+        'username': 'manualauditcs',
+        'password': 'operator123',
+        'display_name': '人工审批客服',
+        'role': 'customer_service',
+        'enabled': True,
+    }).json()['user']
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-manual-audit', json={
+        'account_name': 'WA Manual Audit',
+        'responsible_type': 'registration_group',
+        'assigned_customer_service_user_id': cs['user_id'],
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/manual-audit',
+            'group_name': '审计测试群',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'registration_group': 'RG-MANUAL-AUDIT',
+            'group_id': 'rg-audit-group-id',
+            'approval_count_threshold': 30,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+            'schedule_windows': [{'start': '00:00', 'end': '23:59'}],
+            'enabled': True,
+        }],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'manualauditcs', 'password': 'operator123'}).status_code == 200
+    state_path = tmp_path / 'production_ops_daemon_state.json'
+    with patch('app.main.PRODUCTION_OPS_DAEMON_STATE_PATH', state_path):
+        response = client.post(
+            '/api/ops/whatsapp-approval-accounts/wa-manual-audit/bindings/0/manual-approve',
+            headers={'X-Request-ID': 'req-manual-audit-1', 'User-Agent': 'manual-audit-test/1.0'},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['evidence_summary']['pending_before'] == 2
+    assert body['approved_count'] == 2
+    assert body['notification']['status'] == 'sent'
+    assert body['notification']['notify_profile_name'] == 'wa-approval-broadcast'
+    assert body['notification']['notify_robot_name'] == '审批bot01'
+    assert body['operator']['user_id'] == cs['user_id']
+    assert body['operator']['username'] == 'manualauditcs'
+    assert body['operator']['display_name'] == '人工审批客服'
+    assert body['operator']['role'] == 'customer_service'
+    assert body['operator']['session_id']
+    assert body['request']['request_id'] == 'req-manual-audit-1'
+    assert body['request']['user_agent'] == 'manual-audit-test/1.0'
+    assert body['request']['client_ip']
+    assert sent_messages == [{
+        'chat_id': 'chat-id-01',
+        'text': body['notification']['message_text'],
+    }]
+    assert '审计测试群' in sent_messages[0]['text']
+    assert '本次通过人数: 2' in sent_messages[0]['text']
+
+    audit_rows = client.get('/api/ops/operator-audit-log', params={'limit': 20}).json()['rows']
+    notification_rows = [row for row in audit_rows if row['event_type'] == 'registration_group_manual_approval_notification_sent']
+    assert len(notification_rows) == 1
+    payload = notification_rows[0]['payload']
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    assert payload['account_key'] == 'wa-manual-audit'
+    assert payload['registration_group'] == 'RG-MANUAL-AUDIT'
+    assert payload['group_name'] == '审计测试群'
+    assert payload['notify_profile_name'] == 'wa-approval-broadcast'
+    assert payload['notify_robot_name'] == '审批bot01'
+    assert payload['message_text'] == sent_messages[0]['text']
+    assert payload['response'] == {'message_id': 'msg-manual-audit-1'}
+    executed_rows = [row for row in audit_rows if row['event_type'] == 'registration_group_manual_approval_executed']
+    assert len(executed_rows) == 1
+    executed_payload = executed_rows[0]['payload']
+    if isinstance(executed_payload, str):
+        executed_payload = json.loads(executed_payload)
+    assert executed_payload['account_key'] == 'wa-manual-audit'
+    assert executed_payload['binding_index'] == 0
+    assert executed_payload['registration_group'] == 'RG-MANUAL-AUDIT'
+    assert executed_payload['group_jid'] == 'RG-MANUAL-AUDIT'
+    assert executed_payload['pending_count_before'] == 2
+    assert executed_payload['approved_count'] == 2
+    assert executed_payload['approval_run_id'] == body['approval_run_id']
+    assert executed_payload['operator']['user_id'] == cs['user_id']
+    assert executed_payload['operator']['username'] == 'manualauditcs'
+    assert executed_payload['operator']['role'] == 'customer_service'
+    assert executed_payload['operator']['session_id']
+    assert executed_payload['request']['request_id'] == 'req-manual-audit-1'
+    assert executed_payload['request']['user_agent'] == 'manual-audit-test/1.0'
+    assert executed_payload['request']['client_ip']
+
+
+def test_manual_whatsapp_approval_rejects_unassigned_customer_service(tmp_path):
+    from app.main import create_app
+
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTH_ENABLED': True,
+        'CRM_ADAPTER': StubCrmAdapter(),
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': StubRegistrationGroupApprovalExecutor(),
+    })
+    client = TestClient(app)
+    bootstrap_admin_and_login(client)
+    owner = client.post('/api/ops/accounts', json={
+        'username': 'manualowner',
+        'password': 'operator123',
+        'display_name': '所属客服',
+        'role': 'customer_service',
+        'enabled': True,
+    }).json()['user']
+    other = client.post('/api/ops/accounts', json={
+        'username': 'manualother',
+        'password': 'operator123',
+        'display_name': '其他客服',
+        'role': 'customer_service',
+        'enabled': True,
+    }).json()['user']
+    assert other['user_id'] != owner['user_id']
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-manual-rbac', json={
+        'account_name': 'WA Manual RBAC',
+        'responsible_type': 'registration_group',
+        'assigned_customer_service_user_id': owner['user_id'],
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/manual-rbac',
+            'group_name': '权限测试群',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'registration_group': 'RG-MANUAL-RBAC',
+            'group_id': 'rg-manual-rbac-id',
+            'approval_count_threshold': 30,
+            'approval_timeout_minutes': 30,
+            'enabled': True,
+        }],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'manualother', 'password': 'operator123'}).status_code == 200
+    with patch('app.main.PRODUCTION_OPS_DAEMON_STATE_PATH', tmp_path / 'production_ops_daemon_state.json'):
+        response = client.post('/api/ops/whatsapp-approval-accounts/wa-manual-rbac/bindings/0/manual-approve')
+
+    assert response.status_code == 403
+    assert response.json()['detail'] == 'whatsapp_approval_account_not_assigned'
+
+
+def test_manual_whatsapp_approval_blocks_duplicate_inflight_submit(tmp_path):
+    from app.main import create_app
+
+    class BlockingRegistrationGroupApprovalExecutor(StubRegistrationGroupApprovalExecutor):
+        def __init__(self):
+            super().__init__(
+                result={
+                    'status': 'success',
+                    'verified': True,
+                    'crm_recorded': True,
+                    'result_code': 'approved',
+                    'result_reason': 'verified',
+                    'approval_run_id': 'manual-dedupe-run-1',
+                    'approved_count': 1,
+                    'raw_result': {'pending_before': 1, 'pending_after': 0, 'member_count_after': 6},
+                },
+                group_state_result={
+                    'group_name': '防重测试群',
+                    'group_id': 'rg-manual-dedupe-id',
+                    'pending_count': 1,
+                    'member_count': 5,
+                    'requester_ids': ['dedupe-req-1@lid'],
+                    'requesters': [{'requesterId': 'dedupe-req-1@lid', 'requestedAtUnix': 1746594300}],
+                },
+            )
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def approve(self, context):
+            self.entered.set()
+            assert self.release.wait(timeout=5)
+            return super().approve(context)
+
+    executor = BlockingRegistrationGroupApprovalExecutor()
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTH_ENABLED': True,
+        'CRM_ADAPTER': StubCrmAdapter(),
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+    bootstrap_admin_and_login(client)
+    owner = client.post('/api/ops/accounts', json={
+        'username': 'manualdedupeowner',
+        'password': 'operator123',
+        'display_name': '防重所属客服',
+        'role': 'customer_service',
+        'enabled': True,
+    }).json()['user']
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-manual-dedupe', json={
+        'account_name': 'WA Manual Dedupe',
+        'responsible_type': 'registration_group',
+        'assigned_customer_service_user_id': owner['user_id'],
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/manual-dedupe',
+            'group_name': '防重测试群',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'registration_group': 'RG-MANUAL-DEDUPE',
+            'group_id': 'rg-manual-dedupe-id',
+            'approval_count_threshold': 30,
+            'approval_timeout_minutes': 30,
+            'enabled': True,
+        }],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+
+    responses = []
+
+    def post_manual_approve():
+        with patch('app.main.PRODUCTION_OPS_DAEMON_STATE_PATH', tmp_path / 'production_ops_daemon_state.json'):
+            responses.append(client.post('/api/ops/whatsapp-approval-accounts/wa-manual-dedupe/bindings/0/manual-approve'))
+
+    first = threading.Thread(target=post_manual_approve)
+    first.start()
+    assert executor.entered.wait(timeout=5)
+    second = client.post('/api/ops/whatsapp-approval-accounts/wa-manual-dedupe/bindings/0/manual-approve')
+    executor.release.set()
+    first.join(timeout=5)
+
+    statuses = sorted([response.status_code for response in responses] + [second.status_code])
+    assert statuses == [200, 409]
+    assert second.status_code == 409
+    assert second.json()['detail'] == 'manual_approval_in_progress'
+    assert len(executor.calls) == 1
 
 
 def test_create_app_warms_registration_group_executor_when_supported():

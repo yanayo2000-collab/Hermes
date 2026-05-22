@@ -1,7 +1,11 @@
+import io
 import json
 import re
 import time
 
+from openpyxl import Workbook
+
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.main import (
@@ -76,6 +80,19 @@ def seed_role_and_account(client):
     assert account.status_code == 200
 
 
+def seed_second_role(client):
+    role = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'auto-id-faq_helper',
+        'role_name': '印尼答疑号',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'faq_helper',
+        'phrases': ['Kak, kalau bingung boleh tanya admin ya.'],
+        'enabled': True,
+    })
+    assert role.status_code == 200
+
+
 def test_role_binding_is_primary_distribution_surface_and_group_permission_gates_send(monkeypatch):
     client = make_client()
     seed_role_and_account(client)
@@ -125,6 +142,42 @@ def test_role_binding_is_primary_distribution_surface_and_group_permission_gates
     assert listed['count'] == 2
     assert listed['rows'][0]['role_name'] == '印尼活跃气氛号'
     assert listed['rows'][0]['distribution_status'] in {'可发送', '群权限关闭'}
+
+
+def test_role_binding_edit_can_change_role_without_creating_duplicate_relationship():
+    client = make_client()
+    seed_role_and_account(client)
+    seed_second_role(client)
+
+    created = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'auto-id-community_seed',
+        'account_key': 'atmosphere-indo-01',
+        'group_indexes': [0],
+        'enabled': True,
+        'auto_speaking_enabled': True,
+        'group_send_permission_enabled': True,
+        'daily_max_messages': 5,
+        'min_interval_minutes': 0,
+    })
+    assert created.status_code == 200
+    binding_id = created.json()['bindings'][0]['binding_id']
+
+    edited = client.post(f'/api/ops/group-atmosphere/role-bindings/{binding_id}', json={
+        'role_key': 'auto-id-faq_helper',
+        'auto_speaking_enabled': False,
+        'daily_max_messages': 7,
+    })
+    assert edited.status_code == 200
+    assert edited.json()['binding']['binding_id'] == binding_id
+    assert edited.json()['binding']['role_key'] == 'auto-id-faq_helper'
+
+    listed = client.get('/api/ops/group-atmosphere/role-bindings').json()
+    assert listed['count'] == 1
+    assert len(listed['relationships']) == 1
+    assert listed['relationships'][0]['role_key'] == 'auto-id-faq_helper'
+    assert listed['relationships'][0]['groups'][0]['binding_id'] == binding_id
+    assert listed['relationships'][0]['daily_max_messages'] == 7
+    assert listed['relationships'][0]['auto_speaking_enabled'] is False
 
 
 def test_role_binding_delete_removes_bridge_from_listing_and_relationships():
@@ -477,6 +530,9 @@ def test_role_editor_save_replaces_checked_pool_phrases_without_duplicate_append
     assert texts.count('Halo kak, kalau bingung tanya admin ya') == 1
     assert texts.count('hahhh yup') == 1
     assert len(texts) == 2
+    roles_after = client.get('/api/ops/group-atmosphere/roles').json()['rows']
+    role_summary = next(row for row in roles_after if row['role_key'] == 'auto-id-faq_helper')
+    assert [c['text'] for c in role_summary['candidates']] == texts
 
 
 def test_role_editor_frontend_uses_replace_save_and_dedupes_pool_rows():
@@ -486,6 +542,20 @@ def test_role_editor_frontend_uses_replace_save_and_dedupes_pool_rows():
     assert "source_type:'role_save'" in html
     assert 'const seen=new Set()' in html
     assert 'seen.has(key)' in html
+
+
+def test_role_editor_phrase_pool_has_select_all_toggle():
+    client = make_client()
+    html = client.get('/ops/group-atmosphere').text
+
+    assert 'data-ga-role-pool-select-all="1"' in html
+    assert '全选当前话术' in html
+    assert 'function setRolePhrasePoolSelection' in html
+    assert 'function updateRolePhraseSelectAllState' in html
+    assert 'setRolePhrasePoolSelection(this.checked)' in html
+    assert 'selectAll.indeterminate' in html
+    assert 'ga-role-pool-toolbar' in html
+    assert 'ga-role-pool-select-all' in html
 
 
 def test_candidate_pool_cleans_dedupes_and_sorts_learned_phrases():
@@ -563,6 +633,20 @@ def test_auto_learn_upload_merges_with_existing_candidate_pool_instead_of_overwr
     normalized = [client.app.state.service._normalize_group_atmosphere_phrase_key(text) for text in texts]
     assert len(normalized) == len(set(normalized))
     assert any(candidate['candidate_id'] == 'upload-existing-1' for candidate in row['candidates'])
+
+
+def test_auto_learn_upload_rejects_single_file_over_30mb():
+    client = make_client()
+    oversized = 'A' * (30 * 1024 * 1024 + 1)
+    try:
+        client.app.state.service.auto_learn_group_atmosphere_chat_records(
+            files=[{'filename': 'too-large.txt', 'content': oversized}]
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 413
+        assert exc.detail == 'upload_file_too_large_30mb'
+    else:
+        raise AssertionError('expected 30MB upload limit rejection')
 
 
 def test_auto_learn_candidates_never_include_chat_export_metadata_or_duplicate_suffixes():
@@ -703,6 +787,54 @@ def test_candidate_pool_custom_phrase_is_persisted_and_prioritized():
     assert upload_candidates[0]['customized'] is True
 
 
+def test_candidate_pool_image_phrase_exposes_media_fields_and_icon_marker():
+    client = make_client()
+    created = client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'auto-id-community_seed',
+        'enabled': False,
+        'account_key': 'auto-id-community_seed',
+        'target_group': 'auto-id-community_seed',
+        'group_name': '自动学习素材库-印尼',
+        'language': 'id',
+        'daily_max_messages': 0,
+        'min_interval_minutes': 120,
+        'template_pool': [
+            {
+                'candidate_id': 'image-1',
+                'text': 'Halo kak lihat gambar ini ya',
+                'source_role': 'community_seed',
+                'source_type': 'manual_upload',
+                'safe_to_send': True,
+                'enabled': True,
+                'customized': True,
+                'asset_type': 'image_caption',
+                'media_id': 'gamedia_test_1',
+                'media_path': '/tmp/test-image.jpg',
+                'media_mime_type': 'image/jpeg',
+                'media_filename': 'promo.jpg',
+            }
+        ],
+        'faq_rules': [],
+        'worker_base_url': '',
+        'status': 'candidate_pool',
+    })
+    assert created.status_code == 200
+
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    candidate = next(row for row in pool if row['config_name'] == 'auto-id-community_seed')['candidates'][0]
+    assert candidate['asset_type'] == 'image_caption'
+    assert candidate['media_id'] == 'gamedia_test_1'
+    assert candidate['media_filename'] == 'promo.jpg'
+    assert candidate['media_preview_url'].endswith('/api/ops/group-atmosphere/media-assets/gamedia_test_1/preview')
+
+    html = client.get('/ops/group-atmosphere').text
+    assert 'function candidateHasMedia' in html
+    assert 'function candidateMediaIcon' in html
+    assert 'data-ga-candidate-media-icon="1"' in html
+    assert "ga-candidate-text-wrap ${hasMedia?'has-media':''}" in html
+    assert 'aria-label="带图片"' in html
+
+
 def test_candidate_pool_reorder_persists_manual_priority_order():
     client = make_client()
     created = client.post('/api/ops/group-atmosphere/configs', json={
@@ -738,6 +870,171 @@ def test_candidate_pool_reorder_persists_manual_priority_order():
     assert [item['sort_order'] for item in candidates] == [0, 1, 2]
 
 
+def test_group_atmosphere_candidate_pool_reorder_keeps_combined_pool_order_across_storage_configs():
+    client = make_client()
+    for config_name, candidate_id, text in [
+        ('auto-id-community_seed', 'upload-a', '第一条跨来源话术'),
+        ('auto-id-community_seed-learn', 'learn-b', '第二条跨来源话术'),
+        ('auto-id-community_seed-manual', 'manual-c', '第三条跨来源话术'),
+    ]:
+        created = client.post('/api/ops/group-atmosphere/configs', json={
+            'config_name': config_name,
+            'enabled': False,
+            'account_key': config_name,
+            'target_group': config_name,
+            'group_name': '自动学习素材库-印尼',
+            'language': 'id',
+            'daily_max_messages': 0,
+            'min_interval_minutes': 120,
+            'template_pool': [
+                {
+                    'candidate_id': candidate_id,
+                    'text': text,
+                    'role_positioning': 'community_seed',
+                    'source_role': 'community_seed',
+                    'source_type': 'role_save' if candidate_id == 'manual-c' else 'upload_file',
+                    'safe_to_send': True,
+                    'enabled': True,
+                }
+            ],
+            'faq_rules': [],
+            'worker_base_url': '',
+            'status': 'candidate_pool',
+        })
+        assert created.status_code == 200
+
+    reordered_auto = client.post('/api/ops/group-atmosphere/candidate-pool/reorder', json={
+        'config_name': 'auto-id-community_seed',
+        'candidate_ids': ['upload-a'],
+        'candidate_orders': {'learn-b': 0, 'upload-a': 1, 'manual-c': 2},
+    })
+    reordered_learn = client.post('/api/ops/group-atmosphere/candidate-pool/reorder', json={
+        'config_name': 'auto-id-community_seed-learn',
+        'candidate_ids': ['learn-b'],
+        'candidate_orders': {'learn-b': 0, 'upload-a': 1, 'manual-c': 2},
+    })
+    reordered_manual = client.post('/api/ops/group-atmosphere/candidate-pool/reorder', json={
+        'config_name': 'auto-id-community_seed-manual',
+        'candidate_ids': ['manual-c'],
+        'candidate_orders': {'learn-b': 0, 'upload-a': 1, 'manual-c': 2},
+    })
+    assert reordered_auto.status_code == 200
+    assert reordered_learn.status_code == 200
+    assert reordered_manual.status_code == 200
+
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    candidates = next(row for row in pool if row['role_positioning'] == 'community_seed')['candidates']
+    ids = [item['candidate_id'] for item in candidates if item['candidate_id'] in {'upload-a', 'learn-b', 'manual-c'}]
+    assert ids == ['learn-b', 'upload-a', 'manual-c']
+    manual_candidate = next(item for item in candidates if item['candidate_id'] == 'manual-c')
+    assert manual_candidate['source_type'] == 'role_save'
+    assert manual_candidate['source_label'] == '人工写入'
+
+
+def test_group_atmosphere_candidate_pool_move_to_other_phrase_type_preserves_phrase_and_source_config():
+    client = make_client()
+    created = client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'auto-id-community_seed',
+        'enabled': False,
+        'account_key': 'auto-id-community_seed',
+        'target_group': 'auto-id-community_seed',
+        'group_name': '自动学习素材库-印尼',
+        'language': 'id',
+        'daily_max_messages': 0,
+        'min_interval_minutes': 120,
+        'template_pool': [{
+            'candidate_id': 'move-a',
+            'text': '这条话术要移动到答疑类型',
+            'role_positioning': 'community_seed',
+            'source_role': 'community_seed',
+            'source_type': 'manual_upload',
+            'safe_to_send': True,
+            'enabled': True,
+            'sort_order': 3,
+        }],
+        'faq_rules': [],
+        'worker_base_url': '',
+        'status': 'candidate_pool',
+    })
+    assert created.status_code == 200
+
+    moved = client.post('/api/ops/group-atmosphere/candidate-pool/move-type', json={
+        'config_name': 'auto-id-community_seed',
+        'candidate_ids': ['move-a'],
+        'target_role_positioning': 'faq_helper',
+    })
+    assert moved.status_code == 200
+    body = moved.json()
+    assert body['moved_count'] == 1
+    assert body['source_config_name'] == 'auto-id-community_seed'
+    assert body['target_role_positioning'] == 'faq_helper'
+    assert body['target_config_name'] == 'auto-id-faq_helper'
+
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    community = next((row for row in pool if row['role_positioning'] == 'community_seed'), None)
+    assert not community or all(item['candidate_id'] != 'move-a' for item in community['candidates'])
+    faq = next(row for row in pool if row['role_positioning'] == 'faq_helper')
+    moved_item = next(item for item in faq['candidates'] if item['candidate_id'] == 'move-a')
+    assert moved_item['text'] == '这条话术要移动到答疑类型'
+    assert moved_item['role_positioning'] == 'faq_helper'
+    assert moved_item['source_role'] == 'faq_helper'
+    assert moved_item['category'] == 'faq_helper'
+    assert moved_item['source_config_name'] == 'auto-id-faq_helper'
+
+
+def test_group_atmosphere_candidate_delete_falls_back_to_source_config_from_combined_pool():
+    client = make_client()
+    for config_name, candidate_id, text in [
+        ('auto-id-community_seed', 'upload-a', '第一条展示配置话术'),
+        ('auto-id-community_seed-manual', 'manual-c', '第二条真实来源话术'),
+    ]:
+        created = client.post('/api/ops/group-atmosphere/configs', json={
+            'config_name': config_name,
+            'enabled': False,
+            'account_key': config_name,
+            'target_group': config_name,
+            'group_name': '自动学习素材库-印尼',
+            'language': 'id',
+            'daily_max_messages': 0,
+            'min_interval_minutes': 120,
+            'template_pool': [{
+                'candidate_id': candidate_id,
+                'text': text,
+                'role_positioning': 'community_seed',
+                'source_role': 'community_seed',
+                'source_type': 'manual_upload' if candidate_id == 'manual-c' else 'upload_file',
+                'safe_to_send': True,
+                'enabled': True,
+            }],
+            'faq_rules': [],
+            'worker_base_url': '',
+            'status': 'candidate_pool',
+        })
+        assert created.status_code == 200
+
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    row = next(item for item in pool if item['role_positioning'] == 'community_seed')
+    assert row['config_name'] == 'auto-id-community_seed'
+    manual_candidate = next(item for item in row['candidates'] if item['candidate_id'] == 'manual-c')
+    assert manual_candidate['source_config_name'] == 'auto-id-community_seed-manual'
+    assert manual_candidate['source_label'] == '人工写入'
+
+    deleted = client.delete('/api/ops/group-atmosphere/candidate-pool/auto-id-community_seed/manual-c')
+    assert deleted.status_code == 200
+    assert deleted.json()['config_name'] == 'auto-id-community_seed-manual'
+
+    remaining = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    remaining_ids = [item['candidate_id'] for row in remaining for item in row.get('candidates', [])]
+    assert 'manual-c' not in remaining_ids
+    assert 'upload-a' in remaining_ids
+
+
+def test_group_atmosphere_candidate_pool_page_deletes_by_source_config_name():
+    client = make_client()
+    html = client.get('/ops/group-atmosphere').text
+    assert "deleteCandidateFromPool('${esc(c.source_config_name||c.config_name||r.config_name)}','${esc(c.candidate_id)}')" in html
+
+
 def test_group_atmosphere_candidate_pool_page_exposes_drag_sort_controls():
     client = make_client()
     html = client.get('/ops/group-atmosphere').text
@@ -747,11 +1044,39 @@ def test_group_atmosphere_candidate_pool_page_exposes_drag_sort_controls():
     assert '拖动排序' in html
     assert 'function onCandidateDragStart' in html
     assert 'function onCandidateDrop' in html
-    assert 'function moveCandidatePriority' in html
+    assert 'function moveSelectedCandidatePriority' in html
+    assert 'selectedUsableCandidateIdsForConfig(configName)' in html
+    assert 'moveCandidatePriority' not in html
     assert '/api/ops/group-atmosphere/candidate-pool/reorder' in html
     assert '排序已保存' in html
-    assert '上移' in html
-    assert '下移' in html
+    assert 'candidate_orders:globalOrder' in html
+    assert 'source_config_name||c.config_name||configName' in html
+    assert 'data-source-config-name' in html
+    assert 'moveSelectedCandidatePriority(\'${esc(r.config_name)}\',-1)' in html
+    assert 'moveSelectedCandidatePriority(\'${esc(r.config_name)}\',1)' in html
+    assert '${candidateDraftRow(r,role)}${usableBlock}${more}${pendingBlock}</div>' in html
+
+
+def test_group_atmosphere_candidate_pool_usable_list_has_select_all_checkbox():
+    client = make_client()
+    html = client.get('/ops/group-atmosphere').text
+
+    assert 'data-ga-usable-select-all="1"' in html
+    assert 'function setUsableCandidateSelectionForConfig' in html
+    assert 'function selectedUsableCandidateIdsForConfig' in html
+    assert 'function moveSelectedCandidatePriority' in html
+    assert 'function restoreUsableCandidateSelectionForConfig' in html
+    assert 'const preservedSelection=selectedUsableCandidateIdsForConfig(configName)' in html
+    assert 'restoreUsableCandidateSelectionForConfig(configName,preservedSelection)' in html
+    assert 'usableSelectAll.indeterminate' in html
+    assert '[data-ga-candidate-select][data-config-name=' in html
+    assert 'setUsableCandidateSelectionForConfig(\'${esc(r.config_name)}\',this.checked)' in html
+    assert '<span>可用话术</span>' in html
+    assert 'ga-candidate-bulk-move-actions' in html
+    assert 'data-ga-move-type-select' in html
+    assert '移动到类型' in html
+    assert 'function moveSelectedCandidatesToType' in html
+    assert '/api/ops/group-atmosphere/candidate-pool/move-type' in html
 
 
 def test_learning_account_is_silent_and_updates_candidate_pool_from_chat_records(monkeypatch):
@@ -828,6 +1153,63 @@ def test_learning_account_is_silent_and_updates_candidate_pool_from_chat_records
     assert refreshed['group_links'][0]['last_learned_message_at'] == '2026-05-15T03:01:00Z'
     assert 'last_learned_cursor_at' in refreshed['group_links'][0]
     assert refreshed['group_links'][1].get('last_learned_message_id') is None
+
+
+def test_learning_account_learn_once_falls_back_to_group_id_when_invite_link_resolution_fails(monkeypatch):
+    client = make_client()
+    created = client.post('/api/ops/group-atmosphere/learning-accounts', json={
+        'learning_account_key': 'learn-link-fallback',
+        'account_name': '学习链接兜底号',
+        'region': '印尼',
+        'language': 'id',
+        'enabled': True,
+        'worker_base_url': 'http://learning-worker.local',
+        'group_links': [{
+            'target_group': 'https://chat.whatsapp.com/IJI3J0yUDkS4salNC19T5a',
+            'group_id': '120363425401663814@g.us',
+            'group_name': '6️⃣🥇Grup Elite Linky kelompok 2',
+            'enabled': True,
+        }],
+        'target_role_keys': ['auto-id-community_seed'],
+    })
+    assert created.status_code == 200
+
+    fetch_calls = []
+
+    class FetchResponse:
+        def __init__(self, status_code, body):
+            self.status_code = status_code
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    def fake_post(url, json=None, timeout=None):
+        fetch_calls.append({'url': url, 'json': json, 'timeout': timeout})
+        if json['target_group'].startswith('https://chat.whatsapp.com/'):
+            return FetchResponse(500, {'result_reason': f"group not found: {json['target_group']}"})
+        return FetchResponse(200, {
+            'status': 'success',
+            'result_code': 'messages_fetched',
+            'group_id': '120363425401663814@g.us',
+            'group_name': '6️⃣🥇Grup Elite Linky kelompok 2',
+            'records': [
+                {'sender': 'user1', 'text': 'Halo kak, grup rame banget hari ini', 'created_at': '2026-05-21T06:20:22Z', 'message_id': 'msg-new-fallback'},
+            ],
+            'next_cursor': {'last_message_id': 'msg-new-fallback', 'last_message_at': '2026-05-21T06:20:22Z'},
+        })
+
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+    learned = client.post('/api/ops/group-atmosphere/learning-accounts/learn-link-fallback/learn-once', json={})
+
+    assert learned.status_code == 200
+    assert [call['json']['target_group'] for call in fetch_calls] == [
+        '120363425401663814@g.us',
+    ]
+    refreshed = client.get('/api/ops/group-atmosphere/learning-accounts').json()['rows'][0]
+    assert refreshed['group_links'][0]['group_id'] == '120363425401663814@g.us'
+    assert refreshed['group_links'][0]['group_name'] == '6️⃣🥇Grup Elite Linky kelompok 2'
+    assert refreshed['group_links'][0]['last_learned_message_id'] == 'msg-new-fallback'
 
     pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
     role = next(row for row in pool if row['config_name'] == 'auto-id-community_seed')
@@ -1948,17 +2330,30 @@ def test_group_atmosphere_page_keeps_learning_control_single_entry():
     assert '<button type="button" class="ga-learning-summary"' not in html
     assert '实时学习</button>' in html
     assert 'learnOnceLearningBot' in html
-    assert '已读取${readCount}条群消息,有效素材${usefulCount}条,生成${candidateCount}条文案' in html
+    assert '__gaLatestLearningResultByKey' in html
+    assert '已放入下方话术备选区的“待人工确认”' in html
+    assert '没有新增文案；可能与现有话术重复或被质检过滤' in html
+    assert 'openLearningResultModal(key)' in html
+    assert 'Number(r.candidate_count||0)' in html
+    assert '已读取${readCount}条群消息,有效消息${usefulCount}条,新增${candidateCount}条待确认文案' in html
+    assert '已读取${readCount}条群消息,有效素材${usefulCount}条,生成${candidateCount}条文案' not in html
     assert '已读取 ${readCount} 条群消息，有效素材 ${usefulCount} 条，生成 ${candidateCount} 条文案' not in html
     assert '待人工确认' in html
     assert 'data-ga-learning-pending-list="1"' in html
-    assert '学习机器人/上传生成的话术会出现在这里，确认后才进入可用话术。' in html
+    assert '学习机器人/上传生成的话术会出现在这里，确认后才进入可用话术。' not in html
     assert '可用话术' in html
+    assert '<strong>${esc(candidateTypeLabel(r))}</strong><span class="muted" style="margin-left:8px;white-space:nowrap;">${esc(r.region||\'-\')} · 可用 ${usable.length}/${all.length} 条${pendingHint}</span>' in html
+    assert '<strong>可用话术</strong><span class="pill gray">${usable.length} 条</span>' not in html
+    assert '#ga_candidate_pool .group-card-title{align-items:center!important;margin-bottom:4px!important;}' in html
+    assert '#ga_candidate_pool .group-card-title>.inline-actions{margin-top:0!important;align-self:flex-start!important;transform:translateY(-2px);}' in html
+    assert 'style="margin:2px 0 4px;align-items:center;justify-content:space-between;gap:8px;"' in html
+    assert 'style="margin-top:8px;border-top:1px solid #e5e7eb;padding-top:8px;"' in html
     assert "manual_approved'?'人工确认" not in html
-    assert "status==='manual_approved'||status==='pending_review')return ''" in html
+    assert "status==='manual_approved'||status==='approved_manual'||status==='pending_review')return ''" in html
     assert "?'待质检'" not in html
     assert 'const GA_MAX_GROUPS=5;' in html
     assert 'const GA_LEARNING_MAX_GROUPS=10;' in html
+    assert '<select id="ga_candidate_language_filter"><option value="">语言/地区</option><option value="id" selected>印尼</option>' in html
     assert '立即学习一次</button>' not in html
     assert '立即学习</button>' not in html
 
@@ -1980,6 +2375,9 @@ def test_group_atmosphere_page_exposes_role_bridge_and_custom_phrase_entry():
     assert "box.classList.add('is-empty');box.innerHTML=''" in html
     assert "showTip('学习机器人已保存','success')" in html
     assert '/api/ops/group-atmosphere/role-bindings' in html
+    assert 'saveEditedBridgeRelationship' in html
+    assert "window.__gaBridgeEditingRelationship||null" in html
+    assert "role-bindings/${encodeURIComponent(existing.binding_id)}" in html
     assert '/api/ops/group-atmosphere/learning-accounts' in html
     assert '/api/ops/group-atmosphere/roles/manual-phrases' in html
 
@@ -2108,6 +2506,398 @@ def test_group_atmosphere_role_bridge_persists_randomness_and_sorted_send_order(
     assert set(sent_texts).issubset({'第一条', '第二条', '第三条'})
 
 
+def test_group_atmosphere_role_bridge_create_survives_stale_binding_id_after_role_switch():
+    client = make_client()
+    seed_role_and_account(client)
+    role_b = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'role-id-community_seed-0112131',
+        'role_name': '盖伦0112131',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'phrases': ['第二个同类型角色'],
+        'enabled': True,
+    })
+    assert role_b.status_code == 200
+
+    created = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'auto-id-community_seed',
+        'account_key': 'atmosphere-indo-01',
+        'group_indexes': [0],
+        'auto_speaking_enabled': True,
+        'min_interval_minutes': 0,
+    })
+    assert created.status_code == 200
+    binding_id = created.json()['bindings'][0]['binding_id']
+
+    switched = client.post(f'/api/ops/group-atmosphere/role-bindings/{binding_id}', json={
+        'role_key': 'role-id-community_seed-0112131',
+    })
+    assert switched.status_code == 200
+
+    recreated = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'auto-id-community_seed',
+        'account_key': 'atmosphere-indo-01',
+        'group_indexes': [0],
+        'auto_speaking_enabled': True,
+        'min_interval_minutes': 0,
+    })
+    assert recreated.status_code == 409
+    assert recreated.json()['detail'] == 'role_binding_account_group_already_used'
+
+
+def test_group_atmosphere_role_bridge_rejects_same_account_group_in_another_relationship():
+    client = make_client()
+    seed_role_and_account(client)
+    role_b = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'role-id-community_seed-duplicate',
+        'role_name': '另一个气氛角色',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'phrases': ['第二个角色话术'],
+        'enabled': True,
+    })
+    assert role_b.status_code == 200
+
+    first = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'auto-id-community_seed',
+        'account_key': 'atmosphere-indo-01',
+        'group_indexes': [0],
+        'auto_speaking_enabled': True,
+    })
+    assert first.status_code == 200
+
+    duplicate = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'role-id-community_seed-duplicate',
+        'account_key': 'atmosphere-indo-01',
+        'group_indexes': [0],
+        'auto_speaking_enabled': True,
+    })
+    assert duplicate.status_code == 409
+    assert duplicate.json()['detail'] == 'role_binding_account_group_already_used'
+
+
+def test_group_atmosphere_role_bridge_relationship_labels_keep_created_order_when_new_role_added():
+    client = make_client()
+    seed_role_and_account(client)
+    role_b = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'role-id-community_seed-0112131',
+        'role_name': '盖伦0112131',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'phrases': ['第二个同类型角色'],
+        'enabled': True,
+    })
+    assert role_b.status_code == 200
+
+    first = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'role-id-community_seed-0112131',
+        'account_key': 'atmosphere-indo-01',
+        'group_indexes': [0],
+        'auto_speaking_enabled': True,
+        'min_interval_minutes': 0,
+    })
+    assert first.status_code == 200
+    before = client.get('/api/ops/group-atmosphere/role-bindings').json()['relationships']
+    assert before[0]['role_key'] == 'role-id-community_seed-0112131'
+    assert before[0]['relationship_label'] == '桥接关系1'
+
+    second = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'auto-id-community_seed',
+        'account_key': 'atmosphere-indo-01',
+        'group_indexes': [1],
+        'auto_speaking_enabled': True,
+        'min_interval_minutes': 0,
+    })
+    assert second.status_code == 200
+    after = client.get('/api/ops/group-atmosphere/role-bindings').json()['relationships']
+    labels = {rel['role_key']: rel['relationship_label'] for rel in after}
+    assert labels['role-id-community_seed-0112131'] == '桥接关系1'
+    assert labels['auto-id-community_seed'] == '桥接关系2'
+
+
+def test_group_atmosphere_phrase_type_manual_upload_and_move_workflow():
+    client = make_client()
+    created_type = client.post('/api/ops/group-atmosphere/phrase-types', json={
+        'type_key': 'retention_recall',
+        'type_name': '留存召回型',
+        'description': '召回沉默用户',
+        'enabled': True,
+        'region_scope': ['印尼'],
+    })
+    assert created_type.status_code == 200
+    types = client.get('/api/ops/group-atmosphere/phrase-types').json()['rows']
+    assert any(row['type_key'] == 'retention_recall' and row['type_name'] == '留存召回型' for row in types)
+
+    uploaded = client.post('/api/ops/group-atmosphere/phrases/manual-upload', json={
+        'role_key': 'role-id-retention_recall',
+        'role_name': '印尼留存召回',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'retention_recall',
+        'content': 'Halo kak, kembali aktif ya.\nBonus masih tersedia.',
+    })
+    assert uploaded.status_code == 200
+    upload_body = uploaded.json()
+    assert upload_body['imported_count'] == 2
+    assert upload_body['review_required'] is False
+
+    role = client.get('/api/ops/group-atmosphere/roles').json()['rows'][0]
+    phrases = role['template_pool']
+    assert all(item['source_type'] == 'manual_upload' for item in phrases)
+    assert all(item['safe_to_send'] and item['enabled'] for item in phrases)
+    assert all(item.get('quality_status') == 'approved_manual' for item in phrases)
+    pool_rows = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    uploaded_candidates = [item for row in pool_rows for item in row.get('candidates', []) if item.get('source_type') == 'manual_upload']
+    assert uploaded_candidates
+    assert all(item['source_label'] == '人工写入' for item in uploaded_candidates)
+    assert all(item['safe_to_send'] and item['enabled'] for item in uploaded_candidates)
+
+    target = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'role-id-community_seed',
+        'role_name': '印尼气氛',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'phrases': ['原有气氛话术'],
+        'enabled': True,
+    })
+    assert target.status_code == 200
+    moved = client.post('/api/ops/group-atmosphere/phrases/move', json={
+        'source_role_key': 'role-id-retention_recall',
+        'target_role_key': 'role-id-community_seed',
+        'template_ids': [phrases[0]['template_id']],
+        'mode': 'move',
+    })
+    assert moved.status_code == 200
+    assert moved.json()['moved_count'] == 1
+    roles = {row['config_name']: row for row in client.get('/api/ops/group-atmosphere/roles').json()['rows']}
+    assert all(item.get('template_id') != phrases[0]['template_id'] or item.get('enabled') is False for item in roles['role-id-retention_recall']['template_pool'])
+    assert any(item.get('moved_from_role_key') == 'role-id-retention_recall' for item in roles['role-id-community_seed']['template_pool'])
+
+
+def test_group_atmosphere_phrase_type_delete_hides_only_custom_types_and_page_has_delete_entry():
+    client = make_client()
+    created_type = client.post('/api/ops/group-atmosphere/phrase-types', json={
+        'type_key': 'retention_recall',
+        'type_name': '留存召回型',
+        'enabled': True,
+    })
+    assert created_type.status_code == 200
+    assert created_type.json()['phrase_type']['is_system'] is False
+
+    html = client.get('/ops/group-atmosphere').text
+    assert 'deleteInlinePhraseType' in html
+    assert 'data-ga-delete-phrase-type' in html
+    assert '系统默认话术类型不能删除' in html
+    assert '/api/ops/group-atmosphere/phrase-types/${encodeURIComponent(typeKey)}' in html
+    assert 'ga-candidate-tab-delete-inside' in html
+    assert 'return `<button type="button" class="ga-candidate-tab ${activeCandidateRole()===role?' in html
+    assert '${deleteBtn}</button>`' in html
+    assert 'ga-candidate-tab-wrap' not in html
+
+    deleted = client.delete('/api/ops/group-atmosphere/phrase-types/retention_recall')
+    assert deleted.status_code == 200
+    assert deleted.json()['deleted'] is True
+    assert deleted.json()['phrase_type']['enabled'] is False
+    assert deleted.json()['phrase_type']['type_key'] == 'retention_recall'
+
+    visible_types = client.get('/api/ops/group-atmosphere/phrase-types').json()['rows']
+    assert all(row['type_key'] != 'retention_recall' for row in visible_types)
+    all_types = client.get('/api/ops/group-atmosphere/phrase-types?include_disabled=true').json()['rows']
+    hidden = next(row for row in all_types if row['type_key'] == 'retention_recall')
+    assert hidden['enabled'] is False
+
+    system_delete = client.delete('/api/ops/group-atmosphere/phrase-types/community_seed')
+    assert system_delete.status_code == 400
+    assert system_delete.json()['detail'] == 'system_phrase_type_cannot_delete'
+
+
+def test_group_atmosphere_phrase_type_rename_custom_only_and_page_has_inline_edit():
+    client = make_client()
+    created_type = client.post('/api/ops/group-atmosphere/phrase-types', json={
+        'type_key': 'retention_recall',
+        'type_name': '留存召回型',
+        'enabled': True,
+    })
+    assert created_type.status_code == 200
+
+    renamed = client.post('/api/ops/group-atmosphere/phrase-types/retention_recall', json={
+        'type_name': '沉默召回型',
+    })
+    assert renamed.status_code == 200
+    assert renamed.json()['phrase_type']['type_key'] == 'retention_recall'
+    assert renamed.json()['phrase_type']['type_name'] == '沉默召回型'
+
+    types = client.get('/api/ops/group-atmosphere/phrase-types').json()['rows']
+    assert any(row['type_key'] == 'retention_recall' and row['type_name'] == '沉默召回型' for row in types)
+
+    system_rename = client.post('/api/ops/group-atmosphere/phrase-types/community_seed', json={
+        'type_name': '不能改名',
+    })
+    assert system_rename.status_code == 400
+    assert system_rename.json()['detail'] == 'system_phrase_type_cannot_rename'
+
+    html = client.get('/ops/group-atmosphere').text
+    assert 'startPhraseTypeRename' in html
+    assert 'handlePhraseTypeRenameKey' in html
+    assert 'savePhraseTypeRename' in html
+    assert 'data-ga-phrase-type-rename' in html
+    assert 'ga-phrase-type-rename-input' in html
+    assert '/api/ops/group-atmosphere/phrase-types/${encodeURIComponent(typeKey)}' in html
+    assert "ev.key==='Enter'" in html
+
+
+def test_group_atmosphere_media_asset_upload_preview_and_bind_to_phrase(tmp_path):
+    media_dir = tmp_path / 'ga-media'
+    client = make_client({'GROUP_ATMOSPHERE_MEDIA_DIR': str(media_dir)})
+    png_bytes = b'\x89PNG\r\n\x1a\n' + b'\x00' * 32
+
+    uploaded = client.post('/api/ops/group-atmosphere/media-assets', files={
+        'file': ('poster.png', png_bytes, 'image/png'),
+    })
+    assert uploaded.status_code == 200
+    media = uploaded.json()['media']
+    assert media['filename'] == 'poster.png'
+    assert media['mime_type'] == 'image/png'
+    assert media['file_size'] == len(png_bytes)
+    assert media['media_path'].startswith(str(media_dir))
+
+    duplicate = client.post('/api/ops/group-atmosphere/media-assets', files={
+        'file': ('poster-copy.png', png_bytes, 'image/png'),
+    })
+    assert duplicate.status_code == 200
+    assert duplicate.json()['media']['media_id'] == media['media_id']
+    assert duplicate.json()['deduped'] is True
+
+    listed = client.get('/api/ops/group-atmosphere/media-assets')
+    assert listed.status_code == 200
+    assert len(listed.json()['rows']) == 1
+
+    preview = client.get(f"/api/ops/group-atmosphere/media-assets/{media['media_id']}/preview")
+    assert preview.status_code == 200
+    assert preview.headers['content-type'].startswith('image/png')
+    assert preview.content == png_bytes
+
+    uploaded_phrase = client.post('/api/ops/group-atmosphere/phrases/manual-upload', json={
+        'role_key': 'role-id-community_seed',
+        'role_name': '印尼气氛图文',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'content': 'Halo kak, lihat poster ini.',
+        'media_id': media['media_id'],
+    })
+    assert uploaded_phrase.status_code == 200
+    role = client.get('/api/ops/group-atmosphere/roles').json()['rows'][0]
+    tpl = role['template_pool'][0]
+    assert tpl['asset_type'] == 'image_caption'
+    assert tpl['media_id'] == media['media_id']
+    assert tpl['media_path'] == media['media_path']
+    assert tpl['media_mime_type'] == 'image/png'
+    assert tpl['media_filename'] == 'poster.png'
+
+
+def test_group_atmosphere_manual_file_upload_supports_txt_csv_and_xlsx_template(tmp_path):
+    client = make_client({'GROUP_ATMOSPHERE_MEDIA_DIR': str(tmp_path / 'ga-media')})
+    uploaded = client.post('/api/ops/group-atmosphere/phrases/manual-upload-file', data={
+        'role_key': 'role-id-community_seed',
+        'role_name': '印尼气氛',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+    }, files={'file': ('phrases.csv', b'Halo kak\nSelamat pagi', 'text/csv')})
+    assert uploaded.status_code == 200
+    assert uploaded.json()['imported_count'] == 2
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(['序号', '类型', '话术内容'])
+    ws.append(['001', '气氛', 'Kak, jangan lupa aktif di grup ya.'])
+    ws.append(['002', '答疑', 'Kalau ada pertanyaan boleh tanya admin.'])
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    xlsx = client.post('/api/ops/group-atmosphere/phrases/manual-upload-file', data={
+        'role_key': 'role-id-xlsx-community_seed',
+        'role_name': '印尼xlsx气氛',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+    }, files={'file': ('phrases.xlsx', buf.getvalue(), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')})
+    assert xlsx.status_code == 200
+    assert xlsx.json()['imported_count'] == 2
+    roles = {row['config_name']: row for row in client.get('/api/ops/group-atmosphere/roles').json()['rows']}
+    texts = [item['text'] for item in roles['role-id-xlsx-community_seed']['template_pool']]
+    assert texts == ['Kak, jangan lupa aktif di grup ya.', 'Kalau ada pertanyaan boleh tanya admin.']
+
+
+def test_group_atmosphere_manual_xlsx_without_matching_header_chooses_text_rich_column(tmp_path):
+    client = make_client({'GROUP_ATMOSPHERE_MEDIA_DIR': str(tmp_path / 'ga-media')})
+    wb = Workbook()
+    ws = wb.active
+    ws.append(['001', '气氛', 'Halo kak, share pengalaman kamu di grup ya.'])
+    ws.append(['002', '气氛', 'Kak, jangan sepi-sepi, ngobrol santai di sini.'])
+    ws.append(['003', '气氛', 'Kalau sudah daftar, boleh cerita prosesnya lancar atau tidak.'])
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    xlsx = client.post('/api/ops/group-atmosphere/phrases/manual-upload-file', data={
+        'role_key': 'role-id-xlsx-no-header',
+        'role_name': '印尼无表头话术',
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+    }, files={'file': ('phrases.xlsx', buf.getvalue(), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')})
+    assert xlsx.status_code == 200
+    assert xlsx.json()['imported_count'] == 3
+    role = client.get('/api/ops/group-atmosphere/roles').json()['rows'][0]
+    texts = [item['text'] for item in role['template_pool']]
+    assert texts == [
+        'Halo kak, share pengalaman kamu di grup ya.',
+        'Kak, jangan sepi-sepi, ngobrol santai di sini.',
+        'Kalau sudah daftar, boleh cerita prosesnya lancar atau tidak.',
+    ]
+    assert not any(text.isdigit() for text in texts)
+
+
+def test_group_atmosphere_dispatch_sends_image_with_caption(monkeypatch):
+    client = make_client()
+    sent = []
+
+    def fake_post(url, json=None, timeout=None):
+        sent.append(json)
+        return FakeSendResponse()
+
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+    config = client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'image-role',
+        'account_key': 'atmosphere-indo-01',
+        'target_group': 'group-a@g.us',
+        'group_name': '印尼A群',
+        'language': 'id',
+        'worker_base_url': 'http://worker.local',
+        'min_interval_minutes': 0,
+        'template_pool': [{
+            'template_id': 'tpl-image-1',
+            'text': 'Halo kak, lihat info ini.',
+            'source_type': 'manual_upload',
+            'safe_to_send': True,
+            'enabled': True,
+            'media_path': '/tmp/poster.jpg',
+            'media_mime_type': 'image/jpeg',
+        }],
+    })
+    assert config.status_code == 200
+    dispatched = client.post('/api/ops/group-atmosphere/dispatch-once', json={'config_name': 'image-role'})
+    assert dispatched.status_code == 200
+    assert sent[0]['message_text'] == 'Halo kak, lihat info ini.'
+    assert sent[0]['media_path'] == '/tmp/poster.jpg'
+    assert sent[0]['media_mime_type'] == 'image/jpeg'
+
+
 def test_manual_role_binding_trigger_persists_binding_config_even_without_worker_base_url(monkeypatch):
     client = make_client()
     seed_role_and_account(client)
@@ -2217,6 +3007,8 @@ def test_group_atmosphere_page_matches_role_modal_and_bridge_card_ux():
     assert '${esc(rolePhraseSourceLabel(p))}' in html
     assert '${esc(roleLabel(p.role_positioning||\'\'))}' not in html
     assert 'function rolePhraseSourceLabel' in html
+    assert "manual_upload:'人工写入'" in html
+    assert "'manual_upload','custom'" in html
     assert 'ga-role-manual-phrases' in html
     assert 'rolePhraseMatchesSelectedType' in html
     assert "ga_role_positioning.addEventListener('change'" in html
@@ -2436,7 +3228,7 @@ def test_group_atmosphere_page_matches_next_product_iteration_requirements():
     assert '运行状态' not in html
     assert '登录状态' not in html
     assert 'account-title-row' in html
-    assert '已登录·生效中' in html
+    assert 'function loginLabel(session,runtime)' in html
     assert '#ga_accounts .group-card{padding:8px 10px!important' in html
     assert '${health}' in html
     assert 'Robot card responsive 3-column layout' in html
@@ -2459,7 +3251,7 @@ def test_group_atmosphere_page_matches_next_product_iteration_requirements():
     assert 'deleteGroupAtmosphereRole' in html
 
     assert '<h2>话术生成区</h2>' in html
-    assert '话术上传区' in html
+    assert '话术文件学习' in html
     assert '学习机器人区' in html
     assert 'id="ga_chat_file"' in html
     assert 'id="ga_upload_chat_btn"' in html
@@ -2469,6 +3261,14 @@ def test_group_atmosphere_page_matches_next_product_iteration_requirements():
     assert '过滤 ${rejectedCount} 条' in html
     assert "setUploadResult(successText,'success')" in html
     assert "setUploadResult(errorText,'error')" in html
+    assert "humanizeGaUploadError" in html
+    assert '上传内容太大，请减少文件数量或压缩后再上传' in html
+    assert '单个文件太大，最大30MB，请压缩后再上传' in html
+    assert 'const GA_UPLOAD_MAX_FILE_BYTES=30*1024*1024;' in html
+    assert "const GA_UPLOAD_MAX_FILE_LABEL='30MB';" in html
+    assert 'Number(file.size||0)>GA_UPLOAD_MAX_FILE_BYTES' in html
+    assert 'upload_file_too_large_30mb' in html
+    assert '<html>' not in html.split('function humanizeGaUploadError', 1)[1].split('async function uploadChatFiles', 1)[0]
     assert "setUploadResult(loadingText)" in html
     assert "showTip(loadingText,'info',{sticky:true})" in html
     assert "if(!text||options.sticky)return" in html
@@ -2572,11 +3372,39 @@ def test_group_atmosphere_iteration_fixes_feedback_learning_isolation_and_candid
     assert 'await loadCandidatePool();await loadRoleBridge();renderCandidatePool(window.__gaCandidateRows||[])' in delete_candidate_script
     assert 'data-ga-enable-candidate' not in html
     assert 'id="ga_batch_add_candidates_to_role_btn">加入角色</button>' in html
+    # 点击“新增话术”后的人工写入草稿行必须是统一的表单卡片，不复用候选行五列布局，避免输入框和按钮挤成一团。
+    assert 'ga-candidate-manual-draft-card' in html
+    assert 'ga-candidate-manual-draft-main' in html
+    assert 'ga-candidate-manual-draft-actions' in html
+    assert '#ga_candidate_pool .ga-candidate-manual-draft-card{display:grid!important;grid-template-columns:1fr!important;' in html
+    assert '#ga_candidate_pool .ga-candidate-manual-draft-main{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;' in html
+    assert '#ga_candidate_pool .ga-candidate-manual-draft-card input[type="checkbox"]' not in html
 
     # 所有新按钮/区域都要有可见反馈，不只依赖顶部 ga_action_feedback。
     assert 'ga_learning_result' in html
     assert 'ga_candidate_result' in html
     assert 'setLocalFeedback' in html
+
+    # 话术库入口收敛：人工上传不再选择话术角色；类型管理和图片上传并入话术备选区。
+    assert 'id="ga_manual_upload_role"' not in html
+    assert '新建/自动角色' not in html
+    assert 'id="ga_phrase_type_key"' not in html
+    assert 'id="ga_phrase_type_desc"' not in html
+    assert '话术类型管理' not in html
+    assert '图片素材上传' not in html
+    assert 'id="ga_media_asset_list"' not in html
+    assert 'ga_add_phrase_type_btn' in html
+    assert 'ga_phrase_type_inline_form' in html
+    assert '#ga_phrase_type_inline_form.is-open{display:flex!important;align-items:center!important;gap:10px!important;' in html
+    assert '#ga_phrase_type_inline_form:not(.is-open){display:none!important;}' in html
+    assert '#ga_phrase_type_inline_form button{min-width:88px!important;width:88px!important;white-space:nowrap!important;' in html
+    assert "form.classList.add('is-open')" in html
+    assert "form.classList.remove('is-open')" in html
+    assert 'saveInlinePhraseType' in html
+    assert 'ga_open_image_candidate_modal_btn' in html
+    assert 'ga_image_candidate_modal' in html
+    assert 'saveImageCandidate' in html
+    assert '新增图片' in html
 
 
 def test_group_atmosphere_role_delete_keeps_related_bindings_as_invalid_relationships():
@@ -2748,7 +3576,15 @@ def test_group_atmosphere_load_json_surfaces_plain_text_errors_as_feedback():
     client = make_client()
     html = client.get('/ops/group-atmosphere').text
     assert 'try{data=text?JSON.parse(text):{}}catch(_){data={detail:text}}' in html
-    assert "throw new Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail||data))" in html
+    assert "throw new Error(humanizeGaUploadError" in html
+    assert 'function humanizeGaUploadError' in html
+    assert '上传内容太大，请减少文件数量或压缩后再上传' in html
+    assert '单个文件太大，最大30MB，请压缩后再上传' in html
+    helper = html.split('function humanizeGaUploadError', 1)[1].split('function esc', 1)[0]
+    assert '<html>' not in helper
+    assert '<html' not in helper
+    assert '<body' not in helper
+    assert 'nginx/' not in helper
 
 
 def test_group_atmosphere_run_action_does_not_clobber_specific_local_result_and_manual_send_throws_on_failed_send():
@@ -2822,6 +3658,13 @@ def test_group_atmosphere_account_cards_remove_group_speaking_switch_and_bridge_
     assert 'toggleBridgeGroupPermission' in bridge_renderer
     assert '群发言：开' in bridge_renderer
     assert '群发言：关' in bridge_renderer
+    assert 'bridgeGroupProductionState' in html
+    assert "text:'已就绪'" in html
+    assert "text:'未就绪'" in html
+    assert '可投产' not in bridge_renderer
+    assert '探针待确认' not in bridge_renderer
+    assert '等待自动发言' not in bridge_renderer
+    assert '自动发言关闭' not in bridge_renderer
 
 
 def test_group_atmosphere_bridge_relationships_low_frequency_refreshes_counts_without_full_reload():
@@ -2894,13 +3737,38 @@ def test_group_atmosphere_account_group_input_and_switch_are_same_row():
     assert response.status_code == 200
     html = response.text
 
-    assert 'class="ga-account-group-row" data-ga-group-row="1" style="display:grid"' in html
-    assert 'id="ga_group_1_target"' in html
-    assert 'id="ga_group_1_enabled"' in html
+    for index in range(1, 6):
+        expected_display = 'grid' if index == 1 else 'none'
+        assert f'class="ga-account-group-row" data-ga-group-row="{index}" style="display:{expected_display}"' in html
+        assert f'id="ga_group_{index}_target"' in html
+        assert f'id="ga_group_{index}_enabled"' in html
     assert '.ga-account-group-row{display:grid' in html
     assert 'grid-template-columns:minmax(0,1fr) 150px' in html
     assert "row.style.display='grid'" in html
     assert "row.style.display=idx<count?'grid':'none'" in html
+
+
+def test_approval_and_learning_extra_group_rows_keep_consistent_template():
+    client = make_client()
+    group_page = client.get('/ops/group-atmosphere')
+    assert group_page.status_code == 200
+    group_html = group_page.text
+    learning_renderer = group_html.split('function renderLearningGroupLinks', 1)[1].split('function collectLearningGroups', 1)[0]
+    assert 'GA_LEARNING_MAX_GROUPS' in learning_renderer
+    assert 'class="ga-learning-group-row" data-learning-group-row="${idx}"' in learning_renderer
+    assert 'data-ga-learning-group-link="1"' in learning_renderer
+    assert 'data-ga-learning-group-enabled="1"' in learning_renderer
+
+    approval_page = client.get('/ops/production-ops')
+    assert approval_page.status_code == 200
+    approval_html = approval_page.text
+    assert 'const APPROVAL_BINDING_MAX_COUNT = 10;' in approval_html
+    assert "const template = document.getElementById('wa_binding_card_3');" in approval_html
+    assert "card.id = `wa_binding_card_${i}`" in approval_html
+    assert ".replace(/_3/g, `_${i}`)" in approval_html
+    assert 'class="binding-card" id="wa_binding_card_1"' in approval_html
+    assert 'class="binding-card" id="wa_binding_card_2"' in approval_html
+    assert 'class="binding-card" id="wa_binding_card_3"' in approval_html
 
 
 def test_group_atmosphere_phrase_generation_sections_stack_and_upload_actions_inline():

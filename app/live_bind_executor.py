@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import socket
 import subprocess
@@ -18,6 +19,37 @@ class CmsBindFlowError(RuntimeError):
         super().__init__(result_reason)
         self.result_code = result_code
         self.result_reason = result_reason
+
+
+def _strip_html_tags(text: str) -> str:
+    cleaned = re.sub(r'(?is)<(script|style)[^>]*>.*?</\\1>', ' ', str(text or ''))
+    cleaned = re.sub(r'(?is)<!--.*?-->', ' ', cleaned)
+    cleaned = re.sub(r'(?is)<[^>]+>', ' ', cleaned)
+    return re.sub(r'\\s+', ' ', cleaned).strip()
+
+
+def normalize_bind_upstream_error(status: int, body_text: str) -> str:
+    status = int(status or 0)
+    body = str(body_text or '')
+    lowered = body.lower()
+    title_match = re.search(r'(?is)<title[^>]*>(.*?)</title>', body)
+    title = _strip_html_tags(title_match.group(1)) if title_match else ''
+    plain = _strip_html_tags(body)
+    is_html = '<html' in lowered or '<body' in lowered or '<!doctype' in lowered or bool(title_match)
+    if is_html:
+        if status == 404 or '404 not found' in lowered or '404 not found' in plain.lower():
+            return 'Binding upstream returned HTTP 404 Not Found; check executor URL or nginx route.'
+        if status in (401, 403):
+            return f'Binding upstream returned HTTP {status}; backend session or authorization requires manual recovery.'
+        if status >= 500:
+            return f'Binding upstream returned HTTP {status}; upstream service is temporarily unavailable.'
+        if status >= 400:
+            suffix = f' {title}' if title else ''
+            return f'Binding upstream returned HTTP {status}{suffix}; check executor route.'
+        return plain[:300] or 'Binding upstream returned an HTML response instead of JSON.'
+    if status >= 400:
+        return f'HTTP {status}: {plain or body[:300]}'
+    return plain or body[:300]
 
 
 class LiveChromeBindExecutor:
@@ -223,9 +255,9 @@ class LiveChromeBindExecutor:
             if before_match == 'target':
                 raw_result['precheck'] = 'already_in_target_guild'
                 return {
-                    'status': 'success',
-                    'result_code': 'bind_success',
-                    'result_reason': 'CMS verified SID already in target guild',
+                    'status': 'failed',
+                    'result_code': 'already_in_target_guild',
+                    'result_reason': 'Previously registered in this agency',
                     'raw_result': raw_result,
                 }
             if before_match == 'other':
@@ -247,7 +279,18 @@ class LiveChromeBindExecutor:
                     'raw_result': raw_result,
                 }
             raw_result['precheck'] = 'sid_found_without_guild'
-            submit = self._cms_add_anchor(base_url=base_url, authorization=authorization, proxy_url=proxy_url, sid=account_id, guild_id=str(guild.get('id') or ''), timeout_seconds=request_timeout_seconds)
+            try:
+                submit = self._cms_add_anchor(base_url=base_url, authorization=authorization, proxy_url=proxy_url, sid=account_id, guild_id=str(guild.get('id') or ''), timeout_seconds=request_timeout_seconds)
+            except urllib.error.HTTPError as exc:
+                raw_result['cms_submit_http_status'] = exc.code
+                if exc.code in (401, 403):
+                    return {
+                        'status': 'failed',
+                        'result_code': 'cms_authorization_scope_denied',
+                        'result_reason': 'CMS authorization does not allow adding this SID to the target guild',
+                        'raw_result': raw_result,
+                    }
+                raise
             raw_result['cms_submit_code'] = submit.get('code')
             raw_result['cms_submit_success'] = submit.get('success')
             submit_message = str(submit.get('message') or submit.get('msg') or submit.get('error') or '').strip()
@@ -352,14 +395,19 @@ class LiveChromeBindExecutor:
         timeout_seconds: float = 8.0,
     ) -> dict[str, Any]:
         url = f'{base_url}/api/admin/linky/industrial/industrial/getGuildIdAndName'
-        data = self._cms_request_json(method='GET', url=url, authorization=authorization, proxy_url=proxy_url, timeout_seconds=timeout_seconds)
+        configured_id = str(configured_guild_id or '').strip()
+        configured_sid = str(configured_guild_sid or '').strip()
+        try:
+            data = self._cms_request_json(method='GET', url=url, authorization=authorization, proxy_url=proxy_url, timeout_seconds=timeout_seconds)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403) and configured_id and configured_sid:
+                return {'id': configured_id, 'guild_id': configured_id, 'guild_name': target_guild.strip(), 'sid': configured_sid, 'guild_sid': configured_sid, 'guild_list_unavailable': True}
+            raise
         rows = data.get('data') if isinstance(data, dict) else data
         if not isinstance(rows, list):
             rows = []
         dict_rows = [r for r in rows if isinstance(r, dict)]
         target_norm = target_guild.strip().lower()
-        configured_id = str(configured_guild_id or '').strip()
-        configured_sid = str(configured_guild_sid or '').strip()
         if configured_id or configured_sid:
             configured_matches = []
             for row in dict_rows:
@@ -616,7 +664,7 @@ class LiveChromeBindExecutor:
                 return {
                     'status': 'failed',
                     'result_code': 'bind_backend_http_error',
-                    'result_reason': f'HTTP {status}: {body_text}',
+                    'result_reason': normalize_bind_upstream_error(status, body_text),
                     'raw_result': raw_result,
                 }
             parsed = self._try_parse_json(body_text)

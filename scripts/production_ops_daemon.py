@@ -890,54 +890,12 @@ def _recover_worker_for_target(
             recovery['auto_recover_blocked'] = True
             return recovery
         if normalized_trigger_reason == 'healthy_false_zero_stale_session':
-            recovery['attempted'] = True
-            recovery['mode'] = 'account_runtime_rebuild'
+            recovery['reason'] = 'false_zero_observe_only_skip_runtime_rebuild'
+            recovery['auto_recover_blocked'] = True
             recovery['account_key'] = account_key
-            try:
-                stop_payload = fetch_json(
-                    f"{args.api_base_url.rstrip('/')}/api/ops/whatsapp-approval-accounts/{urllib.parse.quote(account_key, safe='')}/runtime/internal/stop",
-                    method='POST',
-                    payload={},
-                    timeout=args.command_timeout_seconds,
-                )
-                recovery['stop_payload'] = stop_payload
-            except Exception as exc:
-                recovery['stop_error'] = str(exc)
-            try:
-                start_payload = fetch_json(
-                    f"{args.api_base_url.rstrip('/')}/api/ops/whatsapp-approval-accounts/{urllib.parse.quote(account_key, safe='')}/runtime/internal/start",
-                    method='POST',
-                    payload={},
-                    timeout=args.command_timeout_seconds,
-                )
-                recovery['start_payload'] = start_payload
-                runtime = start_payload.get('runtime') if isinstance(start_payload.get('runtime'), dict) else {}
-                recovered_worker_base_url = str(runtime.get('base_url') or '').strip()
-                if not recovered_worker_base_url:
-                    recovery['status'] = 'failed'
-                    recovery['reason'] = 'runtime_start_returned_empty_base_url'
-                    return recovery
-                session_payload = fetch_json(
-                    f"{args.api_base_url.rstrip('/')}/api/ops/whatsapp-approval-accounts/{urllib.parse.quote(account_key, safe='')}/session/internal/start",
-                    method='POST',
-                    payload={},
-                    timeout=args.command_timeout_seconds,
-                )
-                recovery['session_payload'] = session_payload
-                session_runtime = session_payload.get('runtime') if isinstance(session_payload.get('runtime'), dict) else {}
-                session_state = session_payload.get('session') if isinstance(session_payload.get('session'), dict) else {}
-                recovered_worker_base_url = str(session_runtime.get('base_url') or recovered_worker_base_url).strip()
-                recovery['recovered_worker_base_url'] = recovered_worker_base_url
-                recovery['recovered_session_state'] = session_state
-                if recovered_worker_base_url and bool(session_state.get('login_verified')) and bool(session_state.get('session_target_match')):
-                    recovery['status'] = 'ok'
-                    time.sleep(max(1.0, float(args.restart_wait_seconds)))
-                else:
-                    recovery['status'] = 'failed'
-                    recovery['reason'] = 'session_start_did_not_restore_verified_target_matched_session'
-            except Exception as exc:
-                recovery['status'] = 'failed'
-                recovery['reason'] = str(exc)
+            recovery['runtime_status'] = runtime_status or None
+            recovery['login_state'] = login_state or None
+            recovery['can_probe'] = bool(session_state.get('can_probe'))
             return recovery
         recovery['attempted'] = True
         recovery['mode'] = 'account_runtime_start'
@@ -2443,6 +2401,23 @@ def _run_registration_group_cycle(
         target=cycle['monitor_target'],
     )
     pending_count = max(int(authoritative_payload.get('pending_count') or 0), 0)
+    registration_auto_approval_enabled = bool(getattr(args, 'registration_auto_approval_enabled', False))
+    if not registration_auto_approval_enabled:
+        cycle['release_evaluation'] = {
+            'ok': True,
+            'skipped': True,
+            'reason': 'registration_auto_approval_disabled',
+            'pending_count': pending_count,
+        }
+        cycle['formal_approval'] = {
+            'triggered': False,
+            'ready': False,
+            'pending_count': pending_count,
+            'fingerprint': requester_fingerprint(authoritative_payload),
+            'reason_code': 'registration_auto_approval_disabled',
+            'auto_approval_disabled': True,
+        }
+        return cycle
     cycle_anchor_keys = [
         target_registration_group,
         str(target.get('binding_link') or '').strip(),
@@ -3502,6 +3477,8 @@ def main() -> int:
     parser.add_argument('--decided-by-name', default='Song Yuqi')
     parser.add_argument('--auto-recover-worker', action='store_true', default=True)
     parser.add_argument('--no-auto-recover-worker', dest='auto_recover_worker', action='store_false')
+    parser.add_argument('--registration-auto-approval-enabled', action='store_true', default=False)
+    parser.add_argument('--registration-auto-approval-disabled', dest='registration_auto_approval_enabled', action='store_false')
     parser.add_argument('--temp-cleanup-enabled', action='store_true', default=True)
     parser.add_argument('--temp-cleanup-disabled', dest='temp_cleanup_enabled', action='store_false')
     parser.add_argument('--temp-cleanup-interval-seconds', type=float, default=600.0)
