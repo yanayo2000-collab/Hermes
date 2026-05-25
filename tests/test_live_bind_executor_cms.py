@@ -76,11 +76,10 @@ def test_cms_id_bind_calls_add_anchor_only_when_sid_exists_without_guild_and_req
 
 
 
-def test_cms_id_bind_caps_cms_request_timeout_for_fast_bind_sla():
+def test_cms_id_bind_uses_longer_cms_request_timeout_to_avoid_transient_timeouts():
     executor = FakeCmsExecutor([
         [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
-        {"code": 1000, "data": {"records": [{"sid": "12123121", "guild_id": "3432", "guild_name": "Carote"}]}},
-        {"code": 1000, "data": {"records": []}},
+        {"code": 1000, "message": "success", "data": {"success_count": 1, "fail_count": 0, "fail_items": []}},
     ])
 
     result = executor({
@@ -92,10 +91,9 @@ def test_cms_id_bind_caps_cms_request_timeout_for_fast_bind_sla():
         "executor_request_timeout_seconds": 30,
     })
 
-    assert result["status"] == "failed"
-    assert result["result_code"] == "already_in_target_guild"
+    assert result["status"] == "success"
     assert executor.calls
-    assert {call["timeout_seconds"] for call in executor.calls} == {8.0}
+    assert {call["timeout_seconds"] for call in executor.calls} == {30.0}
 
 def test_live_bind_http_html_error_is_normalized_before_reaching_customer_card():
     html_404 = """<html> <head><title>404 Not Found</title></head>
@@ -578,3 +576,71 @@ def test_cms_request_matches_browser_add_anchor_header_and_payload_parity(monkey
     assert headers['cookie'] == 'locale=zh-cn'
     assert headers['accept-language'] == 'zh-CN,zh;q=0.9'
     assert 'Mozilla/5.0' in headers['user-agent']
+
+
+def test_cms_id_bind_uses_ka_addanchor_only_and_classifies_already_in_target():
+    executor = FakeCmsExecutor([
+        [{"id": "1423", "guild_name": "Nova", "sid": "31350499"}],
+        {"code": 1000, "message": "success", "data": {"fail_count": 1, "fail_items": [{"sid": "53341442", "reason": "already in this guild"}]}},
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "53341442",
+        "dept_name": "Nova",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+        "executor_cms_guild_id": "1423",
+        "executor_cms_guild_sid": "31350499",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "already_in_target_guild"
+    assert result["raw_result"]["cms_bind_flow"] == "ka_addanchor_only"
+    assert result["raw_result"]["cms_submit_fail_items"] == [{"sid": "53341442", "reason": "already in this guild"}]
+    assert not any("streamer_detail/page" in call["url"] for call in executor.calls)
+    assert any("streamer_detail/addAnchor" in call["url"] for call in executor.calls)
+
+
+def test_cms_id_bind_uses_ka_addanchor_only_and_classifies_other_guild():
+    executor = FakeCmsExecutor([
+        [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}],
+        {"code": 1000, "message": "success", "data": {"fail_count": 1, "fail_items": [{"sid": "53367380", "reason": "already_joined_another_guild_455_1"}]}},
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "53367380",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+        "executor_cms_guild_id": "3432",
+        "executor_cms_guild_sid": "43536425",
+    })
+
+    assert result["status"] == "failed"
+    assert result["result_code"] == "already_in_other_guild"
+    assert result["result_reason"] == "The streamer was in another agency"
+    assert not any("streamer_detail/page" in call["url"] for call in executor.calls)
+
+
+def test_cms_id_bind_ka_addanchor_success_count_is_success_without_detail_postcheck():
+    executor = FakeCmsExecutor([
+        [{"id": "1423", "guild_name": "Nova", "sid": "31350499"}],
+        {"code": 1000, "message": "success", "data": {"success_count": 1, "fail_count": 0, "fail_items": []}},
+    ])
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "53341442",
+        "dept_name": "Nova",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer secret-token",
+        "executor_cms_guild_id": "1423",
+        "executor_cms_guild_sid": "31350499",
+    })
+
+    assert result["status"] == "success"
+    assert result["result_code"] == "bind_success"
+    assert result["result_reason"] == "CMS KA-AddAnchor accepted"
+    assert not any("streamer_detail/page" in call["url"] for call in executor.calls)

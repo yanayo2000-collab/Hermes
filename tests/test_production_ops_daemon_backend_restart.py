@@ -363,6 +363,14 @@ def test_run_production_ops_daemon_script_exposes_worker_timeout_knob():
     assert '--worker-timeout-seconds "${PRODUCTION_OPS_WORKER_TIMEOUT_SECONDS:-90}"' in script
 
 
+def test_run_production_ops_daemon_script_archives_registration_auto_approval():
+    script = Path('scripts/run_production_ops_daemon.sh').read_text()
+
+    assert 'registration_auto_approval_flag="--registration-auto-approval-disabled"' in script
+    assert 'ignored PRODUCTION_OPS_REGISTRATION_AUTO_APPROVAL_ENABLED' in script
+    assert 'registration_auto_approval_flag="--registration-auto-approval-enabled"' not in script
+
+
 def test_worker_probe_timeout_adapts_from_group_duration_history():
     monitoring = {
         'worker_probe_duration_stats': {
@@ -578,8 +586,7 @@ def test_worker_probe_recovery_clears_failure_gate_and_builds_recovery_notificat
     assert recovered[0]['dedupe_key'] == 'worker_probe_recovered:RG'
 
 
-def test_outside_schedule_target_does_not_increment_worker_probe_failure_gate():
-    args = SimpleNamespace(**Args.__dict__)
+def test_outside_schedule_target_is_still_ordered_for_monitoring():
     outside_target = {
         'registration_group': 'RG',
         'group_name': '注册群',
@@ -595,10 +602,9 @@ def test_outside_schedule_target_does_not_increment_worker_probe_failure_gate():
         'selection_reason': 'configured_binding_outside_schedule',
         'allow_fallback': False,
     }
-    cycle = run_cycle(args, state) if False else None
     from scripts.production_ops_daemon import _ordered_cycle_targets
     ordered = _ordered_cycle_targets(monitor_target, {}, now=datetime(2026, 5, 14, 1, 0, tzinfo=timezone.utc), poll_interval_seconds=20)
-    assert ordered == []
+    assert [row['registration_group'] for row in ordered] == ['RG']
     assert 'monitoring_sessions' not in state
 
 
@@ -2181,6 +2187,51 @@ def test_run_cycle_account_binding_zero_pending_fresh_probe_failure_marks_unveri
     assert cycle_row['decision_group_state']['zero_pending_unverified'] is True
     assert cycle_row['truth_state']['status'] == 'empty_unverified'
     assert notifications == []
+
+
+def test_resolve_monitor_target_prefers_bound_group_id_over_invite_link_for_account_binding(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.worker_base_url = ''
+
+    def fake_fetch_json(url, *, method='GET', payload=None, timeout=30.0):
+        assert url.endswith('/api/ops/whatsapp-approval-accounts/registration-runtime-directory')
+        return {
+            'rows': [
+                {
+                    'account_key': 'registration-a',
+                    'account_name': 'WA Admin',
+                    'responsible_type': 'registration_group',
+                    'enabled': True,
+                    'runtime_state': {'active': True, 'base_url': 'http://worker-1', 'status': 'warm'},
+                    'session_state': {
+                        'login_state': 'logged_in',
+                        'can_probe': True,
+                        'login_verified': True,
+                        'authenticated': True,
+                        'session_target_match': True,
+                    },
+                    'group_link_bindings': [
+                        {
+                            'enabled': True,
+                            'link': 'https://chat.whatsapp.com/INVITE',
+                            'group_id': '120363000000000000@g.us',
+                            'group_name': 'Reg Group',
+                            'schedule_runtime': {'active_now': True},
+                        }
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr('scripts.production_ops_daemon.fetch_json', fake_fetch_json)
+
+    resolved = _resolve_monitor_target(args)
+    selected = resolved['selected']
+
+    assert selected['source'] == 'account_binding'
+    assert selected['registration_group'] == '120363000000000000@g.us'
+    assert selected['binding_link'] == 'https://chat.whatsapp.com/INVITE'
+    assert selected['group_name'] == 'Reg Group'
 
 
 def test_run_cycle_fallback_target_without_explicit_independent_truth_probe_does_not_auto_build_default(monkeypatch):

@@ -50,7 +50,7 @@ class RealtimeApprovalStateStore:
     def ingest_snapshot(self, payload: Dict[str, Any], *, source: str = 'backend') -> Dict[str, Any]:
         incoming = self._normalize_snapshot(payload, source=source)
         previous = self._snapshot
-        merged = self._merge_with_previous(previous, incoming)
+        merged = self._merge_with_previous(previous, incoming, source=source)
         self._snapshot_version += 1
         merged['snapshot_version'] = self._snapshot_version
         merged['generated_at'] = self._now_iso()
@@ -61,7 +61,7 @@ class RealtimeApprovalStateStore:
             self._publish(event)
         return {'snapshot': self.snapshot(), 'events': events}
 
-    def _merge_with_previous(self, previous: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    def _merge_with_previous(self, previous: Dict[str, Any], incoming: Dict[str, Any], *, source: str = 'backend') -> Dict[str, Any]:
         """Keep strong live probe facts from being overwritten by weak daemon snapshots.
 
         The approval page consumes this store as the server-authoritative realtime
@@ -89,7 +89,7 @@ class RealtimeApprovalStateStore:
                     continue
                 group_key = str(group.get('group_id') or group.get('link') or group.get('group_name') or index).strip()
                 previous_group = previous_groups.get(group_key) or {}
-                if self._should_preserve_previous_group_probe(previous_group, group):
+                if self._should_preserve_previous_group_probe(previous_group, group, source=source):
                     preserved_verifier = previous_group.get('membership_verifier')
                     if isinstance(preserved_verifier, dict):
                         group['membership_verifier'] = copy.deepcopy(preserved_verifier)
@@ -97,7 +97,14 @@ class RealtimeApprovalStateStore:
                         group['next_approval_pending_count'] = previous_group.get('next_approval_pending_count')
         return merged
 
-    def _should_preserve_previous_group_probe(self, previous_group: Dict[str, Any], incoming_group: Dict[str, Any]) -> bool:
+    def _should_preserve_previous_group_probe(self, previous_group: Dict[str, Any], incoming_group: Dict[str, Any], *, source: str = 'backend') -> bool:
+        # HTTP polling snapshots are the page's server-authoritative refresh path.
+        # Do not let an old in-memory verifier/detail (for example “待审批 11 人”)
+        # survive forever when the backend/daemon snapshot no longer carries that
+        # count. A fresh daemon/internal event can still preserve strong probe facts
+        # through other source names.
+        if str(source or '').strip() == 'lightweight_snapshot_refresh':
+            return False
         previous_verifier = previous_group.get('membership_verifier') if isinstance(previous_group.get('membership_verifier'), dict) else {}
         incoming_verifier = incoming_group.get('membership_verifier') if isinstance(incoming_group.get('membership_verifier'), dict) else {}
         if previous_verifier.get('ready') is not True:

@@ -191,8 +191,10 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert '话术文件学习' in html
     assert '自动分配到话术库' not in html
     assert '话术方案库' not in html
-    assert '话术包名称' not in html
+    assert 'humanizeGaUploadError' in html
     assert '删除话术包' not in html
+    assert '<h2>话术库管理</h2>' not in html
+    assert 'id="ga_phrase_library_card"' not in html
     assert '话术生成区' in html
     assert '话术备选区' in html
     assert '自动发言' in html
@@ -262,6 +264,11 @@ def test_group_atmosphere_page_exposes_qr_login_console():
     assert '手动发言' in html
     assert 'gaSendModal' in html
     assert '确认发送' in html
+    assert '可直接粘贴图片，发送时会作为图文消息。' in html
+    assert 'id="ga_manual_media_preview"' in html
+    assert 'function handleManualMessagePaste' in html
+    assert "payload.media_id=media.media_id" in html
+    assert '/api/ops/group-atmosphere/media-assets' in html
     assert '/groups/${ctx.groupIndex}/send' in html
     assert '扫码成功 · 已登录' in html
     assert '扫码登录成功，账号已可用' in html
@@ -288,6 +295,8 @@ def test_group_atmosphere_role_bridge_auto_assigns_whatsapp_account_by_role_and_
         'enabled': True,
     })
     assert role.status_code == 200
+    role_key = role.json()['role']['role_key']
+    assert role_key.startswith('role-')
     account = client.post('/api/ops/group-atmosphere/accounts', json={
         'account_key': 'atmosphere-br-01',
         'account_name': '+55 11 90000 2233',
@@ -303,7 +312,7 @@ def test_group_atmosphere_role_bridge_auto_assigns_whatsapp_account_by_role_and_
     assert account.status_code == 200
 
     response = client.post('/api/ops/group-atmosphere/role-bindings', json={
-        'role_key': 'auto-pt-community_seed',
+        'role_key': role_key,
         'group_targets': ['br-group-1@g.us'],
         'auto_speaking_enabled': True,
     })
@@ -312,7 +321,7 @@ def test_group_atmosphere_role_bridge_auto_assigns_whatsapp_account_by_role_and_
     body = response.json()
     assert body['created_count'] == 1
     binding = body['bindings'][0]
-    assert binding['role_key'] == 'auto-pt-community_seed'
+    assert binding['role_key'] == role_key
     assert binding['target_group'] == 'br-group-1@g.us'
     assert binding['account_key'] == 'atmosphere-br-01'
     assert binding['assigned_account_label'] == '+55 11 90000 2233'
@@ -320,13 +329,13 @@ def test_group_atmosphere_role_bridge_auto_assigns_whatsapp_account_by_role_and_
     assert binding['min_interval_minutes'] == 30
     assert binding['max_interval_minutes'] == 90
     rel = body['relationship']
-    assert rel['role_key'] == 'auto-pt-community_seed'
+    assert rel['role_key'] == role_key
     assert rel['groups'][0]['assigned_account_label'] == '+55 11 90000 2233'
 
 
 def test_group_atmosphere_role_bridge_rejects_country_mismatch_without_checklist_noise():
     client = make_client()
-    client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+    role = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
         'role_key': 'auto-pt-community_seed',
         'role_name': '巴西活跃BOT',
         'region': '巴西',
@@ -335,6 +344,8 @@ def test_group_atmosphere_role_bridge_rejects_country_mismatch_without_checklist
         'phrases': ['Oi gente'],
         'enabled': True,
     })
+    assert role.status_code == 200
+    role_key = role.json()['role']['role_key']
     client.post('/api/ops/group-atmosphere/accounts', json={
         'account_key': 'atmosphere-indo-01',
         'account_name': '+62 812 0000 7788',
@@ -346,7 +357,7 @@ def test_group_atmosphere_role_bridge_rejects_country_mismatch_without_checklist
     })
 
     response = client.post('/api/ops/group-atmosphere/role-bindings', json={
-        'role_key': 'auto-pt-community_seed',
+        'role_key': role_key,
         'group_targets': ['id-group-1@g.us'],
     })
 
@@ -763,21 +774,16 @@ def test_group_atmosphere_account_list_persists_actual_group_name_after_login(mo
 
     rows = client.get('/api/ops/group-atmosphere/accounts').json()['rows']
 
-    assert probe_calls == [{
-        'url': 'http://127.0.0.1:59998/probe-group-state',
-        'json': {'registration_group': 'https://chat.whatsapp.com/EoHAaKPML7p3BG7LNEbOl1'},
-        'timeout': 8.0,
-    }]
+    assert probe_calls == []
     assert rows[0]['session']['login_verified'] is True
-    assert rows[0]['groups'][0]['group_name'] == 'Hong Kong Creator Group'
-    assert rows[0]['groups'][0]['group_id'] == '120363000000000000@g.us'
+    assert rows[0]['groups'][0]['target_group'] == 'https://chat.whatsapp.com/EoHAaKPML7p3BG7LNEbOl1'
 
 
 def test_group_atmosphere_session_start_persists_probed_group_name_to_account_and_bridge(monkeypatch, tmp_path):
     client = make_client({'DB_PATH': str(tmp_path / 'automation.db'), 'AUTH_INTERNAL_TOKEN': 'dev-internal-token'})
     service = client.app.state.service
     headers = {'x-ops-internal-token': 'dev-internal-token'}
-    client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+    role = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
         'role_key': 'auto-hk-community_seed',
         'role_name': '香港活跃BOT',
         'region': '香港',
@@ -786,6 +792,8 @@ def test_group_atmosphere_session_start_persists_probed_group_name_to_account_an
         'phrases': ['大家可以多交流。'],
         'enabled': True,
     }, headers=headers)
+    assert role.status_code == 200
+    role_key = role.json()['role']['role_key']
     account = client.post('/api/ops/group-atmosphere/accounts', json={
         'account_key': 'atmosphere-hk-01',
         'account_name': '+852 4456 8277',
@@ -797,7 +805,7 @@ def test_group_atmosphere_session_start_persists_probed_group_name_to_account_an
     }, headers=headers)
     assert account.status_code == 200
     binding = client.post('/api/ops/group-atmosphere/role-bindings', json={
-        'role_key': 'auto-hk-community_seed',
+        'role_key': role_key,
         'account_key': 'atmosphere-hk-01',
         'group_indexes': [0],
         'auto_speaking_enabled': True,
@@ -980,8 +988,10 @@ def test_group_atmosphere_manual_group_send_api_uses_dedicated_runtime(monkeypat
 
     monkeypatch.setattr('app.main.requests.post', fake_post)
 
+    media = service.create_group_atmosphere_media_asset('manual-send.jpg', b'fake-image-bytes', 'image/jpeg', created_by='test')
     response = client.post(f'/api/ops/group-atmosphere/accounts/{account_key}/groups/0/send', json={
         'message_text': 'Halo kak, test manual',
+        'media_id': media['media']['media_id'],
     })
 
     assert response.status_code == 200
@@ -991,6 +1001,10 @@ def test_group_atmosphere_manual_group_send_api_uses_dedicated_runtime(monkeypat
     assert sent[0]['url'] == 'http://127.0.0.1:59999/send-group-message'
     assert sent[0]['json']['target_group'] == '120363400336474261@g.us'
     assert sent[0]['json']['message_text'] == 'Halo kak, test manual'
+    assert sent[0]['json']['media_id'] == media['media']['media_id']
+    assert sent[0]['json']['media_filename'] == 'manual-send.jpg'
+    assert sent[0]['json']['media_mime_type'] == 'image/jpeg'
+    assert body['media_id'] == media['media']['media_id']
     logs = client.get('/api/ops/group-atmosphere/logs').json()['rows']
     assert logs[0]['status'] == 'success'
     assert logs[0]['message_text'] == 'Halo kak, test manual'

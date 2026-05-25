@@ -36,12 +36,21 @@ case "${PRODUCTION_OPS_NOTIFY_ENABLED:-true}" in
     notify_flag="--notify-disabled"
     ;;
 esac
+
+# Registration-group auto approval is archived by product decision.
+# The daemon may still contain historical auto-approval code paths, but production
+# startup must always run in monitor-only mode. Manual one-click approval remains available.
+registration_auto_approval_flag="--registration-auto-approval-disabled"
+if [[ -n "${PRODUCTION_OPS_REGISTRATION_AUTO_APPROVAL_ENABLED:-}" ]]; then
+  echo "[production-ops] ignored PRODUCTION_OPS_REGISTRATION_AUTO_APPROVAL_ENABLED because registration auto approval is archived; running monitor-only" >&2
+fi
 if [[ -z "$resolved_fresh_probe_cmd" && -n "$resolved_registration_group" ]]; then
   resolved_fresh_probe_cmd="node $ROOT_DIR/scripts/fresh_webjs_group_state.js $(printf '%q' "$resolved_registration_group")"
 fi
 
 exec python3 "$ROOT_DIR/scripts/production_ops_daemon.py" \
   "$notify_flag" \
+  "$registration_auto_approval_flag" \
   --api-base-url "${PRODUCTION_OPS_API_BASE_URL:-http://127.0.0.1:8011}" \
   --worker-base-url "$resolved_worker_base_url" \
   --registration-group "$resolved_registration_group" \

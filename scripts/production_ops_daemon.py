@@ -659,6 +659,10 @@ def _has_empty_queue_evidence(*payloads: Optional[Dict[str, Any]]) -> bool:
         data = dict(payload or {})
         if bool(data.get('empty_queue_visible')) or bool(data.get('confirmedEmpty')) or bool(data.get('confirmed_empty')):
             return True
+        if str(data.get('approval_state_status') or '').strip() == 'confirmed_empty':
+            return True
+        if str(data.get('pending_zero_confidence') or '').strip() == 'confirmed' or str(data.get('zero_pending_verified_by') or '').strip():
+            return True
         if bool(data.get('review_surface_ready')) and _safe_pending_count(data) <= 0 and not _has_requester_evidence(data):
             return True
     return False
@@ -1008,11 +1012,6 @@ def _session_state(
 
 def _ordered_cycle_targets(monitor_target: Dict[str, Any], fallback_target: Dict[str, Any], *, now: Optional[datetime] = None, poll_interval_seconds: float = 0.0) -> List[Dict[str, Any]]:
     selected_target = monitor_target.get('selected')
-    if str(monitor_target.get('selection_reason') or '').strip() == 'configured_binding_outside_schedule':
-        normalized_selected = _normalize_monitor_target(selected_target, str((selected_target or {}).get('worker_base_url') or '')) if isinstance(selected_target, dict) else None
-        if normalized_selected and now and _schedule_end_flush_due(normalized_selected, now, poll_interval_seconds=poll_interval_seconds):
-            return [normalized_selected]
-        return []
     candidates = list(monitor_target.get('candidates') or [])
     ordered: List[Dict[str, Any]] = []
     seen: set[str] = set()
@@ -1368,7 +1367,6 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
     rows = payload.get('rows') or []
     candidates: List[Dict[str, Any]] = []
     configured_bindings: List[Dict[str, Any]] = []
-    inactive_bindings: List[Dict[str, Any]] = []
     normalized_fallback_group = str(args.registration_group or '').strip().lower()
 
     def _pick_preferred_target(targets: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -1438,9 +1436,16 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
             if binding.get('enabled') is False:
                 continue
             schedule_runtime = binding.get('schedule_runtime') if isinstance(binding.get('schedule_runtime'), dict) else {}
+            # For already-bound WhatsApp groups, probe by the stable chat id first.
+            # Invite links can be non-resolvable from whatsapp-web.js even when the
+            # account is already an admin/member of the group; using the link as
+            # the daemon's primary probe target caused /group-state 500 "group not
+            # found" and made the monitor show unknown/0 instead of the real queue.
+            # Keep binding_link separately for config matching/debugging, and only
+            # fall back to link when no resolved group_id exists yet.
             registration_group = (
-                str(binding.get('registration_group') or '').strip()
-                or str(binding.get('group_id') or '').strip()
+                str(binding.get('group_id') or '').strip()
+                or str(binding.get('registration_group') or '').strip()
                 or str(binding.get('link') or '').strip()
                 or str(binding.get('group_name') or '').strip()
             )
@@ -1466,9 +1471,6 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
             })
             if not normalized:
                 continue
-            if schedule_runtime.get('configured') and not bool(schedule_runtime.get('active_now')):
-                inactive_bindings.append(normalized)
-                continue
             configured_bindings.append(normalized)
             if runtime_candidate_ready and normalized.get('worker_base_url'):
                 candidates.append(normalized)
@@ -1479,13 +1481,6 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
                 'selected': _pick_preferred_target(configured_bindings),
                 'candidates': configured_bindings,
                 'selection_reason': 'configured_binding_runtime_unavailable',
-                'allow_fallback': False,
-            }
-        if inactive_bindings:
-            return {
-                'selected': _pick_preferred_target(inactive_bindings),
-                'candidates': [],
-                'selection_reason': 'configured_binding_outside_schedule',
                 'allow_fallback': False,
             }
         return {
@@ -1613,7 +1608,7 @@ def _fetch_worker_group_state_with_passive_retry(
     timeout_seconds: float,
     passive_retry_wait_seconds: float,
     passive_retry_count: int = 2,
-    probe_mode: str = 'fast',
+    probe_mode: str = 'full_verify',
 ) -> Dict[str, Any]:
     attempts: List[Dict[str, Any]] = []
     last_error: Exception | None = None

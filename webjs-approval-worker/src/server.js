@@ -31,6 +31,14 @@ const REUSE_CHROME_PROFILE = AUTH_MODE
   : Boolean(String(CHROME_USER_DATA_ROOT).trim() && String(CHROME_PROFILE_DIR).trim());
 const SHARED_APPROVAL_CLIENT = !REUSE_CHROME_PROFILE;
 const POST_APPROVE_PROBE_REFRESH_ENABLED = String(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_POST_APPROVE_PROBE_REFRESH || 'false').trim().toLowerCase() === 'true';
+const GROUP_ATMOSPHERE_BACKEND_URL = String(process.env.GROUP_ATMOSPHERE_BACKEND_URL || process.env.MCN_BACKEND_URL || 'http://127.0.0.1:8011').trim().replace(/\/+$/, '');
+function inferGroupAtmosphereAccountKey(clientId) {
+  const raw = String(clientId || '').trim();
+  if (!raw) return '';
+  return raw.replace(/^wa-approval-/, '').replace(/-approval$/, '');
+}
+const GROUP_ATMOSPHERE_ACCOUNT_KEY = String(process.env.GROUP_ATMOSPHERE_ACCOUNT_KEY || process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_ACCOUNT_KEY || inferGroupAtmosphereAccountKey(CLIENT_ID)).trim();
+const GROUP_ATMOSPHERE_INBOUND_ENABLED = String(process.env.GROUP_ATMOSPHERE_INBOUND_ENABLED || (GROUP_ATMOSPHERE_ACCOUNT_KEY.startsWith('atmosphere-') ? 'true' : 'false')).trim().toLowerCase() !== 'false';
 const PUPPETEER_PROTOCOL_TIMEOUT_MS = Math.max(30000, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_PROTOCOL_TIMEOUT_MS || 180000));
 
 const stateAuthStrategy = REUSE_CHROME_PROFILE ? 'ChromeProfileCopy+NoAuth' : 'LocalAuth';
@@ -297,6 +305,36 @@ function buildParticipantIdentitySet(participants) {
     participantIdentityKeys(participant).forEach((key) => identitySet.add(key));
   });
   return identitySet;
+}
+
+function clientIdentityKeys(activeClient) {
+  const info = activeClient && activeClient.info ? activeClient.info : {};
+  return participantIdentityKeys({
+    id: info.wid || info.me || info.id,
+    wid: info.wid || info.me,
+    user: info.wid && info.wid.user,
+    _serialized: info.wid && info.wid._serialized,
+  });
+}
+
+function findClientParticipant(group, activeClient) {
+  const participants = Array.isArray(group && group.participants) ? group.participants : [];
+  const selfKeys = new Set(clientIdentityKeys(activeClient));
+  if (!participants.length || !selfKeys.size) return null;
+  return participants.find((participant) => participantIdentityKeys(participant).some((key) => selfKeys.has(key))) || null;
+}
+
+function participantAdminState(participant) {
+  if (!participant || typeof participant !== 'object') {
+    return { self_participant_found: false, self_is_admin: null, self_is_super_admin: null };
+  }
+  const isAdmin = Boolean(participant.isAdmin || participant.isSuperAdmin || participant.admin === true || participant.is_admin === true);
+  const isSuperAdmin = Boolean(participant.isSuperAdmin || participant.is_super_admin === true);
+  return {
+    self_participant_found: true,
+    self_is_admin: isAdmin,
+    self_is_super_admin: isSuperAdmin,
+  };
 }
 
 function selectedCandidateIdentityKeys(candidate) {
@@ -639,6 +677,25 @@ async function ensureClientStarted(options = {}) {
     syncApprovalStateFromPrimary();
     settleWaiters(approvalReadyWaiters, { kind: 'ready' });
     settleWaiters(readyWaiters, { kind: 'ready' });
+  });
+
+  client.on('message', (message) => {
+    handleGroupAtmosphereIncomingMessage(client, message).then((result) => {
+      if (result && result.handled) {
+        logEvent('group_atmosphere_trigger_response', {
+          account_key: GROUP_ATMOSPHERE_ACCOUNT_KEY || null,
+          result_code: result.result_code || null,
+          matched_keyword: result.trigger_result && result.trigger_result.matched_keyword ? result.trigger_result.matched_keyword : null,
+          sent_count: Array.isArray(result.sent) ? result.sent.length : 0,
+        });
+      }
+    }).catch((error) => {
+      logEvent('group_atmosphere_inbound_error', {
+        account_key: GROUP_ATMOSPHERE_ACCOUNT_KEY || null,
+        result_code: 'group_atmosphere_inbound_error',
+        result_reason: String(error && error.message ? error.message : error),
+      });
+    });
   });
 
   client.on('auth_failure', (message) => {
@@ -997,6 +1054,93 @@ async function sendGroupMessageWithClient(activeClient, payload) {
 
 async function sendGroupMessage(payload) {
   return sendGroupMessageWithClient(client, payload);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+async function postJson(fetchImpl, url, payload) {
+  const fetchFn = fetchImpl || globalThis.fetch;
+  if (typeof fetchFn !== 'function') {
+    throw new Error('fetch is not available');
+  }
+  const response = await fetchFn(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+  });
+  const text = await response.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { detail: text }; }
+  if (!response.ok) {
+    throw new Error(`backend_http_${response.status}:${data.detail || text || 'unknown_error'}`);
+  }
+  return data;
+}
+
+async function dispatchGroupAtmosphereTriggerSequence(activeClient, targetGroup, triggerResult, options = {}) {
+  const sequence = Array.isArray(triggerResult && triggerResult.reply_sequence) ? triggerResult.reply_sequence : [];
+  const sent = [];
+  for (const segment of sequence) {
+    const delaySeconds = Number(segment && segment.delay_seconds ? segment.delay_seconds : 0) || 0;
+    if (!options.skipDelay && delaySeconds > 0) {
+      await sleep(delaySeconds * 1000);
+    }
+    const payload = {
+      target_group: targetGroup,
+      message_text: String(segment && segment.text ? segment.text : '').trim(),
+      media_path: String(segment && segment.media_path ? segment.media_path : '').trim(),
+      media_mime_type: String(segment && segment.media_mime_type ? segment.media_mime_type : '').trim(),
+      media_filename: String(segment && segment.media_filename ? segment.media_filename : '').trim(),
+      metadata: {
+        trigger_type: triggerResult.trigger_type || 'keyword_match',
+        rule_id: (triggerResult.matched_rule && triggerResult.matched_rule.rule_id) || '',
+        relationship_key: triggerResult.relationship_key || '',
+        matched_keyword: triggerResult.matched_keyword || '',
+      },
+    };
+    if (!payload.message_text && !payload.media_path) continue;
+    const result = await sendGroupMessageWithClient(activeClient, payload);
+    sent.push(result);
+  }
+  return sent;
+}
+
+async function handleGroupAtmosphereIncomingMessage(activeClient, message, options = {}) {
+  if (!GROUP_ATMOSPHERE_INBOUND_ENABLED && options.enabled !== true) {
+    return { handled: false, result_code: 'group_atmosphere_inbound_disabled' };
+  }
+  if (!message || message.fromMe) {
+    return { handled: false, result_code: 'own_or_empty_message_ignored' };
+  }
+  const text = String(message.body || message.text || message.caption || '').trim();
+  if (!text) {
+    return { handled: false, result_code: 'empty_text_ignored' };
+  }
+  const chat = typeof message.getChat === 'function' ? await message.getChat() : null;
+  if (!chat || !chat.isGroup) {
+    return { handled: false, result_code: 'non_group_message_ignored' };
+  }
+  const targetGroup = safeString(chat.id) || safeString(message.from);
+  const accountKey = String(options.accountKey || GROUP_ATMOSPHERE_ACCOUNT_KEY || '').trim();
+  if (!accountKey || !targetGroup) {
+    return { handled: false, result_code: 'missing_account_or_group' };
+  }
+  const backendUrl = String(options.backendUrl || GROUP_ATMOSPHERE_BACKEND_URL || '').replace(/\/+$/, '');
+  const triggerResult = await postJson(options.fetchImpl, `${backendUrl}/api/internal/group-atmosphere/inbound-message`, {
+    account_key: accountKey,
+    target_group: targetGroup,
+    sender_id: safeString(message.author || message.from || ''),
+    text,
+    mentioned: Boolean(message.mentionedIds && message.mentionedIds.length),
+    quoted_own_message: false,
+  });
+  if (!triggerResult || !triggerResult.should_respond) {
+    return { handled: false, result_code: triggerResult && triggerResult.result_code ? triggerResult.result_code : 'trigger_rule_not_matched', trigger_result: triggerResult || {} };
+  }
+  const sent = await dispatchGroupAtmosphereTriggerSequence(activeClient, targetGroup, triggerResult, { skipDelay: Boolean(options.skipDelay) });
+  return { handled: true, result_code: 'trigger_response_sent', trigger_result: triggerResult, sent };
 }
 
 async function fetchGroupMessagesWithClient(activeClient, payload) {
@@ -1560,10 +1704,13 @@ function groupStateFingerprint(groupId, requesterIds, requestedAtValues) {
 }
 
 async function buildGroupStateFromGroup(context, group, options = {}) {
-  const groupId = safeString(group.id);
-  const groupName = group.name || context.registration_group;
-  const mode = normalizeGroupStateMode(context, options);
+  const groupId = safeString(group && group.id) || safeString(context && context.registration_group);
+  const groupName = safeString(group && group.name) || String(context.registration_group || '').trim();
+  const mode = normalizeGroupStateMode({ ...(context || {}), ...(options || {}) });
+  const activeClientForRole = options.activeClient || options.client || approvalClient;
+  const selfAdminState = participantAdminState(findClientParticipant(group, activeClientForRole));
   const sourceTs = new Date().toISOString();
+
   if (mode === 'fast') {
     const refreshFn = typeof options.refreshFn === 'function' ? options.refreshFn : forceRefreshApprovalGroupBeforeRead;
     const fastRefreshEvidence = options.skipRefresh ? [] : await refreshFn(context, group, {
@@ -1582,6 +1729,8 @@ async function buildGroupStateFromGroup(context, group, options = {}) {
       group_name: groupName,
       pending_count: requesterRows.length,
       member_count: null,
+      ...selfAdminState,
+      can_manage_membership_requests: selfAdminState.self_is_admin,
       requester_ids: requesterIds,
       requested_at_unix: requestedAtValues,
       requesters: [],
@@ -1612,6 +1761,8 @@ async function buildGroupStateFromGroup(context, group, options = {}) {
     group_name: groupName,
     pending_count: requests.length,
     member_count: memberCount,
+    ...selfAdminState,
+    can_manage_membership_requests: selfAdminState.self_is_admin,
     requester_ids: requesterIds,
     requested_at_unix: requestedAtValues,
     requesters: requests,
@@ -1767,8 +1918,15 @@ async function resolveAuthoritativeGroupState(context, options = {}) {
       );
     }
   }
+  const finalZeroPayload = latestZeroPayload || initialStatePayload || {};
+  const finalSelfIsAdmin = finalZeroPayload.self_is_admin === true || finalZeroPayload.can_manage_membership_requests === true;
   return attachZeroPendingRecheckEvidence(
-    buildAuthoritativeGroupState(latestZeroPayload || initialStatePayload, { confirmedEmpty: true }),
+    buildAuthoritativeGroupState(
+      finalZeroPayload,
+      finalSelfIsAdmin
+        ? { confirmedEmpty: true }
+        : { unverifiedReason: 'same_runtime_family_zero_pending' },
+    ),
     rechecks,
   );
 }
@@ -2448,6 +2606,15 @@ if (require.main === module) {
     };
     logEvent('startup', startupRecord);
     console.log(JSON.stringify(startupRecord));
+    if (GROUP_ATMOSPHERE_INBOUND_ENABLED) {
+      ensureClientStarted().catch((error) => {
+        logEvent('group_atmosphere_autostart_error', {
+          account_key: GROUP_ATMOSPHERE_ACCOUNT_KEY || null,
+          result_code: 'group_atmosphere_autostart_error',
+          result_reason: String(error && error.message ? error.message : error),
+        });
+      });
+    }
   });
 }
 
@@ -2476,6 +2643,9 @@ module.exports = {
   runBrowserConflictRecoveryFlow,
   sendGroupMessageWithClient,
   sendGroupMessage,
+  dispatchGroupAtmosphereTriggerSequence,
+  handleGroupAtmosphereIncomingMessage,
+  inferGroupAtmosphereAccountKey,
   fetchGroupMessagesWithClient,
   fetchGroupMessages,
 };

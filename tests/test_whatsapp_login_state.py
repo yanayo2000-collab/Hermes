@@ -215,7 +215,7 @@ def test_lightweight_account_list_uses_cached_logged_in_session_without_worker_h
     assert row['session_state']['can_probe'] is True
 
 
-def test_lightweight_logged_in_account_outside_schedule_keeps_standby_status_without_live_probe(monkeypatch):
+def test_lightweight_logged_in_account_outside_schedule_still_monitors_without_live_probe(monkeypatch):
     db = Database(':memory:')
     service = Service(db)
     with db.connect() as conn:
@@ -283,12 +283,11 @@ def test_lightweight_logged_in_account_outside_schedule_keeps_standby_status_wit
     binding = row['group_binding_runtimes'][0]
 
     assert row['session_state']['login_state'] == 'logged_in'
-    assert row['schedule_runtime']['status'] == 'outside_window'
-    assert row['runtime_status'] == 'off_schedule'
-    assert row['status_text'] == '已登录·待命时段'
+    assert row['schedule_runtime']['status'] == 'always_on'
+    assert row['runtime_status'] == 'active'
+    assert row['status_text'] == '运行中'
     assert binding['schedule_runtime']['status'] == 'outside_window'
-    assert binding['monitoring_status_text'] == '已登录·待命时段'
-    assert binding['next_approval_eta_text'] == '待命时段'
+    assert binding['monitoring_status_text'] == '监控中'
 
 
 def test_lightweight_account_list_uses_cached_worker_health_when_session_cache_expired(monkeypatch):
@@ -663,3 +662,24 @@ def test_production_ops_truth_refresh_uses_unified_login_state_marker():
     assert "['runtime_starting', 'initializing'].includes(loginState)" in source
     assert "runtime.active && !runtime.ready" not in source
     assert "['pending_runtime', 'auto_recovering', 'session_mismatch', 'runtime_unavailable', ''].includes(code)" not in source
+
+
+def test_production_ops_runtime_recovery_button_and_qr_gate_marker():
+    source = Path('app/main.py').read_text()
+
+    assert 'function approvalAccountRuntimeIsProductionReady(row, sessionState)' in source
+    assert 'function approvalAccountCanRequestQr(row, sessionState)' in source
+    assert "['awaiting_qr', 'qr_pending', 'waiting_for_scan'].includes(runtimeStatus)" in source
+    assert "const pendingButWorkerHasQr = loginStatus === 'pending_runtime' && qrRuntimeReady;" in source
+    assert 'function approvalAccountQrActionDisabled(row, sessionState, isSessionLoading)' in source
+    assert 'function recoverApprovalAccountRuntime(accountKey)' in source
+    assert "runtime/recover`, {method: 'POST'}" in source
+    assert 'def recover_whatsapp_approval_account_runtime(self, account_key: str)' in source
+    assert "manual_recovery_in_progress" in source
+    assert 'window.__approvalRuntimeRecoveryPendingByAccount[normalized] = true;' in source
+    assert "recoveryButtonText = recoveryPending && !isProductionReady ? '恢复中' : '恢复服务'" in source
+    assert "const recoveryNeeded = approvalAccountRuntimeNeedsRecovery(row, sessionState);" in source
+    assert "const recoveryButtonDisabled = isProductionReady || recoveryPending || !recoveryNeeded;" in source
+    assert "onclick=\"recoverApprovalAccountRuntime('${accountKeyEscaped}')\"" in source
+    assert "${qrActionDisabled ? 'disabled' : ''} onclick=\"startApprovalAccountSession" in source
+    assert "showToast('服务已恢复至可投产状态', 'success')" in source

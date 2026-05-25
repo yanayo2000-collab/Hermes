@@ -498,6 +498,111 @@ def test_group_atmosphere_candidate_pool_aggregates_one_list_per_language_role_a
     assert all(candidate['config_name'] != 'binding-gabind-noise' for candidate in row['candidates'])
 
 
+def test_group_atmosphere_candidate_pool_dedupes_to_manual_usable_media_version():
+    client = make_client()
+    duplicated_text = 'Halo kak, kirim ID dan kode undangan ke admin ya.'
+    auto = client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'auto-id-newcomer_guide',
+        'enabled': True,
+        'account_key': 'pool-auto',
+        'target_group': 'pool-auto@g.us',
+        'group_name': '自动学习候选池',
+        'language': 'id',
+        'status': 'candidate_pool',
+        'template_pool': [{
+            'template_id': 'auto-dup',
+            'candidate_id': 'auto-dup',
+            'text': duplicated_text,
+            'source_type': 'auto_learn',
+            'role_positioning': 'newcomer_guide',
+            'safe_to_send': False,
+            'enabled': False,
+            'score': 99,
+        }],
+    })
+    assert auto.status_code == 200
+    manual = client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'manual-id-newcomer_guide',
+        'enabled': True,
+        'account_key': 'pool-manual',
+        'target_group': 'pool-manual@g.us',
+        'group_name': '人工上传候选池',
+        'language': 'id',
+        'status': 'candidate_pool',
+        'template_pool': [{
+            'template_id': 'manual-dup',
+            'candidate_id': 'manual-dup',
+            'text': duplicated_text,
+            'source_type': 'manual_upload',
+            'role_positioning': 'newcomer_guide',
+            'safe_to_send': True,
+            'enabled': True,
+            'score': 10,
+            'media_id': 'media-1',
+            'media_path': '/tmp/media-1.jpg',
+            'media_mime_type': 'image/jpeg',
+            'media_filename': 'proof.jpg',
+        }],
+    })
+    assert manual.status_code == 200
+
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    row = next(item for item in pool if item['language'] == 'id' and item['role_positioning'] == 'newcomer_guide')
+    matches = [candidate for candidate in row['candidates'] if candidate['text'] == duplicated_text]
+
+    assert len(matches) == 1
+    kept = matches[0]
+    assert kept['source_type'] == 'manual_upload'
+    assert kept['enabled'] is True
+    assert kept['safe_to_send'] is True
+    assert kept['media_id'] == 'media-1'
+
+
+def test_group_atmosphere_candidate_pool_quarantines_manual_links_and_long_numbers():
+    client = make_client()
+    risky = client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'manual-id-faq_helper',
+        'enabled': True,
+        'account_key': 'pool-risk',
+        'target_group': 'pool-risk@g.us',
+        'group_name': '人工风险候选池',
+        'language': 'id',
+        'status': 'candidate_pool',
+        'template_pool': [{
+            'template_id': 'manual-risk-link',
+            'candidate_id': 'manual-risk-link',
+            'text': 'Kak klik https://evil.example lalu kirim nomor 6281234567890 ya.',
+            'source_type': 'manual_upload',
+            'role_positioning': 'faq_helper',
+            'safe_to_send': True,
+            'enabled': True,
+            'score': 100,
+        }],
+    })
+    assert risky.status_code == 200
+
+    pool = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    row = next(item for item in pool if item['language'] == 'id' and item['role_positioning'] == 'faq_helper')
+    candidate = next(item for item in row['candidates'] if item['candidate_id'] == 'manual-risk-link')
+
+    assert candidate['safe_to_send'] is False
+    assert candidate['enabled'] is False
+    assert candidate['quality_status'] == 'risk_review'
+    assert 'unsafe_link' in candidate['quality_reasons']
+    assert 'long_number' in candidate['quality_reasons']
+
+
+def test_group_atmosphere_phrase_score_question_bonus_only_applies_to_faq_helper():
+    from app.main import Service
+
+    newcomer_score = Service._score_group_atmosphere_phrase('Kak kode itu apa?', role='newcomer_guide')
+    faq_score = Service._score_group_atmosphere_phrase('Kak kode itu apa?', role='faq_helper')
+    newcomer_statement_score = Service._score_group_atmosphere_phrase('Kak kode itu apa', role='newcomer_guide')
+
+    assert newcomer_score == newcomer_statement_score
+    assert faq_score > newcomer_score
+
+
 def test_group_atmosphere_custom_candidate_does_not_auto_create_visible_role():
     client = make_client()
     seed = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={

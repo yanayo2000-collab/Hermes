@@ -109,13 +109,14 @@ def test_group_atmosphere_dispatch_respects_rate_limit():
 
     first = client.post('/api/ops/group-atmosphere/dispatch-once', json={'config_name': 'indo-reg-01'})
     assert first.status_code == 200
-    assert first.json()['sent'] is True
+    assert first.json()['sent'] is False
     assert first.json()['dry_run'] is True
+    assert first.json()['result_code'] == 'dry_run'
 
     second = client.post('/api/ops/group-atmosphere/dispatch-once', json={'config_name': 'indo-reg-01'})
     assert second.status_code == 200
     assert second.json()['sent'] is False
-    assert second.json()['result_code'] in {'daily_limit_reached', 'min_interval_not_reached'}
+    assert second.json()['result_code'] == 'dry_run'
 
 
 def test_group_atmosphere_mention_reply_only_when_mentioned():
@@ -150,3 +151,35 @@ def test_group_atmosphere_mention_reply_only_when_mentioned():
     assert mentioned.status_code == 200
     assert mentioned.json()['should_respond'] is True
     assert mentioned.json()['reply_text'] == 'Send your 6-character personal invitation code to admin.'
+
+def test_group_atmosphere_dispatch_does_not_count_worker_success_without_message_id(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        text = '{"status":"success","result_code":"sent"}'
+
+        def json(self):
+            return {'status': 'success', 'result_code': 'sent'}
+
+    monkeypatch.setattr('app.main.requests.post', lambda url, json, timeout: FakeResponse())
+    client = make_client()
+    client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'indo-reg-01',
+        'enabled': True,
+        'account_key': 'wa-seed-01',
+        'target_group': 'group-a@g.us',
+        'worker_base_url': 'http://127.0.0.1:9010',
+        'daily_max_messages': 1,
+        'min_interval_minutes': 60,
+        'template_pool': [{'template_id': 't1', 'text': 'First message'}],
+    })
+
+    first = client.post('/api/ops/group-atmosphere/dispatch-once', json={'config_name': 'indo-reg-01'})
+    assert first.status_code == 200
+    assert first.json()['result_code'] == 'sent'
+    assert first.json()['sent'] is False
+
+    second = client.post('/api/ops/group-atmosphere/dispatch-once', json={'config_name': 'indo-reg-01'})
+    assert second.status_code == 200
+    assert second.json()['result_code'] == 'sent'
+    assert second.json()['sent'] is False
+

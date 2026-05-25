@@ -241,6 +241,18 @@ def test_production_ops_page_connects_realtime_websocket_and_patches_groups():
     assert 'data-realtime-group-id' in source
 
 
+def test_realtime_snapshot_endpoint_refreshes_lightweight_server_snapshot():
+    source = Path('app/main.py').read_text()
+    store_source = Path('app/realtime_approval_state.py').read_text()
+
+    assert 'lightweight_snapshot_refresh' in source
+    assert 'returning the first in-memory' in source
+    assert 'service.list_whatsapp_approval_accounts(lightweight=True)' in source
+    assert "source: str = 'backend'" in store_source
+    assert "lightweight_snapshot_refresh" in store_source
+    assert "return False" in store_source
+
+
 def test_daemon_can_publish_realtime_snapshot_without_browser_probe():
     source = Path('scripts/production_ops_daemon.py').read_text()
 

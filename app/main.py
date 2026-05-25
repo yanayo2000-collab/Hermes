@@ -1643,7 +1643,7 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
 #ga_candidate_card .group-card{padding:13px!important;}
 #ga_scheduler_card{background:#f8fbff!important;}
 #ga_scheduler_card .inline-actions{justify-content:flex-start!important;}
-#ga_editor_modal,#ga_role_editor_modal,#gaQrModal,#gaSendModal{grid-column:auto!important;}
+#ga_editor_modal,#ga_role_editor_modal,#gaQrModal,#gaSendModal,#ga_trigger_rules_modal{grid-column:auto!important;}
 @media (max-width:980px){.ga-board-grid{grid-template-columns:1fr!important}.ga-bridge-layout{grid-template-columns:1fr!important}.ga-bridge-col{border-right:1px solid var(--crm-border)!important}.ga-hero{align-items:flex-start!important;flex-direction:column!important}.ga-hero-actions{justify-content:flex-start!important;min-width:0!important}#ga_overview_stats{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
 @media (max-width:760px){#ga_overview_stats{grid-template-columns:repeat(2,minmax(0,1fr))!important}.ga_candidate_card .toolbar-actions,#ga_candidate_card .toolbar-actions{grid-template-columns:1fr!important}}
 
@@ -1675,6 +1675,15 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
 .ga-pool-filter-row select{max-width:220px!important;}
 .ga-upload-panel{width:min(560px,100%)!important;background:#fff!important;border-radius:18px!important;padding:24px!important;margin:24px 0 34px!important;box-shadow:0 8px 20px rgba(0,0,0,.05)!important;}
 .ga-upload-panel h3,.ga-proto-subhead h3{font-size:26px!important;margin:0 0 16px!important;color:#050505!important;}
+#ga_manual_upload_card.ga-manual-upload-compact{width:100%!important;max-width:none!important;padding:16px!important;margin:0!important;display:grid!important;gap:10px!important;}
+#ga_manual_upload_card .ga-manual-upload-head{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin:0!important;}
+#ga_manual_upload_card .ga-manual-upload-head h3{font-size:18px!important;line-height:1.25!important;margin:0!important;}
+#ga_manual_upload_card .ga-manual-upload-head button{height:38px!important;min-height:38px!important;margin:0!important;white-space:nowrap!important;}
+#ga_manual_upload_card .ga-manual-upload-row{display:grid!important;grid-template-columns:120px 160px minmax(220px,1fr)!important;gap:10px!important;align-items:center!important;margin:0!important;}
+#ga_manual_upload_card .ga-manual-upload-row select,#ga_manual_upload_card .ga-manual-upload-row input[type="file"]{height:38px!important;min-height:38px!important;margin:0!important;}
+#ga_manual_upload_card textarea#ga_manual_phrase_text{min-height:72px!important;margin:0!important;resize:vertical!important;}
+#ga_manual_upload_card #ga_phrase_library_result{margin:0!important;min-height:0!important;}
+@media(max-width:820px){#ga_manual_upload_card .ga-manual-upload-row{grid-template-columns:1fr!important;}#ga_manual_upload_card .ga-manual-upload-head{align-items:stretch!important;flex-direction:column!important;}#ga_manual_upload_card .ga-manual-upload-head button{width:100%!important;}}
 
 .ga-proto-subhead{display:flex!important;align-items:center!important;justify-content:space-between!important;margin-bottom:22px!important;}
 
@@ -1772,10 +1781,26 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
 #ga_candidate_pool .ga-candidate-manual-draft-actions button:first-child{background:var(--crm-blue)!important;border-color:var(--crm-blue)!important;color:#fff!important;}
 @media(max-width:760px){#ga_candidate_pool .ga-candidate-manual-draft-main{grid-template-columns:1fr!important;}#ga_candidate_pool .ga-candidate-manual-draft-actions{justify-content:stretch!important;}#ga_candidate_pool .ga-candidate-manual-draft-actions button{flex:1 1 0!important;}}
 #ga_candidate_pool .candidate-row-compact.is-unavailable{background:#fffaf0!important;border-color:#fed7aa!important;opacity:.96!important;}
+#ga_candidate_pool .ga-candidate-row.is-drag-source{opacity:.48!important;}
+#ga_candidate_pool .ga-candidate-drop-cursor{display:grid!important;grid-template-columns:30px 18px auto minmax(0,1fr) minmax(220px,auto)!important;align-items:center!important;gap:6px 8px!important;margin:3px 0!important;padding:0 8px!important;height:22px!important;color:#1d4ed8!important;font-size:12px!important;font-weight:850!important;pointer-events:none!important;}
+#ga_candidate_pool .ga-candidate-drop-cursor:before{content:"";grid-column:1 / 6!important;height:3px!important;border-radius:999px!important;background:#2563eb!important;box-shadow:0 0 0 3px rgba(37,99,235,.12)!important;}
+#ga_candidate_pool .ga-candidate-drop-cursor:after{content:"拖动到这里放手";grid-column:4 / 6!important;justify-self:start!important;margin-top:-21px!important;padding:1px 8px!important;border-radius:999px!important;background:#eff6ff!important;border:1px solid #bfdbfe!important;color:#1d4ed8!important;line-height:18px!important;white-space:nowrap!important;}
 #ga_candidate_pool .candidate-row-compact input[type="text"]{grid-column:4!important;height:30px!important;min-height:30px!important;min-width:0!important;padding:4px 8px!important;font-size:13px!important;line-height:20px!important;}
 #ga_candidate_pool .group-card-title{align-items:center!important;margin-bottom:4px!important;}
 #ga_candidate_pool .group-card-title>.inline-actions{margin-top:0!important;align-self:flex-start!important;transform:translateY(-2px);}
-#ga_candidate_pool .ga-candidate-sublist{margin-top:4px!important;}
+#ga_candidate_pool .ga-candidate-card-head{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;margin:0 0 6px!important;min-width:0!important;}
+#ga_candidate_pool .ga-candidate-card-title{display:flex!important;align-items:center!important;gap:8px!important;min-width:0!important;flex:1 1 auto!important;white-space:nowrap!important;overflow:hidden!important;}
+#ga_candidate_pool .ga-candidate-card-title strong{min-width:0!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;}
+#ga_candidate_pool .ga-candidate-card-title .muted{margin-left:0!important;white-space:nowrap!important;}
+#ga_candidate_pool .ga-candidate-card-actions{display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:6px!important;flex:0 0 auto!important;}
+#ga_candidate_pool .ga-candidate-card-actions button{height:32px!important;min-height:32px!important;padding:0 10px!important;border-radius:10px!important;font-size:12px!important;line-height:30px!important;white-space:nowrap!important;}
+#ga_candidate_pool .ga-candidate-sublist{margin-top:2px!important;}
+#ga_candidate_pool .ga-candidate-usable-toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:8px!important;min-height:34px!important;margin:0 0 4px!important;padding:5px 8px!important;border-radius:10px!important;background:#f8fbff!important;border:1px solid #e5edf7!important;}
+#ga_candidate_pool .ga-candidate-usable-title{display:inline-flex!important;align-items:center!important;gap:6px!important;margin:0!important;font-size:13px!important;font-weight:800!important;white-space:nowrap!important;}
+#ga_candidate_pool .ga-candidate-usable-title input{width:16px!important;height:16px!important;min-height:16px!important;margin:0!important;}
+#ga_candidate_pool .ga-candidate-bulk-move-actions{display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:6px!important;flex-wrap:nowrap!important;min-width:0!important;}
+#ga_candidate_pool .ga-candidate-bulk-move-actions button{height:30px!important;min-height:30px!important;margin:0!important;padding:0 10px!important;border-radius:9px!important;font-size:12px!important;line-height:28px!important;white-space:nowrap!important;}
+#ga_candidate_pool .ga-candidate-bulk-move-actions select{width:156px!important;max-width:156px!important;height:30px!important;min-height:30px!important;margin:0!important;padding:0 28px 0 8px!important;border-radius:9px!important;font-size:12px!important;line-height:28px!important;}
 #ga_candidate_pool .candidate-role-line{display:flex!important;gap:10px!important;align-items:center!important;flex-wrap:wrap!important;margin-top:8px!important;}
 #ga_candidate_pool .candidate-role-line select{width:auto!important;min-width:220px!important;}
 #ga_learning_result:empty,#ga_candidate_result:empty{display:none!important;}
@@ -1849,7 +1874,13 @@ input[type=file]::file-selector-button{height:28px!important;margin:0 10px 0 0!i
 #ga_learning_bot_card:has(#ga_learning_accounts.is-empty) .toolbar{margin-bottom:0!important;}
 @media(max-width:760px){.ga-upload-action-row{grid-template-columns:1fr!important;}.ga-upload-action-row button{width:100%!important;}}
 #ga_candidate_pool .group-card{box-shadow:none!important;}
-#ga_candidate_role_tabs{display:flex!important;gap:8px!important;flex-wrap:wrap!important;margin:0 0 16px!important;}
+#ga_candidate_type_bar{display:flex!important;align-items:flex-start!important;gap:8px!important;max-width:100%!important;margin:0 0 16px!important;}
+#ga_candidate_role_tabs{display:flex!important;gap:8px!important;flex-wrap:nowrap!important;overflow-x:scroll!important;overflow-y:hidden!important;min-width:0!important;flex:1 1 auto!important;margin:0!important;padding:0 0 12px!important;scrollbar-width:auto!important;scrollbar-color:#94a3b8 #e2e8f0!important;}
+#ga_candidate_role_tabs::-webkit-scrollbar{height:10px!important;}
+#ga_candidate_role_tabs::-webkit-scrollbar-track{background:#e2e8f0!important;border-radius:999px!important;}
+#ga_candidate_role_tabs::-webkit-scrollbar-thumb{background:#94a3b8!important;border-radius:999px!important;border:2px solid #e2e8f0!important;}
+#ga_candidate_role_tabs .ga-candidate-tab{flex:0 0 auto!important;}
+#ga_add_phrase_type_btn{flex:0 0 auto!important;margin:0!important;}
 .ga-candidate-tab{height:36px!important;min-height:36px!important;padding:0 14px!important;border-radius:999px!important;border:1px solid #d7e5ff!important;background:#f2f6ff!important;color:var(--crm-blue-hover)!important;box-shadow:none!important;font-weight:720!important;margin:0!important;display:inline-flex!important;align-items:center!important;gap:8px!important;}
 .ga-candidate-tab-delete-inside{width:18px!important;height:18px!important;min-width:18px!important;min-height:18px!important;padding:0!important;border-radius:999px!important;border:0!important;background:rgba(185,28,28,.10)!important;color:#b91c1c!important;line-height:18px!important;font-size:14px!important;font-weight:900!important;box-shadow:none!important;margin:0 -6px 0 0!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;}
 .ga-candidate-tab.is-active .ga-candidate-tab-delete-inside{background:rgba(255,255,255,.22)!important;color:#fff!important;}
@@ -1865,9 +1896,30 @@ input[type=file]::file-selector-button{height:28px!important;margin:0 10px 0 0!i
 .ga-candidate-text-wrap{position:relative!important;display:flex!important;align-items:center!important;flex:1 1 auto!important;min-width:0!important;}
 .ga-candidate-text-wrap input[data-ga-candidate-text]{width:100%!important;}
 .ga-candidate-text-wrap.has-media input[data-ga-candidate-text]{padding-right:36px!important;}
-.ga-candidate-media-icon{position:absolute!important;right:9px!important;top:50%!important;transform:translateY(-50%)!important;width:22px!important;height:22px!important;border-radius:999px!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;background:#eff6ff!important;border:1px solid #bfdbfe!important;color:#2563eb!important;font-size:13px!important;line-height:1!important;pointer-events:auto!important;}
+.ga-candidate-media-icon{position:absolute!important;right:9px!important;top:50%!important;transform:translateY(-50%)!important;width:22px!important;height:22px!important;min-width:22px!important;min-height:22px!important;max-width:22px!important;max-height:22px!important;border-radius:0!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;background:transparent!important;border:0!important;color:inherit!important;font-size:15px!important;line-height:1!important;pointer-events:auto!important;padding:0!important;margin:0!important;box-sizing:border-box!important;cursor:pointer!important;appearance:none!important;-webkit-appearance:none!important;vertical-align:middle!important;flex:0 0 22px!important;box-shadow:none!important;outline:0!important;}
+button.ga-candidate-media-icon,button.ga-candidate-media-icon:hover,button.ga-candidate-media-icon:focus,button.ga-candidate-media-icon:active,#ga_candidate_pool button.ga-candidate-media-icon,#ga_role_editor_card button.ga-candidate-media-icon,#ga_manual_media_preview .ga-candidate-media-icon{background:transparent!important;border:0!important;border-radius:0!important;box-shadow:none!important;outline:0!important;color:inherit!important;padding:0!important;margin:0!important;min-height:22px!important;height:22px!important;line-height:1!important;}
 /* Role editor modal aligned with WhatsApp account editor */
-#ga_role_editor_modal.is-open,#ga_editor_modal.is-open,#ga_bridge_modal.is-open,#gaSendModal.is-open{display:flex!important;}
+#ga_role_editor_modal.is-open,#ga_editor_modal.is-open,#ga_bridge_modal.is-open,#gaSendModal.is-open,#ga_trigger_rules_modal.is-open{display:flex!important;}
+#ga_trigger_rules_modal{align-items:center!important;justify-content:center!important;padding:20px!important;}
+#ga_trigger_rules_modal .ga-trigger-card{width:min(940px,calc(100vw - 40px))!important;max-height:calc(100vh - 40px)!important;overflow:hidden!important;background:#fff!important;border:1px solid rgba(219,228,240,.95)!important;border-radius:18px!important;box-shadow:0 24px 64px rgba(15,23,42,.24)!important;padding:0!important;margin:0!important;}
+#ga_trigger_rules_modal .modal-head{height:58px!important;padding:0 16px!important;margin:0!important;border-bottom:1px solid var(--crm-border)!important;display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;}
+#ga_trigger_rules_modal .modal-head h2{font-size:18px!important;line-height:24px!important;margin:0!important;}
+#ga_trigger_rules_modal .modal-close{width:34px!important;height:34px!important;min-width:34px!important;min-height:34px!important;margin:0!important;padding:0!important;border-radius:10px!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;}
+.ga-trigger-quick-guide{display:none!important;}
+.ga-trigger-layout{display:grid!important;grid-template-columns:240px minmax(0,1fr)!important;gap:12px!important;padding:12px!important;height:calc(100vh - 98px)!important;max-height:650px!important;min-height:460px!important;box-sizing:border-box!important;}
+.ga-trigger-panel{border:1px solid var(--crm-border)!important;border-radius:14px!important;background:#fff!important;padding:12px!important;min-width:0!important;overflow:auto!important;box-sizing:border-box!important;}
+.ga-trigger-editor{display:flex!important;flex-direction:column!important;overflow:auto!important;gap:12px!important;}
+.ga-trigger-section-title{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;margin:0!important;padding:0!important;min-height:34px!important;}
+.ga-trigger-section-title h3{font-size:15px!important;line-height:22px!important;margin:0!important;}
+.ga-trigger-section-title button{height:34px!important;min-height:34px!important;margin:0!important;white-space:nowrap!important;}
+.ga-trigger-form-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:10px 12px!important;margin:0!important;align-items:start!important;}
+.ga-trigger-field{display:grid!important;gap:6px!important;margin:0!important;min-width:0!important;align-content:start!important;}
+.ga-trigger-field>span{font-size:13px!important;font-weight:700!important;color:#334155!important;line-height:18px!important;height:18px!important;display:flex!important;align-items:center!important;}
+.ga-trigger-field input,.ga-trigger-field select{height:40px!important;min-height:40px!important;margin:0!important;width:100%!important;box-sizing:border-box!important;}
+.ga-trigger-field small,.ga-trigger-message-box small,.ga-trigger-small-grid small{display:none!important;}
+.ga-trigger-enabled{font-size:13px!important;color:#334155!important;display:flex!important;align-items:center!important;gap:6px!important;}
+.ga-trigger-message-box{display:grid!important;gap:8px!important;margin:0!important;flex:1!important;min-height:120px!important;}.ga-trigger-rule-item{padding:10px!important;margin:0 0 8px!important;border-radius:12px!important;}.ga-trigger-rule-row{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:8px!important;align-items:start!important;}.ga-trigger-rule-main{display:grid!important;gap:3px!important;min-width:0!important;}.ga-trigger-rule-main strong{font-size:14px!important;line-height:20px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;}.ga-trigger-rule-main span{font-size:12px!important;line-height:16px!important;color:#64748b!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;}.ga-trigger-rule-actions{display:grid!important;gap:6px!important;}.ga-trigger-rule-actions button{height:28px!important;min-height:28px!important;margin:0!important;padding:0 10px!important;}.ga-trigger-message-head{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;margin:0!important;min-height:34px!important;}.ga-trigger-message-head .muted{display:none!important;}.ga-trigger-message-head button{height:34px!important;min-height:34px!important;margin:0!important;}.ga-trigger-message-segments{display:grid!important;gap:8px!important;}.ga-trigger-segment{border:1px solid var(--crm-border)!important;border-radius:12px!important;background:#f8fbff!important;padding:10px!important;display:grid!important;gap:8px!important;}.ga-trigger-segment-head{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;font-size:13px!important;font-weight:800!important;color:#334155!important;line-height:20px!important;}.ga-trigger-segment-head button{height:28px!important;min-height:28px!important;margin:0!important;}.ga-trigger-segment-body{display:grid!important;grid-template-columns:minmax(0,1fr) 94px!important;gap:8px!important;align-items:start!important;}.ga-trigger-segment textarea{width:100%!important;min-height:64px!important;resize:vertical!important;margin:0!important;box-sizing:border-box!important;}.ga-trigger-segment label{display:grid!important;gap:5px!important;font-size:12px!important;color:#475569!important;line-height:16px!important;}.ga-trigger-segment input{height:34px!important;min-height:34px!important;margin:0!important;box-sizing:border-box!important;}.ga-trigger-media-tail{display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:8px!important;min-height:22px!important;}.ga-trigger-media-tail .muted{display:none!important;}.ga-trigger-small-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important;}.ga-trigger-small-grid label{display:grid!important;gap:5px!important;font-size:12px!important;color:#475569!important;}.ga-trigger-small-grid input,.ga-trigger-small-grid select{width:100%!important;height:36px!important;min-height:36px!important;margin:0!important;}.ga-trigger-actions{display:flex!important;justify-content:flex-end!important;align-items:center!important;gap:8px!important;margin-top:auto!important;padding-top:2px!important;}.ga-trigger-actions-spacer{flex:1 1 auto!important;}.ga-trigger-actions button{height:38px!important;min-height:38px!important;margin:0!important;}
+@media (max-width:980px){.ga-trigger-layout{grid-template-columns:1fr!important;height:auto!important;max-height:none!important}.ga-trigger-small-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
 #ga_role_editor_modal{align-items:center!important;justify-content:center!important;padding:24px!important;}
 #ga_role_editor_card{width:min(960px,calc(100vw - 48px))!important;max-height:calc(100vh - 48px)!important;overflow:auto!important;background:#fff!important;border:1px solid rgba(219,228,240,.95)!important;border-radius:22px!important;box-shadow:0 24px 64px rgba(15,23,42,.24)!important;padding:0!important;margin:0!important;}
 #ga_role_editor_card>.modal-head{position:sticky!important;top:0!important;z-index:2!important;display:flex!important;align-items:flex-start!important;justify-content:space-between!important;gap:16px!important;padding:18px 20px 14px!important;margin:0!important;border-bottom:1px solid var(--crm-border)!important;background:#fff!important;border-radius:22px 22px 0 0!important;}
@@ -1877,22 +1929,18 @@ input[type=file]::file-selector-button{height:28px!important;margin:0 10px 0 0!i
 #ga_role_editor_card>.grid{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:16px!important;padding:16px 20px 0!important;margin:0!important;}
 #ga_role_editor_card>.grid>div{background:#f8fbff!important;border:1px solid var(--crm-border)!important;border-radius:16px!important;padding:14px!important;min-width:0!important;}
 #ga_role_editor_card>.grid h3{font-size:14px!important;line-height:1.3!important;margin:0 0 10px!important;color:#0f172a!important;}
-#ga_role_phrase_pool{display:grid!important;gap:8px!important;max-height:360px!important;overflow:auto!important;padding-right:2px!important;}
+#ga_role_phrase_pool{display:grid!important;gap:8px!important;max-height:560px!important;overflow:auto!important;padding-right:2px!important;}
 #ga_role_phrase_pool .mini-note{margin:0!important;background:#fff!important;border:1px solid var(--crm-border)!important;border-radius:12px!important;padding:10px 12px!important;box-shadow:none!important;}
 #ga_role_phrase_pool .ga-role-pool-row{display:grid!important;grid-template-columns:18px minmax(0,1fr) auto!important;align-items:center!important;gap:8px!important;min-height:34px!important;padding:6px 10px!important;border-radius:10px!important;}
 #ga_role_phrase_pool .ga-role-pool-row input[type="checkbox"]{width:16px!important;height:16px!important;min-height:16px!important;margin:0!important;justify-self:center!important;align-self:center!important;}
 #ga_role_phrase_pool .ga-role-pool-text{overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;font-size:13px!important;line-height:20px!important;}
 #ga_role_phrase_pool .ga-role-pool-source{font-size:12px!important;color:#64748b!important;white-space:nowrap!important;}
 #ga_role_editor_card>.grid.ga-role-editor-single{grid-template-columns:1fr!important;}
-#ga_role_editor_card .ga-role-manual-phrases{margin-top:12px!important;background:#fff!important;border:1px solid var(--crm-border)!important;border-radius:12px!important;padding:10px!important;}
-#ga_role_editor_card .ga-role-manual-phrases h3{margin:0 0 8px!important;}
-#ga_role_editor_card .ga-role-manual-phrases textarea{min-height:96px!important;}
-#ga_role_editor_card .ga-role-pool-row.is-newly-saved{border-color:#2563eb!important;background:#eff6ff!important;box-shadow:0 0 0 1px rgba(37,99,235,.12)!important;} #ga_role_editor_card .ga-role-pool-toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;margin:0 0 8px!important;padding:8px 10px!important;background:#f8fbff!important;border:1px solid var(--crm-border)!important;border-radius:12px!important;} #ga_role_editor_card .ga-role-pool-select-all{display:inline-flex!important;align-items:center!important;gap:6px!important;margin:0!important;font-size:13px!important;font-weight:800!important;color:#1e3a8a!important;} #ga_role_editor_card .ga-role-pool-select-all input{width:16px!important;height:16px!important;min-height:16px!important;margin:0!important;}
-#ga_role_phrases{min-height:360px!important;margin:0!important;resize:vertical!important;}
+#ga_role_editor_card .ga-role-pool-toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;margin:0 0 8px!important;padding:8px 10px!important;background:#f8fbff!important;border:1px solid var(--crm-border)!important;border-radius:12px!important;} #ga_role_editor_card .ga-role-pool-select-all{display:inline-flex!important;align-items:center!important;gap:6px!important;margin:0!important;font-size:13px!important;font-weight:800!important;color:#1e3a8a!important;} #ga_role_editor_card .ga-role-pool-select-all input{width:16px!important;height:16px!important;min-height:16px!important;margin:0!important;} #ga_role_editor_card .ga-role-pool-text-wrap{display:inline-flex!important;align-items:center!important;gap:6px!important;min-width:0!important;flex:1 1 auto!important;} #ga_role_editor_card .ga-role-pool-text-wrap .ga-candidate-media-icon{position:static!important;right:auto!important;top:auto!important;transform:none!important;flex:0 0 auto!important;margin-left:2px!important;} .ga-manual-media-preview{margin:8px 0 0!important;padding:8px 10px!important;border:1px dashed var(--crm-border)!important;border-radius:12px!important;background:#f8fbff!important;font-size:13px!important;} .ga-manual-media-preview.has-media{border-style:solid!important;border-color:#bfdbfe!important;background:#eff6ff!important;color:#1d4ed8!important;font-weight:700!important;}
 #ga_role_editor_card>.inline-actions{display:flex!important;justify-content:flex-end!important;gap:10px!important;padding:16px 20px 20px!important;margin:0!important;}
 #ga_role_editor_card>#ga_role_editor_result{margin:0 20px!important;}
 #ga_role_editor_card .modal-close,#ga_role_editor_card>.inline-actions button{min-height:38px!important;margin:0!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;}
-@media(max-width:980px){#ga_role_editor_card>.compact-grid,#ga_role_editor_card>.grid{grid-template-columns:1fr!important;}#ga_role_phrases{min-height:220px!important;}}
+@media(max-width:980px){#ga_role_editor_card>.compact-grid,#ga_role_editor_card>.grid{grid-template-columns:1fr!important;}}
 /* Group atmosphere spacing tighten */
 .ga-proto-page > .ga-workbench-stats.ga-stats{margin:16px 0!important;}
 .ga-proto-section .inline-actions{gap:10px!important;margin-top:12px!important;}
@@ -1998,6 +2046,51 @@ input[type=file]::file-selector-button{height:28px!important;margin:0 10px 0 0!i
   #ga_role_library,
   #ga_role_library_card #ga_role_library{grid-template-columns:1fr!important;}
 }
+
+/* Group atmosphere unified UI contract: typography, spacing, controls */
+:root{--ga-section-gap:16px;--ga-card-padding:20px;--ga-control-height:38px;--ga-filter-height:34px;--ga-list-control-height:30px;--ga-radius:18px;}
+.ga-proto-stack{display:grid!important;gap:var(--ga-section-gap)!important;}
+.ga-generation-grid{display:grid!important;gap:16px!important;}
+.ga-generation-grid>.ga-upload-panel{margin:0!important;}
+#ga_candidate_card .ga-upload-panel h3{font-size:16px!important;line-height:22px!important;margin:0!important;}
+.ga-empty-state{min-height:42px!important;padding:11px 12px!important;border-radius:12px!important;background:#f8fafc!important;border:1px solid #e2e8f0!important;color:#64748b!important;font-size:14px!important;line-height:20px!important;display:flex!important;align-items:center!important;}
+#ga_accounts.is-empty,#ga_role_library.is-empty{min-height:42px!important;padding:11px 12px!important;border-radius:12px!important;background:#f8fafc!important;border:1px solid #e2e8f0!important;color:#64748b!important;}
+#ga_candidate_card button,#ga_role_bridge_card button,#ga_accounts_card button,#ga_role_library_card button{height:var(--ga-control-height)!important;min-height:var(--ga-control-height)!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;margin:0!important;}
+#ga_candidate_list_card .ga-candidate-card-actions button,#ga_candidate_list_card .ga-candidate-bulk-move-actions button{height:var(--ga-list-control-height)!important;min-height:var(--ga-list-control-height)!important;}
+#ga_candidate_list_card .ga-candidate-bulk-move-actions select{height:var(--ga-list-control-height)!important;min-height:var(--ga-list-control-height)!important;}
+#ga_candidate_list_card .ga-candidate-row button{height:var(--ga-list-control-height)!important;min-height:var(--ga-list-control-height)!important;}
+#ga_candidate_list_card .ga-candidate-row{margin-top:6px!important;}
+#ga_candidate_list_card .ga-candidate-usable-toolbar{min-height:38px!important;}
+#ga_candidate_list_card h2{font-size:19px!important;line-height:24px!important;}
+#ga_candidate_list_card>.ga-proto-head h2{font-size:19px!important;line-height:24px!important;}
+/* Manual upload review modal: align with account/role/send modal spec */
+#ga_manual_upload_review_card{width:min(960px,calc(100vw - 48px))!important;max-height:calc(100vh - 48px)!important;padding:0!important;overflow:hidden!important;border-radius:20px!important;display:grid!important;grid-template-rows:auto auto minmax(0,1fr) auto!important;}
+#ga_manual_upload_review_card .modal-head{padding:20px 20px 14px!important;margin:0!important;border-bottom:1px solid #e5eaf3!important;align-items:flex-start!important;}
+#ga_manual_upload_review_card .modal-head h2{font-size:20px!important;line-height:26px!important;margin:0!important;}
+#ga_manual_upload_review_card .ga-review-subtitle{margin-top:4px!important;color:#64748b!important;font-size:13px!important;line-height:20px!important;}
+#ga_manual_upload_review_summary{padding:14px 20px!important;border-bottom:1px solid #e5eaf3!important;background:#f8fbff!important;color:#334155!important;}
+#ga_manual_upload_review_body{padding:14px 20px 18px!important;overflow:auto!important;display:grid!important;gap:12px!important;}
+#ga_manual_upload_review_card .ga-review-summary-grid{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:10px!important;}
+#ga_manual_upload_review_card .ga-review-summary-card{background:#fff!important;border:1px solid #e5eaf3!important;border-radius:14px!important;padding:10px 12px!important;box-shadow:none!important;}
+#ga_manual_upload_review_card .ga-review-summary-card .label{font-size:12px!important;color:#64748b!important;font-weight:800!important;}
+#ga_manual_upload_review_card .ga-review-summary-card .value{font-size:20px!important;line-height:26px!important;font-weight:900!important;color:#0f172a!important;margin-top:2px!important;}
+#ga_manual_upload_review_card .ga-review-toolbar{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin-top:12px!important;}
+#ga_manual_upload_review_card .ga-review-select-all{display:inline-flex!important;align-items:center!important;gap:8px!important;font-size:13px!important;font-weight:850!important;color:#1e3a8a!important;margin:0!important;}
+#ga_manual_upload_review_card .ga-review-select-all input{width:16px!important;height:16px!important;min-height:16px!important;margin:0!important;}
+#ga_manual_upload_review_card .ga-review-group{margin:0!important;padding:12px!important;background:#fff!important;border:1px solid #e5eaf3!important;border-radius:16px!important;box-shadow:none!important;}
+#ga_manual_upload_review_card .ga-review-group .toolbar{margin:0 0 10px!important;min-height:30px!important;align-items:center!important;}
+#ga_manual_upload_review_card .ga-review-row{display:grid!important;grid-template-columns:18px minmax(0,1fr) auto!important;gap:8px!important;align-items:start!important;padding:8px 0!important;border-top:1px solid #eef2f7!important;}
+#ga_manual_upload_review_card .ga-review-row:first-of-type{border-top:0!important;}
+#ga_manual_upload_review_card .ga-review-row input[type="checkbox"]{width:16px!important;height:16px!important;min-height:16px!important;margin:9px 0 0!important;}
+#ga_manual_upload_review_card .ga-review-row-main{display:grid!important;gap:0!important;min-width:0!important;}
+#ga_manual_upload_review_card .ga-review-row textarea{min-height:38px!important;height:auto!important;max-height:240px!important;resize:vertical!important;overflow:hidden!important;padding:8px 10px!important;font-size:13px!important;line-height:20px!important;border-radius:10px!important;margin:0!important;white-space:pre-wrap!important;}
+#ga_manual_upload_review_card .ga-review-translate-btn{height:34px!important;min-height:34px!important;margin:2px 0 0!important;padding:0 10px!important;border-radius:10px!important;font-size:12px!important;white-space:nowrap!important;}
+#ga_manual_upload_review_card .ga-review-row textarea.is-translated{background:#f8fbff!important;border-color:#bfdbfe!important;}
+#ga_manual_upload_review_card .ga-review-row select{height:38px!important;min-height:38px!important;border-radius:10px!important;margin:0!important;font-size:13px!important;}
+#ga_manual_upload_review_card .ga-review-footer{padding:14px 20px 20px!important;margin:0!important;border-top:1px solid #e5eaf3!important;background:#fff!important;display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;}
+#ga_manual_upload_review_card .ga-review-footer .inline-actions{margin:0!important;padding:0!important;display:flex!important;gap:10px!important;justify-content:flex-end!important;}
+#ga_manual_upload_review_card .ga-review-footer button{height:38px!important;min-height:38px!important;margin:0!important;}
+@media(max-width:860px){#ga_manual_upload_review_card{width:calc(100vw - 24px)!important;}#ga_manual_upload_review_card .ga-review-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;}#ga_manual_upload_review_card .ga-review-row{grid-template-columns:18px minmax(0,1fr)!important;}#ga_manual_upload_review_card .ga-review-row select{grid-column:2!important;}#ga_manual_upload_review_card .ga-review-footer{align-items:stretch!important;flex-direction:column!important;}#ga_manual_upload_review_card .ga-review-footer .inline-actions{justify-content:stretch!important;}#ga_manual_upload_review_card .ga-review-footer button{flex:1 1 auto!important;}}
 </style>
 </head><body><div class="page-shell"><div class="shell-nav"><a href="/ops">管理员看板</a><a href="/ops/intake-bot-presets">收口配置中心</a><a href="/ops/production-ops">群审批控制台</a><a href="/ops/registration-group-approval-batch-members">注册群审批留存页</a><a href="/ops/group-atmosphere">群聊天助手</a><a href="/ops/accounts" data-admin-only-nav="true">账号设置</a></div>
 <div class="ga-proto-page" data-layout="ops-workbench-redesign"><div class="ga-page-head"><div><h1 class="ga-proto-title">群聊天助手</h1></div></div>
@@ -2008,36 +2101,38 @@ input[type=file]::file-selector-button{height:28px!important;margin:0 10px 0 0!i
 <section class="ga-proto-section ga-wa-section" id="ga_accounts_card" data-layout-zone="whatsapp-resource-pool"><div class="ga-proto-head"><div><h2>发言机器人配置</h2></div><div class="ga-proto-head-actions"><button type="button" id="ga_new_account_btn">新增发言机器人</button></div></div><div id="ga_action_feedback" class="muted ga-inline-feedback"></div><div id="ga_accounts" class="account-table-wrap"></div></section>
 <section class="ga-proto-section ga-role-section" id="ga_role_library_card" data-layout-zone="speech-roles"><div class="ga-proto-head"><div><h2>话术角色</h2></div><button type="button" id="ga_new_role_btn">新增话术角色</button></div><div id="ga_role_library" class="muted">加载话术角色...</div></section>
 
-<section class="ga-proto-section ga-copy-section" id="ga_phrase_library_card" data-layout-zone="phrase-library"><div class="ga-proto-head"><div><h2>话术库管理</h2></div><span class="pill gray">人工上传直采纳</span></div><div class="grid ga-generation-grid ga-generation-stack"><div class="ga-upload-panel"><h3>人工上传话术</h3><div class="compact-grid"><select id="ga_manual_upload_region"><option value="印尼">印尼</option><option value="墨西哥">墨西哥</option><option value="巴西">巴西</option></select><select id="ga_manual_upload_type"></select></div><input type="file" id="ga_manual_phrase_file" accept=".txt,.csv,.xlsx,.xls"/><textarea id="ga_manual_phrase_text" placeholder="也可直接粘贴：每行一条。人工上传的话术会100%采纳，先进入对应话术类型的话术池。"></textarea><div class="inline-actions"><button type="button" id="ga_manual_upload_btn">导入人工话术</button></div></div></div><pre id="ga_phrase_library_result" class="muted"></pre></section>
-<section class="ga-proto-section ga-copy-section" id="ga_candidate_card" data-layout-zone="phrase-generation"><div class="ga-proto-head"><div><h2>话术生成区</h2></div><span class="pill gray" id="ga_candidate_count">0 条</span></div><div class="grid ga-generation-grid ga-generation-stack"><div class="ga-upload-panel" id="ga_learning_upload_card"><h3>话术文件学习</h3><div class="ga-upload-action-row"><input type="file" id="ga_chat_file" multiple/><button type="button" id="ga_upload_chat_btn">上传并学习</button><button type="button" class="secondary" id="ga_clear_chat_files_btn">清空文件</button></div><pre id="ga_upload_result" class="muted"></pre></div><div class="ga-upload-panel" id="ga_learning_bot_card"><div class="toolbar"><h3>学习机器人区</h3><button type="button" id="ga_open_learning_bot_modal_btn">新增学习机器人</button></div><pre id="ga_learning_result" class="muted"></pre><div id="ga_learning_accounts" class="ga-learning-card-list is-empty"></div></div></div></section>
-<section class="ga-proto-section ga-copy-list-section" id="ga_candidate_list_card" data-layout-zone="candidate-phrases"><div class="ga-proto-head"><div><h2>话术备选区</h2></div><div class="ga-pool-filter-row"><select id="ga_candidate_language_filter"><option value="">语言/地区</option><option value="id" selected>印尼</option><option value="es">墨西哥</option><option value="pt">巴西</option></select><select id="ga_candidate_role_filter" style="display:none"><option value="community_seed">气氛活跃型</option><option value="faq_helper">解惑答疑型</option><option value="newcomer_guide">教程引导型</option><option value="motivation_admin">激励运营型</option></select><select id="ga_candidate_target_role_select"><option value="">选择话术角色</option></select><button type="button" id="ga_batch_add_candidates_to_role_btn">加入角色</button></div></div><div id="ga_candidate_role_tabs" class="ga-candidate-tabs"></div><div id="ga_phrase_type_inline_form" class="mini-note ga-inline-type-form" style="display:none"><input id="ga_phrase_type_inline_name" placeholder="输入新的话术类型名称"/><button type="button" id="ga_save_inline_phrase_type_btn">保存</button><button type="button" class="ghost" id="ga_cancel_inline_phrase_type_btn">取消</button></div><div id="ga_candidate_pool" class="muted">暂无备选话术</div><pre id="ga_candidate_result" class="muted"></pre></section>
+<section class="ga-proto-section ga-copy-section" id="ga_candidate_card" data-layout-zone="phrase-generation"><div class="ga-proto-head"><div><h2>话术生成区</h2></div></div><div class="grid ga-generation-grid ga-generation-stack"><div class="ga-upload-panel ga-manual-upload-compact" id="ga_manual_upload_card"><div class="ga-manual-upload-head"><h3>人工上传话术</h3><button type="button" id="ga_manual_upload_btn">导入人工话术</button></div><div class="ga-manual-upload-row"><select id="ga_manual_upload_region"><option value="">加载地区...</option></select><select id="ga_manual_upload_type"></select><input type="file" id="ga_manual_phrase_file" accept=".txt,.csv,.xlsx,.xls"/></div><textarea id="ga_manual_phrase_text" placeholder="粘贴话术：每行一条；或选择 txt/csv/xlsx 文件导入。"></textarea><pre id="ga_phrase_library_result" class="muted"></pre></div><div class="ga-upload-panel" id="ga_learning_upload_card"><h3>话术文件学习</h3><div class="ga-upload-action-row"><input type="file" id="ga_chat_file" multiple/><button type="button" id="ga_upload_chat_btn">上传并学习</button><button type="button" class="secondary" id="ga_clear_chat_files_btn">清空文件</button></div><pre id="ga_upload_result" class="muted"></pre></div><div class="ga-upload-panel" id="ga_learning_bot_card"><div class="toolbar"><h3>学习机器人区</h3><button type="button" id="ga_open_learning_bot_modal_btn">新增学习机器人</button></div><pre id="ga_learning_result" class="muted"></pre><div id="ga_learning_accounts" class="ga-learning-card-list is-empty"></div></div></div></section>
+<section class="ga-proto-section ga-copy-list-section" id="ga_candidate_list_card" data-layout-zone="candidate-phrases"><div class="ga-proto-head"><div><h2>话术备选区</h2></div><div class="ga-pool-filter-row"><select id="ga_candidate_language_filter"><option value="">语言/地区</option><option value="id" selected>印尼</option><option value="es">墨西哥</option><option value="pt">巴西</option></select><select id="ga_candidate_role_filter" style="display:none"><option value="community_seed">气氛活跃型</option><option value="faq_helper">解惑答疑型</option><option value="newcomer_guide">教程引导型</option><option value="motivation_admin">激励运营型</option></select><select id="ga_candidate_target_role_select"><option value="">选择话术角色</option></select><button type="button" id="ga_batch_add_candidates_to_role_btn">加入角色</button></div></div><div id="ga_candidate_type_bar"><div id="ga_candidate_role_tabs" class="ga-candidate-tabs"></div><button type="button" class="ga-candidate-tab ga-add-phrase-type-tab" id="ga_add_phrase_type_btn">+</button></div><div id="ga_phrase_type_inline_form" class="mini-note ga-inline-type-form" style="display:none"><input id="ga_phrase_type_inline_name" placeholder="输入新的话术类型名称"/><button type="button" id="ga_save_inline_phrase_type_btn">保存</button><button type="button" class="ghost" id="ga_cancel_inline_phrase_type_btn">取消</button></div><div id="ga_candidate_pool" class="muted">暂无备选话术</div><pre id="ga_candidate_result" class="muted"></pre></section>
 </div>
 <!-- 检查可发送</button><button type="button" id="ga_mount_role_btn">保存桥接 -->
 <div class="modal" id="ga_bridge_modal" aria-hidden="true"><div class="card modal-card" id="ga_bridge_modal_card"><div class="modal-head"><h2 id="ga_bridge_modal_title">新增桥接</h2><button type="button" class="modal-close" id="ga_close_bridge_modal_btn" aria-label="关闭">×</button></div><div class="ga-bridge-create" id="ga_bridge_create_panel"><div class="ga-bridge-field-grid"><div class="ga-bridge-field"><label for="ga_bridge_region">国家/地区</label><select id="ga_bridge_region"><option value="">国家</option></select></div><div class="ga-bridge-field"><label for="ga_bridge_role_select">话术角色</label><select id="ga_bridge_role_select"><option value="">选择话术角色</option></select></div><div class="ga-bridge-field"><label for="ga_bridge_auto_speaking">自动发言</label><select id="ga_bridge_auto_speaking"><option value="true">开启自动发言</option><option value="false">暂停自动发言</option></select></div></div><div class="ga-bridge-layout"><div class="ga-bridge-col ga-group-select-col"><h3>目标群组</h3><div id="ga_bridge_group_choices" class="muted">请选择国家和话术角色</div></div><div class="ga-bridge-col"><h3>发言频率</h3><div class="ga-bridge-frequency-grid"><div class="ga-bridge-field"><label for="ga_bridge_daily_max">每日上限</label><input id="ga_bridge_daily_max" inputmode="numeric" placeholder="如 20"/></div><div class="ga-bridge-field"><label for="ga_bridge_min_interval">最小间隔秒</label><input id="ga_bridge_min_interval" inputmode="numeric" placeholder="如 30"/></div><div class="ga-bridge-field"><label for="ga_bridge_max_interval">最大间隔秒</label><input id="ga_bridge_max_interval" inputmode="numeric" placeholder="如 90"/></div><div class="ga-bridge-field"><label for="ga_bridge_randomness_level">话术随机性</label><select id="ga_bridge_randomness_level"><option value="low">稳定</option><option value="medium" selected>适中</option><option value="high">灵活</option></select></div><div class="ga-bridge-field"><label for="ga_bridge_phrase_send_order">发送次序</label><select id="ga_bridge_phrase_send_order"><option value="random" selected>随机发言</option><option value="sorted">按排序发送</option></select></div><div class="ga-bridge-field ga-bridge-time-window"><label>发言时间段</label><div class="ga-time-window-row"><input type="time" id="ga_bridge_window_start" value="00:00"/><span>至</span><input type="time" id="ga_bridge_window_end" value="23:59"/></div><div class="muted">默认全天</div></div></div><pre id="ga_role_bridge_result" class="muted"></pre><pre id="ga_scheduler_result" class="muted"></pre></div></div><div class="ga-bridge-footer"><div class="ga-bridge-footer-status">状态：<span id="ga_scheduler_status" class="muted">就绪</span></div><div class="ga-bridge-footer-actions"><button type="button" id="ga_mount_role_btn">保存桥接</button></div></div></div></div></div>
 
 <div class="modal" id="ga_editor_modal" aria-hidden="true"><div class="card modal-card" id="ga_editor_card"><div class="modal-head"><h2 id="ga_editor_title">账号配置</h2><div class="toolbar-actions"><span class="muted" id="ga_session_status">未选择</span><button type="button" class="modal-close" id="ga_close_editor_btn">关闭</button></div></div><div><div><div class="compact-grid"><input id="ga_account_name_login" placeholder="账号备注"/><select id="ga_region"><option value="">加载地区...</option></select><select id="ga_account_role_positioning"><option value="community_seed">气氛活跃型</option><option value="faq_helper">解惑答疑型</option><option value="newcomer_guide">教程引导型</option><option value="motivation_admin">激励运营型</option></select></div><div class="compact-grid"><select id="ga_account_enabled"><option value="true">账号发言：开</option><option value="false">账号发言：关</option></select><button type="button" class="clear-form-button" id="ga_clear_form_btn">清空表单</button></div><div class="card" style="box-shadow:none;margin-top:8px;padding:12px;"><div class="section-title"><h3 style="margin:0;font-size:15px;">发言群</h3><button type="button" class="secondary" id="ga_add_group_btn">+ 增加发言群</button></div><div id="ga_group_rows"><div class="ga-account-group-row" data-ga-group-row="1" style="display:grid"><input id="ga_group_1_target" placeholder="群1：链接 / 群名 / group_id"/><select id="ga_group_1_enabled"><option value="true">群1：开</option><option value="false">群1：关</option></select></div><div class="ga-account-group-row" data-ga-group-row="2" style="display:none"><input id="ga_group_2_target" placeholder="群2：链接 / 群名 / group_id"/><select id="ga_group_2_enabled"><option value="true">群2：开</option><option value="false">群2：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(2)">删除群组</button></div><div class="ga-account-group-row" data-ga-group-row="3" style="display:none"><input id="ga_group_3_target" placeholder="群3：链接 / 群名 / group_id"/><select id="ga_group_3_enabled"><option value="true">群3：开</option><option value="false">群3：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(3)">删除群组</button></div><div class="ga-account-group-row" data-ga-group-row="4" style="display:none"><input id="ga_group_4_target" placeholder="群4：链接 / 群名 / group_id"/><select id="ga_group_4_enabled"><option value="true">群4：开</option><option value="false">群4：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(4)">删除群组</button></div><div class="ga-account-group-row" data-ga-group-row="5" style="display:none"><input id="ga_group_5_target" placeholder="群5：链接 / 群名 / group_id"/><select id="ga_group_5_enabled"><option value="true">群5：开</option><option value="false">群5：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(5)">删除群组</button></div><div class="ga-account-group-row" data-ga-group-row="6" style="display:none"><input id="ga_group_6_target" placeholder="群6：链接 / 群名 / group_id"/><select id="ga_group_6_enabled"><option value="true">群6：开</option><option value="false">群6：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(6)">删除群组</button></div><div class="ga-account-group-row" data-ga-group-row="7" style="display:none"><input id="ga_group_7_target" placeholder="群7：链接 / 群名 / group_id"/><select id="ga_group_7_enabled"><option value="true">群7：开</option><option value="false">群7：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(7)">删除群组</button></div><div class="ga-account-group-row" data-ga-group-row="8" style="display:none"><input id="ga_group_8_target" placeholder="群8：链接 / 群名 / group_id"/><select id="ga_group_8_enabled"><option value="true">群8：开</option><option value="false">群8：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(8)">删除群组</button></div><div class="ga-account-group-row" data-ga-group-row="9" style="display:none"><input id="ga_group_9_target" placeholder="群9：链接 / 群名 / group_id"/><select id="ga_group_9_enabled"><option value="true">群9：开</option><option value="false">群9：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(9)">删除群组</button></div><div class="ga-account-group-row" data-ga-group-row="10" style="display:none"><input id="ga_group_10_target" placeholder="群10：链接 / 群名 / group_id"/><select id="ga_group_10_enabled"><option value="true">群10：开</option><option value="false">群10：关</option></select><button type="button" class="ghost" onclick="removeGroupRow(10)">删除群组</button></div></div></div></div><div class="inline-actions"><button type="button" id="ga_save_account_btn">保存</button></div></div></div></div>
-<div class="modal" id="ga_role_editor_modal" aria-hidden="true"><div class="card modal-card" id="ga_role_editor_card"><div class="modal-head"><h2 id="ga_role_editor_title">话术角色</h2><div class="toolbar-actions"><button type="button" class="modal-close" id="ga_close_role_editor_btn">关闭</button></div></div><input type="hidden" id="ga_role_key"/><div class="compact-grid"><input id="ga_role_name" placeholder="角色名称，如：印尼活跃气氛号"/><select id="ga_role_region"><option value="">加载地区...</option></select><select id="ga_role_positioning"><option value="community_seed">气氛活跃型</option><option value="faq_helper">解惑答疑型</option><option value="newcomer_guide">教程引导型</option><option value="motivation_admin">激励运营型</option></select><select id="ga_role_enabled"><option value="true">角色启用</option><option value="false">角色停用</option></select></div><div class="grid ga-role-editor-single"><div><h3>从话术池选择话术</h3><div id="ga_role_phrase_pool" class="muted">话术池加载中...</div><div class="ga-role-manual-phrases"><h3>手动补充话术</h3><textarea id="ga_role_phrases" placeholder="每行一条话术，可不填"></textarea><div class="inline-actions"><button type="button" id="ga_save_manual_role_phrases_btn">保存文案</button></div></div></div></div><div class="inline-actions"><button type="button" id="ga_save_role_btn">保存话术角色</button><button type="button" class="ghost" id="ga_clear_role_btn">清空</button></div><pre id="ga_role_editor_result" class="muted"></pre></div></div>
+<div class="modal" id="ga_role_editor_modal" aria-hidden="true"><div class="card modal-card" id="ga_role_editor_card"><div class="modal-head"><h2 id="ga_role_editor_title">话术角色</h2><div class="toolbar-actions"><button type="button" class="modal-close" id="ga_close_role_editor_btn">关闭</button></div></div><input type="hidden" id="ga_role_key"/><div class="compact-grid"><input id="ga_role_name" placeholder="角色名称，如：印尼活跃气氛号"/><select id="ga_role_region"><option value="">加载地区...</option></select><select id="ga_role_positioning"><option value="community_seed">气氛活跃型</option><option value="faq_helper">解惑答疑型</option><option value="newcomer_guide">教程引导型</option><option value="motivation_admin">激励运营型</option></select><select id="ga_role_enabled"><option value="true">角色启用</option><option value="false">角色停用</option></select></div><div class="grid ga-role-editor-single"><div><h3>从话术池选择话术</h3><div id="ga_role_phrase_pool" class="muted">话术池加载中...</div></div></div><div class="inline-actions"><button type="button" id="ga_save_role_btn">保存话术角色</button><button type="button" class="ghost" id="ga_clear_role_btn">清空</button></div><pre id="ga_role_editor_result" class="muted"></pre></div></div>
 
 
 </div>
 <div class="modal" id="ga_learning_account_modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="gaLearningModalTitle"><div class="modal-head"><h2 id="gaLearningModalTitle">学习机器人WhatsApp账号</h2><div class="toolbar-actions"><button type="button" class="modal-close" id="ga_close_learning_bot_modal_btn">关闭</button></div></div><input type="hidden" id="ga_learning_account_key"/><div class="compact-grid"><input id="ga_learning_account_name" placeholder="账号备注，如：印尼学习机器人01"/><select id="ga_learning_region"></select></div><div style="margin-top:12px;"><div class="section-title"><h3 style="margin:0;font-size:15px;">群链接</h3><button type="button" class="secondary" id="ga_add_learning_group_link_btn">+ 增加群链接</button></div><div id="ga_learning_group_links" class="ga-learning-groups"></div></div><div class="inline-actions"><button type="button" id="ga_save_learning_bot_btn">保存</button><button type="button" class="ghost" id="ga_cancel_learning_bot_btn">取消</button></div></div></div>
 <div class="modal" id="ga_learning_result_modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true"><div class="modal-head"><h2>学习结果</h2><button type="button" class="modal-close" onclick="closeLearningResultModal()">关闭</button></div><div id="ga_learning_result_modal_body" class="muted">暂无学习结果</div></div></div>
-<div class="modal" id="ga_image_candidate_modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true"><div class="modal-head"><h2>新增图片话术</h2><button type="button" class="modal-close" id="ga_close_image_candidate_modal_btn">关闭</button></div><input type="hidden" id="ga_image_candidate_config"/><input type="hidden" id="ga_image_candidate_role"/><input type="file" id="ga_image_candidate_file" accept="image/png,image/jpeg,image/webp"/><textarea id="ga_image_candidate_text" placeholder="输入图片配套文字，一张图片对应一段文案"></textarea><div class="inline-actions"><button type="button" id="ga_save_image_candidate_btn">保存</button><button type="button" class="ghost" id="ga_cancel_image_candidate_btn">取消</button></div><pre id="ga_image_candidate_result" class="muted"></pre></div></div>
+<div class="modal" id="ga_manual_upload_review_modal" aria-hidden="true"><div class="card modal-card" id="ga_manual_upload_review_card" role="dialog" aria-modal="true" aria-labelledby="gaManualUploadReviewTitle"><div class="modal-head"><div><h2 id="gaManualUploadReviewTitle">审核导入话术</h2><div class="ga-review-subtitle">只会导入已勾选的话术；可在确认前修改文案。</div></div><button type="button" class="modal-close" onclick="closeManualUploadReviewModal()">关闭</button></div><div id="ga_manual_upload_review_summary" class="muted">暂无待审核话术</div><div id="ga_manual_upload_review_body" class="ga-review-list"></div><div class="ga-review-footer"><div class="muted" id="ga_manual_upload_review_footer_hint">确认后进入话术备选区，可再加入角色。</div><div class="inline-actions"><button type="button" class="ghost" onclick="closeManualUploadReviewModal()">取消</button><button type="button" onclick="confirmManualUploadReview()">确认导入已选话术</button></div></div></div></div>
+<div class="modal" id="ga_image_candidate_modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true"><div class="modal-head"><h2 id="ga_image_candidate_title">新增图片话术</h2><button type="button" class="modal-close" id="ga_close_image_candidate_modal_btn">关闭</button></div><input type="hidden" id="ga_image_candidate_config"/><input type="hidden" id="ga_image_candidate_role"/><input type="hidden" id="ga_image_candidate_candidate_id"/><input type="file" id="ga_image_candidate_file" accept="image/png,image/jpeg,image/webp"/><textarea id="ga_image_candidate_text" placeholder="输入图片配套文字，一张图片对应一段文案"></textarea><div class="inline-actions"><button type="button" id="ga_save_image_candidate_btn">保存</button><button type="button" class="ghost" id="ga_cancel_image_candidate_btn">取消</button></div><pre id="ga_image_candidate_result" class="muted"></pre></div></div>
+<div class="modal" id="ga_candidate_media_preview_modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true"><div class="modal-head"><h2>图片预览</h2><button type="button" class="modal-close" onclick="closeCandidateMediaPreview()">关闭</button></div><img id="ga_candidate_media_preview_image" alt="预存图片预览" style="max-width:100%;max-height:60vh;border-radius:14px;border:1px solid var(--crm-border);object-fit:contain;background:#f8fafc;"/><div id="ga_candidate_media_preview_caption" class="muted" style="margin-top:10px;"></div><div class="inline-actions"><button type="button" onclick="replaceCandidateMediaFromPreview()">更换图片</button><button type="button" class="danger" onclick="removeCandidateMediaFromPreview()">删除图片</button></div></div></div>
 <div id="gaQrModal" class="qr-modal" onclick="dismissAtmosphereQrModal(event)"><div class="qr-modal-card" role="dialog" aria-modal="true" aria-labelledby="gaQrModalTitle" onclick="event.stopPropagation()"><div class="qr-modal-head"><div><h3 id="gaQrModalTitle">账号登录二维码</h3></div><button type="button" class="secondary" onclick="closeAtmosphereQrModal()">关闭</button></div><div class="qr-modal-body"><div id="gaQrModalStatus" class="qr-modal-status muted">正在准备二维码…</div><div id="gaQrModalContent"></div><div class="qr-modal-actions"><button type="button" onclick="retryAtmosphereQrModal()">重新生成二维码</button><button type="button" class="secondary" onclick="refreshAtmosphereQrModal()">刷新状态</button></div></div></div></div></div>
-<div id="gaSendModal" class="modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="gaSendModalTitle"><div class="modal-head"><div><h2 id="gaSendModalTitle">手动发言</h2><div class="muted" id="gaSendModalSubTitle">选择群后发送</div></div><button type="button" class="modal-close" id="ga_close_send_modal_btn">关闭</button></div><textarea id="ga_manual_message_text" placeholder="输入临时发送到群里的消息"></textarea><div class="inline-actions"><button type="button" id="ga_send_message_btn">确认发送</button><button type="button" class="ghost" onclick="fillManualMessage('Halo kak, selamat datang ya 😊')">欢迎语</button><button type="button" class="ghost" onclick="fillManualMessage('Kalau ada pertanyaan, boleh tanya di grup ya kak.')">答疑提醒</button></div><pre id="ga_send_result" class="muted"></pre></div></div>
-<div id="ga_tip_toast" aria-live="polite"></div>
+<div id="gaSendModal" class="modal" aria-hidden="true"><div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="gaSendModalTitle"><div class="modal-head"><div><h2 id="gaSendModalTitle">手动发言</h2><div class="muted" id="gaSendModalSubTitle">选择群后发送</div></div><button type="button" class="modal-close" id="ga_close_send_modal_btn">关闭</button></div><textarea id="ga_manual_message_text" placeholder="输入临时发送到群里的消息，可直接粘贴图片"></textarea><div id="ga_manual_media_preview" class="ga-manual-media-preview muted" data-media-id="">可直接粘贴图片，发送时会作为图文消息。</div><div class="inline-actions"><button type="button" id="ga_send_message_btn">确认发送</button><button type="button" class="ghost" onclick="fillManualMessage('Halo kak, selamat datang ya 😊')">欢迎语</button><button type="button" class="ghost" onclick="fillManualMessage('Kalau ada pertanyaan, boleh tanya di grup ya kak.')">答疑提醒</button></div><pre id="ga_send_result" class="muted"></pre></div></div>
+<div id="ga_trigger_rules_modal" class="modal" aria-hidden="true"><div class="card modal-card ga-trigger-card" role="dialog" aria-modal="true" aria-labelledby="gaTriggerRulesTitle"><div class="modal-head"><h2 id="gaTriggerRulesTitle">触发规则</h2><button type="button" class="modal-close" onclick="closeTriggerRulesModal()">×</button></div><div class="ga-trigger-layout"><section class="ga-trigger-panel ga-trigger-list-panel"><div class="section-title ga-trigger-section-title"><h3>规则</h3><button type="button" class="secondary" onclick="newTriggerRuleForm()">新增</button></div><div id="ga_trigger_rules_list" class="ga-trigger-rule-list"></div></section><section class="ga-trigger-panel ga-trigger-editor"><div class="section-title ga-trigger-section-title"><h3 id="ga_trigger_rule_form_title">新建规则</h3></div><input id="ga_trigger_rule_id" type="hidden"><div class="ga-trigger-form-grid"><div class="ga-trigger-field"><span>名称</span><input id="ga_trigger_rule_name" placeholder="新人欢迎"></div><div class="ga-trigger-field"><span>状态</span><select id="ga_trigger_rule_enabled"><option value="true" selected>启用</option><option value="false">停用</option></select></div><div class="ga-trigger-field"><span>触发</span><select id="ga_trigger_rule_type" onchange="syncTriggerRuleConditionHelp()"><option value="member_join">新人入群</option><option value="keyword_match">关键词</option><option value="group_silence">群冷场</option></select></div><div class="ga-trigger-field" id="ga_trigger_condition_field"><span id="ga_trigger_condition_label">关键词</span><input id="ga_trigger_rule_condition" placeholder="kode, code"></div><div class="ga-trigger-field"><span>冷却（秒）</span><input id="ga_trigger_cooldown" type="number" min="0" value="600"></div><div class="ga-trigger-field"><span>优先级</span><select id="ga_trigger_priority"></select></div></div><div class="ga-trigger-message-box"><div class="toolbar ga-trigger-message-head"><strong>发送内容</strong><button type="button" class="secondary" onclick="addTriggerMessageSegment()">+ 话术</button></div><div id="ga_trigger_message_segments" class="ga-trigger-message-segments"></div></div><div class="ga-trigger-actions"><button id="ga_trigger_delete_btn" type="button" class="danger" onclick="deleteTriggerRuleFromModal()">删除</button><span class="ga-trigger-actions-spacer"></span><button type="button" class="ghost" onclick="newTriggerRuleForm()">取消</button><button type="button" onclick="saveTriggerRuleFromModal()">保存</button></div><pre id="ga_trigger_rule_save_result" class="muted"></pre></section></div></div></div><div id="ga_tip_toast" aria-live="polite"></div>
+
 <script>
 async function loadJson(url,options={}){const res=await fetch(url,options);const text=await res.text();let data={};try{data=text?JSON.parse(text):{}}catch(_){data={detail:text}}if(!res.ok)throw new Error(humanizeGaUploadError(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail||data),res.status));return data}
-function humanizeGaUploadError(message,status=0){const text=String(message||'').trim();const low=text.toLowerCase();if(low.includes('upload_file_too_large_30mb'))return '单个文件太大，最大30MB，请压缩后再上传';if(status===413||low.includes('413 request entity too large')||low.includes('request entity too large'))return '上传内容太大，请减少文件数量或压缩后再上传';if(low.includes('<'+'html')||low.includes('<'+'body')||low.includes('nginx'+'/'))return '上传失败：服务器返回异常，请稍后重试';return text||'上传失败，请稍后重试'}
+function humanizeGaUploadError(message,status=0){const text=String(message||'').trim();const low=text.toLowerCase();const codeMap={phrases_required:'请先填写或上传话术内容',candidate_text_required:'请先填写话术内容',role_key_or_phrases_required:'请先选择话术角色并勾选话术',role_required:'请先选择话术角色',role_key_required:'请先选择话术角色',role_not_found:'话术角色不存在或已被删除',source_config_required:'缺少来源话术列表，请刷新后重试',source_config_not_found:'来源话术列表不存在，请刷新后重试',group_atmosphere_config_not_found:'话术列表不存在，请刷新后重试',candidate_required:'请先勾选要操作的话术',candidate_not_found:'话术不存在或已被删除，请刷新后重试',target_role_required:'请先选择目标话术类型',target_type_same_as_source:'目标话术类型和当前类型相同，无需移动',role_type_mismatch:'所选话术类型与目标角色不一致',type_name_required:'请填写话术类型名称',type_key_required:'请选择话术类型',phrase_type_not_found:'话术类型不存在或已被删除，请刷新后重试',system_phrase_type_cannot_rename:'系统话术类型不能改名',system_phrase_type_cannot_delete:'系统话术类型不能删除',media_id_required:'请先上传图片',media_not_found:'图片不存在或已被删除，请重新上传',media_file_required:'请先选择图片文件',media_file_too_large:'图片文件过大，请压缩后重试',unsupported_media_type:'图片格式不支持，请上传 jpg/png/webp',unsupported_phrase_file_type:'文件格式不支持，请上传 txt/csv/xlsx',upload_file_too_large_30mb:'单个文件太大，最大30MB，请压缩后再上传',chat_record_content_is_empty:'文件里没有识别到可导入内容',records_required:'请先上传聊天记录',invalid_speech_plan:'话术包状态异常，请刷新后重试',plan_display_name_required:'请填写话术包名称',speech_plan_not_found:'话术包不存在或已被删除，请刷新后重试'};if(codeMap[text])return codeMap[text];try{const obj=JSON.parse(text);if(obj&&obj.detail)return humanizeGaUploadError(String(obj.detail),status)}catch(_){ }if(status===413||low.includes('413 request entity too large')||low.includes('request entity too large'))return '上传内容太大，请减少文件数量或压缩后再上传';if(low.includes('<'+'html')||low.includes('<'+'body')||low.includes('nginx'+'/'))return '上传失败：服务器返回异常，请稍后重试';if(/^[a-z]+[a-z0-9_]*$/.test(text)&&text.includes('_'))return '操作失败，请检查填写内容后重试';return text||'上传失败，请稍后重试'}
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function renderUnifiedRegionOptions(selectId,currentValue=''){const el=document.getElementById(selectId);if(!el)return;const rows=window.__mcnRegionOptions||[];const current=String(currentValue||el.value||'').trim();const options=rows.map(r=>`<option value="${esc(r.label_zh||r.value)}" data-region-code="${esc(r.code||'')}" data-phone-code="${esc(r.phone_code||'')}">${esc(r.label_zh||r.label||r.value)}</option>`).join('');el.innerHTML=options||'<option value="印尼">印尼</option>';if(current&&Array.from(el.options).some(o=>o.value===current))el.value=current;else if(Array.from(el.options).some(o=>o.value==='印尼'))el.value='印尼'}
-async function loadUnifiedRegionOptions(){const data=await loadJson('/api/ops/mcn-region-options');window.__mcnRegionOptions=Array.isArray(data.options)?data.options:[];renderUnifiedRegionOptions('ga_region');renderUnifiedRegionOptions('ga_role_region');renderUnifiedRegionOptions('ga_bridge_region');renderUnifiedRegionOptions('ga_learning_region');return data}
+async function loadUnifiedRegionOptions(){const data=await loadJson('/api/ops/mcn-region-options');window.__mcnRegionOptions=Array.isArray(data.options)?data.options:[];renderUnifiedRegionOptions('ga_region');renderUnifiedRegionOptions('ga_role_region');renderUnifiedRegionOptions('ga_bridge_region');renderUnifiedRegionOptions('ga_learning_region');renderUnifiedRegionOptions('ga_manual_upload_region');return data}
 function selectedOperationalAccountKey(){return document.getElementById('ga_account_key_login').value.trim()||document.getElementById('ga_account_key').value.trim()}
 function selectedAccountKey(){return selectedOperationalAccountKey()}
 function showTip(text,type='info',options={}){const tip=document.getElementById('ga_tip_toast');if(!tip)return;if(window.__gaTipTimer)clearTimeout(window.__gaTipTimer);tip.textContent=text||'';tip.style.background=type==='error'?'#991b1b':(type==='success'?'#166534':'#0f172a');tip.classList.toggle('is-open',!!text);if(!text||options.sticky)return;window.__gaTipTimer=setTimeout(()=>{tip.classList.remove('is-open');tip.textContent=''},Number(options.duration||2400))}
 function setFeedback(text,type='info'){const el=document.getElementById('ga_action_feedback');if(el){el.textContent='';el.style.display='none'}if(text&&text!=='就绪')showTip(text,type)}
 function setLocalFeedback(id,text,type='info'){const el=document.getElementById(id);if(el){el.textContent='';el.style.display='none'}if(text)showTip(text,type)}
-const gaActionLocalTargets={'保存':'ga_session_status','生成二维码':'ga_session_status','刷新登录态':'ga_session_status','删除':'ga_session_status','切换账号开关':'ga_session_status','切换群开关':'ga_session_status','发送群消息':'ga_send_result','保存文案组名称':'ga_candidate_result','删除文案组':'ga_candidate_result','加入话术方案':'ga_candidate_result','加入话术角色':'ga_candidate_result','删除备选话术':'ga_candidate_result','自动发言检查':'ga_scheduler_result','保存话术角色':'ga_role_editor_result','保存文案':'ga_role_editor_result','保存桥接关系':'ga_role_bridge_result','删除桥接':'ga_role_bridge_result','删除话术角色':'ga_role_bridge_result','保存学习机器人':'ga_learning_result','删除学习机器人':'ga_learning_result','切换学习群':'ga_learning_result','立即一键发言':'ga_role_bridge_result','切换群发言开关':'ga_role_bridge_result'}
+const gaActionLocalTargets={'保存':'ga_session_status','生成二维码':'ga_session_status','刷新登录态':'ga_session_status','删除':'ga_session_status','切换账号开关':'ga_session_status','切换群开关':'ga_session_status','发送群消息':'ga_send_result','保存文案组名称':'ga_candidate_result','删除文案组':'ga_candidate_result','加入话术方案':'ga_candidate_result','加入话术角色':'ga_candidate_result','删除备选话术':'ga_candidate_result','自动发言检查':'ga_scheduler_result','保存话术角色':'ga_role_editor_result','保存桥接关系':'ga_role_bridge_result','删除桥接':'ga_role_bridge_result','删除话术角色':'ga_role_bridge_result','保存学习机器人':'ga_learning_result','删除学习机器人':'ga_learning_result','切换学习群':'ga_learning_result','发言测试':'ga_role_bridge_result','切换群发言开关':'ga_role_bridge_result'}
 function actionLocalTarget(label){return gaActionLocalTargets[label]||''}
 function runAction(label,fn){const localTarget=actionLocalTarget(label);const localEl=localTarget?document.getElementById(localTarget):null;setFeedback(`${label}中…`);if(localEl)setLocalFeedback(localTarget,`${label}中…`);window.__gaActionInFlight=true;return Promise.resolve().then(fn).then(res=>{if(res&&res.silent){setFeedback('');if(localEl)setLocalFeedback(localTarget,'');return res}setFeedback(`${label}成功`,'success');const currentLocalText=localEl?localEl.textContent:'';if(localEl&&(!currentLocalText||currentLocalText===`${label}中…`))setLocalFeedback(localTarget,`${label}成功`,'success');return res}).catch(err=>{setFeedback(`${label}失败：${err.message||err}`,'error');if(localEl)setLocalFeedback(localTarget,`${label}失败：${err.message||err}`,'error');throw err}).finally(()=>{window.__gaActionInFlight=false})}
 function regionLanguage(region){const value=String(region||'').trim();const row=(window.__mcnRegionOptions||[]).find(r=>[r.label_zh,r.value,r.label,r.code].map(x=>String(x||'').trim()).includes(value));if(row&&row.language)return row.language;return value==='印尼'?'id':(value==='墨西哥'?'es':(value==='巴西'?'pt':''))}
@@ -2093,20 +2188,27 @@ function candidateAccountMatches(row){const language=document.getElementById('ga
 function setOverviewStat(id,value){const el=document.getElementById(id);if(el)el.textContent=String(value)}
 function updateAtmosphereOverview(){const accounts=window.__gaAccounts||[];const roles=window.__gaRoles||[];const relationships=window.__gaRoleRelationships||[];const mounted=relationships.reduce((n,r)=>n+((r.groups||[]).length),0);const auto=relationships.reduce((n,r)=>n+(r.auto_speaking_enabled?((r.groups||[]).filter(g=>g.group_send_permission_enabled!==false).length):0),0);const blocked=relationships.reduce((n,r)=>n+((r.groups||[]).filter(g=>g.group_send_permission_enabled===false).length),0);setOverviewStat('ga_stat_accounts',accounts.length);setOverviewStat('ga_stat_roles',roles.length);setOverviewStat('ga_stat_mounted',mounted);setOverviewStat('ga_stat_auto',auto);setOverviewStat('ga_stat_blocked',blocked)}
 function refreshCandidateGroupSelect(){refreshGroupPlanSelects()}
-function renderAccounts(rows){window.__gaAccounts=rows;refreshGroupPlanSelects();renderBridgeFormOptions();renderLearningAccountOptions();const accountCountEl=document.getElementById('ga_accounts_count');if(accountCountEl)accountCountEl.textContent=`${rows.length} 个账号`;updateAtmosphereOverview();if(!rows.length){ga_accounts.innerHTML='<div class="muted">暂无账号</div>';return}ga_accounts.innerHTML=`<div class="account-card-grid">${rows.map((r,i)=>{const rt=r.runtime||{};const sess=r.session||r.session_state||{};const regionText=r.region||'-';const loginText=loginLabel(sess,rt);const health=`<span class="pill ${loginPillClass(loginText)}">${esc(loginText)}</span>`;const roleText=roleLabel(r.role_positioning||'community_seed')||'-';const accountMeta=`<div class="account-meta-row"><span class="pill gray">地区：${esc(regionText)}</span><span class="pill gray">话术类型：${esc(roleText)}</span></div>`;const groupCards=(r.groups||[]).map((g,idx)=>`<div class="group-card"><div class="group-card-title"><div><div class="group-card-name">${esc(detectedGroupName(g))}</div><div class="group-card-link">${esc(g.target_group||'-')}</div></div></div></div>`).join('');return `<div class="account-card" id="${accountDomId(r.account_key)}"><div class="account-card-head"><div class="account-title-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><h3 style="margin:0;">${esc(r.account_name||'未命名账号')}</h3>${health}</div>${accountMeta}</div><div style="margin-top:12px;"><div class="group-card-grid">${groupCards||'<div class="muted">暂无挂载群组</div>'}</div></div><div class="account-actions" style="margin-top:12px;"><button type="button" class="secondary" onclick="selectAtmosphereAccount('${esc(r.account_key)}')">编辑</button><button type="button" onclick="setSelectedAtmosphereAccountKey('${esc(r.account_key)}');startAtmosphereQr(false)">二维码</button><button type="button" class="danger" onclick="deleteAtmosphereAccount('${esc(r.account_key)}')">删除</button></div></div>`}).join('')}</div>`;renderLearningAccountOptions()}
+function renderAccounts(rows){window.__gaAccounts=rows;refreshGroupPlanSelects();renderBridgeFormOptions();renderLearningAccountOptions();const accountCountEl=document.getElementById('ga_accounts_count');if(accountCountEl)accountCountEl.textContent=`${rows.length} 个账号`;updateAtmosphereOverview();if(!rows.length){ga_accounts.innerHTML='<div class="ga-empty-state">暂无账号</div>';return}ga_accounts.classList.remove('is-empty');ga_accounts.innerHTML=`<div class="account-card-grid">${rows.map((r,i)=>{const rt=r.runtime||{};const sess=r.session||r.session_state||{};const regionText=r.region||'-';const loginText=loginLabel(sess,rt);const health=`<span class="pill ${loginPillClass(loginText)}">${esc(loginText)}</span>`;const roleText=roleLabel(r.role_positioning||'community_seed')||'-';const accountMeta=`<div class="account-meta-row"><span class="pill gray">地区：${esc(regionText)}</span><span class="pill gray">话术类型：${esc(roleText)}</span></div>`;const groupCards=(r.groups||[]).map((g,idx)=>`<div class="group-card"><div class="group-card-title"><div><div class="group-card-name">${esc(detectedGroupName(g))}</div><div class="group-card-link">${esc(g.target_group||'-')}</div></div></div></div>`).join('');return `<div class="account-card" id="${accountDomId(r.account_key)}"><div class="account-card-head"><div class="account-title-row" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><h3 style="margin:0;">${esc(r.account_name||'未命名账号')}</h3>${health}</div>${accountMeta}</div><div style="margin-top:12px;"><div class="group-card-grid">${groupCards||'<div class="muted">暂无挂载群组</div>'}</div></div><div class="account-actions" style="margin-top:12px;"><button type="button" class="secondary" onclick="selectAtmosphereAccount('${esc(r.account_key)}')">编辑</button><button type="button" onclick="setSelectedAtmosphereAccountKey('${esc(r.account_key)}');startAtmosphereQr(false)">二维码</button><button type="button" class="danger" onclick="deleteAtmosphereAccount('${esc(r.account_key)}')">删除</button></div></div>`}).join('')}</div>`;renderLearningAccountOptions()}
 
-function openManualSendModal(accountKey,idx){const account=(window.__gaAccounts||[]).find(x=>String(x.account_key||'')===String(accountKey||''));const group=account&&account.groups?account.groups[idx]:null;if(!account||!group){setFeedback('未找到发言群','error');return}window.__gaSendContext={accountKey:account.account_key,groupIndex:idx,groupName:group.group_name||group.target_group||''};const modal=document.getElementById('gaSendModal');const title=document.getElementById('gaSendModalTitle');const sub=document.getElementById('gaSendModalSubTitle');const text=document.getElementById('ga_manual_message_text');const result=document.getElementById('ga_send_result');if(title)title.textContent=`发送到：${group.group_name||'该群'}`;if(sub)sub.textContent=`${account.account_name||'账号'} · ${group.target_group||''}`;if(text)text.value='';if(result)result.textContent='';if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false');setTimeout(()=>text&&text.focus(),50)}}
+function updateManualSendMediaPreview(){const preview=document.getElementById('ga_manual_media_preview');if(!preview)return;const media=window.__gaManualSendMedia||null;if(media?.media_id){preview.dataset.mediaId=media.media_id;preview.classList.add('has-media');preview.innerHTML=`<span class="ga-candidate-media-icon" data-ga-candidate-media-icon="1" aria-label="带图片" title="带图片：${esc(media.filename||'图片')}">🖼</span> 已粘贴图片：${esc(media.filename||'图片')} <button type="button" class="ghost" onclick="clearManualSendMedia()">移除</button>`}else{preview.dataset.mediaId='';preview.classList.remove('has-media');preview.textContent='可直接粘贴图片，发送时会作为图文消息。'}}
+function clearManualSendMedia(){window.__gaManualSendMedia=null;updateManualSendMediaPreview()}
+async function handleManualMessagePaste(ev){const items=[...(ev.clipboardData?.items||[])];const item=items.find(x=>String(x.type||'').startsWith('image/'));if(!item)return;ev.preventDefault();const file=item.getAsFile();if(!file)return;const fd=new FormData();fd.append('file',file,file.name||`pasted-${Date.now()}.png`);setLocalFeedback('ga_send_result','正在上传粘贴图片…','info');const mediaData=await loadJson('/api/ops/group-atmosphere/media-assets',{method:'POST',body:fd});if(!mediaData.media?.media_id)throw new Error('图片上传失败');window.__gaManualSendMedia=mediaData.media;updateManualSendMediaPreview();setLocalFeedback('ga_send_result','图片已添加，发送时会一起发送','success')}
+function bindManualSendPaste(){const el=document.getElementById('ga_manual_message_text');if(el&&el.dataset.boundPaste!=='1'){el.addEventListener('paste',ev=>{handleManualMessagePaste(ev).catch(err=>{setLocalFeedback('ga_send_result',`图片粘贴失败：${err.message||err}`,'error')})});el.dataset.boundPaste='1'}}
+function openManualSendModal(accountKey,idx){const account=(window.__gaAccounts||[]).find(x=>String(x.account_key||'')===String(accountKey||''));const group=account&&account.groups?account.groups[idx]:null;if(!account||!group){setFeedback('未找到发言群','error');return}window.__gaSendContext={mode:'single',accountKey:account.account_key,groupIndex:idx,groupName:group.group_name||group.target_group||''};window.__gaManualSendMedia=null;const modal=document.getElementById('gaSendModal');const title=document.getElementById('gaSendModalTitle');const sub=document.getElementById('gaSendModalSubTitle');const text=document.getElementById('ga_manual_message_text');const result=document.getElementById('ga_send_result');if(title)title.textContent=`发送到：${group.group_name||'该群'}`;if(sub)sub.textContent=`${account.account_name||'账号'} · ${group.target_group||''}`;if(text)text.value='';if(result)result.textContent='';updateManualSendMediaPreview();bindManualSendPaste();if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false');setTimeout(()=>text&&text.focus(),50)}}
+function openBridgeManualSendModal(relationshipKey){const rel=(window.__gaRoleRelationships||[]).find(x=>String(x.relationship_key||x.role_key||'')===String(relationshipKey||''));if(!rel){setFeedback('未找到桥接关系','error');return}const groups=(rel.groups||[]).filter(g=>g&&g.group_send_permission_enabled!==false&&!g.role_deleted).map(g=>({accountKey:g.account_key,groupIndex:Number(g.group_index||0),groupName:g.group_name||g.target_group||'',targetGroup:g.target_group||'',bindingId:g.binding_id||''}));if(!groups.length){setFeedback('该桥接关系没有已开启群发言的群组','error');return}window.__gaSendContext={mode:'relationship',relationshipKey:String(relationshipKey||''),relationshipLabel:rel.relationship_label||rel.role_name||rel.role_key||'桥接关系',groups};window.__gaManualSendMedia=null;const modal=document.getElementById('gaSendModal');const title=document.getElementById('gaSendModalTitle');const sub=document.getElementById('gaSendModalSubTitle');const text=document.getElementById('ga_manual_message_text');const result=document.getElementById('ga_send_result');if(title)title.textContent=`发送到桥接关系：${rel.relationship_label||rel.role_name||'桥接关系'}`;if(sub)sub.textContent=`将发送至 ${groups.length} 个已开启群发言的群组`;if(text)text.value='';if(result)result.textContent='';updateManualSendMediaPreview();bindManualSendPaste();if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false');setTimeout(()=>text&&text.focus(),50)}}
 function closeManualSendModal(){const modal=document.getElementById('gaSendModal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
 function fillManualMessage(text){const el=document.getElementById('ga_manual_message_text');if(el)el.value=text||''}
-async function sendManualGroupMessage(){return runAction('发送群消息',async()=>{const ctx=window.__gaSendContext||{};if(!ctx.accountKey&&ctx.groupIndex!==0)throw new Error('请先选择发言群');const text=String(document.getElementById('ga_manual_message_text')?.value||'').trim();if(!text)throw new Error('请输入要发送的内容');const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(ctx.accountKey)}/groups/${ctx.groupIndex}/send`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message_text:text,trigger_type:'manual_ops_page'})});const result=document.getElementById('ga_send_result');if(result)result.textContent=data.sent?'发送成功':`发送失败：${data.result_reason||data.result_code||''}`;if(!data.sent)throw new Error(data.result_reason||data.result_code||'发送失败');await reloadAll();setTimeout(closeManualSendModal,500);return data})}
+async function sendBridgeRelationshipManualMessage(ctx,payload){const groups=(ctx.groups||[]).filter(g=>g&&g.accountKey&&(g.groupIndex===0||g.groupIndex));if(!groups.length)throw new Error('该桥接关系没有已开启群发言的群组');const results=[];for(const g of groups){try{const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(g.accountKey)}/groups/${g.groupIndex}/send`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,trigger_type:'manual_role_bridge_batch'})});results.push({...data,account_key:g.accountKey,group_index:g.groupIndex,group_name:g.groupName,sent:data.sent===true})}catch(err){results.push({sent:false,account_key:g.accountKey,group_index:g.groupIndex,group_name:g.groupName,result_reason:String(err.message||err)})}}const sentCount=results.filter(x=>x.sent).length;const failedCount=results.length-sentCount;return {sent:sentCount>0&&failedCount===0,partial_sent:sentCount>0&&failedCount>0,sent_count:sentCount,failed_count:failedCount,total_count:results.length,results}}
+async function sendManualGroupMessage(){return runAction('发送群消息',async()=>{const ctx=window.__gaSendContext||{};const text=String(document.getElementById('ga_manual_message_text')?.value||'').trim();const media=window.__gaManualSendMedia||null;if(!text&&!media?.media_id)throw new Error('请输入要发送的内容或粘贴图片');const payload={message_text:text,trigger_type:'manual_ops_page'};if(media?.media_id)payload.media_id=media.media_id;if(ctx.mode==='relationship'){const data=await sendBridgeRelationshipManualMessage(ctx,payload);const result=document.getElementById('ga_send_result');if(result)result.textContent=`已发送 ${data.sent_count}/${data.total_count} 个群${data.failed_count?`，失败 ${data.failed_count} 个`:''}`;if(!data.sent&&!data.partial_sent)throw new Error('桥接关系群组发送失败');await reloadAll();setTimeout(closeManualSendModal,700);return data}if(!ctx.accountKey&&ctx.groupIndex!==0)throw new Error('请先选择发言群');const data=await loadJson(`/api/ops/group-atmosphere/accounts/${encodeURIComponent(ctx.accountKey)}/groups/${ctx.groupIndex}/send`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=document.getElementById('ga_send_result');if(result)result.textContent=data.sent?'发送成功':`发送失败：${data.result_reason||data.result_code||''}`;if(!data.sent)throw new Error(data.result_reason||data.result_code||'发送失败');await reloadAll();setTimeout(closeManualSendModal,500);return data})}
+
 function renderAutoLearnResult(data){const roles=(data.role_assignments||[]).map(item=>`${roleLabel(item.role_positioning)}：${item.imported_count} 条 · 候选 ${((item.candidates||[]).length)} 条`).join('\\n');return `识别地区：${data.detected_region||'-'}\n识别语言：${data.detected_language||'-'}\n导入样本：${data.imported_count||0} 条\n${roles}`}
 function candidateRoleRows(){return (window.__gaPhraseTypes&&window.__gaPhraseTypes.length?window.__gaPhraseTypes.map(r=>[r.type_key,r.type_name]):[['community_seed','气氛活跃型'],['faq_helper','解惑答疑型'],['newcomer_guide','教程引导型'],['motivation_admin','激励运营型']])}
 const GA_CANDIDATE_ROLES=[['community_seed','气氛活跃型'],['faq_helper','解惑答疑型'],['newcomer_guide','教程引导型'],['motivation_admin','激励运营型']];
 function activeCandidateRole(){return window.__gaCandidateActiveRole||document.getElementById('ga_candidate_role_filter')?.value||'community_seed'}
-function setCandidateRoleTab(role){window.__gaCandidateActiveRole=role;const select=document.getElementById('ga_candidate_role_filter');if(select)select.value=role;renderCandidatePool(window.__gaCandidateRows||[])}
+function setCandidateRoleTab(role){const anchor=document.getElementById('ga_candidate_role_tabs')||document.getElementById('ga_candidate_pool');const beforeTop=anchor?anchor.getBoundingClientRect().top:null;const pool=document.getElementById('ga_candidate_pool');if(pool){const currentHeight=Math.ceil(pool.getBoundingClientRect().height||0);window.__gaCandidatePoolMinHeight=Math.max(Number(window.__gaCandidatePoolMinHeight||0),currentHeight);if(window.__gaCandidatePoolMinHeight>0)pool.style.minHeight=`${window.__gaCandidatePoolMinHeight}px`;}window.__gaCandidateActiveRole=role;const select=document.getElementById('ga_candidate_role_filter');if(select)select.value=role;renderCandidatePool(window.__gaCandidateRows||[]);requestAnimationFrame(()=>{const afterTop=anchor?anchor.getBoundingClientRect().top:null;if(beforeTop!==null&&afterTop!==null){const delta=afterTop-beforeTop;if(Math.abs(delta)>1)window.scrollBy({top:delta,left:0,behavior:'auto'});}})}
 function filterCandidateRows(rows){const language=document.getElementById('ga_candidate_language_filter')?.value||'';const role=activeCandidateRole();return (rows||[]).filter(r=>(!language||String(r.language||'')===language)&&(!role||String(r.role_positioning||'')===role))}
 function candidateCountsByRole(rows){const language=document.getElementById('ga_candidate_language_filter')?.value||'';const counts={};(rows||[]).forEach(r=>{if(language&&String(r.language||'')!==language)return;const role=String(r.role_positioning||'community_seed');counts[role]=(counts[role]||0)+Number(r.candidate_count||0)});return counts}
-function renderCandidateTabs(rows){const box=document.getElementById('ga_candidate_role_tabs');if(!box)return;const counts=candidateCountsByRole(rows||[]);const roleRows=candidateRoleRows();if(!window.__gaCandidateActiveRole)window.__gaCandidateActiveRole=roleRows.find(([role])=>(counts[role]||0)>0)?.[0]||'community_seed';const phraseTypeMap=new Map((window.__gaPhraseTypes||[]).map(t=>[String(t.type_key||''),t]));const editing=String(window.__gaEditingPhraseTypeKey||'');box.innerHTML=roleRows.map(([role,label])=>{const meta=phraseTypeMap.get(String(role));const canEdit=meta&&meta.is_system!==true;const canDelete=canEdit;const deleteBtn=canDelete?`<span role="button" tabindex="0" class="ga-candidate-tab-delete-inside" data-ga-delete-phrase-type="${esc(role)}" title="删除话术类型" onclick="event.stopPropagation();deleteInlinePhraseType('${esc(role)}')">×</span>`:'';const labelHtml=editing===String(role)?`<input class="ga-phrase-type-rename-input" data-ga-phrase-type-rename="${esc(role)}" value="${esc(label)}" onclick="event.stopPropagation()" ondblclick="event.stopPropagation()" onkeydown="handlePhraseTypeRenameKey(event,'${esc(role)}')" onblur="cancelPhraseTypeRename('${esc(role)}')"/>`:`<span data-ga-phrase-type-label="${esc(role)}" title="${canEdit?'双击改名':'系统类型不可改名'}" ondblclick="event.stopPropagation();startPhraseTypeRename('${esc(role)}')">${esc(label)}</span>`;return `<button type="button" class="ga-candidate-tab ${activeCandidateRole()===role?'is-active':''}" onclick="setCandidateRoleTab('${esc(role)}')">${labelHtml}<span>${counts[role]||0}</span>${deleteBtn}</button>`}).join('')+`<button type="button" class="ga-candidate-tab ga-add-phrase-type-tab" id="ga_add_phrase_type_btn" onclick="showInlinePhraseTypeForm()">+</button>`;if(editing)setTimeout(()=>{const input=document.querySelector(`[data-ga-phrase-type-rename="${CSS.escape(editing)}"]`);if(input){input.focus();input.select()}},30)}
+function renderCandidateTabs(rows){const box=document.getElementById('ga_candidate_role_tabs');if(!box)return;const counts=candidateCountsByRole(rows||[]);const roleRows=candidateRoleRows();if(!window.__gaCandidateActiveRole)window.__gaCandidateActiveRole=roleRows.find(([role])=>(counts[role]||0)>0)?.[0]||'community_seed';const phraseTypeMap=new Map((window.__gaPhraseTypes||[]).map(t=>[String(t.type_key||''),t]));const editing=String(window.__gaEditingPhraseTypeKey||'');box.innerHTML=roleRows.map(([role,label])=>{const meta=phraseTypeMap.get(String(role));const canEdit=meta&&meta.is_system!==true;const canDelete=canEdit;const deleteBtn=canDelete?`<span role="button" tabindex="0" class="ga-candidate-tab-delete-inside" data-ga-delete-phrase-type="${esc(role)}" title="删除话术类型" onclick="event.stopPropagation();deleteInlinePhraseType('${esc(role)}')">×</span>`:'';const labelHtml=editing===String(role)?`<input class="ga-phrase-type-rename-input" data-ga-phrase-type-rename="${esc(role)}" value="${esc(label)}" onclick="event.stopPropagation()" ondblclick="event.stopPropagation()" onkeydown="handlePhraseTypeRenameKey(event,'${esc(role)}')" onblur="cancelPhraseTypeRename('${esc(role)}')"/>`:`<span data-ga-phrase-type-label="${esc(role)}" title="${canEdit?'双击改名':'系统类型不可改名'}" ondblclick="event.stopPropagation();startPhraseTypeRename('${esc(role)}')">${esc(label)}</span>`;return `<button type="button" class="ga-candidate-tab ${activeCandidateRole()===role?'is-active':''}" onclick="setCandidateRoleTab('${esc(role)}')">${labelHtml}<span>${counts[role]||0}</span>${deleteBtn}</button>`}).join('');if(editing)setTimeout(()=>{const input=document.querySelector(`[data-ga-phrase-type-rename="${CSS.escape(editing)}"]`);if(input){input.focus();input.select()}},30)}
 function speechPlanRows(){return (window.__gaCandidateRows||[]).filter(r=>(r.enabled_candidate_count||0)>0)}
 function speechPlanLabel(r){return `${r.plan_display_name||roleLabel(r.role_positioning||r.config_name)} · ${r.enabled_candidate_count||0}条`}
 function groupPlanLabel(configName){const name=String(configName||'').trim();if(!name)return '未装载话术方案';const row=speechPlanRows().find(r=>String(r.config_name||'')===name);return row?speechPlanLabel(row):name}
@@ -2127,37 +2229,57 @@ function addManualCandidateDraft(configName){window.__gaManualCandidateDrafts=wi
 function cancelManualCandidateDraft(configName){if(window.__gaManualCandidateDrafts)delete window.__gaManualCandidateDrafts[candidateManualDraftKey(configName)];renderCandidatePool(window.__gaCandidateRows||[])}
 function candidateDraftRow(r,role){const key=String(r.config_name||'');if(!(window.__gaManualCandidateDrafts||{})[candidateManualDraftKey(key)])return '';return `<div class="mini-note ga-candidate-manual-draft-card"><div class="ga-candidate-manual-draft-head"><div class="ga-candidate-manual-draft-title"><span class="ga-source-badge">人工写入</span><span>新增话术</span></div></div><div class="ga-candidate-manual-draft-main"><input type="text" data-ga-manual-candidate-text="${esc(key)}" data-role="${esc(role)}" placeholder="输入人工写入话术"/><div class="ga-candidate-manual-draft-actions"><button type="button" onclick="saveManualCandidate('${esc(key)}','${esc(role)}')">保存</button><button type="button" class="secondary" onclick="cancelManualCandidateDraft('${esc(key)}')">取消</button></div></div></div>`}
 function candidateQualityReasonText(reason){const map={meta_summary:'系统分析产物',question_like:'疑似用户问题',user_first_person_request:'用户求助原话',dynamic_or_sensitive_token:'含动态/敏感信息',low_value_chat:'低价值闲聊',low_quality_or_role_mismatch:'质量不足或类型不匹配',too_short:'内容过短'};return map[String(reason||'')]||String(reason||'')}function candidateQualityBadge(c){const reasons=Array.isArray(c?.quality_reasons)?c.quality_reasons:[];const status=String(c?.quality_status||'');if(status==='manual_approved'||status==='approved_manual'||status==='pending_review')return '';if(!reasons.length&&!status)return '';const label=status==='rejected'?'已过滤':'质检';const reasonText=reasons.map(candidateQualityReasonText).filter(Boolean).join('、');return `<span class="ga-source-badge" title="质量原因：${esc(reasonText||label)}">${esc(label)}${reasonText?` · ${esc(reasonText)}`:''}</span>`}function candidateHasMedia(c){return Boolean(c&&(c.media_id||c.media_path||c.asset_type==='image_caption'))}
-function candidateMediaIcon(c){if(!candidateHasMedia(c))return '';const title=esc(c.media_filename?`带图片：${c.media_filename}`:'带图片');return `<span class="ga-candidate-media-icon" data-ga-candidate-media-icon="1" title="${title}" aria-label="带图片">🖼</span>`}
-function candidateRowHtml(r,c,role){const usable=candidateIsUsable(c);const pending=candidateNeedsConfirm(c);const hasMedia=candidateHasMedia(c);const qualityBadge=candidateQualityBadge(c);const pendingBadge=pending?`<span class="ga-source-badge" style="background:#fff7ed!important;color:#9a3412!important;border-color:#fed7aa!important;">待确认</span>`:'';const confirmButton=pending?`<button type="button" class="secondary ga-confirm-candidate-btn" onclick="enableCandidate('${esc(r.config_name)}','${esc(c.candidate_id)}')">确认</button>`:'';const metaBadges=`<span class="ga-candidate-meta-badges">${pendingBadge}${qualityBadge}</span>`;const actionButtons=`<span class="ga-candidate-actions"><button type="button" class="secondary ga-translate-btn" title="候选翻译" aria-label="候选翻译" onclick="toggleCandidateTranslation('${esc(r.config_name)}','${esc(c.candidate_id)}')">译</button>${confirmButton}<button type="button" class="secondary" onclick="saveCustomCandidate('${esc(r.config_name)}','${esc(c.candidate_id)}')">保存自定义</button><button type="button" class="danger" onclick="deleteCandidateFromPool('${esc(c.source_config_name||c.config_name||r.config_name)}','${esc(c.candidate_id)}')">删除</button></span>`;return `<div class="mini-note candidate-row-compact ga-candidate-row ${pending?'is-unavailable':''}" draggable="true" data-ga-candidate-row="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" data-source-config-name="${esc(c.source_config_name||c.config_name||r.config_name)}" style="${pending?'opacity:.92;background:#fffaf0!important;border-color:#fed7aa!important;':''}" ondragstart="${usable?`onCandidateDragStart(event,'${esc(r.config_name)}','${esc(c.candidate_id)}')`:''}" ondragover="${usable?'onCandidateDragOver(event)':''}" ondrop="${usable?`onCandidateDrop(event,'${esc(r.config_name)}','${esc(c.candidate_id)}')`:''}"><button type="button" class="secondary ga-candidate-drag-handle" data-ga-candidate-drag-handle="1" title="拖动排序" aria-label="拖动排序" ${usable?'':'disabled'}>⋮⋮</button>${pending?`<input type="checkbox" data-ga-pending-candidate-select="1" data-ga-batch-candidate-select="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" onchange="updateCandidateBatchActions('${esc(r.config_name)}')"/>`:`<input type="checkbox" data-ga-candidate-select="1" data-ga-batch-candidate-select="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" data-role="${esc(role)}" onchange="updateCandidateBatchActions('${esc(r.config_name)}')" ${usable?'':'disabled'}/>`}<span class="ga-source-badge">${esc(candidateSourceLabel(c))}</span><span class="ga-candidate-text-wrap ${hasMedia?'has-media':''}"><input type="text" data-ga-candidate-text="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" data-original-text="${esc(c.text)}" data-zh-text="${esc(c.text_zh||'')}" data-zh-source="${esc(c.text_zh_source||'')}" data-zh-status="${esc(c.text_zh_status||'')}" value="${esc(c.text)}"/>${candidateMediaIcon(c)}</span>${actionButtons}${metaBadges}</div>`}
+function candidateMediaIcon(r,c){if(c===undefined){c=r;r={}}if(!candidateHasMedia(c))return '';const title=esc(c.media_filename?`带图片：${c.media_filename}`:'带图片');return `<button type="button" class="ga-candidate-media-icon" data-ga-candidate-media-icon="1" title="${title}" aria-label="预览图片" onclick="openCandidateMediaPreview('${esc(r?.config_name||c?.config_name||'')}','${esc(c?.candidate_id||c?.template_id||'')}')">🖼</button>`}
+function candidateRowHtml(r,c,role){const usable=candidateIsUsable(c);const pending=candidateNeedsConfirm(c);const hasMedia=candidateHasMedia(c);const qualityBadge=candidateQualityBadge(c);const pendingBadge=pending?`<span class="ga-source-badge" style="background:#fff7ed!important;color:#9a3412!important;border-color:#fed7aa!important;">待确认</span>`:'';const confirmButton=pending?`<button type="button" class="secondary ga-confirm-candidate-btn" onclick="enableCandidate('${esc(r.config_name)}','${esc(c.candidate_id)}')">确认</button>`:'';const metaBadges=`<span class="ga-candidate-meta-badges">${pendingBadge}${qualityBadge}</span>`;const actionButtons=`<span class="ga-candidate-actions"><button type="button" class="secondary ga-translate-btn" title="候选翻译" aria-label="候选翻译" onclick="toggleCandidateTranslation('${esc(r.config_name)}','${esc(c.candidate_id)}')">译</button>${confirmButton}<button type="button" class="secondary" onclick="saveCustomCandidate('${esc(r.config_name)}','${esc(c.candidate_id)}')">保存自定义</button></span>`;return `<div class="mini-note candidate-row-compact ga-candidate-row ${pending?'is-unavailable':''}" data-ga-candidate-row="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" data-source-config-name="${esc(c.source_config_name||c.config_name||r.config_name)}" style="${pending?'opacity:.92;background:#fffaf0!important;border-color:#fed7aa!important;':''}" ondragover="${usable?`onCandidateDragOver(event,'${esc(r.config_name)}','${esc(c.candidate_id)}')`:''}" ondragleave="${usable?'scheduleCandidateDropCursorClear(event)':''}" ondrop="${usable?`onCandidateDrop(event,'${esc(r.config_name)}','${esc(c.candidate_id)}')`:''}"><button type="button" class="secondary ga-candidate-drag-handle" draggable="true" data-ga-candidate-drag-handle="1" title="拖动排序" aria-label="拖动排序" ondragstart="${usable?`onCandidateDragStart(event,'${esc(r.config_name)}','${esc(c.candidate_id)}')`:''}" ondragend="clearCandidateDropCursor()" onpointerdown="${usable?`onCandidatePointerDragStart(event,'${esc(r.config_name)}','${esc(c.candidate_id)}')`:''}" ${usable?'':'disabled'}>⋮⋮</button>${pending?`<input type="checkbox" data-ga-pending-candidate-select="1" data-ga-batch-candidate-select="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" onchange="updateCandidateBatchActions('${esc(r.config_name)}')"/>`:`<input type="checkbox" data-ga-candidate-select="1" data-ga-batch-candidate-select="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" data-role="${esc(role)}" onchange="updateCandidateBatchActions('${esc(r.config_name)}')" ${usable?'':'disabled'}/>`}<span class="ga-source-badge">${esc(candidateSourceLabel(c))}</span><span class="ga-candidate-text-wrap ${hasMedia?'has-media':''}"><input type="text" data-ga-candidate-text="1" data-config-name="${esc(r.config_name)}" data-candidate-id="${esc(c.candidate_id)}" data-original-text="${esc(c.text)}" data-zh-text="${esc(c.text_zh||'')}" data-zh-source="${esc(c.text_zh_source||'')}" data-zh-status="${esc(c.text_zh_status||'')}" value="${esc(c.text)}"/>${candidateMediaIcon(r,c)}</span>${actionButtons}${metaBadges}</div>`}
 function candidateIsManual(c){const source=String(c?.source_type||c?.source_label||c?.source||'').trim();return ['manual','manual_upload','custom','role_save','人工写入'].includes(source)||c?.customized===true}
 function candidateIsUsable(c){return c&&(candidateIsManual(c)||(c.enabled!==false&&c.safe_to_send===true))}
 function candidateNeedsConfirm(c){return c&&!candidateIsManual(c)&&!candidateIsUsable(c)}
 function selectedBatchCandidateItems(){return [...document.querySelectorAll('[data-ga-batch-candidate-select]:checked')].map(el=>({configName:el.dataset.configName||'',candidateId:el.dataset.candidateId||'',pending:el.hasAttribute('data-ga-pending-candidate-select')})).filter(x=>x.configName&&x.candidateId)}
-function selectedCandidateIdsForConfig(configName){return [...document.querySelectorAll(`[data-ga-batch-candidate-select][data-config-name="${CSS.escape(String(configName||''))}"]:checked`)].map(el=>String(el.dataset.candidateId||'')).filter(Boolean)}
+function selectedCandidateIdsForConfig(configName){return selectedUsableCandidateIdsForConfig(configName)}
 function pendingCandidateIdsForConfig(configName){return [...document.querySelectorAll(`[data-ga-pending-candidate-select][data-config-name="${CSS.escape(String(configName||''))}"]:checked`)].map(el=>String(el.dataset.candidateId||'')).filter(Boolean)}
-function setCandidateSelectionForConfig(configName,checked){document.querySelectorAll(`[data-ga-batch-candidate-select][data-config-name="${CSS.escape(String(configName||''))}"]`).forEach(el=>{if(!el.disabled)el.checked=!!checked});updateCandidateBatchActions(configName)}
+function setPendingCandidateSelectionForConfig(configName,checked){document.querySelectorAll(`[data-ga-pending-candidate-select][data-config-name="${CSS.escape(String(configName||''))}"]`).forEach(el=>{if(!el.disabled)el.checked=!!checked});updateCandidateBatchActions(configName)}
+function setCandidateSelectionForConfig(configName,checked){setPendingCandidateSelectionForConfig(configName,checked)}
 function setUsableCandidateSelectionForConfig(configName,checked){document.querySelectorAll(`[data-ga-candidate-select][data-config-name="${CSS.escape(String(configName||''))}"]`).forEach(el=>{if(!el.disabled)el.checked=!!checked});updateCandidateBatchActions(configName)}
 function selectedUsableCandidateIdsForConfig(configName){return [...document.querySelectorAll(`[data-ga-candidate-select][data-config-name="${CSS.escape(String(configName||''))}"]:checked`)].map(el=>String(el.dataset.candidateId||'')).filter(Boolean)}
 function selectedUsableCandidateItemsForConfig(configName){const selected=new Set(selectedUsableCandidateIdsForConfig(configName));return candidateRowListForConfig(configName).filter(c=>selected.has(String(c.candidate_id||'')))}
 function restoreUsableCandidateSelectionForConfig(configName,candidateIds){const key=CSS.escape(String(configName||''));const keep=new Set((candidateIds||[]).map(id=>String(id||'')).filter(Boolean));document.querySelectorAll(`[data-ga-candidate-select][data-config-name="${key}"]`).forEach(el=>{el.checked=keep.has(String(el.dataset.candidateId||''))});const boxes=[...document.querySelectorAll(`[data-ga-candidate-select][data-config-name="${key}"]`)];const usableSelectAll=document.querySelector(`[data-ga-usable-select-all][data-config-name="${key}"]`);if(usableSelectAll){usableSelectAll.checked=boxes.length>0&&boxes.every(el=>el.checked);usableSelectAll.indeterminate=boxes.some(el=>el.checked)&&!usableSelectAll.checked}updateCandidateBatchActions(configName)}
-function updateCandidateBatchActions(configName){const selectedIds=selectedCandidateIdsForConfig(configName);const pendingIds=pendingCandidateIdsForConfig(configName);const box=document.querySelector(`[data-ga-pending-actions="${CSS.escape(String(configName||''))}"]`);if(box){box.querySelectorAll('[data-ga-pending-count]').forEach(el=>el.textContent=String(selectedIds.length));box.querySelectorAll('button[data-ga-batch-action="delete"]').forEach(btn=>btn.disabled=!selectedIds.length);box.querySelectorAll('button[data-ga-batch-action="confirm"]').forEach(btn=>btn.disabled=!pendingIds.length)}}
+function updateCandidateBatchActions(configName){const pendingIds=pendingCandidateIdsForConfig(configName);const box=document.querySelector(`[data-ga-pending-actions="${CSS.escape(String(configName||''))}"]`);if(box){box.querySelectorAll('[data-ga-pending-count]').forEach(el=>el.textContent=String(pendingIds.length));box.querySelectorAll('button[data-ga-batch-action="delete"]').forEach(btn=>btn.disabled=!pendingIds.length);box.querySelectorAll('button[data-ga-batch-action="confirm"]').forEach(btn=>btn.disabled=!pendingIds.length)}}
 function candidateRowListForConfig(configName){const row=(window.__gaCandidateRows||[]).find(r=>String(r.config_name||'')===String(configName||''));return row?(row.candidates||[]).filter(candidateIsUsable):[]}
 function candidateIdsForConfig(configName){return candidateRowListForConfig(configName).map(c=>String(c.candidate_id||'')).filter(Boolean)}
 async function saveCandidateOrder(configName,candidateIds){const preservedSelection=selectedUsableCandidateIdsForConfig(configName);const rows=candidateRowListForConfig(configName);const byId=new Map(rows.map(c=>[String(c.candidate_id||''),c]));const ordered=(candidateIds||[]).map(id=>byId.get(String(id||''))).filter(Boolean);const grouped={};const globalOrder={};ordered.forEach((c,idx)=>{const source=String(c.source_config_name||c.config_name||configName||'').trim();const id=String(c.candidate_id||'').trim();if(!source||!id)return;grouped[source]=grouped[source]||[];grouped[source].push(id);globalOrder[id]=idx});for(const [sourceConfig,ids] of Object.entries(grouped)){await loadJson('/api/ops/group-atmosphere/candidate-pool/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:sourceConfig,candidate_ids:ids,candidate_orders:globalOrder})})}showTip('排序已保存','success');await loadCandidatePool();restoreUsableCandidateSelectionForConfig(configName,preservedSelection)}
-function onCandidateDragStart(ev,configName,candidateId){window.__gaCandidateDrag={configName:String(configName||''),candidateId:String(candidateId||'')};try{ev.dataTransfer.setData('text/plain',JSON.stringify(window.__gaCandidateDrag));ev.dataTransfer.effectAllowed='move'}catch(e){}}
-function onCandidateDragOver(ev){ev.preventDefault();try{ev.dataTransfer.dropEffect='move'}catch(e){}}
-async function onCandidateDrop(ev,configName,targetCandidateId){ev.preventDefault();const drag=window.__gaCandidateDrag||{};if(!drag.candidateId||String(drag.configName)!==String(configName||'')||String(drag.candidateId)===String(targetCandidateId||''))return;const ids=candidateIdsForConfig(configName).filter(id=>id!==String(drag.candidateId));const targetIdx=Math.max(0,ids.indexOf(String(targetCandidateId||'')));ids.splice(targetIdx,0,String(drag.candidateId));await saveCandidateOrder(configName,ids)}
+function onCandidateDragStart(ev,configName,candidateId){window.__gaCandidateDrag={configName:String(configName||''),candidateId:String(candidateId||'')};document.querySelectorAll('.ga-candidate-row.is-drag-source').forEach(el=>el.classList.remove('is-drag-source'));const row=ev?.target?.closest?.('[data-ga-candidate-row]');if(row)row.classList.add('is-drag-source');try{ev.dataTransfer.setData('text/plain',JSON.stringify(window.__gaCandidateDrag));ev.dataTransfer.effectAllowed='move'}catch(e){}}
+function candidateDropCursorElement(){let el=document.getElementById('ga_candidate_drop_cursor');if(!el){el=document.createElement('div');el.id='ga_candidate_drop_cursor';el.className='ga-candidate-drop-cursor';el.setAttribute('data-ga-drop-position','1')}return el}
+function clearCandidateDropCursor(){const el=document.getElementById('ga_candidate_drop_cursor');if(el)el.remove();document.querySelectorAll('.ga-candidate-row.is-drag-source').forEach(row=>row.classList.remove('is-drag-source'));window.__gaCandidateDropHint=null}
+function cleanupCandidatePointerDrag(){document.removeEventListener('pointermove',onCandidatePointerDragMove,true);document.removeEventListener('pointerup',onCandidatePointerDragEnd,true);document.removeEventListener('pointercancel',onCandidatePointerDragCancel,true);window.__gaCandidatePointerDrag=null}
+function candidateDragNextOrder(drag,hint,targetCandidateId){if(!drag?.candidateId||!drag?.configName)return null;const ids=candidateIdsForConfig(drag.configName).filter(id=>id!==String(drag.candidateId));const target=String((hint&&hint.targetCandidateId)||targetCandidateId||'');if(!target||target===String(drag.candidateId)||!ids.includes(target))return null;let targetIdx=Math.max(0,ids.indexOf(target));if(hint&&hint.after)targetIdx+=1;ids.splice(targetIdx,0,String(drag.candidateId));return ids}
+function scheduleCandidateDropCursorClear(ev){const related=ev?.relatedTarget;if(related&&related.closest&&related.closest('#ga_candidate_pool'))return;setTimeout(()=>{const active=document.elementFromPoint(window.__gaLastDragX||0,window.__gaLastDragY||0);if(!active||!active.closest||!active.closest('#ga_candidate_pool'))clearCandidateDropCursor()},40)}
+function showCandidateDropCursor(ev,configName,targetCandidateId){const drag=window.__gaCandidateDrag||{};if(!drag.candidateId||String(drag.configName)!==String(configName||''))return null;const row=ev?.currentTarget?.closest?.('[data-ga-candidate-row]')||ev?.target?.closest?.('[data-ga-candidate-row]');if(!row||String(row.dataset.candidateId||'')===String(drag.candidateId||''))return null;const rect=row.getBoundingClientRect();const after=Number(ev.clientY||0)>rect.top+(rect.height/2);const cursor=candidateDropCursorElement();cursor.dataset.configName=String(configName||'');cursor.dataset.targetCandidateId=String(targetCandidateId||'');cursor.dataset.dropAfter=after?'1':'0';if(after)row.insertAdjacentElement('afterend',cursor);else row.insertAdjacentElement('beforebegin',cursor);window.__gaCandidateDropHint={configName:String(configName||''),targetCandidateId:String(targetCandidateId||''),after};return window.__gaCandidateDropHint}
+function onCandidateDragOver(ev,configName,targetCandidateId){ev.preventDefault();window.__gaLastDragX=ev.clientX;window.__gaLastDragY=ev.clientY;try{ev.dataTransfer.dropEffect='move'}catch(e){}showCandidateDropCursor(ev,configName,targetCandidateId)}
+function onCandidatePointerDragStart(ev,configName,candidateId){if(ev&&ev.button!==undefined&&ev.button!==0)return;const handle=ev?.currentTarget||ev?.target;const row=handle?.closest?.('[data-ga-candidate-row]');window.__gaCandidateDrag={configName:String(configName||''),candidateId:String(candidateId||'')};window.__gaCandidatePointerDrag={configName:String(configName||''),candidateId:String(candidateId||''),pointerId:ev?.pointerId,startX:Number(ev?.clientX||0),startY:Number(ev?.clientY||0),moved:false,saving:false};document.querySelectorAll('.ga-candidate-row.is-drag-source').forEach(el=>el.classList.remove('is-drag-source'));if(row)row.classList.add('is-drag-source');try{handle?.setPointerCapture?.(ev.pointerId)}catch(e){}document.addEventListener('pointermove',onCandidatePointerDragMove,true);document.addEventListener('pointerup',onCandidatePointerDragEnd,true);document.addEventListener('pointercancel',onCandidatePointerDragCancel,true);ev?.preventDefault?.();ev?.stopPropagation?.()}
+function candidateDropHintFromPoint(drag,x,y){if(!drag)return null;const el=document.elementFromPoint(Number(x||0),Number(y||0));const row=el?.closest?.('[data-ga-candidate-row]');if(row&&String(row.dataset.configName||'')===String(drag.configName||'')&&String(row.dataset.candidateId||'')!==String(drag.candidateId||'')){return showCandidateDropCursor({clientY:Number(y||0),currentTarget:row,target:row},drag.configName,row.dataset.candidateId)}return null}
+function onCandidatePointerDragMove(ev){const drag=window.__gaCandidatePointerDrag;if(!drag||drag.saving)return;drag.lastX=Number(ev.clientX||0);drag.lastY=Number(ev.clientY||0);window.__gaLastDragX=ev.clientX;window.__gaLastDragY=ev.clientY;const dx=Math.abs(Number(ev.clientX||0)-Number(drag.startX||0));const dy=Math.abs(Number(ev.clientY||0)-Number(drag.startY||0));if(dx+dy>3)drag.moved=true;const edge=42;let delta=0;if(ev.clientY<edge)delta=-18;else if(ev.clientY>window.innerHeight-edge)delta=18;if(delta)window.scrollBy({top:delta,left:0,behavior:'auto'});candidateDropHintFromPoint(drag,ev.clientX,ev.clientY);ev.preventDefault?.()}
+async function onCandidatePointerDragEnd(ev){const drag=window.__gaCandidatePointerDrag;if(!drag||drag.saving)return;drag.saving=true;const moved=drag.moved||Math.abs(Number(ev?.clientX||drag.lastX||0)-Number(drag.startX||0))+Math.abs(Number(ev?.clientY||drag.lastY||0)-Number(drag.startY||0))>3;const hint=window.__gaCandidateDropHint||candidateDropHintFromPoint(drag,ev?.clientX||drag.lastX,ev?.clientY||drag.lastY);const ids=candidateDragNextOrder(drag,hint,hint?.targetCandidateId);cleanupCandidatePointerDrag();clearCandidateDropCursor();if(!moved||!ids)return;await saveCandidateOrder(drag.configName,ids)}
+function onCandidatePointerDragCancel(ev){cleanupCandidatePointerDrag();clearCandidateDropCursor()}
+async function onCandidateDrop(ev,configName,targetCandidateId){ev.preventDefault();const hint=showCandidateDropCursor(ev,configName,targetCandidateId)||window.__gaCandidateDropHint||{};const drag=window.__gaCandidateDrag||{};const ids=candidateDragNextOrder(drag,hint,targetCandidateId);clearCandidateDropCursor();if(!ids)return;await saveCandidateOrder(drag.configName,ids)}
 async function moveSelectedCandidatePriority(configName,delta){const ids=candidateIdsForConfig(configName);const selected=new Set(selectedUsableCandidateIdsForConfig(configName));if(!ids.length||!selected.size)throw new Error('请先勾选要移动的话术');const next=ids.slice();let moved=false;if(Number(delta||0)<0){for(let i=1;i<next.length;i++){if(selected.has(next[i])&&!selected.has(next[i-1])){const t=next[i-1];next[i-1]=next[i];next[i]=t;moved=true}}}else{for(let i=next.length-2;i>=0;i--){if(selected.has(next[i])&&!selected.has(next[i+1])){const t=next[i+1];next[i+1]=next[i];next[i]=t;moved=true}}}if(!moved){showTip('已到边界','info');return}await saveCandidateOrder(configName,next)}
-async function moveSelectedCandidatesToType(configName){return runAction('移动话术类型',async()=>{const select=document.querySelector(`[data-ga-move-type-select][data-config-name="${CSS.escape(String(configName||''))}"]`);const targetRole=String(select?.value||'').trim();if(!targetRole)throw new Error('请选择目标话术类型');const items=selectedUsableCandidateItemsForConfig(configName);if(!items.length)throw new Error('请先勾选要移动的话术');const bySource={};items.forEach(c=>{const source=String(c.source_config_name||c.config_name||configName||'').trim();const id=String(c.candidate_id||'').trim();if(!source||!id)return;bySource[source]=bySource[source]||[];bySource[source].push(id)});let moved=0;for(const [sourceConfig,ids] of Object.entries(bySource)){const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/move-type',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:sourceConfig,candidate_ids:ids,target_role_positioning:targetRole})});moved+=Number(data.moved_count||ids.length)}if(select)select.value='';window.__gaCandidateActiveRole=targetRole;const roleSelect=document.getElementById('ga_candidate_role_filter');if(roleSelect)roleSelect.value=targetRole;setLocalFeedback('ga_candidate_result',`已移动 ${moved} 条话术到${roleLabel(targetRole)}`,'success');await loadCandidatePool();return {ok:true,moved_count:moved}})}
+async function moveSelectedCandidatesToType(configName){return runAction('移动话术类型',async()=>{const select=document.querySelector(`[data-ga-move-type-select][data-config-name="${CSS.escape(String(configName||''))}"]`);const targetRole=String(select?.value||'').trim();if(!targetRole)throw new Error('请选择目标话术类型');const currentRow=(window.__gaCandidateRows||[]).find(r=>String(r.config_name||'')===String(configName||''));const currentRole=String(currentRow?.role_positioning||activeCandidateRole()||'').trim();if(currentRole&&targetRole===currentRole)throw new Error('目标话术类型不能和当前类型相同');const items=selectedUsableCandidateItemsForConfig(configName);if(!items.length)throw new Error('请先勾选要移动的话术');const bySource={};items.forEach(c=>{const source=String(c.source_config_name||c.config_name||configName||'').trim();const id=String(c.candidate_id||'').trim();if(!source||!id)return;bySource[source]=bySource[source]||[];bySource[source].push(id)});let moved=0;for(const [sourceConfig,ids] of Object.entries(bySource)){const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/move-type',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:sourceConfig,candidate_ids:ids,target_role_positioning:targetRole})});moved+=Number(data.moved_count||0)}if(!moved)throw new Error('没有实际移动任何话术');if(select)select.value='';window.__gaCandidateActiveRole=targetRole;const roleSelect=document.getElementById('ga_candidate_role_filter');if(roleSelect)roleSelect.value=targetRole;setLocalFeedback('ga_candidate_result',`已移动 ${moved} 条话术到${roleLabel(targetRole)}`,'success');await loadCandidatePool();return {ok:true,moved_count:moved}})}
+
+async function deleteSelectedUsableCandidates(configName){return runAction('删除已选话术',async()=>{const items=selectedUsableCandidateItemsForConfig(configName);if(!items.length)throw new Error('请先勾选要删除的话术');if(!confirm(`确认删除已选 ${items.length} 条话术？`))return {cancelled:true,silent:true};const bySource={};items.forEach(c=>{const source=String(c.source_config_name||c.config_name||configName||'').trim();const id=String(c.candidate_id||'').trim();if(!source||!id)return;bySource[source]=bySource[source]||[];bySource[source].push(id)});let deleted=0;for(const [sourceConfig,ids] of Object.entries(bySource)){for(const id of ids){await loadJson(`/api/ops/group-atmosphere/candidate-pool/${encodeURIComponent(sourceConfig)}/${encodeURIComponent(id)}`,{method:'DELETE'});deleted+=1}}setLocalFeedback('ga_candidate_result',`已删除 ${deleted} 条话术`,'success');showTip(`已删除 ${deleted} 条话术`,'success');await loadCandidatePool();await loadRoleBridge();return {ok:true,deleted_count:deleted}})}
+
 async function toggleCandidateTranslation(configName,candidateId){const targetConfig=String(configName||'');const targetId=String(candidateId||'');const el=[...document.querySelectorAll('[data-ga-candidate-text]')].find(x=>String(x.dataset.configName||'')===targetConfig&&String(x.dataset.candidateId||'')===targetId);if(!el)return;const showingZh=el.dataset.showingZh==='1';if(showingZh){el.value=el.dataset.originalText||el.value;el.dataset.showingZh='0';return}if(!el.dataset.originalText)el.dataset.originalText=el.value;if(!String(el.dataset.zhText||'').trim()||el.dataset.zhSource==='rule'){el.value='正在翻译…';try{const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/translate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:targetConfig,candidate_id:targetId})});const c=data.candidate||{};el.dataset.zhText=c.text_zh||'暂未生成准确中文翻译，请人工确认原文含义。';el.dataset.zhSource=c.text_zh_source||'';el.dataset.zhStatus=c.text_zh_status||'';updateCandidateCacheTranslation(targetConfig,targetId,c)}catch(err){el.dataset.zhText='翻译失败，请稍后重试';el.dataset.zhSource='error';el.dataset.zhStatus='needs_review';showTip(`翻译失败：${err.message||err}`,'error')}}el.value=el.dataset.zhText||'暂未生成准确中文翻译，请人工确认原文含义。';el.dataset.showingZh='1'}
 function updateCandidateCacheTranslation(configName,candidateId,candidate){(window.__gaCandidateRows||[]).forEach(row=>(row.candidates||[]).forEach(item=>{if(String(row.config_name||'')===String(configName||'')&&String(item.candidate_id||'')===String(candidateId||'')){item.text_zh=candidate.text_zh||item.text_zh;item.text_zh_source=candidate.text_zh_source||item.text_zh_source;item.text_zh_status=candidate.text_zh_status||item.text_zh_status}}))}
-function renderCandidatePool(rows){window.__gaCandidateRows=rows||[];renderSpeechPlanLibrary();renderCandidateTabs(rows||[]);renderCandidateTargetRoleOptions();const pool=document.getElementById('ga_candidate_pool');const count=document.getElementById('ga_candidate_count');const visibleRows=filterCandidateRows(rows||[]);const total=visibleRows.reduce((n,r)=>n+Number(r.candidate_count||0),0);if(count)count.textContent=`${total} 条`;if(!pool)return;if(!visibleRows.length){const role=activeCandidateRole();const label=roleLabel(role);const configName=`role-${document.getElementById('ga_candidate_language_filter')?.value||'id'}-${role}`;pool.classList.remove('muted');pool.innerHTML=`<div class="group-card" data-role="${esc(role)}"><div class="group-card-title"><div><strong>${esc(label)}</strong><div class="muted">暂无话术，先新增话术或新增图片。</div></div><div class="inline-actions"><button type="button" class="secondary" onclick="addManualCandidateDraft('${esc(configName)}')">新增话术</button><button type="button" class="secondary" id="ga_open_image_candidate_modal_btn" onclick="openImageCandidateModal('${esc(configName)}','${esc(role)}')">新增图片</button></div></div>${candidateDraftRow({config_name:configName},role)}</div>`;return}pool.classList.remove('muted');pool.innerHTML=visibleRows.map(r=>{const all=(r.candidates||[]).slice(0,100);const pending=all.filter(candidateNeedsConfirm);const usable=all.filter(candidateIsUsable);const role=String(r.role_positioning||'');const expanded=Boolean((window.__gaCandidateExpanded||{})[role]);const shownUsable=expanded?usable:usable.slice(0,10);const shownPending=expanded?pending:pending.slice(0,10);const more=(usable.length+pending.length)>20?`<button type="button" class="secondary ga-candidate-expand" onclick="toggleCandidateExpanded('${esc(role)}')">${expanded?'收起':'展开全部'} ${usable.length+pending.length} 条</button>`:'';const pendingHint=pending.length?` · 待确认 ${pending.length} 条`:'';const batchBar=`<div class="mini-note ga-pending-batch-bar" data-ga-pending-actions="${esc(r.config_name)}" style="display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;background:${pending.length?'#fff7ed':'#f8fafc'}!important;border-color:${pending.length?'#fed7aa':'#e5e7eb'}!important;margin:8px 0!important;"><label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:13px;font-weight:800;color:${pending.length?'#9a3412':'#64748b'};"><input type="checkbox" style="width:16px!important;height:16px!important;min-height:16px!important;margin:0!important;" onchange="setCandidateSelectionForConfig('${esc(r.config_name)}',this.checked)"/> <span>待确认批量操作：</span> 全选待确认 ${pending.length} 条${pending.length?` · 当前显示 ${shownPending.length} 条`:' · 暂无待确认'}</label><div style="display:flex;align-items:center;gap:8px;"><span class="muted">已选 <span data-ga-pending-count>0</span></span><button type="button" class="secondary" data-ga-batch-action="confirm" disabled onclick="confirmSelectedPendingCandidates('${esc(r.config_name)}')">一键确认</button><button type="button" class="danger" data-ga-batch-action="delete" disabled onclick="deleteSelectedPendingCandidates('${esc(r.config_name)}')">删除已选话术</button></div></div>`;const usableBlock=`<div class="ga-candidate-sublist ga-candidate-usable-list"><div class="toolbar" style="margin:2px 0 4px;align-items:center;justify-content:space-between;gap:8px;"><label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:13px;font-weight:800;"><input type="checkbox" data-ga-usable-select-all="1" data-config-name="${esc(r.config_name)}" style="width:16px!important;height:16px!important;min-height:16px!important;margin:0!important;" ${shownUsable.length?'':'disabled'} onchange="setUsableCandidateSelectionForConfig('${esc(r.config_name)}',this.checked)"/> <span>可用话术</span></label><span class="toolbar-actions ga-candidate-bulk-move-actions"><button type="button" class="secondary" onclick="moveSelectedCandidatePriority('${esc(r.config_name)}',-1)" ${shownUsable.length?'':'disabled'}>上移</button><button type="button" class="secondary" onclick="moveSelectedCandidatePriority('${esc(r.config_name)}',1)" ${shownUsable.length?'':'disabled'}>下移</button><select data-ga-move-type-select="1" data-config-name="${esc(r.config_name)}" ${shownUsable.length?'':'disabled'}>${phraseTypeMoveOptionsHtml(role)}</select><button type="button" class="secondary" onclick="moveSelectedCandidatesToType('${esc(r.config_name)}')" ${shownUsable.length?'':'disabled'}>确认移动</button></span></div>${shownUsable.length?shownUsable.map(c=>candidateRowHtml(r,c,role)).join(''):'<div class="muted">暂无已确认可用话术</div>'}</div>`;const pendingBlock=`<div class="ga-candidate-sublist ga-candidate-pending-list" data-ga-learning-pending-list="1" style="margin-top:8px;border-top:1px solid #e5e7eb;padding-top:8px;"><div class="toolbar" style="margin:0 0 4px;"><strong>待人工确认</strong><span class="pill orange">${pending.length} 条</span></div>${batchBar}${shownPending.length?shownPending.map(c=>candidateRowHtml(r,c,role)).join(''):''}</div>`;return `<div class="group-card" data-language="${esc(r.language||'')}" data-role="${esc(role)}"><div class="group-card-title"><div><strong>${esc(candidateTypeLabel(r))}</strong><span class="muted" style="margin-left:8px;white-space:nowrap;">${esc(r.region||'-')} · 可用 ${usable.length}/${all.length} 条${pendingHint}</span></div><div class="inline-actions"><button type="button" class="secondary" onclick="addManualCandidateDraft('${esc(r.config_name)}')">新增话术</button><button type="button" class="secondary" id="ga_open_image_candidate_modal_btn" onclick="openImageCandidateModal('${esc(r.config_name)}','${esc(role)}')">新增图片</button></div></div>${candidateDraftRow(r,role)}${usableBlock}${more}${pendingBlock}</div>`}).join('')}
+function renderCandidatePool(rows){window.__gaCandidateRows=rows||[];renderSpeechPlanLibrary();renderCandidateTabs(rows||[]);renderCandidateTargetRoleOptions();const pool=document.getElementById('ga_candidate_pool');if(pool&&Number(window.__gaCandidatePoolMinHeight||0)>0)pool.style.minHeight=`${Number(window.__gaCandidatePoolMinHeight||0)}px`;const count=document.getElementById('ga_candidate_count');const visibleRows=filterCandidateRows(rows||[]);const total=visibleRows.reduce((n,r)=>n+Number(r.candidate_count||0),0);if(count)count.textContent=`${total} 条`;if(!pool)return;if(!visibleRows.length){const role=activeCandidateRole();const label=roleLabel(role);const configName=`auto-${document.getElementById('ga_candidate_language_filter')?.value||'id'}-${role}`;pool.classList.remove('muted');pool.innerHTML=`<div class="group-card" data-role="${esc(role)}"><div class="group-card-title"><div><strong>${esc(label)}</strong><div class="muted">暂无话术，先新增话术或新增图片。</div></div><div class="inline-actions"><button type="button" class="secondary" onclick="addManualCandidateDraft('${esc(configName)}')">新增话术</button><button type="button" class="secondary" id="ga_open_image_candidate_modal_btn" onclick="openImageCandidateModal('${esc(configName)}','${esc(role)}')">新增图片</button></div></div>${candidateDraftRow({config_name:configName},role)}</div>`;return}pool.classList.remove('muted');pool.innerHTML=visibleRows.map(r=>{const all=(r.candidates||[]).slice(0,100);const pending=all.filter(candidateNeedsConfirm);const usable=all.filter(candidateIsUsable);const role=String(r.role_positioning||'');const expanded=Boolean((window.__gaCandidateExpanded||{})[role]);const shownUsable=expanded?usable:usable.slice(0,10);const shownPending=expanded?pending:pending.slice(0,10);const more=(usable.length+pending.length)>20?`<button type="button" class="secondary ga-candidate-expand" onclick="toggleCandidateExpanded('${esc(role)}')">${expanded?'收起':'展开全部'} ${usable.length+pending.length} 条</button>`:'';const pendingHint=pending.length?` · 待确认 ${pending.length} 条`:'';const batchBar=`<div class="mini-note ga-pending-batch-bar" data-ga-pending-actions="${esc(r.config_name)}" style="display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;background:${pending.length?'#fff7ed':'#f8fafc'}!important;border-color:${pending.length?'#fed7aa':'#e5e7eb'}!important;margin:8px 0!important;"><label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:13px;font-weight:800;color:${pending.length?'#9a3412':'#64748b'};"><input type="checkbox" style="width:16px!important;height:16px!important;min-height:16px!important;margin:0!important;" onchange="setPendingCandidateSelectionForConfig('${esc(r.config_name)}',this.checked)"/> <span>待确认批量操作：</span> 全选待确认 ${pending.length} 条${pending.length?` · 当前显示 ${shownPending.length} 条`:' · 暂无待确认'}</label><div style="display:flex;align-items:center;gap:8px;"><span class="muted">已选 <span data-ga-pending-count>0</span></span><button type="button" class="secondary" data-ga-batch-action="confirm" disabled onclick="confirmSelectedPendingCandidates('${esc(r.config_name)}')">一键确认</button><button type="button" class="danger" data-ga-batch-action="delete" disabled onclick="deleteSelectedPendingCandidates('${esc(r.config_name)}')">删除已选话术</button></div></div>`;const usableBlock=`<div class="ga-candidate-sublist ga-candidate-usable-list"><div class="ga-candidate-usable-toolbar"><label class="ga-candidate-usable-title"><input type="checkbox" data-ga-usable-select-all="1" data-config-name="${esc(r.config_name)}" ${shownUsable.length?'':'disabled'} onchange="setUsableCandidateSelectionForConfig('${esc(r.config_name)}',this.checked)"/><span>可用话术</span><span class="pill gray">${usable.length} 条</span></label><span class="ga-candidate-bulk-move-actions"><button type="button" class="secondary" onclick="moveSelectedCandidatePriority('${esc(r.config_name)}',-1)" ${shownUsable.length?'':'disabled'}>上移</button><button type="button" class="secondary" onclick="moveSelectedCandidatePriority('${esc(r.config_name)}',1)" ${shownUsable.length?'':'disabled'}>下移</button><select data-ga-move-type-select="1" data-config-name="${esc(r.config_name)}" ${shownUsable.length?'':'disabled'}>${phraseTypeMoveOptionsHtml(role)}</select><button type="button" class="secondary" onclick="moveSelectedCandidatesToType('${esc(r.config_name)}')" ${shownUsable.length?'':'disabled'}>确认移动</button><button type="button" class="danger" onclick="deleteSelectedUsableCandidates('${esc(r.config_name)}')" ${shownUsable.length?'':'disabled'}>删除</button></span></div>${shownUsable.length?shownUsable.map(c=>candidateRowHtml(r,c,role)).join(''):'<div class="muted">暂无已确认可用话术</div>'}</div>`;const pendingBlock=`<div class="ga-candidate-sublist ga-candidate-pending-list" data-ga-learning-pending-list="1" style="margin-top:8px;border-top:1px solid #e5e7eb;padding-top:8px;"><div class="toolbar" style="margin:0 0 4px;"><strong>待人工确认</strong><span class="pill orange">${pending.length} 条</span></div>${batchBar}${shownPending.length?shownPending.map(c=>candidateRowHtml(r,c,role)).join(''):''}</div>`;return `<div class="group-card" data-language="${esc(r.language||'')}" data-role="${esc(role)}"><div class="ga-candidate-card-head"><div class="ga-candidate-card-title"><strong>${esc(candidateTypeLabel(r))}</strong><span class="muted">${esc(r.region||'-')} · 可用 ${usable.length}/${all.length} 条${pendingHint}</span></div><div class="ga-candidate-card-actions"><button type="button" class="secondary" onclick="addManualCandidateDraft('${esc(r.config_name)}')">新增话术</button><button type="button" class="secondary" id="ga_open_image_candidate_modal_btn" onclick="openImageCandidateModal('${esc(r.config_name)}','${esc(role)}')">新增图片</button></div></div>${candidateDraftRow(r,role)}${usableBlock}${more}${pendingBlock}</div>`}).join('')}
 function toggleCandidateExpanded(role){window.__gaCandidateExpanded=window.__gaCandidateExpanded||{};window.__gaCandidateExpanded[role]=!window.__gaCandidateExpanded[role];renderCandidatePool(window.__gaCandidateRows||[])}
 
 async function saveManualCandidate(configName,role){const el=document.querySelector(`[data-ga-manual-candidate-text="${CSS.escape(String(configName||''))}"]`);const text=String(el?.value||'').trim();if(!text){setFeedback('请先填写话术内容','error');setLocalFeedback('ga_candidate_result','请先填写话术内容','error');return}return runAction('新增话术',async()=>{await loadJson('/api/ops/group-atmosphere/candidate-pool/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:configName,text,role_positioning:role})});if(window.__gaManualCandidateDrafts)delete window.__gaManualCandidateDrafts[candidateManualDraftKey(configName)];setLocalFeedback('ga_candidate_result','人工写入话术已保存','success');await loadCandidatePool();return {ok:true}})}
-function openImageCandidateModal(configName,role){const modal=document.getElementById('ga_image_candidate_modal');document.getElementById('ga_image_candidate_config').value=String(configName||'');document.getElementById('ga_image_candidate_role').value=String(role||activeCandidateRole()||'community_seed');const file=document.getElementById('ga_image_candidate_file');if(file)file.value='';const text=document.getElementById('ga_image_candidate_text');if(text)text.value='';const result=document.getElementById('ga_image_candidate_result');if(result)result.textContent='';if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false')}}
+function findCandidateById(configName,candidateId){let found=null;(window.__gaCandidateRows||[]).forEach(r=>(r.candidates||[]).forEach(c=>{if(found)return;const cfg=String(r.config_name||c.config_name||'');const id=String(c.candidate_id||c.template_id||'');if(String(configName||'')===cfg&&String(candidateId||'')===id)found={row:r,candidate:c}}));return found}
+function openCandidateMediaPreview(configName,candidateId){const found=findCandidateById(configName,candidateId);const c=found?.candidate||{};if(!candidateHasMedia(c)){showTip('未找到预存图片','error');return}window.__gaCandidateMediaPreview={configName,candidateId,candidate:c,role:String(c.role_positioning||found?.row?.role_positioning||activeCandidateRole()||'community_seed')};const img=document.getElementById('ga_candidate_media_preview_image');const url=c.media_preview_url||(c.media_id?`/api/ops/group-atmosphere/media-assets/${encodeURIComponent(c.media_id)}/preview`:'');if(img)img.src=url;const caption=document.getElementById('ga_candidate_media_preview_caption');if(caption)caption.textContent=c.media_filename?`${c.media_filename} · ${c.text||''}`:(c.text||'');const modal=document.getElementById('ga_candidate_media_preview_modal');if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false')}}
+function closeCandidateMediaPreview(){const modal=document.getElementById('ga_candidate_media_preview_modal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}const img=document.getElementById('ga_candidate_media_preview_image');if(img)img.removeAttribute('src');window.__gaTriggerMediaPreviewMode=false}
+function replaceCandidateMediaFromPreview(){if(window.__gaTriggerMediaPreviewMode)return replaceTriggerSegmentMedia();const ctx=window.__gaCandidateMediaPreview||{};closeCandidateMediaPreview();openImageCandidateModal(ctx.configName,ctx.role,ctx.candidateId)}
+async function removeCandidateMediaFromPreview(){if(window.__gaTriggerMediaPreviewMode)return removeTriggerSegmentMedia();const ctx=window.__gaCandidateMediaPreview||{};const c=ctx.candidate||{};if(!ctx.configName||!ctx.candidateId)throw new Error('未找到图片话术');return runAction('删除图片',async()=>{await loadJson('/api/ops/group-atmosphere/candidate-pool/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:ctx.configName,candidate_id:ctx.candidateId,text:String(c.text||'').trim()||' ',remove_media:true})});closeCandidateMediaPreview();setLocalFeedback('ga_candidate_result','图片已删除，文案保留','success');await loadCandidatePool();return {ok:true}})}
+function openImageCandidateModal(configName,role,candidateId=''){const modal=document.getElementById('ga_image_candidate_modal');document.getElementById('ga_image_candidate_config').value=String(configName||'');document.getElementById('ga_image_candidate_role').value=String(role||activeCandidateRole()||'community_seed');const idEl=document.getElementById('ga_image_candidate_candidate_id');if(idEl)idEl.value=String(candidateId||'');const editing=Boolean(candidateId);const found=editing?findCandidateById(configName,candidateId):null;const title=document.getElementById('ga_image_candidate_title');if(title)title.textContent=editing?'更换图片':'新增图片话术';const file=document.getElementById('ga_image_candidate_file');if(file)file.value='';const text=document.getElementById('ga_image_candidate_text');if(text)text.value=editing?String(found?.candidate?.text||''):'';const result=document.getElementById('ga_image_candidate_result');if(result)result.textContent='';if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false')}}
 function closeImageCandidateModal(){const modal=document.getElementById('ga_image_candidate_modal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
-async function saveImageCandidate(){return runAction('新增图片',async()=>{const input=document.getElementById('ga_image_candidate_file');const file=input?.files?.[0];if(!file)throw new Error('请先选择1张图片');const text=String(document.getElementById('ga_image_candidate_text')?.value||'').trim();const configName=String(document.getElementById('ga_image_candidate_config')?.value||'').trim();const role=String(document.getElementById('ga_image_candidate_role')?.value||activeCandidateRole()||'community_seed').trim();const fd=new FormData();fd.append('file',file);const mediaData=await loadJson('/api/ops/group-atmosphere/media-assets',{method:'POST',body:fd});const mediaId=mediaData.media?.media_id;if(!mediaId)throw new Error('图片上传失败');const payload={role_positioning:role,role_name:roleLabel(role),region:document.getElementById('ga_manual_upload_region')?.value||'印尼',language:document.getElementById('ga_candidate_language_filter')?.value||'id',content:text,media_id:mediaId};if(configName)payload.role_key=configName;const data=await loadJson('/api/ops/group-atmosphere/phrases/manual-upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=document.getElementById('ga_image_candidate_result');if(result)result.textContent=`已保存 ${data.imported_count||0} 条图片话术`;closeImageCandidateModal();setLocalFeedback('ga_candidate_result','图片话术已保存','success');await loadCandidatePool();return data})}
+async function saveImageCandidate(){return runAction('保存图片',async()=>{const input=document.getElementById('ga_image_candidate_file');const file=input?.files?.[0];if(!file)throw new Error('请先选择1张图片');const text=String(document.getElementById('ga_image_candidate_text')?.value||'').trim();const configName=String(document.getElementById('ga_image_candidate_config')?.value||'').trim();const role=String(document.getElementById('ga_image_candidate_role')?.value||activeCandidateRole()||'community_seed').trim();const candidateId=String(document.getElementById('ga_image_candidate_candidate_id')?.value||'').trim();const fd=new FormData();fd.append('file',file);const mediaData=await loadJson('/api/ops/group-atmosphere/media-assets',{method:'POST',body:fd});const mediaId=mediaData.media?.media_id;if(!mediaId)throw new Error('图片上传失败');let data;if(candidateId){data=await loadJson('/api/ops/group-atmosphere/candidate-pool/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:configName,candidate_id:candidateId,text,media_id:mediaId})})}else{const payload={role_positioning:role,role_name:roleLabel(role),region:document.getElementById('ga_manual_upload_region')?.value||'印尼',language:document.getElementById('ga_candidate_language_filter')?.value||'id',content:text,media_id:mediaId};if(configName)payload.role_key=configName;data=await loadJson('/api/ops/group-atmosphere/phrases/manual-upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})}const result=document.getElementById('ga_image_candidate_result');if(result)result.textContent=candidateId?'图片已更换':`已保存 ${data.imported_count||0} 条图片话术`;closeImageCandidateModal();setLocalFeedback('ga_candidate_result',candidateId?'图片已更换':'图片话术已保存','success');await loadCandidatePool();return data})}
 async function saveCustomCandidate(configName,candidateId){const text=candidateEditedText(configName,candidateId);if(!text){setFeedback('请先填写话术内容','error');setLocalFeedback('ga_candidate_result','请先填写话术内容','error');return}return runAction('保存话术编辑',async()=>{await loadJson('/api/ops/group-atmosphere/candidate-pool/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:configName,candidate_id:candidateId,text})});setLocalFeedback('ga_candidate_result','话术编辑已保存，排序已提升','success');await loadCandidatePool();return {ok:true}})}
 async function loadCandidatePool(){const data=await loadJson('/api/ops/group-atmosphere/candidate-pool');renderCandidatePool(data.rows||[]);return data}
 async function renameSpeechPlan(configName){return runAction('保存文案组名称',async()=>{const input=document.getElementById(`ga_plan_name_${configName}`);const name=String(input?.value||'').trim();if(!name)throw new Error('请填写文案组名称');const data=await loadJson(`/api/ops/group-atmosphere/speech-plans/${encodeURIComponent(configName)}/rename`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan_display_name:name})});await loadCandidatePool();refreshGroupPlanSelects();await reloadAll();return data})}
@@ -2166,28 +2288,26 @@ async function saveSelectedCandidatesToRole(){return runAction('加入话术角�
 async function deleteCandidateFromPool(configName,candidateId){return runAction('删除备选话术',async()=>{if(!confirm('确认删除这条备选话术？'))return {cancelled:true,silent:true};await loadJson(`/api/ops/group-atmosphere/candidate-pool/${encodeURIComponent(configName)}/${encodeURIComponent(candidateId)}`,{method:'DELETE'});setLocalFeedback('ga_candidate_result','备选话术已删除','success');await loadCandidatePool();await loadRoleBridge();renderCandidatePool(window.__gaCandidateRows||[]);return {ok:true}})}
 async function enableCandidate(configName,candidateId){return runAction('确认话术可用',async()=>{const result=document.getElementById('ga_candidate_result');if(result)result.textContent='';showTip('正在确认话术…');const payload={config_name:configName,candidate_ids:[candidateId]};const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/enable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});if(result)result.textContent='';showTip('话术已确认可用','success');await loadCandidatePool();refreshGroupPlanSelects();return data})}
 async function confirmSelectedPendingCandidates(configName){return runAction('一键确认',async()=>{const ids=pendingCandidateIdsForConfig(configName);if(!ids.length)throw new Error('请先勾选待确认话术');const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/enable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:configName,candidate_ids:ids})});showTip(`已确认 ${Number(data.enabled_count||ids.length)} 条话术`,'success');await loadCandidatePool();refreshGroupPlanSelects();return data})}
-async function deleteSelectedPendingCandidates(configName){return runAction('删除已选话术',async()=>{const ids=selectedCandidateIdsForConfig(configName);if(!ids.length)throw new Error('请先勾选要删除的话术');if(!confirm(`确认删除已选 ${ids.length} 条话术？`))return {cancelled:true,silent:true};let deleted=0;for(const id of ids){await loadJson(`/api/ops/group-atmosphere/candidate-pool/${encodeURIComponent(configName)}/${encodeURIComponent(id)}`,{method:'DELETE'});deleted+=1}showTip(`已删除 ${deleted} 条话术`,'success');await loadCandidatePool();await loadRoleBridge();return {ok:true,deleted_count:deleted}})}
+async function deleteSelectedPendingCandidates(configName){return runAction('删除已选话术',async()=>{const ids=pendingCandidateIdsForConfig(configName);if(!ids.length)throw new Error('请先勾选要删除的话术');if(!confirm(`确认删除已选 ${ids.length} 条话术？`))return {cancelled:true,silent:true};let deleted=0;for(const id of ids){await loadJson(`/api/ops/group-atmosphere/candidate-pool/${encodeURIComponent(configName)}/${encodeURIComponent(id)}`,{method:'DELETE'});deleted+=1}showTip(`已删除 ${deleted} 条话术`,'success');await loadCandidatePool();await loadRoleBridge();return {ok:true,deleted_count:deleted}})}
 function formatSchedulerResults(data){const results=data.results||[];if(!results.length)return '没有可运行的自动发言配置。';const details=results.map(r=>`${r.config_name||'-'}：${r.sent?'已发送':(r.dry_run?'未真正发送':'未发送')} · ${r.result_reason||r.result_code||''}`).join('\\n');return `检查 ${data.attempted_count||0} 个配置，实际发送 ${data.sent_count||0} 条\\n${details}`}
 async function runAtmosphereScheduler(){return runAction('自动发言检查',async()=>{const status=document.getElementById('ga_scheduler_status');if(status)status.textContent='';showTip('检查可发送话术中…');const data=await loadJson('/api/ops/group-atmosphere/scheduler/run-due',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const el=document.getElementById('ga_scheduler_result');if(el)el.textContent='';showTip(`已检查 ${data.attempted_count||0} 个配置，实际发送 ${data.sent_count||0} 条`,'success');if(status)status.textContent='';await reloadAll();return data})}
-function roleKeyFor(region,positioning){return `auto-${regionLanguage(region)}-${positioning}`}
-function openRoleEditor(roleKey=''){const modal=document.getElementById('ga_role_editor_modal');clearRoleEditor(false);window.__gaRoleEditorSelectedTexts=new Set();window.__gaRoleEditorExistingPhrases=[];if(roleKey){const row=(window.__gaRoles||[]).find(r=>String(r.role_key||r.config_name)===String(roleKey));if(row){document.getElementById('ga_role_key').value=row.role_key||row.config_name||'';document.getElementById('ga_role_name').value=row.role_name||row.plan_display_name||'';document.getElementById('ga_role_region').value=row.region||'印尼';document.getElementById('ga_role_positioning').value=row.role_positioning||'community_seed';document.getElementById('ga_role_enabled').value=row.enabled===false?'false':'true';const existing=(row.candidates||[]).map(c=>String(c.text||'').trim()).filter(Boolean);window.__gaRoleEditorExistingPhrases=existing.map(text=>({text,source:'role_save',language:row.language,role_positioning:row.role_positioning||'community_seed'}));window.__gaRoleEditorSelectedTexts=new Set(existing);document.getElementById('ga_role_phrases').value='';}}renderRolePhrasePool();if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false')}}
+function roleKeyFor(region,positioning){return `role-${regionLanguage(region)}-${positioning}`}
+function openRoleEditor(roleKey=''){const modal=document.getElementById('ga_role_editor_modal');clearRoleEditor(false);window.__gaRoleEditorSelectedTexts=new Set();window.__gaRoleEditorExistingPhrases=[];if(roleKey){const row=(window.__gaRoles||[]).find(r=>String(r.role_key||r.config_name)===String(roleKey));if(row){document.getElementById('ga_role_key').value=row.role_key||row.config_name||'';document.getElementById('ga_role_name').value=row.role_name||row.plan_display_name||'';document.getElementById('ga_role_region').value=row.region||'印尼';document.getElementById('ga_role_positioning').value=row.role_positioning||'community_seed';document.getElementById('ga_role_enabled').value=row.enabled===false?'false':'true';const existingItems=(row.candidates||[]).map(c=>({text:String(c.text||'').trim(),source:'role_save',language:row.language,role_positioning:row.role_positioning||'community_seed',asset_type:c.asset_type,media_id:c.media_id,media_path:c.media_path,media_mime_type:c.media_mime_type,media_filename:c.media_filename,media_preview_url:c.media_preview_url})).filter(c=>c.text);const existing=existingItems.map(c=>c.text);window.__gaRoleEditorExistingPhrases=existingItems;window.__gaRoleEditorSelectedTexts=new Set(existing);}}renderRolePhrasePool();if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false')}}
 function closeRoleEditor(){const modal=document.getElementById('ga_role_editor_modal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
-function clearRoleEditor(feedback=true){const region=document.getElementById('ga_role_region');const pos=document.getElementById('ga_role_positioning');window.__gaRoleEditorSelectedTexts=new Set();window.__gaRoleEditorExistingPhrases=[];document.getElementById('ga_role_key').value='';document.getElementById('ga_role_name').value='';if(region)renderUnifiedRegionOptions('ga_role_region','印尼');if(pos)pos.value='community_seed';document.getElementById('ga_role_enabled').value='true';document.getElementById('ga_role_phrases').value='';const result=document.getElementById('ga_role_editor_result');if(result)result.textContent='';renderRolePhrasePool();if(feedback)setFeedback('新话术角色','success')}
+function clearRoleEditor(feedback=true){const region=document.getElementById('ga_role_region');const pos=document.getElementById('ga_role_positioning');window.__gaRoleEditorSelectedTexts=new Set();window.__gaRoleEditorExistingPhrases=[];document.getElementById('ga_role_key').value='';document.getElementById('ga_role_name').value='';if(region)renderUnifiedRegionOptions('ga_role_region','印尼');if(pos)pos.value='community_seed';document.getElementById('ga_role_enabled').value='true';const result=document.getElementById('ga_role_editor_result');if(result)result.textContent='';renderRolePhrasePool();if(feedback)setFeedback('新话术角色','success')}
 function roleEditorSelectedType(){return document.getElementById('ga_role_positioning')?.value||'community_seed'}
 function rolePhraseMatchesSelectedType(p){return String(p?.role_positioning||'community_seed')===String(roleEditorSelectedType()||'community_seed')}
-function candidatePoolPhrases(){const rows=window.__gaCandidateRows||[];const out=[];const seen=new Set();rows.forEach(r=>(r.candidates||[]).forEach(c=>{if(!c||!c.text)return;const text=String(c.text||'').trim();const role=String(c.role_positioning||r.role_positioning||'community_seed');const source=String(c.source_label||c.source_type||c.source||r.source_label||r.source_type||'').trim();const key=`${role}::${text.toLowerCase().replace(/\s+/g,' ')}`;if(!text||seen.has(key))return;seen.add(key);out.push({text,source:source||r.plan_display_name||r.config_name,language:r.language,role_positioning:role})}));return out}
+function mergeRolePhraseMedia(target,source){if(!target||!source)return target;['asset_type','media_id','media_path','media_mime_type','media_filename','media_preview_url'].forEach(k=>{if(!target[k]&&source[k])target[k]=source[k]});return target}
+function candidatePoolPhrases(){const rows=window.__gaCandidateRows||[];const out=[];const seen=new Map();rows.forEach(r=>(r.candidates||[]).forEach(c=>{if(!c||!c.text)return;const text=String(c.text||'').trim();const role=String(c.role_positioning||r.role_positioning||'community_seed');const source=String(c.source_label||c.source_type||c.source||r.source_label||r.source_type||'').trim();const key=`${role}::${text.toLowerCase().replace(/\s+/g,' ')}`;if(!text)return;const item={text,source:source||r.plan_display_name||r.config_name,language:r.language,role_positioning:role,asset_type:c.asset_type,media_id:c.media_id,media_path:c.media_path,media_mime_type:c.media_mime_type,media_filename:c.media_filename,media_preview_url:c.media_preview_url};if(seen.has(key)){mergeRolePhraseMedia(seen.get(key),item);return}seen.set(key,item);out.push(item)}));return out}
 function rolePhraseSourceLabel(p){const raw=String(p?.source||'').trim();const map={manual:'人工写入',manual_upload:'人工写入',custom:'人工写入',role_save:'人工写入',learning_account:'学习bot',learning_bot:'学习bot',upload_file:'上传生成',auto_learn:'上传生成',local_language_profile:'上传生成',upload:'上传生成'};return map[raw]||raw||'上传生成'}
-function roleEditorAvailablePhrases(){const out=[];const seen=new Set();[...candidatePoolPhrases(),...(window.__gaRoleEditorExistingPhrases||[])].forEach(p=>{if(!rolePhraseMatchesSelectedType(p))return;const text=String(p?.text||'').trim();const key=text.toLowerCase().replace(/\s+/g,' ');if(!text||seen.has(key))return;seen.add(key);out.push(p)});return out}
+function roleEditorAvailablePhrases(){const out=[];const seen=new Map();[...candidatePoolPhrases(),...(window.__gaRoleEditorExistingPhrases||[])].forEach(p=>{if(!rolePhraseMatchesSelectedType(p))return;const text=String(p?.text||'').trim();const key=text.toLowerCase().replace(/\s+/g,' ');if(!text)return;if(seen.has(key)){mergeRolePhraseMedia(seen.get(key),p);return}seen.set(key,p);out.push(p)});return out}
 function visibleRolePoolPhrases(){return roleEditorAvailablePhrases()}
 function updateRolePhraseSelectAllState(){const all=[...document.querySelectorAll('[data-ga-role-pool-idx]')];const selectAll=document.querySelector('[data-ga-role-pool-select-all]');if(!selectAll)return;const checked=all.filter(el=>el.checked);selectAll.checked=all.length>0&&checked.length===all.length;selectAll.indeterminate=checked.length>0&&checked.length<all.length}
 function syncRoleEditorSelectedTextsFromDom(){const pool=visibleRolePoolPhrases();const selected=window.__gaRoleEditorSelectedTexts||new Set();[...document.querySelectorAll('[data-ga-role-pool-idx]')].forEach(el=>{const text=String(pool[Number(el.dataset.gaRolePoolIdx)]?.text||'').trim();if(!text)return;if(el.checked)selected.add(text);else selected.delete(text)});window.__gaRoleEditorSelectedTexts=selected;updateRolePhraseSelectAllState();return selected}
 function setRolePhrasePoolSelection(checked){const pool=visibleRolePoolPhrases();const selected=window.__gaRoleEditorSelectedTexts||new Set();[...document.querySelectorAll('[data-ga-role-pool-idx]')].forEach(el=>{el.checked=!!checked;const text=String(pool[Number(el.dataset.gaRolePoolIdx)]?.text||'').trim();if(!text)return;if(checked)selected.add(text);else selected.delete(text)});window.__gaRoleEditorSelectedTexts=selected;updateRolePhraseSelectAllState()}
-function renderRolePhrasePool(highlightTexts=[]){const box=document.getElementById('ga_role_phrase_pool');if(!box)return;const phrases=visibleRolePoolPhrases();if(!phrases.length){box.innerHTML=`<div class="muted">暂无${esc(roleLabel(roleEditorSelectedType()))}话术</div>`;return}const visiblePhrases=phrases.slice(0,80);const selected=window.__gaRoleEditorSelectedTexts||new Set();const selectedVisibleCount=visiblePhrases.filter(p=>selected.has(String(p.text||'').trim())).length;const selectAllChecked=visiblePhrases.length>0&&selectedVisibleCount===visiblePhrases.length?'checked':'';const selectAllIndeterminate=selectedVisibleCount>0&&selectedVisibleCount<visiblePhrases.length?'data-indeterminate="1"':'';const highlightSet=new Set((highlightTexts||[]).map(x=>String(x||'').trim()).filter(Boolean));const toolbar=`<div class="ga-role-pool-toolbar"><label class="ga-role-pool-select-all"><input type="checkbox" data-ga-role-pool-select-all="1" ${selectAllChecked} ${selectAllIndeterminate} onchange="setRolePhrasePoolSelection(this.checked)"/> <span>全选当前话术</span></label><span class="muted">已选 ${selectedVisibleCount}/${visiblePhrases.length} 条</span></div>`;box.innerHTML=toolbar+visiblePhrases.map((p,idx)=>{const text=String(p.text||'').trim();const checked=selected.has(text)?'checked':'';const highlight=highlightSet.has(text)?' is-newly-saved':'';return `<label class="mini-note ga-role-pool-row${highlight}"><input type="checkbox" data-ga-role-pool-idx="${idx}" ${checked} onchange="syncRoleEditorSelectedTextsFromDom()"/><span class="ga-role-pool-text">${esc(p.text)}</span><span class="ga-role-pool-source">${esc(rolePhraseSourceLabel(p))}</span></label>`}).join('');const selectAll=box.querySelector('[data-ga-role-pool-select-all]');if(selectAll&&selectAll.hasAttribute('data-indeterminate'))selectAll.indeterminate=true}
+function renderRolePhrasePool(highlightTexts=[]){const box=document.getElementById('ga_role_phrase_pool');if(!box)return;const phrases=visibleRolePoolPhrases();if(!phrases.length){box.innerHTML=`<div class="muted">暂无${esc(roleLabel(roleEditorSelectedType()))}话术</div>`;return}const visiblePhrases=phrases;const selected=window.__gaRoleEditorSelectedTexts||new Set();const selectedVisibleCount=visiblePhrases.filter(p=>selected.has(String(p.text||'').trim())).length;const selectAllChecked=visiblePhrases.length>0&&selectedVisibleCount===visiblePhrases.length?'checked':'';const selectAllIndeterminate=selectedVisibleCount>0&&selectedVisibleCount<visiblePhrases.length?'data-indeterminate="1"':'';const scrollHint=phrases.length>10?'<span class="muted">列表高度约10条，更多向下滚动</span>':'';const highlightSet=new Set((highlightTexts||[]).map(x=>String(x||'').trim()).filter(Boolean));const toolbar=`<div class="ga-role-pool-toolbar"><label class="ga-role-pool-select-all"><input type="checkbox" data-ga-role-pool-select-all="1" ${selectAllChecked} ${selectAllIndeterminate} onchange="setRolePhrasePoolSelection(this.checked)"/> <span>全选当前话术</span></label><span class="muted">已选 ${selectedVisibleCount}/${visiblePhrases.length} 条</span>${scrollHint}</div>`;box.innerHTML=toolbar+visiblePhrases.map((p,idx)=>{const text=String(p.text||'').trim();const checked=selected.has(text)?'checked':'';const highlight=highlightSet.has(text)?' is-newly-saved':'';return `<label class="mini-note ga-role-pool-row${highlight}"><input type="checkbox" data-ga-role-pool-idx="${idx}" ${checked} onchange="syncRoleEditorSelectedTextsFromDom()"/><span class="ga-role-pool-text-wrap"><span class="ga-role-pool-text">${esc(p.text)}</span>${candidateMediaIcon(p)}</span><span class="ga-role-pool-source">${esc(rolePhraseSourceLabel(p))}</span></label>`}).join('');const selectAll=box.querySelector('[data-ga-role-pool-select-all]');if(selectAll&&selectAll.hasAttribute('data-indeterminate'))selectAll.indeterminate=true}
 
-function collectRolePhrases(){syncRoleEditorSelectedTextsFromDom();const pool=visibleRolePoolPhrases();const picked=[...document.querySelectorAll('[data-ga-role-pool-idx]:checked')].map(el=>pool[Number(el.dataset.gaRolePoolIdx)]?.text).filter(Boolean);return Array.from(new Set(picked))}
-function collectManualRolePhrases(){return document.getElementById('ga_role_phrases').value.split(/\\n+/).map(x=>x.trim()).filter(Boolean)}
-function optimisticInsertManualRolePhrases(roleKey,region,language,positioning,roleName,phrases){window.__gaCandidateRows=window.__gaCandidateRows||[];let row=window.__gaCandidateRows.find(r=>String(r.config_name||'')===String(roleKey||''));if(!row){row={config_name:roleKey,plan_display_name:roleName||`${region} · ${roleLabel(positioning)}`,language,region,role_positioning:positioning,candidate_count:0,enabled_candidate_count:0,candidates:[]};window.__gaCandidateRows.unshift(row)}row.candidates=row.candidates||[];const existing=new Set(row.candidates.map(c=>String(c.text||'').trim()));phrases.slice().reverse().forEach((text,idx)=>{if(!String(text||'').trim()||existing.has(String(text||'').trim()))return;row.candidates.unshift({candidate_id:`manual_${Date.now()}_${idx}`,text:String(text).trim(),language,region,role_positioning:positioning,source_type:'manual',source_label:'人工写入',customized:true,customized_at:new Date().toISOString(),score:999,frequency:1,safe_to_send:true,enabled:true});existing.add(String(text).trim())});row.candidate_count=row.candidates.length;row.enabled_candidate_count=row.candidates.filter(c=>c.enabled&&c.safe_to_send).length;return row}
-async function saveRoleManualPhrases(){return runAction('保存文案',async()=>{const region=document.getElementById('ga_role_region').value;const positioning=document.getElementById('ga_role_positioning').value;const roleKey=document.getElementById('ga_role_key').value.trim();const roleName=document.getElementById('ga_role_name').value.trim()||`${region} · ${roleLabel(positioning)}`;const language=regionLanguage(region);const savedPhrases=collectManualRolePhrases();if(!savedPhrases.length)throw new Error('请先输入要保存的文案');const data=await loadJson('/api/ops/group-atmosphere/roles/manual-phrases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role_key:roleKey||null,role_name:roleName,region,language,role_positioning:positioning,phrases:savedPhrases,enabled:document.getElementById('ga_role_enabled').value==='true'})});const actualRoleKey=data?.role?.role_key||data?.role?.config_name||roleKey||roleKeyFor(region,positioning);document.getElementById('ga_role_key').value=actualRoleKey;optimisticInsertManualRolePhrases(actualRoleKey,region,language,positioning,roleName,savedPhrases);syncRoleEditorSelectedTextsFromDom();const previousSelected=[...(window.__gaRoleEditorSelectedTexts||new Set())];window.__gaRoleEditorSelectedTexts=new Set([...previousSelected,...savedPhrases]);document.getElementById('ga_role_phrases').value='';renderRolePhrasePool(savedPhrases);renderCandidatePool(window.__gaCandidateRows||[]);const savedRow=document.querySelector('#ga_role_phrase_pool .ga-role-pool-row.is-newly-saved');if(savedRow)savedRow.scrollIntoView({block:'nearest',inline:'nearest'});showTip(`已保存 ${savedPhrases.length} 条文案，已加入上方列表`,'success');Promise.all([loadCandidatePool(),loadRoleBridge()]).then(()=>{window.__gaRoleEditorSelectedTexts=new Set([...previousSelected,...savedPhrases]);renderRolePhrasePool(savedPhrases);renderCandidatePool(window.__gaCandidateRows||[])}).catch(err=>{console.error(err);showTip(`后台刷新失败：${err.message||err}`,'error')});return {...data,silent:true}})}
+function collectRolePhrases(){const selected=syncRoleEditorSelectedTextsFromDom()||window.__gaRoleEditorSelectedTexts||new Set();return Array.from(new Set([...selected].map(x=>String(x||'').trim()).filter(Boolean)))}
 async function saveRoleEditor(){return runAction('保存话术角色',async()=>{const region=document.getElementById('ga_role_region').value;const positioning=document.getElementById('ga_role_positioning').value;const roleKey=document.getElementById('ga_role_key').value.trim();const phrases=collectRolePhrases();const savedPhrases=phrases.map(x=>String(x||'').trim()).filter(Boolean);const data=await loadJson('/api/ops/group-atmosphere/roles/manual-phrases',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role_key:roleKey||null,role_name:document.getElementById('ga_role_name').value.trim()||`${region} · ${roleLabel(positioning)}`,region,language:regionLanguage(region),role_positioning:positioning,phrases:savedPhrases,enabled:document.getElementById('ga_role_enabled').value==='true',replace_role_phrases:true,source_type:'role_save'})});const actualRoleKey=data?.role?.role_key||data?.role?.config_name||roleKey||roleKeyFor(region,positioning);document.getElementById('ga_role_key').value=actualRoleKey;const result=document.getElementById('ga_role_editor_result');if(result)result.textContent=`话术角色已保存，已勾选 ${savedPhrases.length} 条话术`;await reloadAll();window.__gaRoleEditorSelectedTexts=new Set(savedPhrases);renderRolePhrasePool();renderCandidatePool(window.__gaCandidateRows||[]);closeRoleEditor();setFeedback('话术角色已保存，列表已更新','success');return data})}
 function renderBridgeFormOptions(){const roles=(window.__gaRoles||[]);const roleSelect=document.getElementById('ga_bridge_role_select');if(roleSelect){const current=roleSelect.value;roleSelect.innerHTML='<option value="">选择话术角色</option>'+roles.map(r=>`<option value="${esc(r.role_key||r.config_name)}" data-region="${esc(r.region||'')}">${esc(r.role_name||r.plan_display_name||r.role_key)}</option>`).join('');roleSelect.value=roles.some(r=>String(r.role_key||r.config_name)===current)?current:''}renderUnifiedRegionOptions('ga_bridge_region',document.getElementById('ga_bridge_region')?.value||'');renderBridgeGroupChoices();renderLearningAccountOptions()}
 function bridgeRoleRegion(){const region=document.getElementById('ga_bridge_region')?.value||'';if(region)return String(region);const roleKey=document.getElementById('ga_bridge_role_select')?.value||'';const role=(window.__gaRoles||[]).find(r=>String(r.role_key||r.config_name||'')===String(roleKey));return role?String(role.region||''):''}
@@ -2205,9 +2325,38 @@ function bridgeFrequencyText(rel){const min=Number(rel.min_interval_minutes||0);
 function bridgeRandomnessText(rel){const map={low:'稳定',medium:'适中',high:'灵活'};return `话术随机性：${map[String(rel.randomness_level||'medium')]||'适中'}`}
 function bridgeSendOrderText(rel){return String(rel.phrase_send_order||'random')==='sorted'?'按排序发送':'随机发言'}
 function bridgeGroupProductionState(group,account,loginOk,permissionOk,rowRoleDeleted){if(rowRoleDeleted||!permissionOk||!loginOk)return {cls:'orange',text:'未就绪'};const target=String(group?.target_group||'').trim();const name=String(group?.group_name||'').trim();const knownGroup=Boolean(target&&(target.endsWith('@g.us')||(name&&name!==target&&name!=='群名待探测')));return knownGroup?{cls:'green',text:'已就绪'}:{cls:'orange',text:'未就绪'}}
-function renderBridgeRelationships(bindings){const box=document.getElementById('ga_role_bindings');if(!box)return;const relationships=bindings.relationships||[];if(!relationships.length){box.innerHTML='<div class="mini-note">暂无桥接关系</div>';return}box.innerHTML=relationships.map(rel=>{const roleDeleted=!!rel.role_deleted;const bindingIds=(rel.groups||[]).map(g=>g.binding_id).filter(Boolean).join(',');const autoOn=rel.auto_speaking_enabled!==false;const autoSwitch=roleDeleted?'<span class="pill red">角色被删除</span>':`<button type="button" class="${autoOn?'switch-on':'switch-off'}" style="height:32px;min-height:32px;padding:0 12px;white-space:nowrap;" onclick="toggleBridgeRelationshipAuto('${esc(bindingIds)}',${autoOn?'false':'true'})">${autoOn?'自动发言：开':'自动发言：关'}</button>`;const groups=(rel.groups||[]).map(g=>{const rowRoleDeleted=roleDeleted||!!g.role_deleted;const account=bridgeAccountForGroup(g);const sess=account.session||account.session_state||{};const rt=account.runtime||{};const accountLogin=loginLabel(sess,rt);const permissionOk=g.group_send_permission_enabled!==false;const loginOk=accountLogin.startsWith('已登录');const state=bridgeGroupProductionState(g,account,loginOk,permissionOk,rowRoleDeleted);const statusCls=state.cls;const statusText=state.text;const waLabel=g.assigned_account_label||account.account_name||g.account_key||'待重新分配';return `<div class="mini-note" style="display:grid;gap:8px;"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;"><div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;"><strong style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(g.group_name||g.target_group)} ・ ${esc(waLabel)}</strong><span class="muted" style="white-space:nowrap;">${esc(bridgeTodayText(g,rel))}</span></div><span class="pill ${statusCls}" style="white-space:nowrap;flex:0 0 auto;">${statusText}</span></div><div class="muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(g.target_group||'')}</div>${rowRoleDeleted?'<div class="muted" style="color:#b91c1c;font-weight:700;">话术角色已删除，请编辑桥接更换角色</div>':''}<div class="inline-actions"><button type="button" class="secondary" ${rowRoleDeleted?'disabled':''} onclick="openManualSendModal('${esc(g.account_key)}',${Number(g.group_index||0)})">手动发送</button><button type="button" class="secondary" onclick="toggleBridgeGroupPermission('${esc(g.binding_id)}',${permissionOk?'false':'true'})">${permissionOk?'群发言：开':'群发言：关'}</button></div></div>`}).join('');const roleTitle=roleDeleted?'已删除角色':(rel.role_name||rel.role_key);return `<div class="account-card binding-card ${roleDeleted?'is-invalid-role':''}"><div class="account-card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;"><div style="min-width:0;"><h3 style="margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(rel.relationship_label)} · ${esc(roleTitle)}</h3><div class="muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${roleDeleted?'请编辑桥接更换角色':`国家：${esc(rel.region||'-')} · ${esc(roleLabel(rel.role_positioning||''))} · ${esc(bridgeFrequencyText(rel))}`}</div></div>${autoSwitch}</div><div class="group-card-grid" style="margin-top:10px;">${groups}</div><div class="inline-actions" style="margin-top:12px;"><button type="button" ${roleDeleted?'disabled':''} onclick="triggerRelationship('${esc((rel.groups||[])[0]?.binding_id||'')}')">一键发言</button><button type="button" class="secondary" onclick="editBridgeRelationship('${esc(rel.relationship_key||rel.role_key||'')}')">编辑桥接</button><button type="button" class="danger" onclick="deleteBridgeRelationship('${esc(bindingIds)}')">删除桥接</button></div></div>`}).join('')}
+function renderBridgeRelationships(bindings){const box=document.getElementById('ga_role_bindings');if(!box)return;const relationships=bindings.relationships||[];if(!relationships.length){box.innerHTML='<div class="ga-empty-state">暂无桥接关系</div>';return}box.innerHTML=relationships.map(rel=>{const roleDeleted=!!rel.role_deleted;const bindingIds=(rel.groups||[]).map(g=>g.binding_id).filter(Boolean).join(',');const autoOn=rel.auto_speaking_enabled!==false;const triggerOn=rel.trigger_speaking_enabled!==false;const autoSwitch=roleDeleted?'<span class="pill red">角色被删除</span>':`<button type="button" class="${autoOn?'switch-on':'switch-off'}" style="height:32px;min-height:32px;padding:0 12px;white-space:nowrap;" onclick="toggleBridgeRelationshipAuto('${esc(bindingIds)}',${autoOn?'false':'true'})">${autoOn?'自动发言：开':'自动发言：关'}</button>`;const triggerSwitch=roleDeleted?'':`<button type="button" class="${triggerOn?'switch-on':'switch-off'}" style="height:32px;min-height:32px;padding:0 12px;white-space:nowrap;" onclick="toggleBridgeRelationshipTrigger('${esc(bindingIds)}',${triggerOn?'false':'true'})">${triggerOn?'触发发言：开':'触发发言：关'}</button>`;const ruleTypes=(rel.trigger_rule_types||[]).map(t=>({member_join:'入群欢迎',keyword_match:'关键词回复',group_silence:'群沉默'}[t]||t));const ruleSummary=Number(rel.trigger_rule_count||0)>0?`触发规则：${Number(rel.trigger_rule_enabled_count||0)} 条启用 / ${Number(rel.trigger_rule_count||0)} 条${ruleTypes.length?' · '+ruleTypes.join('、'):''}`:'触发规则：未配置';const groups=(rel.groups||[]).map(g=>{const rowRoleDeleted=roleDeleted||!!g.role_deleted;const account=bridgeAccountForGroup(g);const sess=account.session||account.session_state||{};const rt=account.runtime||{};const accountLogin=loginLabel(sess,rt);const permissionOk=g.group_send_permission_enabled!==false;const loginOk=accountLogin.startsWith('已登录');const state=bridgeGroupProductionState(g,account,loginOk,permissionOk,rowRoleDeleted);const statusCls=state.cls;const statusText=state.text;const waLabel=g.assigned_account_label||account.account_name||g.account_key||'待重新分配';return `<div class="mini-note" style="display:grid;gap:8px;"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;"><div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1;"><strong style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(g.group_name||g.target_group)} ・ ${esc(waLabel)}</strong><span class="muted" style="white-space:nowrap;">${esc(bridgeTodayText(g,rel))}</span></div><span class="pill ${statusCls}" style="white-space:nowrap;flex:0 0 auto;">${statusText}</span></div><div class="muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(g.target_group||'')}</div>${rowRoleDeleted?'<div class="muted" style="color:#b91c1c;font-weight:700;">话术角色已删除，请编辑桥接更换角色</div>':''}<div class="inline-actions"><button type="button" class="secondary" ${rowRoleDeleted?'disabled':''} onclick="openManualSendModal('${esc(g.account_key)}',${Number(g.group_index||0)})">手动发送</button><button type="button" class="secondary" onclick="toggleBridgeGroupPermission('${esc(g.binding_id)}',${permissionOk?'false':'true'})">${permissionOk?'群发言：开':'群发言：关'}</button></div></div>`}).join('');const roleTitle=roleDeleted?'已删除角色':(rel.role_name||rel.role_key);return `<div class="account-card binding-card ${roleDeleted?'is-invalid-role':''}"><div class="account-card-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;"><div style="min-width:0;"><h3 style="margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(rel.relationship_label)} · ${esc(roleTitle)}</h3><div class="muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${roleDeleted?'请编辑桥接更换角色':`国家：${esc(rel.region||'-')} · ${esc(roleLabel(rel.role_positioning||''))} · ${esc(bridgeFrequencyText(rel))}`}</div></div><div class="inline-actions" style="justify-content:flex-end;">${autoSwitch}${triggerSwitch}</div></div><div class="group-card-grid" style="margin-top:10px;">${groups}</div><div class="muted" style="margin-top:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(ruleSummary)}</div><div class="inline-actions" style="margin-top:12px;"><button type="button" class="primary" ${roleDeleted?'disabled':''} onclick="openBridgeManualSendModal('${esc(rel.relationship_key||rel.role_key||'')}')">手动发送</button><button type="button" class="secondary" ${roleDeleted?'disabled':''} onclick="openTriggerRulesModal('${esc(rel.relationship_key||rel.role_key||'')}')">触发规则</button><button type="button" class="secondary" ${roleDeleted?'disabled':''} onclick="triggerRelationship('${esc((rel.groups||[])[0]?.binding_id||'')}')">发言测试</button><button type="button" class="secondary" onclick="editBridgeRelationship('${esc(rel.relationship_key||rel.role_key||'')}')">编辑桥接</button><button type="button" class="danger" onclick="deleteBridgeRelationship('${esc(bindingIds)}')">删除桥接</button></div></div>`}).join('')}
 async function toggleBridgeRelationshipAuto(bindingIds='',nextValue=true){return runAction('切换自动发言',async()=>{const ids=String(bindingIds||'').split(',').map(x=>x.trim()).filter(Boolean);if(!ids.length)throw new Error('桥接关系缺少群组');for(const id of ids){await loadJson(`/api/ops/group-atmosphere/role-bindings/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({auto_speaking_enabled:nextValue===true||nextValue==='true'})})}showTip(`自动发言已${nextValue===true||nextValue==='true'?'开启':'关闭'}`,'success');await reloadAll();return {ok:true,silent:true}})}
-function renderRoleBridge(roles,bindings,learning){window.__gaRoles=roles.rows||[];window.__gaRoleBindings=bindings.rows||[];window.__gaRoleRelationships=bindings.relationships||[];updateAtmosphereOverview();window.__gaLearningAccounts=learning.rows||[];renderBridgeFormOptions();renderCandidateTargetRoleOptions();renderRolePhrasePool();renderLearningAccounts(window.__gaLearningAccounts);const roleBox=document.getElementById('ga_role_library');if(roleBox)roleBox.innerHTML=(roles.rows||[]).length?(roles.rows||[]).map(r=>`<div class="mini-note"><div class="toolbar" style="margin-bottom:6px;"><div><strong>${esc(r.role_name||r.role_key)}</strong><div class="muted">角色定位：${esc(roleLabel(r.role_positioning))}</div><div class="muted">国家：${esc(r.region||'-')} · 装载话术：${esc(r.enabled_phrase_count||0)}/${esc(r.phrase_count||0)} 条</div></div><div class="toolbar-actions"><button type="button" class="secondary" onclick="openRoleEditor('${esc(r.role_key||r.config_name)}')">编辑</button><button type="button" class="danger" onclick="deleteGroupAtmosphereRole('${esc(r.role_key||r.config_name)}')">删除</button></div></div></div>`).join(''):'<div class="muted">暂无话术角色</div>';renderBridgeRelationships(bindings)}
+async function toggleBridgeRelationshipTrigger(bindingIds='',nextValue=true){return runAction('切换触发发言',async()=>{const ids=String(bindingIds||'').split(',').map(x=>x.trim()).filter(Boolean);if(!ids.length)throw new Error('桥接关系缺少群组');for(const id of ids){await loadJson(`/api/ops/group-atmosphere/role-bindings/${encodeURIComponent(id)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trigger_speaking_enabled:nextValue===true||nextValue==='true'})})}showTip(`触发发言已${nextValue===true||nextValue==='true'?'开启':'关闭'}`,'success');await reloadAll();return {ok:true,silent:true}})}
+function triggerTypeLabel(t){return {member_join:'新人入群',keyword_match:'关键词',group_silence:'群冷场'}[String(t||'')]||String(t||'-')}
+function triggerRuleConditionText(rule){const c=rule?.conditions||{};if(rule?.trigger_type==='keyword_match')return (c.keywords||[c.keyword]).filter(Boolean).join('、')||'-';if(rule?.trigger_type==='group_silence')return `${Math.round(Number(c.silence_seconds||300)/60)} 分钟`;return '入群'}
+function triggerRuleSummaryText(rule){const seq=rule.message_sequence||[];const hasImage=seq.some(x=>x.media_id);return `${rule.enabled?'启用':'停用'} · ${seq.length||0} 条${hasImage?' · 图':''} · ${Number(rule.cooldown_seconds||0)}s · P${Number(rule.priority||0)}`}
+function closeTriggerRulesModal(){const modal=document.getElementById('ga_trigger_rules_modal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
+function defaultTriggerCooldown(type){if(type==='member_join')return 60;if(type==='group_silence')return 1800;return 0}
+function nextAvailableTriggerPriority(current=''){const used=new Set((window.__gaTriggerRules||[]).map(r=>String(r.priority||'')).filter(v=>v&&v!==String(current||'')));for(let i=1;i<=20;i++){if(!used.has(String(i)))return i}return 21}
+function renderTriggerPriorityOptions(current=''){const sel=document.getElementById('ga_trigger_priority');if(!sel)return;const value=String(current||nextAvailableTriggerPriority(current));const used=new Set((window.__gaTriggerRules||[]).map(r=>String(r.priority||'')).filter(v=>v&&v!==value));let html='';for(let i=1;i<=20;i++){if(used.has(String(i)))continue;html+=`<option value="${i}" ${String(i)===value?'selected':''}>${i}</option>`}sel.innerHTML=html||`<option value="${esc(value)}" selected>${esc(value)}</option>`;sel.value=value}
+function triggerSegmentMediaIcon(seg,idx){if(!seg?.media_id)return '';return `<button type="button" class="ga-candidate-media-icon" data-ga-trigger-media-icon="1" title="预览/编辑图片" onclick="openTriggerSegmentMediaPreview(${idx})">🖼</button>`}
+function renderTriggerMessageSegments(){const box=document.getElementById('ga_trigger_message_segments');if(!box)return;const list=(window.__gaTriggerSegments&&window.__gaTriggerSegments.length?window.__gaTriggerSegments:[{text:'',delay_seconds:3}]).slice(0,3);window.__gaTriggerSegments=list;box.innerHTML=list.map((seg,idx)=>`<div class="ga-trigger-segment" data-ga-trigger-segment="${idx}"><div class="ga-trigger-segment-head"><span>话术 ${idx+1}</span>${idx>0?`<button type="button" class="ghost" onclick="removeTriggerMessageSegment(${idx})">删除</button>`:''}</div><div class="ga-trigger-segment-body"><textarea data-ga-trigger-segment-text="${idx}" placeholder="输入话术" oninput="syncTriggerSegmentFromDom(${idx})" onpaste="onTriggerSegmentPaste(event,${idx})">${esc(seg.text||'')}</textarea><label>延迟<input type="number" min="0" value="${Number(seg.delay_seconds||0)}" data-ga-trigger-segment-delay="${idx}" oninput="syncTriggerSegmentFromDom(${idx})"></label></div><div class="ga-trigger-media-tail">${triggerSegmentMediaIcon(seg,idx)}</div></div>`).join('');const addBtn=document.querySelector('.ga-trigger-message-box button.secondary');if(addBtn)addBtn.disabled=list.length>=3}
+function syncTriggerSegmentFromDom(idx){window.__gaTriggerSegments=window.__gaTriggerSegments||[];const seg=window.__gaTriggerSegments[idx]||{};seg.text=String(document.querySelector(`[data-ga-trigger-segment-text="${idx}"]`)?.value||'');seg.delay_seconds=Number(document.querySelector(`[data-ga-trigger-segment-delay="${idx}"]`)?.value||0);window.__gaTriggerSegments[idx]=seg}
+function addTriggerMessageSegment(){window.__gaTriggerSegments=window.__gaTriggerSegments||[];if(window.__gaTriggerSegments.length>=3){showTip('最多 3 条话术','warning');return}window.__gaTriggerSegments.push({text:'',delay_seconds:window.__gaTriggerSegments.length?5:3});renderTriggerMessageSegments()}
+function removeTriggerMessageSegment(idx){window.__gaTriggerSegments=(window.__gaTriggerSegments||[]).filter((_,i)=>i!==Number(idx));if(!window.__gaTriggerSegments.length)window.__gaTriggerSegments=[{text:'',delay_seconds:3}];renderTriggerMessageSegments()}
+async function uploadTriggerSegmentImage(file,idx){if(!file||!String(file.type||'').startsWith('image/'))return;const fd=new FormData();fd.append('file',file,file.name||`pasted-${Date.now()}.png`);const data=await loadJson('/api/ops/group-atmosphere/media-assets',{method:'POST',body:fd});const media=data.media||data.asset||data.row||data;window.__gaTriggerSegments=window.__gaTriggerSegments||[];const seg=window.__gaTriggerSegments[idx]||{};seg.media_id=media.media_id||'';seg.media_preview_url=media.media_preview_url||media.preview_url||'';seg.media_filename=media.filename||media.media_filename||file.name||'';if(!seg.media_id)throw new Error('图片上传失败');window.__gaTriggerSegments[idx]=seg;renderTriggerMessageSegments();showTip('图片已附加到该条话术','success')}
+function onTriggerSegmentPaste(ev,idx){const items=[...(ev.clipboardData?.items||[])];const item=items.find(x=>String(x.type||'').startsWith('image/'));if(!item)return;ev.preventDefault();const file=item.getAsFile();uploadTriggerSegmentImage(file,idx).catch(err=>showTip(`图片上传失败：${err.message||err}`,'error'))}
+function openTriggerSegmentMediaPreview(idx){const seg=(window.__gaTriggerSegments||[])[idx];if(!seg?.media_id){showTip('这条话术还没有图片','warning');return}window.__gaTriggerMediaPreviewIndex=idx;window.__gaTriggerMediaPreviewMode=true;const img=document.getElementById('ga_candidate_media_preview_image');const url=seg.media_preview_url||(seg.media_id?`/api/ops/group-atmosphere/media-assets/${encodeURIComponent(seg.media_id)}/preview`:'');if(img)img.src=url;const caption=document.getElementById('ga_candidate_media_preview_caption');if(caption)caption.textContent=seg.media_filename?`${seg.media_filename} · ${seg.text||''}`:(seg.text||'');const modal=document.getElementById('ga_candidate_media_preview_modal');if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false')}}
+function removeTriggerSegmentMedia(){const idx=Number(window.__gaTriggerMediaPreviewIndex);const seg=(window.__gaTriggerSegments||[])[idx];if(!seg)return;delete seg.media_id;delete seg.media_preview_url;delete seg.media_filename;renderTriggerMessageSegments();closeCandidateMediaPreview();showTip('已删除该条话术图片','success')}
+function replaceTriggerSegmentMedia(){const input=document.createElement('input');input.type='file';input.accept='image/png,image/jpeg,image/webp';input.onchange=()=>uploadTriggerSegmentImage(input.files?.[0],Number(window.__gaTriggerMediaPreviewIndex)).then(()=>closeCandidateMediaPreview());input.click()}
+function newTriggerRuleForm(){['ga_trigger_rule_id','ga_trigger_rule_name','ga_trigger_rule_condition','ga_trigger_rule_save_result'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='' });const type=document.getElementById('ga_trigger_rule_type');if(type)type.value='keyword_match';const en=document.getElementById('ga_trigger_rule_enabled');if(en)en.value='true';const del=document.getElementById('ga_trigger_delete_btn');if(del)del.style.display='none';const cool=document.getElementById('ga_trigger_cooldown');if(cool)cool.value=String(defaultTriggerCooldown('keyword_match'));window.__gaTriggerSegments=[{text:'',delay_seconds:3}];renderTriggerPriorityOptions('');renderTriggerMessageSegments();syncTriggerRuleConditionHelp();const title=document.getElementById('ga_trigger_rule_form_title');if(title)title.textContent='新建规则'}
+function syncTriggerRuleConditionHelp(){const type=document.getElementById('ga_trigger_rule_type')?.value||'keyword_match';const input=document.getElementById('ga_trigger_rule_condition');const label=document.getElementById('ga_trigger_condition_label');const cool=document.getElementById('ga_trigger_cooldown');if(type==='keyword_match'){if(label)label.textContent='关键词';if(input){input.disabled=false;input.placeholder='kode, code'}}else if(type==='group_silence'){if(label)label.textContent='冷场（分钟）';if(input){input.disabled=false;input.placeholder='5'}}else{if(label)label.textContent='条件';if(input){input.disabled=true;input.value='';input.placeholder='入群'}}if(cool&&!document.getElementById('ga_trigger_rule_id')?.value)cool.value=String(defaultTriggerCooldown(type))}
+function renderTriggerRulesList(){const box=document.getElementById('ga_trigger_rules_list');if(!box)return;const rules=window.__gaTriggerRules||[];box.innerHTML=rules.length?rules.map(rule=>`<div class="mini-note ga-trigger-rule-item" onclick="editTriggerRuleForm('${esc(rule.rule_id)}')"><div class="ga-trigger-rule-row"><div class="ga-trigger-rule-main"><strong>${esc(rule.rule_name||triggerTypeLabel(rule.trigger_type))}</strong><span>${esc(triggerTypeLabel(rule.trigger_type))} · ${esc(triggerRuleConditionText(rule))}</span><span>${esc(triggerRuleSummaryText(rule))}</span></div><div class="ga-trigger-rule-actions"><button type="button" class="secondary" onclick="event.stopPropagation();editTriggerRuleForm('${esc(rule.rule_id)}')">编辑</button><button type="button" class="danger" onclick="event.stopPropagation();deleteTriggerRule('${esc(rule.rule_id)}')">删除</button></div></div></div>`).join(''):'<div class="ga-empty-state">暂无规则</div>'}
+function editTriggerRuleForm(ruleId){const rule=(window.__gaTriggerRules||[]).find(r=>String(r.rule_id)===String(ruleId));if(!rule)return;document.getElementById('ga_trigger_rule_id').value=rule.rule_id||'';document.getElementById('ga_trigger_rule_name').value=rule.rule_name||'';document.getElementById('ga_trigger_rule_type').value=rule.trigger_type||'keyword_match';const c=rule.conditions||{};document.getElementById('ga_trigger_rule_condition').value=rule.trigger_type==='group_silence'?String(Math.round(Number(c.silence_seconds||300)/60)):(rule.trigger_type==='keyword_match'?(c.keywords||[c.keyword]).filter(Boolean).join(', '):'');document.getElementById('ga_trigger_cooldown').value=Number(rule.cooldown_seconds||defaultTriggerCooldown(rule.trigger_type));renderTriggerPriorityOptions(String(rule.priority||''));document.getElementById('ga_trigger_rule_enabled').value=rule.enabled===false?'false':'true';const del=document.getElementById('ga_trigger_delete_btn');if(del)del.style.display='inline-flex';window.__gaTriggerSegments=(rule.message_sequence||[]).slice(0,3).map((seg,idx)=>({...seg,delay_seconds:Number(seg.delay_seconds??(idx?5:3))}));if(!window.__gaTriggerSegments.length)window.__gaTriggerSegments=[{text:'',delay_seconds:3}];renderTriggerMessageSegments();const title=document.getElementById('ga_trigger_rule_form_title');if(title)title.textContent='编辑规则';syncTriggerRuleConditionHelp()}
+function collectTriggerRulePayload(){(window.__gaTriggerSegments||[]).forEach((_,idx)=>syncTriggerSegmentFromDom(idx));const type=document.getElementById('ga_trigger_rule_type')?.value||'keyword_match';const condRaw=String(document.getElementById('ga_trigger_rule_condition')?.value||'').trim();let conditions={};if(type==='keyword_match')conditions={keywords:condRaw.split(/[,，\\n]/).map(x=>x.trim()).filter(Boolean),match_type:'contains'};if(type==='group_silence')conditions={silence_seconds:Math.max(1,Number(condRaw||5))*60};const sequence=(window.__gaTriggerSegments||[]).slice(0,3).map(seg=>({type:seg.media_id?'image_text':'text',text:String(seg.text||'').trim(),media_id:seg.media_id||'',media_preview_url:seg.media_preview_url||'',media_filename:seg.media_filename||'',delay_seconds:Number(seg.delay_seconds||0)})).filter(seg=>seg.text||seg.media_id);return {rule_id:document.getElementById('ga_trigger_rule_id')?.value||'',relationship_key:window.__gaTriggerRelationshipKey||'',rule_name:document.getElementById('ga_trigger_rule_name')?.value||triggerTypeLabel(type),trigger_type:type,enabled:document.getElementById('ga_trigger_rule_enabled')?.value!=='false',conditions,message_sequence:sequence,delay_min_seconds:Number(sequence[0]?.delay_seconds||0),delay_max_seconds:Number(sequence[0]?.delay_seconds||0),cooldown_seconds:Number(document.getElementById('ga_trigger_cooldown')?.value||defaultTriggerCooldown(type)),priority:Number(document.getElementById('ga_trigger_priority')?.value||nextAvailableTriggerPriority())}}
+async function loadTriggerRulesForModal(){const relationshipKey=window.__gaTriggerRelationshipKey||'';const data=await loadJson(`/api/ops/group-atmosphere/trigger-rules?relationship_key=${encodeURIComponent(relationshipKey)}`);window.__gaTriggerRules=data.rows||[];renderTriggerRulesList();renderTriggerPriorityOptions(document.getElementById('ga_trigger_priority')?.value||'');return data}
+async function openTriggerRulesModal(relationshipKey){window.__gaTriggerRelationshipKey=relationshipKey||'';const modal=document.getElementById('ga_trigger_rules_modal');if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false')}newTriggerRuleForm();await loadTriggerRulesForModal();return {ok:true}}
+async function saveTriggerRuleFromModal(){return runAction('保存触发规则',async()=>{const payload=collectTriggerRulePayload();const data=await loadJson('/api/ops/group-atmosphere/trigger-rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const out=document.getElementById('ga_trigger_rule_save_result');if(out)out.textContent='已保存';await loadTriggerRulesForModal();await reloadAll();editTriggerRuleForm(data.rule.rule_id);return {ok:true,silent:true}})}
+async function deleteTriggerRule(ruleId){if(!ruleId)return;if(!confirm('确认删除这条触发规则？'))return;await loadJson(`/api/ops/group-atmosphere/trigger-rules/${encodeURIComponent(ruleId)}`,{method:'DELETE'});showTip('触发规则已删除','success');await loadTriggerRulesForModal();await reloadAll()}
+async function deleteTriggerRuleFromModal(){const id=document.getElementById('ga_trigger_rule_id')?.value||'';if(!id){showTip('请先选择要删除的规则','warning');return}return deleteTriggerRule(id)}
+function roleAvailablePhraseCount(r){const direct=Number(r?.available_phrase_count||0);if(direct>0)return direct;const language=String(r?.language||'');const role=String(r?.role_positioning||'');const row=(window.__gaCandidateRows||[]).find(x=>String(x.language||'')===language&&String(x.role_positioning||'')===role);const count=Number(row?.candidate_count||(row?.candidates||[]).length||0);return count>0?count:Number(r?.phrase_count||0)}
+function renderRoleBridge(roles,bindings,learning){window.__gaRoles=roles.rows||[];window.__gaRoleBindings=bindings.rows||[];window.__gaRoleRelationships=bindings.relationships||[];updateAtmosphereOverview();window.__gaLearningAccounts=learning.rows||[];renderBridgeFormOptions();renderCandidateTargetRoleOptions();renderRolePhrasePool();renderLearningAccounts(window.__gaLearningAccounts);const roleBox=document.getElementById('ga_role_library');if(roleBox)roleBox.innerHTML=(roles.rows||[]).length?(roles.rows||[]).map(r=>{const loaded=Number(r.enabled_phrase_count||0);const available=roleAvailablePhraseCount(r);return `<div class="mini-note"><div class="toolbar" style="margin-bottom:6px;"><div><strong>${esc(r.role_name||r.role_key)}</strong><div class="muted">话术类型：${esc(roleLabel(r.role_positioning))}</div><div class="muted">国家：${esc(r.region||'-')} · 装载话术：${esc(loaded)}/${esc(available)} 条</div></div><div class="toolbar-actions"><button type="button" class="secondary" onclick="openRoleEditor('${esc(r.role_key||r.config_name)}')">编辑</button><button type="button" class="danger" onclick="deleteGroupAtmosphereRole('${esc(r.role_key||r.config_name)}')">删除</button></div></div></div>`}).join(''):'<div class="ga-empty-state">暂无话术角色</div>';renderBridgeRelationships(bindings)}
 
 
 function clearBridgeModalForm(){window.__gaBridgeEditingRelationship=null;renderUnifiedRegionOptions('ga_bridge_region','');const roleEl=document.getElementById('ga_bridge_role_select');if(roleEl)roleEl.value='';const autoEl=document.getElementById('ga_bridge_auto_speaking');if(autoEl)autoEl.value='true';const dailyEl=document.getElementById('ga_bridge_daily_max');if(dailyEl)dailyEl.value='';const minEl=document.getElementById('ga_bridge_min_interval');if(minEl)minEl.value='';const maxEl=document.getElementById('ga_bridge_max_interval');if(maxEl)maxEl.value='';const randomEl=document.getElementById('ga_bridge_randomness_level');if(randomEl)randomEl.value='medium';const orderEl=document.getElementById('ga_bridge_phrase_send_order');if(orderEl)orderEl.value='random';applyBridgeAllowedWindows([])}
@@ -2251,11 +2400,25 @@ async function loadRoleBridge(){const [roles,bindings,learning]=await Promise.al
 function shouldSkipBridgeRelationshipRefresh(){return document.visibilityState==='hidden'||Boolean(window.__gaActionInFlight)||Boolean(document.querySelector('.modal.is-open'))}
 async function refreshBridgeRelationshipsQuietly(){if(shouldSkipBridgeRelationshipRefresh())return;try{const data=await loadJson('/api/ops/group-atmosphere/role-bindings');window.__gaRoleBindings=data.rows||[];window.__gaRoleRelationships=data.relationships||[];renderBridgeRelationships(data);updateAtmosphereOverview()}catch(err){console.warn('bridge relationship refresh skipped',err)}}
 async function addManualPhrases(){openRoleEditor()}
-async function triggerRoleBinding(bindingId){return runAction('立即一键发言',async()=>{const data=await loadJson(`/api/ops/group-atmosphere/role-bindings/${encodeURIComponent(bindingId)}/trigger`,{method:'POST'});const el=document.getElementById('ga_role_bridge_result');if(el)el.textContent='';showTip('一键发言已触发','success');await reloadAll();return data})}
+async function triggerRoleBinding(bindingId){return runAction('发言测试',async()=>{const data=await loadJson(`/api/ops/group-atmosphere/role-bindings/${encodeURIComponent(bindingId)}/trigger`,{method:'POST'});const el=document.getElementById('ga_role_bridge_result');if(el)el.textContent='';showTip('发言测试已触发','success');await reloadAll();return data})}
 async function triggerRelationship(firstBindingId){if(!firstBindingId)throw new Error('桥接关系缺少群组');return triggerRoleBinding(firstBindingId)}
 async function toggleBridgeGroupPermission(bindingId,nextValue){return runAction('切换群发言开关',async()=>{const data=await loadJson(`/api/ops/group-atmosphere/role-bindings/${encodeURIComponent(bindingId)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_send_permission_enabled:nextValue===true||nextValue==='true'})});const el=document.getElementById('ga_role_bridge_result');if(el)el.textContent='';showTip(`群发言开关已${data.binding?.group_send_permission_enabled?'开启':'关闭'}`,'success');await reloadAll();return data})}
 function renderPhraseLibraryOptions(){const typeSel=document.getElementById('ga_manual_upload_type');if(typeSel)typeSel.innerHTML=phraseTypeOptionsHtml(typeSel.value||activeCandidateRole()||'community_seed')}
-async function uploadManualPhrases(){return runAction('导入人工话术',async()=>{const file=document.getElementById('ga_manual_phrase_file')?.files?.[0]||null;const pasted=String(document.getElementById('ga_manual_phrase_text')?.value||'');const region=document.getElementById('ga_manual_upload_region')?.value||'印尼';const type=document.getElementById('ga_manual_upload_type')?.value||activeCandidateRole()||'community_seed';let imported=0;let duplicate=0;let lastData=null;if(file){if(!/\.(txt|csv|xlsx|xls)$/i.test(file.name||''))throw new Error('当前支持 txt/csv/xlsx 文件');const fd=new FormData();fd.append('file',file);fd.append('region',region);fd.append('language',regionLanguage(region));fd.append('role_positioning',type);fd.append('role_name',roleLabel(type));lastData=await loadJson('/api/ops/group-atmosphere/phrases/manual-upload-file',{method:'POST',body:fd});imported+=Number(lastData.imported_count||0);duplicate+=Number(lastData.duplicate_count||0)}if(pasted.trim()){const payload={role_positioning:type,role_name:roleLabel(type),region,language:regionLanguage(region),content:pasted};lastData=await loadJson('/api/ops/group-atmosphere/phrases/manual-upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});imported+=Number(lastData.imported_count||0);duplicate+=Number(lastData.duplicate_count||0)}if(!file&&!pasted.trim())throw new Error('请先选择文件或粘贴话术');const out=document.getElementById('ga_phrase_library_result');if(out)out.textContent=`已导入 ${imported} 条话术，重复跳过 ${duplicate} 条；无需二次审核`;await reloadAll();return lastData||{ok:true,imported_count:imported,duplicate_count:duplicate}})}
+function manualUploadReviewGroupKey(item){return `${item.region||'-'} / ${roleLabel(item.role_positioning||'community_seed')}`}
+function manualUploadReviewSummaryCard(label,value,cls=''){return `<div class="ga-review-summary-card ${esc(cls)}"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div></div>`}
+function manualUploadReviewBadge(item){return ''}
+function manualUploadReviewTextareaRows(value){const lines=String(value||'').split(new RegExp('\\r\\n|\\r|\\n')).length;return Math.max(1,Math.min(10,lines))}
+function autoResizeManualUploadReviewTextarea(el){if(!el)return;const rows=manualUploadReviewTextareaRows(el.value);el.setAttribute('rows',String(rows));el.style.height='auto';const maxHeight=240;const next=Math.max(38,Math.min(maxHeight,Number(el.scrollHeight||38)));el.style.height=`${next}px`;el.style.overflowY=Number(el.scrollHeight||0)>maxHeight?'auto':'hidden'}
+function autoResizeManualUploadReviewTextareas(){document.querySelectorAll('[data-ga-review-textarea="1"]').forEach(autoResizeManualUploadReviewTextarea)}
+function onManualUploadReviewTextInput(el){if(el&&el.dataset.showingZh==='1'){el.dataset.originalText=el.dataset.originalText||'';el.dataset.showingZh='0';el.classList.remove('is-translated')}autoResizeManualUploadReviewTextarea(el)}
+async function toggleManualUploadReviewTranslation(idx){const el=document.querySelector(`[data-ga-review-text="${idx}"]`);if(!el)return;const item=(window.__gaManualUploadReviewItems||[])[Number(idx)]||{};if(el.dataset.showingZh==='1'){el.value=el.dataset.originalText||item.text||el.value;el.dataset.showingZh='0';el.classList.remove('is-translated');autoResizeManualUploadReviewTextarea(el);return}const current=String(el.value||item.text||'').trim();if(!current){showTip('请先填写话术内容','error');return}if(!el.dataset.originalText)el.dataset.originalText=current;if(!String(el.dataset.zhText||'').trim()){el.value='正在翻译…';autoResizeManualUploadReviewTextarea(el);try{const data=await loadJson('/api/ops/group-atmosphere/phrases/manual-upload-translate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:current,language:item.language||regionLanguage(item.region||'')||'id',region:item.region||'',role_positioning:item.role_positioning||'community_seed'})});el.dataset.zhText=data.text_zh||'暂未生成准确中文翻译，请人工确认原文含义。';el.dataset.zhSource=data.text_zh_source||'';el.dataset.zhStatus=data.text_zh_status||''}catch(err){el.dataset.zhText='翻译失败，请稍后重试';showTip(`翻译失败：${err.message||err}`,'error')}}el.value=el.dataset.zhText||'暂未生成准确中文翻译，请人工确认原文含义。';el.dataset.showingZh='1';el.classList.add('is-translated');autoResizeManualUploadReviewTextarea(el)}
+function updateManualUploadReviewSelectionState(){const items=collectManualUploadReviewItems(false);const selected=items.filter(x=>x.selected).length;const total=items.length;const checkbox=document.querySelector('[data-ga-review-select-all="1"]');if(checkbox){checkbox.checked=total>0&&selected===total;checkbox.indeterminate=selected>0&&selected<total;checkbox.disabled=total===0}const selectedEl=document.getElementById('ga_manual_upload_review_selected_count');if(selectedEl)selectedEl.textContent=String(selected);const totalEl=document.getElementById('ga_manual_upload_review_total_count');if(totalEl)totalEl.textContent=String(total);const hint=document.getElementById('ga_manual_upload_review_footer_hint');if(hint)hint.textContent=selected?`将导入 ${selected} 条话术；确认后进入话术备选区，可再加入角色。`:'当前未勾选任何话术。'}
+function setManualUploadReviewSelection(checked){document.querySelectorAll('[data-ga-review-select]').forEach(el=>{el.checked=Boolean(checked)});updateManualUploadReviewSelectionState()}
+function renderManualUploadReviewModal(data){window.__gaManualUploadReviewItems=(data.items||[]).map(item=>({...item,selected:item.selected!==false}));const summary=document.getElementById('ga_manual_upload_review_summary');const body=document.getElementById('ga_manual_upload_review_body');const s=data.summary||{};const selectedCount=window.__gaManualUploadReviewItems.filter(x=>x.selected!==false).length;if(summary){summary.innerHTML=`<div class="ga-review-summary-grid">${manualUploadReviewSummaryCard('识别话术',s.total||0)}${manualUploadReviewSummaryCard('待确认',s.new_count||0)}${manualUploadReviewSummaryCard('重复跳过',s.duplicate_count||0)}${manualUploadReviewSummaryCard('无效',s.invalid_count||0)}</div><div class="ga-review-toolbar"><label class="ga-review-select-all"><input type="checkbox" data-ga-review-select-all="1" onchange="setManualUploadReviewSelection(this.checked)" ${selectedCount?'checked':''}/> 全选当前可导入话术</label><div class="muted">已选 <strong id="ga_manual_upload_review_selected_count">${selectedCount}</strong>/<span id="ga_manual_upload_review_total_count">${window.__gaManualUploadReviewItems.length}</span> 条</div></div>`}if(body){const groups={};window.__gaManualUploadReviewItems.forEach((item,idx)=>{const key=manualUploadReviewGroupKey(item);groups[key]=groups[key]||[];groups[key].push({item,idx})});body.innerHTML=Object.entries(groups).map(([key,rows])=>`<section class="mini-note ga-review-group"><div class="toolbar"><strong>${esc(key)}</strong><span class="pill gray">${rows.length} 条</span></div>${rows.map(({item,idx})=>`<div class="ga-review-row"><input type="checkbox" data-ga-review-select="${idx}" ${item.selected?'checked':''} onchange="updateManualUploadReviewSelectionState()"/><div class="ga-review-row-main"><textarea data-ga-review-text="${idx}" data-ga-review-textarea="1" rows="${manualUploadReviewTextareaRows(item.text||'')}" oninput="onManualUploadReviewTextInput(this)">${esc(item.text||'')}</textarea></div><button type="button" class="secondary ga-review-translate-btn" title="查看中文含义" onclick="toggleManualUploadReviewTranslation(${idx})">翻译</button></div>`).join('')}</section>`).join('')||'<div class="ga-empty-state">没有可导入的话术</div>'}const modal=document.getElementById('ga_manual_upload_review_modal');if(modal){modal.classList.add('is-open');modal.setAttribute('aria-hidden','false')}setTimeout(autoResizeManualUploadReviewTextareas,30);updateManualUploadReviewSelectionState()}
+function closeManualUploadReviewModal(){const modal=document.getElementById('ga_manual_upload_review_modal');if(modal){modal.classList.remove('is-open');modal.setAttribute('aria-hidden','true')}}
+function collectManualUploadReviewItems(onlySelected=true){return (window.__gaManualUploadReviewItems||[]).map((item,idx)=>{const region=item.region||'印尼';return {...item,selected:document.querySelector(`[data-ga-review-select="${idx}"]`)?.checked===true,text:String(document.querySelector(`[data-ga-review-text="${idx}"]`)?.value||item.text||'').trim(),region,language:item.language||regionLanguage(region)||'id',role_positioning:item.role_positioning||'community_seed'}}).filter(item=>item.text&&(!onlySelected||item.selected))}
+async function confirmManualUploadReview(){return runAction('确认导入话术',async()=>{const items=collectManualUploadReviewItems(true);if(!items.length)throw new Error('请至少勾选1条话术');const data=await loadJson('/api/ops/group-atmosphere/phrases/manual-upload-confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})});const out=document.getElementById('ga_phrase_library_result');if(out)out.textContent=`已确认入池 ${data.imported_count||0} 条话术，重复跳过 ${data.duplicate_count||0} 条`;closeManualUploadReviewModal();await reloadAll();return data})}
+async function uploadManualPhrases(){return runAction('导入人工话术',async()=>{const file=document.getElementById('ga_manual_phrase_file')?.files?.[0]||null;const pasted=String(document.getElementById('ga_manual_phrase_text')?.value||'');const region=document.getElementById('ga_manual_upload_region')?.value||'印尼';const type=document.getElementById('ga_manual_upload_type')?.value||activeCandidateRole()||'community_seed';let combined={items:[],duplicates:[],invalid_items:[],summary:{total:0,new_count:0,duplicate_count:0,invalid_count:0}};const mergePreview=(data)=>{combined.items=combined.items.concat(data.items||[]);combined.duplicates=combined.duplicates.concat(data.duplicates||[]);combined.invalid_items=combined.invalid_items.concat(data.invalid_items||[]);const s=data.summary||{};combined.summary.total+=Number(s.total||0);combined.summary.new_count+=Number(s.new_count||0);combined.summary.duplicate_count+=Number(s.duplicate_count||0);combined.summary.invalid_count+=Number(s.invalid_count||0)};if(file){if(!/\.(txt|csv|xlsx|xls)$/i.test(file.name||''))throw new Error('当前支持 txt/csv/xlsx/xls 文件');const fd=new FormData();fd.append('file',file);fd.append('region',region);fd.append('language',regionLanguage(region));fd.append('role_positioning',type);mergePreview(await loadJson('/api/ops/group-atmosphere/phrases/manual-upload-preview-file',{method:'POST',body:fd}))}if(pasted.trim()){mergePreview(await loadJson('/api/ops/group-atmosphere/phrases/manual-upload-preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({role_positioning:type,region,language:regionLanguage(region),content:pasted})}))}if(!file&&!pasted.trim())throw new Error('请先选择文件或粘贴话术');renderManualUploadReviewModal(combined);const out=document.getElementById('ga_phrase_library_result');if(out)out.textContent=`已生成待审核话术 ${combined.summary.new_count||0} 条，请在弹窗确认后入池`;return {...combined,silent:true}})}
 function showInlinePhraseTypeForm(){window.__gaEditingPhraseTypeKey='';const form=document.getElementById('ga_phrase_type_inline_form');if(form){form.classList.add('is-open');const input=document.getElementById('ga_phrase_type_inline_name');if(input)setTimeout(()=>input.focus(),30)}}
 function hideInlinePhraseTypeForm(){const form=document.getElementById('ga_phrase_type_inline_form');if(form)form.classList.remove('is-open');const input=document.getElementById('ga_phrase_type_inline_name');if(input)input.value=''}
 async function saveInlinePhraseType(){return runAction('保存话术类型',async()=>{const input=document.getElementById('ga_phrase_type_inline_name');const name=String(input?.value||'').trim();if(!name)throw new Error('请输入话术类型名称');const data=await loadJson('/api/ops/group-atmosphere/phrase-types',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type_name:name,enabled:true})});const next=data.phrase_type?.type_key||'';hideInlinePhraseTypeForm();if(next)window.__gaCandidateActiveRole=next;await reloadAll();return data})}
@@ -2267,12 +2430,10 @@ async function deleteInlinePhraseType(typeKey){return runAction('删除话术类
 async function savePhraseType(){return saveInlinePhraseType()}
 async function reloadAll(){ensureGroupRows();const [regions,a,c,pt,media]=await Promise.all([loadUnifiedRegionOptions(),loadJson('/api/ops/group-atmosphere/accounts'),loadJson('/api/ops/group-atmosphere/candidate-pool'),loadJson('/api/ops/group-atmosphere/phrase-types').catch(()=>({rows:[]})),loadJson('/api/ops/group-atmosphere/media-assets').catch(()=>({rows:[]}))]);window.__gaPhraseTypes=pt.rows||[];window.__gaMediaAssets=media.rows||[];if(!window.__mcnRegionOptions.length&&Array.isArray(a.region_options))window.__mcnRegionOptions=a.region_options;renderUnifiedRegionOptions('ga_region');renderUnifiedRegionOptions('ga_role_region');renderPhraseTypeSelects();renderPhraseLibraryOptions();renderCandidatePool(c.rows||[]);renderAccounts(a.rows||[]);await loadRoleBridge()}
 function toggleBridgeCreatePanel(){const card=document.getElementById('ga_role_bridge_card');if(card){card.classList.toggle('is-creating');const sel=document.getElementById('ga_bridge_role_select');if(card.classList.contains('is-creating')&&sel)setTimeout(()=>sel.focus(),50)}}
-function openRoleEditorFromPool(){const draft=document.getElementById('ga_quick_phrase_draft');openRoleEditor();setTimeout(()=>{const target=document.getElementById('ga_role_phrases');if(target&&draft&&draft.value.trim())target.value=[target.value,draft.value.trim()].filter(Boolean).join('\\n')},80)}
-function clearQuickPhraseDraft(){const el=document.getElementById('ga_quick_phrase_draft');if(el)el.value='';setFeedback('已清空话术草稿','success')}
-const gaButtonHandlers={ga_new_bridge_btn:()=>openBridgeModal(),ga_new_account_btn:openNewAccountEditor,ga_new_role_btn:()=>openRoleEditor(),ga_new_role_btn_pool_1:()=>openRoleEditor(),ga_new_role_btn_pool_2:()=>openRoleEditor(),ga_new_role_btn_pool_3:()=>openRoleEditor(),ga_new_role_btn_pool_learn:()=>openRoleEditor(),ga_new_role_btn_pool_create:openRoleEditorFromPool,ga_clear_phrase_draft_btn:clearQuickPhraseDraft,ga_new_role_btn_bridge:()=>openRoleEditor(),ga_close_editor_btn:closeAccountEditor,ga_close_send_modal_btn:closeManualSendModal,ga_send_message_btn:sendManualGroupMessage,ga_clear_form_btn:clearAccountForm,ga_add_group_btn:addGroupRow,ga_save_account_btn:saveAtmosphereAccount,ga_batch_add_candidates_to_role_btn:saveSelectedCandidatesToRole,ga_mount_role_btn:mountSelectedRole,ga_close_role_editor_btn:closeRoleEditor,ga_save_role_btn:saveRoleEditor,ga_save_manual_role_phrases_btn:saveRoleManualPhrases,ga_clear_role_btn:clearRoleEditor,ga_close_bridge_modal_btn:closeBridgeModal,ga_upload_chat_btn:uploadChatFiles,ga_clear_chat_files_btn:clearChatFiles,ga_open_learning_bot_modal_btn:()=>openLearningBotModal(),ga_close_learning_bot_modal_btn:closeLearningBotModal,ga_cancel_learning_bot_btn:closeLearningBotModal,ga_add_learning_group_link_btn:()=>addLearningGroupLinkRow(),ga_save_learning_bot_btn:saveLearningBot,ga_add_phrase_type_btn:showInlinePhraseTypeForm,ga_save_inline_phrase_type_btn:saveInlinePhraseType,ga_cancel_inline_phrase_type_btn:hideInlinePhraseTypeForm,ga_close_image_candidate_modal_btn:closeImageCandidateModal,ga_cancel_image_candidate_btn:closeImageCandidateModal,ga_save_image_candidate_btn:saveImageCandidate};
+const gaButtonHandlers={ga_new_bridge_btn:()=>openBridgeModal(),ga_new_account_btn:openNewAccountEditor,ga_new_role_btn:()=>openRoleEditor(),ga_new_role_btn_pool_1:()=>openRoleEditor(),ga_new_role_btn_pool_2:()=>openRoleEditor(),ga_new_role_btn_pool_3:()=>openRoleEditor(),ga_new_role_btn_pool_learn:()=>openRoleEditor(),ga_new_role_btn_bridge:()=>openRoleEditor(),ga_close_editor_btn:closeAccountEditor,ga_close_send_modal_btn:closeManualSendModal,ga_send_message_btn:sendManualGroupMessage,ga_clear_form_btn:clearAccountForm,ga_add_group_btn:addGroupRow,ga_save_account_btn:saveAtmosphereAccount,ga_batch_add_candidates_to_role_btn:saveSelectedCandidatesToRole,ga_mount_role_btn:mountSelectedRole,ga_close_role_editor_btn:closeRoleEditor,ga_save_role_btn:saveRoleEditor,ga_clear_role_btn:clearRoleEditor,ga_close_bridge_modal_btn:closeBridgeModal,ga_upload_chat_btn:uploadChatFiles,ga_clear_chat_files_btn:clearChatFiles,ga_open_learning_bot_modal_btn:()=>openLearningBotModal(),ga_close_learning_bot_modal_btn:closeLearningBotModal,ga_cancel_learning_bot_btn:closeLearningBotModal,ga_add_learning_group_link_btn:()=>addLearningGroupLinkRow(),ga_save_learning_bot_btn:saveLearningBot,ga_add_phrase_type_btn:showInlinePhraseTypeForm,ga_save_inline_phrase_type_btn:saveInlinePhraseType,ga_cancel_inline_phrase_type_btn:hideInlinePhraseTypeForm,ga_close_image_candidate_modal_btn:closeImageCandidateModal,ga_cancel_image_candidate_btn:closeImageCandidateModal,ga_save_image_candidate_btn:saveImageCandidate};
 function syncToolAccountSelects(sourceId){const source=document.getElementById(sourceId);const key=source?.value||'';setSelectedAtmosphereAccountKey(key)}
 function runGaButtonHandler(id,ev){const handler=gaButtonHandlers[id];if(!handler)return false;if(ev){ev.preventDefault();ev.stopPropagation()}const now=Date.now();const last=Number(window.__gaLastButtonAt||0);if(window.__gaLastButtonId===id&&now-last<350)return true;window.__gaLastButtonId=id;window.__gaLastButtonAt=now;try{Promise.resolve(handler()).catch(err=>{setFeedback(`操作失败：${err.message||err}`,'error');console.error(err)})}catch(err){setFeedback(`操作失败：${err.message||err}`,'error');console.error(err)}return true}
-function bindGroupAtmosphereButtons(){for(const id of Object.keys(gaButtonHandlers)){const el=document.getElementById(id);if(el&&el.dataset.bound!=='1'){el.type='button';el.addEventListener('click',ev=>runGaButtonHandler(id,ev));el.addEventListener('pointerup',ev=>runGaButtonHandler(id,ev));el.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){runGaButtonHandler(id,ev)}});el.dataset.bound='1'}}if(!document.body.dataset.gaModalBound){document.addEventListener('keydown',ev=>{if(ev.key==='Escape'){closeAccountEditor();closeBridgeModal();closeLearningBotModal();closeManualSendModal();closeImageCandidateModal();}});document.body.dataset.gaModalBound='1'}if(!document.body.dataset.gaDelegated){for(const eventName of ['click','pointerup','mousedown']){document.addEventListener(eventName,ev=>{const target=ev.target&&ev.target.closest?ev.target.closest('button'):null;if(target&&runGaButtonHandler(target.id||'',ev))return},true)}document.body.dataset.gaDelegated='1'}window.addGroupRow=addGroupRow;window.removeGroupRow=removeGroupRow;window.saveAtmosphereAccount=saveAtmosphereAccount;window.startAtmosphereQr=startAtmosphereQr;window.refreshAtmosphereSession=refreshAtmosphereSession;window.openAtmosphereQrModal=openAtmosphereQrModal;window.startAtmosphereQrForAccount=startAtmosphereQrForAccount;window.closeAtmosphereQrModal=closeAtmosphereQrModal;window.dismissAtmosphereQrModal=dismissAtmosphereQrModal;window.retryAtmosphereQrModal=retryAtmosphereQrModal;window.refreshAtmosphereQrModal=refreshAtmosphereQrModal;window.deleteAtmosphereAccount=deleteAtmosphereAccount;window.openLearningBotModal=openLearningBotModal;window.deleteLearningBot=deleteLearningBot;window.toggleLearningBotEnabled=toggleLearningBotEnabled;window.toggleLearningGroupEnabled=toggleLearningGroupEnabled;window.addLearningGroupLinkRow=addLearningGroupLinkRow;window.removeLearningGroupLinkRow=removeLearningGroupLinkRow;window.fillAccountForm=fillAccountForm;window.selectAtmosphereAccount=selectAtmosphereAccount;window.toggleAtmosphereAccountEnabled=toggleAtmosphereAccountEnabled;window.toggleAtmosphereGroupEnabled=toggleAtmosphereGroupEnabled;window.setSelectedAtmosphereAccountKey=setSelectedAtmosphereAccountKey;window.openAccountEditor=openAccountEditor;window.closeAccountEditor=closeAccountEditor;window.openNewAccountEditor=openNewAccountEditor;window.openManualSendModal=openManualSendModal;window.closeManualSendModal=closeManualSendModal;window.fillManualMessage=fillManualMessage;window.sendManualGroupMessage=sendManualGroupMessage;window.loadCandidatePool=loadCandidatePool;window.enableCandidate=enableCandidate;window.runAtmosphereScheduler=runAtmosphereScheduler;window.openRoleEditor=openRoleEditor;window.closeRoleEditor=closeRoleEditor;window.saveRoleEditor=saveRoleEditor;window.toggleBridgeGroupPermission=toggleBridgeGroupPermission;window.triggerRelationship=triggerRelationship;}
+function bindGroupAtmosphereButtons(){for(const id of Object.keys(gaButtonHandlers)){const el=document.getElementById(id);if(el&&el.dataset.bound!=='1'){el.type='button';el.addEventListener('click',ev=>runGaButtonHandler(id,ev));el.addEventListener('pointerup',ev=>runGaButtonHandler(id,ev));el.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){runGaButtonHandler(id,ev)}});el.dataset.bound='1'}}if(!document.body.dataset.gaModalBound){document.addEventListener('keydown',ev=>{if(ev.key==='Escape'){closeAccountEditor();closeBridgeModal();closeLearningBotModal();closeManualSendModal();closeTriggerRulesModal();closeImageCandidateModal();closeManualUploadReviewModal();}});document.body.dataset.gaModalBound='1'}if(!document.body.dataset.gaDelegated){for(const eventName of ['click','pointerup','mousedown']){document.addEventListener(eventName,ev=>{const target=ev.target&&ev.target.closest?ev.target.closest('button'):null;if(target&&runGaButtonHandler(target.id||'',ev))return},true)}document.body.dataset.gaDelegated='1'}window.addGroupRow=addGroupRow;window.removeGroupRow=removeGroupRow;window.saveAtmosphereAccount=saveAtmosphereAccount;window.startAtmosphereQr=startAtmosphereQr;window.refreshAtmosphereSession=refreshAtmosphereSession;window.openAtmosphereQrModal=openAtmosphereQrModal;window.startAtmosphereQrForAccount=startAtmosphereQrForAccount;window.closeAtmosphereQrModal=closeAtmosphereQrModal;window.dismissAtmosphereQrModal=dismissAtmosphereQrModal;window.retryAtmosphereQrModal=retryAtmosphereQrModal;window.refreshAtmosphereQrModal=refreshAtmosphereQrModal;window.deleteAtmosphereAccount=deleteAtmosphereAccount;window.openLearningBotModal=openLearningBotModal;window.deleteLearningBot=deleteLearningBot;window.toggleLearningBotEnabled=toggleLearningBotEnabled;window.toggleLearningGroupEnabled=toggleLearningGroupEnabled;window.addLearningGroupLinkRow=addLearningGroupLinkRow;window.removeLearningGroupLinkRow=removeLearningGroupLinkRow;window.fillAccountForm=fillAccountForm;window.selectAtmosphereAccount=selectAtmosphereAccount;window.toggleAtmosphereAccountEnabled=toggleAtmosphereAccountEnabled;window.toggleAtmosphereGroupEnabled=toggleAtmosphereGroupEnabled;window.setSelectedAtmosphereAccountKey=setSelectedAtmosphereAccountKey;window.openAccountEditor=openAccountEditor;window.closeAccountEditor=closeAccountEditor;window.openNewAccountEditor=openNewAccountEditor;window.openManualSendModal=openManualSendModal;window.closeManualSendModal=closeManualSendModal;window.openTriggerRulesModal=openTriggerRulesModal;window.closeTriggerRulesModal=closeTriggerRulesModal;window.newTriggerRuleForm=newTriggerRuleForm;window.editTriggerRuleForm=editTriggerRuleForm;window.saveTriggerRuleFromModal=saveTriggerRuleFromModal;window.deleteTriggerRule=deleteTriggerRule;window.deleteTriggerRuleFromModal=deleteTriggerRuleFromModal;window.syncTriggerRuleConditionHelp=syncTriggerRuleConditionHelp;window.fillManualMessage=fillManualMessage;window.sendManualGroupMessage=sendManualGroupMessage;window.loadCandidatePool=loadCandidatePool;window.enableCandidate=enableCandidate;window.runAtmosphereScheduler=runAtmosphereScheduler;window.openRoleEditor=openRoleEditor;window.closeRoleEditor=closeRoleEditor;window.saveRoleEditor=saveRoleEditor;window.toggleBridgeGroupPermission=toggleBridgeGroupPermission;window.triggerRelationship=triggerRelationship;}
 bindGroupAtmosphereButtons();
 ['ga_candidate_language_filter','ga_candidate_role_filter'].forEach(id=>{const el=document.getElementById(id);if(el&&el.dataset.boundCandidateFilter!=='1'){el.addEventListener('change',()=>{renderAccounts(window.__gaAccounts||[]);renderCandidatePool(window.__gaCandidateRows||[])});el.dataset.boundCandidateFilter='1';}});const manualUploadBtn=document.getElementById('ga_manual_upload_btn');if(manualUploadBtn&&manualUploadBtn.dataset.bound!=='1'){manualUploadBtn.addEventListener('click',uploadManualPhrases);manualUploadBtn.dataset.bound='1'}const savePhraseTypeBtn=document.getElementById('ga_save_phrase_type_btn');if(savePhraseTypeBtn&&savePhraseTypeBtn.dataset.bound!=='1'){savePhraseTypeBtn.addEventListener('click',savePhraseType);savePhraseTypeBtn.dataset.bound='1'}if(window.ga_role_positioning&&ga_role_positioning.dataset.boundRolePoolFilter!=='1'){ga_role_positioning.addEventListener('change',()=>{syncRoleEditorSelectedTextsFromDom();renderRolePhrasePool()});ga_role_positioning.dataset.boundRolePoolFilter='1';}const bridgeRoleSelect=document.getElementById('ga_bridge_role_select');if(bridgeRoleSelect&&bridgeRoleSelect.dataset.boundBridgeSelect!=='1'){bridgeRoleSelect.addEventListener('change',renderBridgeGroupChoices);bridgeRoleSelect.dataset.boundBridgeSelect='1';}const bridgeRegionSelect=document.getElementById('ga_bridge_region');if(bridgeRegionSelect&&bridgeRegionSelect.dataset.boundBridgeRegion!=='1'){bridgeRegionSelect.addEventListener('change',renderBridgeGroupChoices);bridgeRegionSelect.dataset.boundBridgeRegion='1';}
 reloadAll().catch(err=>{ga_session_status.textContent=err.message||String(err)});
@@ -2308,7 +2469,9 @@ OPS_INTAKE_SUBMIT_PAGE_HTML = r"""
     button { border:0; border-radius:12px; background:#2563eb; color:#fff; font-weight:850; padding:10px 14px; cursor:pointer; min-height:40px; } button:disabled{opacity:.55;cursor:not-allowed}.secondary{background:#e8f0ff;color:#1d4ed8}.ghost{background:#f1f5f9;color:#334155}.danger{background:#fee2e2;color:#991b1b}
     .actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; margin-top:12px; }.status-line{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px}.items{display:grid;gap:10px;margin-top:12px}.item-card{box-shadow:none}.item-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.reply{white-space:pre-wrap;background:#0f172a;color:#e5e7eb;border-radius:12px;padding:10px;margin-top:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;line-height:1.55}.empty{padding:18px;border:1px dashed #cbd5e1;border-radius:16px;background:#fff;color:#64748b;text-align:center}.overdue{border-color:#f59e0b!important;background:#fffbeb!important}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.tabs .tab{background:#fff!important;color:#1d4ed8!important;border:1px solid #dbe4f0!important;box-shadow:none!important;transform:none!important}.tabs .tab:hover{background:#eef4ff!important;color:#1d4ed8!important;box-shadow:none!important}.tabs .tab.active{background:#2563eb!important;color:#fff!important;border-color:#2563eb!important;box-shadow:0 8px 18px rgba(37,99,235,.18)!important}
     .modal { position:fixed; inset:0; background:rgba(15,23,42,.48); display:none; align-items:center; justify-content:center; padding:24px; z-index:80; } .modal.is-open{display:flex}.modal-card{width:min(720px,100%);max-height:calc(100vh - 48px);overflow:auto;background:#fff;border-radius:20px;border:1px solid #dbe4f0;box-shadow:0 24px 64px rgba(15,23,42,.24);padding:20px}.modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}.modal-head h3{margin:0;font-size:20px}.assignee-picker{position:relative}.assignee-dropdown-btn{width:100%;justify-content:space-between;text-align:left}.assignee-options{display:none;max-height:260px;overflow:auto;margin-top:8px;border:1px solid #dbe4f0;border-radius:14px;background:#fff;box-shadow:0 14px 32px rgba(15,23,42,.12);padding:8px}.assignee-options.is-open{display:grid;gap:6px}.assignee-option{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:10px;cursor:pointer;color:#0f172a;font-size:14px}.assignee-option:hover{background:#f1f5f9}.assignee-option input{width:auto;min-height:auto;margin:0}.executor-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.executor-meta div{font-size:13px;color:#475569;background:#f8fbff;border:1px solid #e5eaf3;border-radius:12px;padding:8px 10px}
-    @media(max-width:980px){body{padding:16px}.summary{grid-template-columns:1fr}.guild-grid,.executor-grid{grid-template-columns:1fr}.field-grid,.executor-meta{grid-template-columns:1fr}.shell-nav{overflow:auto;flex-wrap:nowrap}.shell-nav a{white-space:nowrap}}
+    :root{--intake-card-gap:16px;--intake-card-pad:20px;--intake-control-height:56px;--intake-field-gap:16px;--intake-inner-gap:12px;}.page-shell{display:grid!important;gap:var(--intake-card-gap)!important;}.summary{gap:var(--intake-card-gap)!important;}.summary-card{padding:14px 16px!important;border-radius:16px!important;}.summary-card .value{font-size:22px!important;line-height:28px!important;margin-top:2px!important;}.section-card{padding:var(--intake-card-pad)!important;border-radius:20px!important;}.section-head{margin-bottom:10px!important;}.section-head h2{font-size:20px!important;line-height:26px!important;}.tabs{margin-top:10px!important;}.guild-grid{grid-template-columns:1fr!important;gap:var(--intake-card-gap)!important;margin-top:12px!important;}.guild-card{padding:16px!important;border-radius:18px!important;}.guild-head{margin-bottom:10px!important;align-items:center!important;}.guild-title{font-size:18px!important;line-height:24px!important;}.channel-status-icons{display:flex!important;gap:8px!important;flex-wrap:wrap!important;margin-top:6px!important;}.intake-input-grid{display:grid;grid-template-columns:minmax(320px,0.9fr) minmax(420px,1fr);gap:16px;align-items:start;margin-top:12px;}.intake-raw-block{min-width:0;}.guild-card textarea{min-height:152px!important;line-height:1.45!important;}.field-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;column-gap:16px!important;row-gap:15px!important;margin-top:0!important;}.field-grid label{margin:0 0 10px!important;}body[data-ops-role] .field-grid{column-gap:16px!important;row-gap:15px!important;gap:15px 16px!important;}.intake-input-grid .field-grid input{min-height:56px!important;height:56px!important;padding:12px 14px!important;border-radius:14px!important;margin:0!important;}.intake-input-grid .intake-raw-block{padding-top:34px!important;}.intake-input-grid .intake-raw-block textarea{min-height:152px!important;height:152px!important;border-radius:14px!important;margin:0!important;}textarea,input,select{min-height:var(--intake-control-height)!important;padding:12px 14px!important;border-radius:14px!important;}button{min-height:50px!important;padding:10px 16px!important;}.status-line{margin-top:10px!important;}.actions{margin-top:10px!important;}.items{gap:8px!important;margin-top:10px!important;}.item-card{padding:12px!important;border-radius:16px!important;}.reply{margin-top:6px!important;padding:9px 10px!important;line-height:1.45!important;}.empty{padding:14px!important;border-radius:14px!important;}
+    @media(max-width:1180px){.intake-input-grid{grid-template-columns:1fr;}.field-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;}}
+    @media(max-width:980px){body{padding:16px}.summary{grid-template-columns:1fr}.guild-grid,.executor-grid{grid-template-columns:1fr}.field-grid,.executor-meta{grid-template-columns:1fr!important}.shell-nav{overflow:auto;flex-wrap:nowrap}.shell-nav a{white-space:nowrap}}
   </style>
 </head>
 <body data-ops-role="__OPS_USER_ROLE__">
@@ -2328,13 +2491,19 @@ function duplicatePendingMessage(detail){const base='该用户已有绑定记录
 function readableApiError(data,status){const detail=data&&data.detail!==undefined?data.detail:data;if(typeof detail==='string')return detail;if(detail&&detail.reason==='duplicate_pending')return duplicatePendingMessage(detail);if(detail&&detail.message)return detail.message;return `操作失败 HTTP ${status}`}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function pill(text,cls=''){return `<span class="pill ${cls}">${esc(text)}</span>`}function setText(id,v){const el=document.getElementById(id);if(el)el.textContent=String(v)}function field(id,guild,key){return document.getElementById(`${id}_${guild}_${key}`)}function activeGuilds(){return state.activeGuild?[state.activeGuild]:state.guilds.map(g=>g.guild_name)}
+function submissionEnabled(g){return (g||{}).submission_enabled!==false&&String((g||{}).effective_status||'active')==='active'}
+function channelStatusText(status){const s=String(status||'not_configured');if(s==='valid')return '有效';if(s==='invalid')return '失效';return '未配置'}
+function channelStatusClass(status){const s=String(status||'not_configured');if(s==='valid')return 'green';if(s==='invalid')return 'red';return ''}
+function channelStatusHtml(row){return `<div class="channel-status-icons"><span class="pill ${channelStatusClass(row.cms_channel_status)}">CMS ID：${channelStatusText(row.cms_channel_status)}</span><span class="pill ${channelStatusClass(row.code_channel_status)}">个人 Code：${channelStatusText(row.code_channel_status)}</span></div>`}
+function executorChannelStatusHtml(row){return `<div class="executor-channel-status">${pill(`CMS ID：${channelStatusText(row.cms_channel_status)}`,channelStatusClass(row.cms_channel_status))}${pill(`个人 Code：${channelStatusText(row.code_channel_status)}`,channelStatusClass(row.code_channel_status))}</div>`}
+function formatSecondTime(value){if(!value)return '-';const text=String(value).trim();const matched=text.match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}:\d{2})/);if(matched)return `${matched[1]} ${matched[2]}`;const d=new Date(text);if(Number.isNaN(d.getTime()))return text.replace('T',' ').slice(0,19);const pad=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`}
 function renderTabs(){const el=document.getElementById('guildTabs');el.innerHTML=state.guilds.map(g=>`<button class="tab ${state.activeGuild===g.guild_name?'active':''}" onclick="selectGuild('${esc(g.guild_name)}')">${esc(g.guild_name)}</button>`).join('')}function selectGuild(guild){state.activeGuild=guild;renderTabs();renderGuilds();refreshItems()}
-function renderGuilds(){const rows=state.guilds.filter(g=>!state.activeGuild||g.guild_name===state.activeGuild);const grid=document.getElementById('guildGrid');if(!rows.length){grid.innerHTML='<div class="empty">暂无可用公会收口区。请确认公会执行器已生效，并且当前客服已被分配到对应公会。</div>';return}grid.innerHTML=rows.map(g=>`<div class="guild-card" data-guild="${esc(g.guild_name)}"><div class="guild-head"><div><h2 class="guild-title">${esc(g.guild_name)} 收口区</h2><div class="muted">${esc(g.effective_reason||'生效中')} · ${g.code_required?'Code 必填':'CMS ID 绑定，Code 可空'}</div></div><div class="actions" style="margin-top:0"><a class="secondary" style="text-decoration:none;border-radius:12px;padding:10px 14px;font-weight:850" href="/ops/bind-failed-users?guild_name=${encodeURIComponent(g.guild_name)}">绑定历史</a>${isAdmin?`<button class="secondary" onclick="openAssigneeModal('${esc(g.guild_name)}')">编辑客服</button>`:''}${pill('🟢 生效中','green')}</div></div><textarea id="raw_${esc(g.guild_name)}_text" placeholder="粘贴该公会用户资料" oninput="scheduleParse('${esc(g.guild_name)}')"></textarea><div class="field-grid"><div><label>Phone</label><input id="field_${esc(g.guild_name)}_phone" oninput="manualFieldChanged('${esc(g.guild_name)}')"></div><div><label>ID / SID</label><input id="field_${esc(g.guild_name)}_account_id" oninput="manualFieldChanged('${esc(g.guild_name)}')"></div><div><label>Group</label><input id="field_${esc(g.guild_name)}_group" oninput="manualFieldChanged('${esc(g.guild_name)}')"></div><div><label>Code</label><input id="field_${esc(g.guild_name)}_code" oninput="manualFieldChanged('${esc(g.guild_name)}')"></div></div><div class="status-line"><span class="muted" id="parse_${esc(g.guild_name)}"></span><button id="submit_${esc(g.guild_name)}" disabled onclick="submitGuild('${esc(g.guild_name)}')">确认提交 ${esc(g.guild_name)}</button></div><div class="items" id="items_${esc(g.guild_name)}"><div class="muted">暂无事项</div></div></div>`).join('')}
+function renderGuilds(){const rows=state.guilds.filter(g=>!state.activeGuild||g.guild_name===state.activeGuild);const grid=document.getElementById('guildGrid');if(!rows.length){grid.innerHTML='<div class="empty">暂无可用公会收口区。请确认公会执行器已配置，并且当前客服已被分配到对应公会。</div>';return}grid.innerHTML=rows.map(g=>{const enabled=submissionEnabled(g);return `<div class="guild-card ${enabled?'':'executor-inactive'}" data-guild="${esc(g.guild_name)}"><div class="guild-head"><div><h2 class="guild-title">${esc(g.guild_name)} 收口区</h2>${channelStatusHtml(g)}</div><div class="actions" style="margin-top:0"><a class="secondary" style="text-decoration:none;border-radius:12px;padding:10px 14px;font-weight:850" href="/ops/bind-failed-users?guild_name=${encodeURIComponent(g.guild_name)}">绑定历史</a>${isAdmin?`<button class="secondary" onclick="openAssigneeModal('${esc(g.guild_name)}')">编辑客服</button>`:''}</div></div><div class="intake-input-grid"><div class="intake-raw-block"><textarea id="raw_${esc(g.guild_name)}_text" placeholder="粘贴该公会用户资料" oninput="scheduleParse('${esc(g.guild_name)}')" ${enabled?'':'disabled'}></textarea></div><div class="field-grid"><div><label>Phone</label><input id="field_${esc(g.guild_name)}_phone" oninput="manualFieldChanged('${esc(g.guild_name)}')" ${enabled?'':'disabled'}></div><div><label>ID / SID</label><input id="field_${esc(g.guild_name)}_account_id" oninput="manualFieldChanged('${esc(g.guild_name)}')" ${enabled?'':'disabled'}></div><div><label>Group</label><input id="field_${esc(g.guild_name)}_group" oninput="manualFieldChanged('${esc(g.guild_name)}')" ${enabled?'':'disabled'}></div><div><label>Code</label><input id="field_${esc(g.guild_name)}_code" oninput="manualFieldChanged('${esc(g.guild_name)}')" ${enabled?'':'disabled'}></div></div></div><div class="status-line"><span class="muted" id="parse_${esc(g.guild_name)}"></span><button id="submit_${esc(g.guild_name)}" disabled onclick="submitGuild('${esc(g.guild_name)}')">确认提交 ${esc(g.guild_name)}</button></div><div class="items" id="items_${esc(g.guild_name)}"></div></div>`}).join('')}
 function currentFields(guild){return {phone:field('field',guild,'phone')?.value.trim()||'',account_id:field('field',guild,'account_id')?.value.trim()||'',group:field('field',guild,'group')?.value.trim()||'',code:field('field',guild,'code')?.value.trim()||''}}function scheduleParse(guild){clearTimeout(state.parseTimers[guild]);setParseState(guild,'识别中...',false);state.parseTimers[guild]=setTimeout(()=>parseGuild(guild),260)}function manualFieldChanged(guild){parseGuild(guild,true)}function bindIntakeAutoParseInputs(){if(document.body.dataset.intakeAutoParseBound==='1')return;document.addEventListener('input',ev=>{const el=ev.target;if(!el||!el.id)return;if(el.id.startsWith('raw_')&&el.id.endsWith('_text')){const guild=el.id.slice(4,-5);scheduleParse(guild)}else if(el.id.startsWith('field_')){const parts=el.id.split('_');if(parts.length>=3){const key=parts.pop();const guild=parts.slice(1).join('_');if(['phone','account_id','group','code'].includes(key))manualFieldChanged(guild)}}});document.body.dataset.intakeAutoParseBound='1'}
-async function parseGuild(guild,fromFields=false){const raw=document.getElementById(`raw_${guild}_text`)?.value.trim()||'';if(!raw&&!fromFields){setParseState(guild,'',false);return}try{const data=await loadJson(`/api/ops/intake-workbench/guilds/${encodeURIComponent(guild)}/parse`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:raw,fields:fromFields?currentFields(guild):{}})});for(const [k,v] of Object.entries(data.fields||{})){const el=field('field',guild,k==='phone'?'phone':k);if(el&&(!fromFields||!el.value.trim()))el.value=v||''}setParseState(guild,data.can_submit?'识别完成，可提交':`待补充：${(data.errors||[]).join(', ')}`,data.can_submit)}catch(err){setParseState(guild,err.message,false)}}function setParseState(guild,text,can){const el=document.getElementById(`parse_${guild}`);if(el)el.textContent=text;const btn=document.getElementById(`submit_${guild}`);if(btn)btn.disabled=!can}
+async function parseGuild(guild,fromFields=false){const raw=document.getElementById(`raw_${guild}_text`)?.value.trim()||'';const guildRow=state.guilds.find(g=>g.guild_name===guild)||{};if(!submissionEnabled(guildRow)){setParseState(guild,'',false);return}if(!raw&&!fromFields){setParseState(guild,'',false);return}try{const data=await loadJson(`/api/ops/intake-workbench/guilds/${encodeURIComponent(guild)}/parse`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:raw,fields:fromFields?currentFields(guild):{}})});for(const [k,v] of Object.entries(data.fields||{})){const el=field('field',guild,k==='phone'?'phone':k);if(el&&(!fromFields||!el.value.trim()))el.value=v||''}setParseState(guild,data.can_submit?'识别完成，可提交':`待补充：${(data.errors||[]).join(', ')}`,data.can_submit)}catch(err){setParseState(guild,err.message,false)}}function setParseState(guild,text,can){const el=document.getElementById(`parse_${guild}`);if(el)el.textContent=text;const btn=document.getElementById(`submit_${guild}`);const guildRow=state.guilds.find(g=>g.guild_name===guild)||{};if(btn)btn.disabled=!can||!submissionEnabled(guildRow)}
 async function submitGuild(guild){const raw=document.getElementById(`raw_${guild}_text`)?.value.trim()||'';const btn=document.getElementById(`submit_${guild}`);btn.disabled=true;setParseState(guild,'提交处理中...',false);try{const submitted=await loadJson(`/api/ops/intake-workbench/guilds/${encodeURIComponent(guild)}/submit`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:raw,fields:currentFields(guild)})});document.getElementById(`raw_${guild}_text`).value='';['phone','account_id','group','code'].forEach(k=>{const el=field('field',guild,k);if(el)el.value=''});setParseState(guild,'已提交，系统处理中',false);await refreshItems();if(submitted.item?.item_id)scheduleItemRefresh(guild,submitted.item.item_id)}catch(err){setParseState(guild,err.message,false);btn.disabled=false}}
 function itemStatus(row){const s=String(row.system_status||'');const rc=String(row.result_code||'').toLowerCase();const rr=String(row.result_reason||'').toLowerCase();const duplicate=rc.includes('duplicate')||rr.includes('data duplication')||rr.includes('duplicate_sid')||rr.includes('sid already exists');if(row.feedback_status==='feedback_done')return pill('已反馈','green');if(row.feedback_status==='cleared')return duplicate?pill('❌ 重复提交','red'):pill('已清除');if(duplicate)return pill('❌ 重复提交','red');if(s==='fully_success'&&row.feedback_status==='pending_feedback')return pill('✅ 全链路成功，待反馈','green');if(s==='partial_success_crm_failed')return pill('⚠️ 绑定成功，CRM未完成','yellow');if(s==='already_registered')return pill('❌ 曾注册');if(s==='bind_queued')return pill('资料已接收，等待处理');if(s==='binding')return pill('绑定中');if(s==='crm_verifying')return pill('CRM核验中');if(s==='manual_required'||s==='route_mismatch')return pill('需要人工处理','yellow');if(s==='failed'||s==='bind_failed'||s==='validation_failed'||s==='crm_failed')return pill('❌ 失败','red');return pill('处理中')}
-function formatBeijingTime(value){if(!value)return '-';const d=new Date(value);if(Number.isNaN(d.getTime()))return String(value).replace('T',' ').slice(0,19);return new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(d).replace(/\//g,'-')}function itemCard(row){const created=new Date(row.created_at||Date.now());const ageMin=Math.floor((Date.now()-created.getTime())/60000);const overdue=row.feedback_status==='pending_feedback'&&ageMin>=5;const status=row.feedback_status==='pending_feedback'&&row.system_status==='fully_success'?pill(`待反馈 ${ageMin} 分钟`,overdue?'yellow':'green'):itemStatus(row);const canMark=row.system_status==='fully_success'&&row.feedback_status==='pending_feedback';const canClear=row.feedback_status!=='cleared'&&!(row.system_status==='fully_success'&&row.feedback_status==='pending_feedback');return `<div class="item-card ${overdue?'overdue':''}"><div class="item-head"><div><strong>#${esc(row.item_id||'')}</strong><div class="muted">发起人：${esc(row.submitted_by_username||'-')} · 发起时间：${esc(formatBeijingTime(row.created_at))}</div><div class="muted">${esc(row.parsed_phone||'-')} / ${esc(row.parsed_account_id||'-')} / ${esc(row.parsed_group||'-')}</div></div>${status}</div>${row.group_auto_filled?`<div class="muted" style="color:#b45309">系统根据历史审批记录自动补全 Group：${esc(row.parsed_group||'-')}（${row.group_auto_fill_source==='no_registration_group_history'?'无注册群记录，按其他渠道处理':'来自唯一注册群记录'}）</div>`:''}<div class="reply">${esc(String(row.reply_text||'' ).replace(/^\*\*(.*?)\*\*/m,'$1'))}</div><div class="actions"><button class="secondary" onclick="openItemCorrection('${esc(row.item_id)}')">更正资料</button>${row.system_status==='partial_success_crm_failed'?`<button class="secondary" onclick="copyProcessingNotice('${esc(row.item_id)}')">复制处理中说明</button>`:''}${row.feedback_status==='pending_feedback'?`<button ${canMark?'':'disabled'} onclick="markFeedbackDone('${esc(row.item_id)}')">我已反馈</button>`:''}${canClear?`<button class="secondary" onclick="clearItemCard('${esc(row.item_id)}')">清除卡片</button>`:''}</div></div>`}function renderItemList(guild,rows){const expanded=state.expandedItems[guild]===true;const visible=expanded?rows:rows.slice(0,INTAKE_VISIBLE_CARD_LIMIT);let html=visible.length?visible.map(itemCard).join(''):'<div class="muted">暂无事项</div>';if(rows.length>INTAKE_VISIBLE_CARD_LIMIT){html+=`<button class="secondary" style="width:100%;margin-top:8px" onclick="toggleItemList('${esc(guild)}')">${expanded?'收起记录':`更多记录 ${rows.length-INTAKE_VISIBLE_CARD_LIMIT} 条`}</button>`}return html}function toggleItemList(guild){state.expandedItems[guild]=!state.expandedItems[guild];const el=document.getElementById(`items_${guild}`);const rows=state.items[guild]||[];if(el)el.innerHTML=renderItemList(guild,rows)}function scheduleItemRefresh(guild,itemId){clearInterval(state.pollTimers[itemId]);let ticks=0;state.pollTimers[itemId]=setInterval(async()=>{ticks+=1;await refreshItems();const row=(state.items[guild]||[]).find(x=>x.item_id===itemId);const done=row&&!['queued','processing','bind_queued','binding','crm_verifying'].includes(String(row.system_status||''));if(done||ticks>=30){clearInterval(state.pollTimers[itemId]);delete state.pollTimers[itemId]}},2000)}async function openItemCorrection(itemId){const row=Object.values(state.items).flat().find(x=>x.item_id===itemId)||{};const phone=prompt('更正 Phone',row.parsed_phone||'');if(phone===null)return;const account_id=prompt('更正 ID / SID',row.parsed_account_id||'');if(account_id===null)return;const group=prompt('更正 Group',row.parsed_group||'');if(group===null)return;const code=prompt('更正 Code',row.parsed_code||'');if(code===null)return;await loadJson(`/api/ops/intake-workbench/items/${encodeURIComponent(itemId)}/fields`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'',fields:{phone,account_id,group,code}})});await refreshItems();scheduleItemRefresh(row.guild_name||state.activeGuild,itemId)}
+function formatBeijingTime(value){if(!value)return '-';const d=new Date(value);if(Number.isNaN(d.getTime()))return String(value).replace('T',' ').slice(0,19);return new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(d).replace(/\//g,'-')}function itemCard(row){const created=new Date(row.created_at||Date.now());const ageMin=Math.floor((Date.now()-created.getTime())/60000);const overdue=row.feedback_status==='pending_feedback'&&ageMin>=5;const status=row.feedback_status==='pending_feedback'&&row.system_status==='fully_success'?pill(`待反馈 ${ageMin} 分钟`,overdue?'yellow':'green'):itemStatus(row);const canMark=row.system_status==='fully_success'&&row.feedback_status==='pending_feedback';const canClear=row.feedback_status!=='cleared'&&!(row.system_status==='fully_success'&&row.feedback_status==='pending_feedback');return `<div class="item-card ${overdue?'overdue':''}"><div class="item-head"><div><strong>#${esc(row.item_id||'')}</strong><div class="muted">发起人：${esc(row.submitted_by_username||'-')} · 发起时间：${esc(formatBeijingTime(row.created_at))}</div><div class="muted">${esc(row.parsed_phone||'-')} / ${esc(row.parsed_account_id||'-')} / ${esc(row.parsed_group||'-')}</div></div>${status}</div>${row.group_auto_filled?`<div class="muted" style="color:#b45309">系统根据历史审批记录自动补全 Group：${esc(row.parsed_group||'-')}（${row.group_auto_fill_source==='no_registration_group_history'?'无注册群记录，按其他渠道处理':'来自唯一注册群记录'}）</div>`:''}<div class="reply">${esc(String(row.reply_text||'' ).replace(/^\*\*(.*?)\*\*/m,'$1'))}</div><div class="actions"><button class="secondary" onclick="openItemCorrection('${esc(row.item_id)}')">更正资料</button>${row.system_status==='partial_success_crm_failed'?`<button class="secondary" onclick="copyProcessingNotice('${esc(row.item_id)}')">复制处理中说明</button>`:''}${row.feedback_status==='pending_feedback'?`<button ${canMark?'':'disabled'} onclick="markFeedbackDone('${esc(row.item_id)}')">我已反馈</button>`:''}${canClear?`<button class="secondary" onclick="clearItemCard('${esc(row.item_id)}')">清除卡片</button>`:''}</div></div>`}function renderItemList(guild,rows){const expanded=state.expandedItems[guild]===true;const visible=expanded?rows:rows.slice(0,INTAKE_VISIBLE_CARD_LIMIT);let html=visible.length?visible.map(itemCard).join(''):'';if(rows.length>INTAKE_VISIBLE_CARD_LIMIT){html+=`<button class="secondary" style="width:100%;margin-top:8px" onclick="toggleItemList('${esc(guild)}')">${expanded?'收起记录':`更多记录 ${rows.length-INTAKE_VISIBLE_CARD_LIMIT} 条`}</button>`}return html}function toggleItemList(guild){state.expandedItems[guild]=!state.expandedItems[guild];const el=document.getElementById(`items_${guild}`);const rows=state.items[guild]||[];if(el)el.innerHTML=renderItemList(guild,rows)}function scheduleItemRefresh(guild,itemId){clearInterval(state.pollTimers[itemId]);let ticks=0;state.pollTimers[itemId]=setInterval(async()=>{ticks+=1;await refreshItems();const row=(state.items[guild]||[]).find(x=>x.item_id===itemId);const done=row&&!['queued','processing','bind_queued','binding','crm_verifying'].includes(String(row.system_status||''));if(done||ticks>=30){clearInterval(state.pollTimers[itemId]);delete state.pollTimers[itemId]}},2000)}async function openItemCorrection(itemId){const row=Object.values(state.items).flat().find(x=>x.item_id===itemId)||{};const phone=prompt('更正 Phone',row.parsed_phone||'');if(phone===null)return;const account_id=prompt('更正 ID / SID',row.parsed_account_id||'');if(account_id===null)return;const group=prompt('更正 Group',row.parsed_group||'');if(group===null)return;const code=prompt('更正 Code',row.parsed_code||'');if(code===null)return;await loadJson(`/api/ops/intake-workbench/items/${encodeURIComponent(itemId)}/fields`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'',fields:{phone,account_id,group,code}})});await refreshItems();scheduleItemRefresh(row.guild_name||state.activeGuild,itemId)}
 async function refreshItems(){let pending=0,processing=0,done=0;for(const guild of activeGuilds()){const data=await loadJson(`/api/ops/intake-workbench/items?guild_name=${encodeURIComponent(guild)}&limit=50`);state.items[guild]=data.rows||[];pending+=data.summary?.pending_feedback||0;processing+=data.summary?.processing||0;done+=data.summary?.feedback_done_today||0;const el=document.getElementById(`items_${guild}`);if(el)el.innerHTML=renderItemList(guild,data.rows||[])}setText('sumPending',pending);setText('sumProcessing',processing);setText('sumDone',done);document.title=pending?`(${pending}) 绑定中心`:'绑定中心'}
 async function copyTextWithFallback(text){try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(text);return true}}catch(_){}try{const ta=document.createElement('textarea');ta.value=text;ta.setAttribute('readonly','');ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();const ok=document.execCommand('copy');document.body.removeChild(ta);return !!ok}catch(_){return false}}
 async function copyProcessingNotice(itemId){const copied=await copyTextWithFallback('后台已完成绑定，资料同步中，请勿重复提交，我们会继续处理。');if(!copied)alert('浏览器未允许自动复制，请手动复制处理中说明。')}
@@ -2351,8 +2520,8 @@ function selectedExecutorAssigneeIds(){return [...document.querySelectorAll('#ex
 function updateExecutorAssigneeSummary(){const labels=[...document.querySelectorAll('#executorAssigneeOptions input[type="checkbox"]:checked')].map(el=>el.dataset.label||el.value);setText('executorAssigneeSummary',labels.length?`已选择 ${labels.length} 人：${labels.join('、')}`:'未选择客服');setText('executorAssigneeDropdownButton',labels.length?`已选择 ${labels.length} 人 ▾`:'选择客服人员 ▾')}
 function toggleExecutorAssigneeDropdown(){const box=document.getElementById('executorAssigneeOptions');if(box)box.classList.toggle('is-open')}
 function renderExecutorAssigneeOptions(guild){const box=document.getElementById('executorAssigneeOptions');if(!box)return;const g=state.guilds.find(x=>x.guild_name===guild)||{};const assigned=new Set((g.assignees||[]).map(a=>a.user_id));box.innerHTML=state.accounts.length?state.accounts.map(u=>{const label=`${u.display_name||u.username}（${u.username}）`;return `<label class="assignee-option"><input type="checkbox" value="${esc(u.user_id)}" data-label="${esc(label)}" ${assigned.has(u.user_id)?'checked':''} onchange="updateExecutorAssigneeSummary()"><span>${esc(label)}</span></label>`}).join(''):'<div class="muted" style="padding:10px">暂无可选客服账号</div>';box.classList.add('is-open');updateExecutorAssigneeSummary()}
-function renderExecutors(){const sec=document.getElementById('executorSection');if(!isAdmin){sec.style.display='none';return}sec.style.display='block';const grid=document.getElementById('executorGrid');if(!state.executors.length){grid.innerHTML='<div class="empty">暂无公会执行器</div>';return}grid.innerHTML=state.executors.map(e=>`<div class="executor-card"><div class="executor-head"><div><h3 class="executor-title">${esc(e.guild_name)}</h3><div class="muted">${e.enabled?'启用':'停用'} · ${esc(e.updated_at||'-')}</div></div>${pill(e.enabled?'🟢 生效中':'已停用',e.enabled?'green':'')}</div><div class="executor-meta"><div>OAuth：${e.oauth_configured?'已配置':'未配置'}</div><div>CMS Token：${e.platform_authorization_configured?'已配置':'未配置'}</div><div>Refresh Token：${e.cms_refresh_token_configured?'已配置':'未配置'}</div><div>并发：${esc(e.bind_concurrency||1)}</div></div><div class="actions"><button class="secondary" onclick="openExecutorModal('${esc(e.guild_name)}')">编辑</button></div></div>`).join('')}
-async function loadExecutors(){if(!isAdmin)return;const data=await loadJson('/api/ops/guild-executors');state.executors=data.rows||[];renderExecutors()}function openExecutorModal(guild){state.executorEditing=guild||'';const e=state.executors.find(x=>x.guild_name===guild)||{};executorModalTitle.textContent=guild?'编辑公会执行器':'新增公会执行器';executor_guild_name.value=guild||'';executor_guild_name.disabled=!!guild;executor_enabled.value=e.enabled===false?'false':'true';executor_oauth_token.value='';executor_oauth_token_secret.value='';executor_platform_authorization.value='';executor_cms_refresh_token.value='';executor_proxy_region.value=e.proxy_region||'';executor_bind_concurrency.value=e.bind_concurrency||1;executor_request_timeout_seconds.value=e.request_timeout_seconds||30;executor_notes.value=e.notes||'';renderExecutorAssigneeOptions(guild||'');executorModal.classList.add('is-open')}function closeExecutorModal(){executorModal.classList.remove('is-open');const box=document.getElementById('executorAssigneeOptions');if(box)box.classList.remove('is-open');setText('executorMessage','')}
+function renderExecutors(){const sec=document.getElementById('executorSection');if(!isAdmin){sec.style.display='none';return}sec.style.display='block';const grid=document.getElementById('executorGrid');if(!state.executors.length){grid.innerHTML='<div class="empty">暂无公会执行器</div>';return}grid.innerHTML=state.executors.map(e=>`<div class="executor-card"><div class="executor-head"><div><h3 class="executor-title">${esc(e.guild_name)}</h3><div class="muted">${e.enabled?'启用':'停用'} · ${esc(formatSecondTime(e.updated_at))}</div></div></div>${executorChannelStatusHtml(e)}<div class="executor-meta"><div>OAuth：${e.oauth_configured?'已配置':'未配置'}</div><div>CMS Token：${e.platform_authorization_configured?'已配置':'未配置'}</div><div>Refresh Token：${e.cms_refresh_token_configured?'已配置':'未配置'}</div><div>并发：${esc(e.bind_concurrency||1)}</div></div><div class="actions"><button class="secondary" onclick="openExecutorModal('${esc(e.guild_name)}')">编辑</button></div></div>`).join('')}
+async function loadExecutors(){if(!isAdmin)return;const data=await loadJson('/api/ops/guild-executors');let rows=data.rows||[];try{const health=await loadJson('/api/ops/guild-executors/health');const healthMap=new Map((health.rows||[]).map(row=>[String(row.guild_name||''),row]));rows=rows.map(row=>({...row,...(healthMap.get(String(row.guild_name||''))||{})}))}catch(_){}state.executors=rows;renderExecutors()}function openExecutorModal(guild){state.executorEditing=guild||'';const e=state.executors.find(x=>x.guild_name===guild)||{};executorModalTitle.textContent=guild?'编辑公会执行器':'新增公会执行器';executor_guild_name.value=guild||'';executor_guild_name.disabled=!!guild;executor_enabled.value=e.enabled===false?'false':'true';executor_oauth_token.value='';executor_oauth_token_secret.value='';executor_platform_authorization.value='';executor_cms_refresh_token.value='';executor_proxy_region.value=e.proxy_region||'';executor_bind_concurrency.value=e.bind_concurrency||1;executor_request_timeout_seconds.value=e.request_timeout_seconds||30;executor_notes.value=e.notes||'';renderExecutorAssigneeOptions(guild||'');executorModal.classList.add('is-open')}function closeExecutorModal(){executorModal.classList.remove('is-open');const box=document.getElementById('executorAssigneeOptions');if(box)box.classList.remove('is-open');setText('executorMessage','')}
 async function saveExecutor(){const guild=(state.executorEditing||executor_guild_name.value).trim();if(!guild){setText('executorMessage','请填写公会名称');return}const payload={enabled:executor_enabled.value==='true',oauth_token:executor_oauth_token.value.trim(),oauth_token_secret:executor_oauth_token_secret.value.trim(),platform_authorization:executor_platform_authorization.value.trim(),cms_refresh_token:executor_cms_refresh_token.value.trim(),proxy_region:executor_proxy_region.value.trim(),bind_concurrency:Number(executor_bind_concurrency.value||1),request_timeout_seconds:Number(executor_request_timeout_seconds.value||30),notes:executor_notes.value.trim()};const assigneeIds=selectedExecutorAssigneeIds();setText('executorMessage','保存中...');await loadJson(`/api/ops/guild-executors/${encodeURIComponent(guild)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await loadJson(`/api/ops/intake-workbench/guilds/${encodeURIComponent(guild)}/assignees`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_ids:assigneeIds})});closeExecutorModal();await Promise.all([loadExecutors(),loadGuilds()])}
 async function loadGuilds(){const data=await loadJson('/api/ops/intake-workbench/guilds');state.guilds=data.rows||[];if(!state.guilds.find(g=>g.guild_name===state.activeGuild))state.activeGuild=state.guilds[0]?.guild_name||'';renderTabs();renderGuilds();applyIntakePrefill();await refreshItems()}
 function applyIntakePrefill(){let payload=null;try{payload=JSON.parse(localStorage.getItem('ops_intake_prefill')||'null')}catch(_){payload=null}if(!payload)return;localStorage.removeItem('ops_intake_prefill');const guild=String(payload.guild_name||payload.fields?.agency||state.activeGuild||'').trim();if(guild&&state.guilds.find(g=>g.guild_name===guild)){state.activeGuild=guild;renderTabs();renderGuilds()}const target=state.activeGuild||guild;const fields=payload.fields||{};const raw=document.getElementById(`raw_${target}_text`);if(raw)raw.value=payload.text||['Phone: '+(fields.phone||''),'ID: '+(fields.account_id||''),'Group: '+(fields.group||''),'Code: '+(fields.code||'-')].join('\\n');for(const [k,v] of Object.entries(fields)){const el=field('field',target,k);if(el)el.value=v||''}if(target)parseGuild(target,true)}
@@ -2723,7 +2892,7 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
               <button type="button" class="secondary icon-add" onclick="addApprovalBindingCard()" title="新增群组">＋</button>
               <span style="display:none;">新增群组</span>
             </div>
-            <div class="binding-list">
+            <div class="binding-list" id="wa_binding_editor_list" data-approval-binding-editor-list="true">
               <div class="binding-card" id="wa_binding_card_1">
                 <div class="binding-card-head">
                   <div class="binding-title">第 1 组群绑定</div>
@@ -2958,6 +3127,81 @@ function approvalSessionQrPendingText(sessionState) {
   if (loginState === 'login_failed') return '二维码生成失败或登录失败，请手动重新生成。';
   return '暂未拿到可展示的二维码。';
 }
+function approvalAccountRuntimeIsProductionReady(row, sessionState) {
+  const item = row && typeof row === 'object' ? row : {};
+  const session = sessionState && typeof sessionState === 'object' ? sessionState : {};
+  const runtime = item.runtime_state && typeof item.runtime_state === 'object' ? item.runtime_state : {};
+  return Boolean(
+    session.login_verified === true
+    || session.can_probe === true
+    || item.can_probe === true
+    || (runtime.ready === true && runtime.authenticated === true)
+  );
+}
+function approvalAccountCanRequestQr(row, sessionState) {
+  const item = row && typeof row === 'object' ? row : {};
+  const session = sessionState && typeof sessionState === 'object' ? sessionState : {};
+  const runtime = item.runtime_state && typeof item.runtime_state === 'object' ? item.runtime_state : {};
+  if (approvalAccountRuntimeIsProductionReady(item, session)) return false;
+  if (approvalSessionHasQrPayload(session) && (session.can_show_qr === true || session.qr_available === true)) return true;
+  const loginState = String(session.login_state || '').trim();
+  const loginStatus = String(session.login_check_status || '').trim();
+  const runtimeStatus = String(runtime.status || item.runtime_status || '').trim();
+  const runtimeActive = runtime.active === true || item.monitor_runtime_active === true || Boolean(runtime.base_url || item.worker_base_url);
+  const targetMatch = runtime.session_target_match !== false;
+  const qrRuntimeReady = runtimeActive && targetMatch && ['awaiting_qr', 'qr_pending', 'waiting_for_scan'].includes(runtimeStatus);
+  const qrLoginReady = ['waiting_for_scan_qr_ready', 'waiting_for_scan_qr_pending'].includes(loginState)
+    || ['waiting_for_scan', 'qr_pending', 'needs_scan'].includes(loginStatus);
+  const pendingButWorkerHasQr = loginStatus === 'pending_runtime' && qrRuntimeReady;
+  return Boolean(qrRuntimeReady || qrLoginReady || pendingButWorkerHasQr);
+}
+function approvalAccountRuntimeNeedsRecovery(row, sessionState) {
+  const item = row && typeof row === 'object' ? row : {};
+  const session = sessionState && typeof sessionState === 'object' ? sessionState : {};
+  if (approvalAccountRuntimeIsProductionReady(item, session)) return false;
+  if (approvalAccountCanRequestQr(item, session)) return false;
+  const loginState = String(session.login_state || '').trim();
+  const loginStatus = String(session.login_check_status || '').trim();
+  const runtime = item.runtime_state && typeof item.runtime_state === 'object' ? item.runtime_state : {};
+  const runtimeStatus = String(runtime.status || item.runtime_status || '').trim();
+  const runtimeActive = runtime.active === true || item.monitor_runtime_active === true || Boolean(runtime.base_url || item.worker_base_url);
+  return [
+    'runtime_recovering',
+    'runtime_starting',
+    'initializing',
+    'runtime_unhealthy',
+    'runtime_unavailable',
+    'pending_runtime',
+    'service_unready',
+  ].includes(loginState) || [
+    'runtime_recovering',
+    'local_auth_recovering',
+    'runtime_unstable',
+    'runtime_unavailable',
+    'pending_runtime',
+    'service_unready',
+    'auto_recovering',
+  ].includes(loginStatus) || [
+    'stopped',
+    'unavailable',
+    'pending_runtime',
+    'service_unready',
+  ].includes(runtimeStatus) || !runtimeActive;
+}
+function approvalAccountQrActionDisabled(row, sessionState, isSessionLoading) {
+  const session = sessionState && typeof sessionState === 'object' ? sessionState : {};
+  if (isSessionLoading) return true;
+  if (approvalAccountCanRequestQr(row, session)) return false;
+  if (approvalAccountRuntimeIsProductionReady(row, session)) return true;
+  if (approvalAccountRuntimeNeedsRecovery(row, session)) return true;
+  return false;
+}
+function approvalRecoveryPending(accountKey, row, sessionState) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) return false;
+  if (approvalAccountRuntimeIsProductionReady(row, sessionState)) return false;
+  return Boolean(window.__approvalRuntimeRecoveryPendingByAccount && window.__approvalRuntimeRecoveryPendingByAccount[normalized]);
+}
 function closeApprovalQrModal() {
   clearTimeout(window.__approvalQrModalRefreshTimer);
   window.__approvalQrModalRefreshTimer = null;
@@ -3188,9 +3432,13 @@ function ensureApprovalAccountKey() {
 const APPROVAL_BINDING_MAX_COUNT = 10;
 window.__approvalBindingFormVisibleCount = window.__approvalBindingFormVisibleCount || 1;
 function ensureApprovalBindingCards() {
-  const list = document.querySelector('.binding-list');
+  const list = document.getElementById('wa_binding_editor_list') || document.querySelector('#approvalAccountEditorModal .binding-list');
   const template = document.getElementById('wa_binding_card_3');
   if (!list || !template) return;
+  for (let i = 2; i <= 3; i += 1) {
+    const existing = document.getElementById(`wa_binding_card_${i}`);
+    if (existing && existing.parentElement !== list) list.appendChild(existing);
+  }
   for (let i = 4; i <= APPROVAL_BINDING_MAX_COUNT; i += 1) {
     if (document.getElementById(`wa_binding_card_${i}`)) continue;
     const card = template.cloneNode(true);
@@ -3393,7 +3641,7 @@ const VERIFIER_BINDING_STATUS_TEXT = {
   login_unready: '待登录',
   binding_target_missing: '缺目标',
   probe_unavailable: '探针异常',
-  outside_schedule: '时段外待命',
+  outside_schedule: '监控中',
 };
 function formatVerifierFrameworkStatus(status) {
   const normalized = String(status || '').trim();
@@ -3444,9 +3692,10 @@ function firstFiniteValue(values, fallback='0') {
   }
   return fallback;
 }
-function registrationOperationalStatus({rows, config, workerState}) {
+function registrationOperationalStatus({rows, config, workerState, loginIssue}) {
   if (!Array.isArray(rows) || !rows.length) return '未配置';
   if (config && config.enabled === false) return '已暂停';
+  if (loginIssue) return '部分异常';
   return workerState?.ok ? '正常' : '异常';
 }
 function officialOperationalStatus({rows, bridgeData, health}) {
@@ -3477,9 +3726,7 @@ function approvalRoleCanManage(role) {
 function bindingSummaryHtml(binding, row, bindingIndex) {
   const verifier = binding.membership_verifier || {};
   const monitoringEnabled = binding.enabled !== false;
-  const monitoringEffective = Boolean(binding.monitoring_effective);
-  const scheduleActiveNow = Boolean(binding.schedule_runtime?.active_now);
-  const bindingBadgeText = String(binding.monitoring_status_text || '').trim() || (!monitoringEnabled ? '不监控' : (monitoringEffective ? '当前生效' : (scheduleActiveNow ? '未生效' : '时段外未生效')));
+  const bindingBadgeText = !monitoringEnabled ? '不监控' : '监控中';
   const bindingTitle = binding.group_name || binding.link || '未配置群链接';
   const verifierDetail = String(verifier.detail || '').trim();
   const showVerifierDetail = Boolean(verifierDetail) && !['inferred_live_probe_ready'].includes(String(verifier.status || '').trim());
@@ -3542,12 +3789,7 @@ function accountCardHtml(row) {
   const loginStatusCode = String(sessionState.login_check_status || '').trim();
   const rawAccountStatusText = String(row.status_text || '').trim();
   const accountHeaderStatusText = (() => {
-    const isScheduleStandby = rawAccountStatusText.includes('时段外') || rawAccountStatusText.includes('待命') || rawAccountStatusText.includes('outside_schedule');
-    if (isScheduleStandby) {
-      if (sessionState.login_verified) return '已登录·待命时段';
-      if (isSessionLoading || ['pending_runtime', 'runtime_starting', 'initializing', 'auto_recovering'].includes(loginStatusCode)) return '登录中·待命时段';
-      return '待登录·待命时段';
-    }
+    if (row.enabled && sessionState.login_verified) return '已登录·监控中';
     if (sessionState.login_verified && rawAccountStatusText && !rawAccountStatusText.includes('登录')) return `已登录·${rawAccountStatusText}`;
     return rawAccountStatusText || loginStatusText || '-';
   })();
@@ -3569,13 +3811,20 @@ function accountCardHtml(row) {
   const qrActionText = approvalSessionHasQrPayload(sessionState) && (sessionState.can_show_qr === true || sessionState.qr_available === true)
     ? '查看二维码'
     : (isSessionLoading ? '生成中…' : '生成二维码');
+  const qrActionDisabled = approvalAccountQrActionDisabled(row, sessionState, isSessionLoading);
+  const isProductionReady = approvalAccountRuntimeIsProductionReady(row, sessionState);
+  const recoveryNeeded = approvalAccountRuntimeNeedsRecovery(row, sessionState);
+  const recoveryPending = approvalRecoveryPending(row.account_key, row, sessionState);
+  const recoveryButtonDisabled = isProductionReady || recoveryPending || !recoveryNeeded;
+  const recoveryButtonText = recoveryPending && !isProductionReady ? '恢复中' : '恢复服务';
   const noteValue = String(row.notes || '').trim();
   const assignedCustomerServiceText = String(row.assigned_customer_service_display_name || row.assigned_customer_service_username || '').trim() || '未指定';
   const accountToggleButtonHtml = canOperateAccount
     ? `<button type="button" class="card-monitor-toggle ${monitorButtonClass}" onclick="setApprovalAccountEnabled('${accountKeyEscaped}', ${row.enabled ? 'false' : 'true'})" ${pendingAction ? 'disabled' : ''}>${monitorButtonText}</button>`
     : `<span class="card-monitor-toggle ${monitorButtonClass}" style="cursor:default;">${monitorButtonText}</span>`;
   const operatorActionsHtml = canOperateAccount
-    ? `<button type="button" class="${isSessionLoading ? 'button-loading' : ''}" ${isSessionLoading ? 'disabled' : ''} onclick="startApprovalAccountSession('${accountKeyEscaped}')">${qrActionText}</button>
+    ? `<button type="button" class="${isSessionLoading ? 'button-loading' : ''}" ${qrActionDisabled ? 'disabled' : ''} onclick="startApprovalAccountSession('${accountKeyEscaped}')">${qrActionText}</button>
+      <button type="button" class="secondary ${recoveryPending ? 'button-loading' : ''}" ${recoveryButtonDisabled ? 'disabled' : ''} onclick="recoverApprovalAccountRuntime('${accountKeyEscaped}')">${recoveryButtonText}</button>
       <button type="button" class="secondary" onclick="refreshApprovalAccountSession('${accountKeyEscaped}')">刷新状态</button>`
     : '';
   const adminActionsHtml = isAdminUser
@@ -3747,6 +3996,71 @@ async function resetApprovalAccountSession(accountKey) {
   showToast('会话已重置，并重新生成新的绑定二维码', 'success');
   return data;
 }
+function currentApprovalAccountRow(accountKey) {
+  const normalized = String(accountKey || '').trim();
+  return (Array.isArray(window.__approvalAccounts) ? window.__approvalAccounts : []).find(item => String(item?.account_key || '').trim() === normalized) || {};
+}
+function clearApprovalRuntimeRecoveryPendingIfReady(accountKey) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) return false;
+  const row = currentApprovalAccountRow(normalized);
+  const session = (window.__approvalSessionStateByAccount || {})[normalized] || row.session_state || {};
+  if (!approvalAccountRuntimeIsProductionReady(row, session)) return false;
+  if (window.__approvalRuntimeRecoveryPendingByAccount) delete window.__approvalRuntimeRecoveryPendingByAccount[normalized];
+  return true;
+}
+function scheduleApprovalRuntimeRecoveryPoll(accountKey, attempt = 1) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) return;
+  clearTimeout(window.__approvalRuntimeRecoveryPollTimers?.[normalized]);
+  window.__approvalRuntimeRecoveryPollTimers = window.__approvalRuntimeRecoveryPollTimers || {};
+  if (clearApprovalRuntimeRecoveryPendingIfReady(normalized)) {
+    renderApprovalAccountRows();
+    showToast('服务已恢复至可投产状态', 'success');
+    return;
+  }
+  window.__approvalRuntimeRecoveryPollTimers[normalized] = setTimeout(async () => {
+    try {
+      await refreshApprovalAccountSession(normalized, {silent: true});
+      await reloadApprovalAccounts();
+      if (clearApprovalRuntimeRecoveryPendingIfReady(normalized)) {
+        renderApprovalAccountRows();
+        showToast('服务已恢复至可投产状态', 'success');
+        return;
+      }
+    } catch (err) {
+      console.warn('approval runtime recovery poll failed', normalized, err);
+    }
+    if (window.__approvalRuntimeRecoveryPendingByAccount?.[normalized]) {
+      scheduleApprovalRuntimeRecoveryPoll(normalized, Math.min(Number(attempt || 1) + 1, 999));
+    }
+  }, Math.min(5000 + Number(attempt || 1) * 1000, 15000));
+}
+async function recoverApprovalAccountRuntime(accountKey) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) throw new Error('account_key is required');
+  window.__approvalRuntimeRecoveryPendingByAccount = window.__approvalRuntimeRecoveryPendingByAccount || {};
+  if (window.__approvalRuntimeRecoveryPendingByAccount[normalized]) return;
+  window.__approvalRuntimeRecoveryPendingByAccount[normalized] = true;
+  renderApprovalAccountRows();
+  try {
+    const data = await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(normalized)}/runtime/recover`, {method: 'POST'});
+    applyApprovalAccountSessionPayload(normalized, data);
+    showToast(data.recovery_locked ? '恢复服务已在执行，请等待可投产状态' : '已发起服务恢复，正在等待可投产状态', 'success');
+    if (clearApprovalRuntimeRecoveryPendingIfReady(normalized)) {
+      renderApprovalAccountRows();
+      showToast('服务已恢复至可投产状态', 'success');
+      return data;
+    }
+    scheduleApprovalRuntimeRecoveryPoll(normalized, 1);
+    return data;
+  } catch (error) {
+    delete window.__approvalRuntimeRecoveryPendingByAccount[normalized];
+    renderApprovalAccountRows();
+    showToast(error.message || '恢复服务失败', 'error');
+    throw error;
+  }
+}
 function openApprovalAccountEditorModal(mode = 'create') {
   const modal = document.getElementById('approvalAccountEditorModal');
   const title = document.getElementById('approvalAccountEditorTitle');
@@ -3788,6 +4102,14 @@ function applyApprovalAccountsPayload(data, canManageApprovalAccounts) {
     const accountKey = String(item.account_key || '').trim();
     return [accountKey, mergeApprovalSessionState(previousSessionState[accountKey], item.session_state || {})];
   }).filter(item => item[0]));
+  if (window.__approvalRuntimeRecoveryPendingByAccount) {
+    window.__approvalAccounts.forEach(item => {
+      const accountKey = String(item.account_key || '').trim();
+      if (accountKey && approvalAccountRuntimeIsProductionReady(item, window.__approvalSessionStateByAccount[accountKey] || item.session_state || {})) {
+        delete window.__approvalRuntimeRecoveryPendingByAccount[accountKey];
+      }
+    });
+  }
   const notifyRobotOptions = Array.isArray(data.notify_robot_options) ? data.notify_robot_options : [];
   const approvalAreaOptions = Array.isArray(data.area_options) ? data.area_options : [];
   const customerServiceOptions = Array.isArray(data.customer_service_options) ? data.customer_service_options : [];
@@ -4080,14 +4402,23 @@ async function saveApprovalAccount() {
       schedule_windows: [],
       notes: document.getElementById('wa_notes').value.trim(),
     };
-    await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(accountKey)}`, {
+    const saveResult = await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(accountKey)}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
     });
-    showToast('保存 WhatsApp 审批账号成功', 'success');
+    const probeRefreshBindings = Array.isArray(saveResult.probe_refresh_bindings) ? saveResult.probe_refresh_bindings : [];
+    showToast(probeRefreshBindings.length ? '保存成功，正在自动探测群组' : '保存 WhatsApp 审批账号成功', 'success');
     closeApprovalAccountEditorModal();
     await reloadApprovalAccounts();
+    for (const bindingIndex of probeRefreshBindings) {
+      try {
+        await refreshApprovalBindingProbe(accountKey, Number(bindingIndex));
+      } catch (probeErr) {
+        console.warn('auto approval binding probe refresh failed', probeErr);
+        showToast(`第${Number(bindingIndex) + 1}组自动探测失败，请点实时刷新`, 'error');
+      }
+    }
   } catch (err) {
     showToast(`保存审批账号失败：${err.message || err}`, 'error');
     throw err;
@@ -4283,6 +4614,127 @@ async function reloadOfficialBridgeSummary() {
   window.__officialBridgeSummaryData = data;
   renderOfficialGroupOverview();
 }
+function finiteNumberOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+function monitorTargetCandidateList(status) {
+  const source = status || {};
+  const candidates = Array.isArray(source.monitor_targets?.candidates) ? source.monitor_targets.candidates : [];
+  return candidates.filter(item => item && typeof item === 'object');
+}
+function registrationCycleList(status) {
+  const cycles = Array.isArray((status || {}).registration_group_cycles) ? status.registration_group_cycles : [];
+  return cycles.filter(item => item && typeof item === 'object');
+}
+function registrationProbeZeroUnverified(source) {
+  const item = source || {};
+  const verifier = item.membership_verifier || {};
+  return Boolean(
+    item.zero_pending_unverified ||
+    item.pending_zero_confidence === 'unverified' ||
+    verifier.zero_pending_unverified ||
+    verifier.status === 'zero_pending_unverified' ||
+    verifier.truth_state?.zero_pending_unverified
+  );
+}
+function registrationPendingTotalFromCycles(status) {
+  const cycles = registrationCycleList(status);
+  if (!cycles.length) return null;
+  let total = 0;
+  let counted = 0;
+  cycles.forEach(cycle => {
+    const decision = cycle.decision_group_state || {};
+    const payload = cycle.worker_state?.payload || decision.payload || cycle.fresh_probe?.payload || {};
+    if (registrationProbeZeroUnverified(decision) || registrationProbeZeroUnverified(payload)) return;
+    const value = finiteNumberOrNull(payload.pending_count ?? cycle.pending_count);
+    if (value !== null) {
+      total += value;
+      counted += 1;
+    }
+  });
+  return counted ? total : null;
+}
+function registrationApprovedTodayTotalFromCycles(status) {
+  const cycles = registrationCycleList(status);
+  if (!cycles.length) return null;
+  let total = 0;
+  let counted = 0;
+  cycles.forEach(cycle => {
+    const value = finiteNumberOrNull(
+      cycle.today_approved_count ??
+      cycle.approved_today_count ??
+      cycle.formal_approval?.approved_count ??
+      cycle.manual_approval?.approved_count
+    );
+    if (value !== null) {
+      total += value;
+      counted += 1;
+    }
+  });
+  return counted ? total : null;
+}
+function registrationBindingPendingCount(binding) {
+  if (registrationProbeZeroUnverified(binding)) return null;
+  const verifier = (binding || {}).membership_verifier || {};
+  const directValue = finiteNumberOrNull(
+    binding?.next_approval_pending_count ??
+    binding?.pending_count ??
+    binding?.worker_state?.payload?.pending_count ??
+    binding?.fresh_probe?.payload?.pending_count ??
+    verifier.pending_count
+  );
+  if (directValue !== null) return directValue;
+  const detail = String(verifier.detail || binding?.status_text || '').trim();
+  const match = detail.match(/待审批\s*(\d+)\s*人/);
+  return match ? Number(match[1]) : null;
+}
+function registrationPendingTotalFromAccountBindings(rows) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  let total = 0;
+  let counted = 0;
+  safeRows.forEach(row => {
+    if (!row || row.enabled === false || !row.session_state?.login_verified) return;
+    const bindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
+      ? row.group_binding_runtimes
+      : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
+    bindings.forEach(binding => {
+      if (!binding || binding.enabled === false) return;
+      const value = registrationBindingPendingCount(binding);
+      if (value !== null) {
+        total += value;
+        counted += 1;
+      }
+    });
+  });
+  return counted ? total : null;
+}
+function registrationCoverageText(rows) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const enabledRows = safeRows.filter(row => row && row.enabled !== false);
+  const onlineRows = enabledRows.filter(row => Boolean(row.session_state?.login_verified));
+  const enabledGroupCount = enabledRows.reduce((sum, row) => {
+    const bindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
+      ? row.group_binding_runtimes
+      : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
+    return sum + bindings.filter(binding => binding && binding.enabled !== false).length;
+  }, 0);
+  const onlineGroupCount = onlineRows.reduce((sum, row) => {
+    const bindings = Array.isArray(row.group_binding_runtimes) && row.group_binding_runtimes.length
+      ? row.group_binding_runtimes
+      : (Array.isArray(row.group_link_bindings) ? row.group_link_bindings : []);
+    return sum + bindings.filter(binding => binding && binding.enabled !== false).length;
+  }, 0);
+  if (!enabledRows.length) return '0 个账号 / 0 个群';
+  return `已统计 ${onlineGroupCount}/${enabledGroupCount} 个群`;
+}
+function officialPendingTotalFromConfiguredAccounts(officialRows, summary) {
+  const rows = Array.isArray(officialRows) ? officialRows : [];
+  const enabledOfficialRows = rows.filter(row => row && row.enabled !== false);
+  if (!enabledOfficialRows.length) return null;
+  const value = finiteNumberOrNull((summary || {}).pending_count);
+  return value !== null ? value : 0;
+}
 function renderOfficialGroupOverview() {
   if (!document.getElementById('officialBridgeSummaryMeta')) return;
   const data = window.__officialBridgeSummaryData || {};
@@ -4297,9 +4749,10 @@ function renderOfficialGroupOverview() {
     : (pendingTimeoutCount > 0
       ? `${pendingTimeoutCount} 人超时待处理`
       : (loginIssue || (String(health.status || '').trim() && String(health.status || '').trim() !== 'healthy' ? formatOfficialBridgeHealthStatus(health.status) : '无异常')));
+  const officialPendingTotal = officialPendingTotalFromConfiguredAccounts(officialRows, summary);
   const officialOperationalRows = [
     ['运行状态', officialOperationalStatus({rows: officialRows, bridgeData: data, health})],
-    ['待处理人数', String(summary.pending_count ?? 0)],
+    ['待处理人数', officialPendingTotal !== null ? String(officialPendingTotal) : '-'],
     ['今日已通过', firstFiniteValue([summary.today_approved_count, summary.approved_today_count, summary.approved_count, summary.resolved_count], '0')],
     ['审批账号', approvalAccountSummaryText(officialRows)],
     ['最近检查', formatOpsShortTime(health.checked_at || summary.checked_at || data.checked_at)],
@@ -4315,9 +4768,9 @@ function renderRegistrationGroupOverview() {
   const config = (window.__productionOpsDaemonData || {}).config || {};
   const status = runtime.status || {};
   const workerState = status.worker_state || {};
-  const probeCandidates = [status.decision_group_state?.payload, status.fresh_probe?.payload, status.worker_state?.payload]
-    .filter(item => item && typeof item === 'object');
-  const pendingValues = probeCandidates.map(item => Number(item.pending_count)).filter(item => Number.isFinite(item));
+  const monitorTargets = monitorTargetCandidateList(status);
+  const registrationPendingTotal = registrationPendingTotalFromAccountBindings(registrationRows) ?? registrationPendingTotalFromCycles(status);
+  const registrationApprovedTodayTotal = registrationApprovedTodayTotalFromCycles(status);
   const incidents = Array.isArray(status.incidents) ? status.incidents : [];
   const warnings = Array.isArray(status.observation_warnings) ? status.observation_warnings : [];
   const loginIssue = approvalLoginIssueText(registrationRows);
@@ -4327,10 +4780,11 @@ function renderRegistrationGroupOverview() {
       ? `${warnings.length} 个待核验`
       : (loginIssue || (workerState.ok ? '无异常' : (workerState.message || '审批异常'))));
   const registrationOperationalRows = [
-    ['运行状态', registrationOperationalStatus({rows: registrationRows, config, workerState})],
-    ['待审批人数', pendingValues.length ? String(Math.max(...pendingValues)) : '-'],
-    ['今日已通过', firstFiniteValue([status.today_approved_count, status.approved_today_count, status.formal_approval?.approved_count, status.manual_approval?.approved_count], '0')],
+    ['运行状态', registrationOperationalStatus({rows: registrationRows, config, workerState, loginIssue})],
+    ['待审批人数', registrationPendingTotal !== null ? String(registrationPendingTotal) : '-'],
+    ['今日已通过', registrationApprovedTodayTotal !== null ? String(registrationApprovedTodayTotal) : firstFiniteValue([status.today_approved_count, status.approved_today_count, status.formal_approval?.approved_count, status.manual_approval?.approved_count], '0')],
     ['审批账号', approvalAccountSummaryText(registrationRows)],
+    ['统计范围', registrationCoverageText(registrationRows)],
     ['最近检查', formatOpsShortTime(status.checked_at)],
     ['异常提示', abnormalText || '无异常'],
   ];
@@ -4357,6 +4811,7 @@ function applyProductionOpsDaemonConfig(data) {
   if (runtimeHint) runtimeHint.textContent = `守护进程=${launchdState} · 最近检查=${checkedAt} · 异常=${pendingIncidents} · 待核验=${observationWarnings} · 通知=${notificationCount}`;
   if (pathsHint) pathsHint.textContent = `状态文件：${runtime.status_path || '-'} · 运行时配置：${runtime.env_path || '-'}${pendingIncidents ? ` · 当前异常数：${pendingIncidents}` : ''}${observationWarnings ? ` · 待核验数：${observationWarnings}` : ''}`;
   renderRegistrationGroupOverview();
+  renderOfficialGroupOverview();
 }
 async function reloadProductionOpsDaemonConfig() {
   const data = await loadJson('/api/ops/production-ops-daemon');
@@ -4426,7 +4881,7 @@ OPS_PAGE_HTML = """
       <div class="subtitle">只保留核心运营指标：收口数据、审批群监控、群聊天助手数据和系统健康。仅管理员和超级管理员可见。</div>
     </div>
 
-    <div class="section"><h2 class="section-title"><span>收口数据</span><span class="pill" id="intakeHealthPill">加载中</span></h2><div class="grid grid-4"><div class="card"><div class="label">待人工复核</div><div id="manualReviewCount" class="metric">-</div></div><a class="card" href="/ops/bind-failed-users?scope=all" style="text-decoration:none;color:inherit;"><div class="label">绑定异常用户数</div><div id="bindFailedCount" class="metric">-</div></a><div class="card"><div class="label">待完成用户</div><div id="pendingCompletionUserCount" class="metric">-</div></div><div class="card"><div class="label">未读客服通知</div><div id="unreadNotificationCount" class="metric">-</div></div></div></div>
+    <div class="section" data-manual-review-endpoint="/api/ops/manual-review-queue"><h2 class="section-title"><span>收口数据</span><span class="pill" id="intakeHealthPill">加载中</span></h2><div class="grid grid-4"><div class="card"><div class="label">待人工复核</div><div id="manualReviewCount" class="metric">-</div></div><a class="card" href="/ops/bind-failed-users?scope=all" style="text-decoration:none;color:inherit;"><div class="label">绑定异常用户数</div><div id="bindFailedCount" class="metric">-</div></a><div class="card"><div class="label">待完成用户</div><div id="pendingCompletionUserCount" class="metric">-</div></div><div class="card"><div class="label">未读客服通知</div><div id="unreadNotificationCount" class="metric">-</div></div></div></div>
     <div class="section"><h2 class="section-title"><span>审批群监控</span><span class="pill" id="approvalHealthPill">加载中</span></h2><div class="grid grid-2"><div class="card"><div class="label">注册群</div><div class="status-line"><span>监控群组</span><strong id="registrationMonitoredGroupCount">-</strong></div><div class="status-line"><span>待审批总人数</span><strong id="registrationTotalPendingCount">-</strong></div></div><div class="card"><div class="label">官方群</div><div class="status-line"><span>监控群组</span><strong id="officialMonitoredGroupCount">-</strong></div><div class="status-line"><span>待审批总人数</span><strong id="officialTotalPendingCount">-</strong></div></div></div></div>
     <div class="section"><h2 class="section-title"><span>群聊天助手数据</span><span class="pill" id="atmosphereHealthPill">加载中</span></h2><div class="grid grid-4"><div class="card"><div class="label">WhatsApp 账号</div><div id="atmosphereAccountCount" class="metric">-</div></div><div class="card"><div class="label">已开启群</div><div id="atmosphereEnabledGroupCount" class="metric">-</div></div><div class="card"><div class="label">自动发言配置</div><div id="atmosphereEnabledConfigCount" class="metric">-</div></div><div class="card"><div class="label">最近发送成功</div><div id="atmosphereRecentSentCount" class="metric">-</div></div></div></div>
     <div class="section"><h2 class="section-title"><span>系统健康</span></h2><div id="healthRows"></div></div>
@@ -5257,13 +5712,42 @@ def _normalize_area_options(options: list[str]) -> list[dict[str, Any]]:
     return normalized
 
 
+def _normalize_whatsapp_group_invite_link(value: Any) -> str:
+    raw = str(value or '').strip()
+    if not raw:
+        return ''
+    match = re.search(r'https://chat\.whatsapp\.com/([A-Za-z0-9_-]+)', raw)
+    if match:
+        return f'https://chat.whatsapp.com/{match.group(1)}'
+    return raw
+
+
+def _whatsapp_approval_binding_config_fingerprint(binding: Dict[str, Any]) -> str:
+    item = dict(binding or {})
+    payload = {
+        'link': _normalize_whatsapp_group_invite_link(item.get('link')),
+        'group_name': str(item.get('group_name') or '').strip(),
+        'registration_group': str(item.get('registration_group') or '').strip(),
+        'group_id': str(item.get('group_id') or '').strip(),
+        'area': str(item.get('area') or '').strip(),
+        'notify_profile_name': str(item.get('notify_profile_name') or '').strip(),
+        'enabled': False if item.get('enabled') is False else True,
+        'approval_count_threshold': int(_coerce_positive_int(item.get('approval_count_threshold'), WHATSAPP_APPROVAL_DEFAULT_COUNT_THRESHOLD) or 0),
+        'approval_timeout_minutes': int(_coerce_positive_int(item.get('approval_timeout_minutes'), WHATSAPP_APPROVAL_DEFAULT_TIMEOUT_MINUTES) or 0),
+        'auto_recover_worker': bool(item.get('auto_recover_worker')) if item.get('auto_recover_worker') is not None else True,
+        'schedule_windows': _normalize_schedule_windows_payload(item.get('schedule_windows') if isinstance(item.get('schedule_windows'), list) else []),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
+
+
 def _normalize_group_link_bindings(bindings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for item in bindings or []:
         if not isinstance(item, dict):
             continue
-        link = str(item.get('link') or '').strip()
+        link = _normalize_whatsapp_group_invite_link(item.get('link'))
         area = str(item.get('area') or '').strip()
         if not link:
             continue
@@ -5359,6 +5843,11 @@ class GroupAtmosphereTemplate(BaseModel):
     moved_from_template_id: Optional[str] = None
     moved_to_role_key: Optional[str] = None
     moved_at: Optional[str] = None
+    role_positioning: Optional[str] = None
+    phrase_type: Optional[str] = None
+    role_selected: bool = False
+    role_send_enabled: bool = False
+    role_selection_order: Optional[int] = None
     source_role: Optional[str] = None
     source_type: Optional[str] = None
     text_zh: Optional[str] = None
@@ -5440,8 +5929,12 @@ class GroupAtmosphereDispatchRequest(BaseModel):
 
 
 class GroupAtmosphereManualSendRequest(BaseModel):
-    message_text: str
+    message_text: Optional[str] = ''
     trigger_type: str = 'manual_ops_page'
+    media_id: Optional[str] = None
+    media_path: Optional[str] = None
+    media_mime_type: Optional[str] = None
+    media_filename: Optional[str] = None
 
 
 class GroupAtmosphereInboundMessageRequest(BaseModel):
@@ -5488,6 +5981,8 @@ class GroupAtmosphereCandidateCustomRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=500)
     candidate_id: Optional[str] = None
     role_positioning: Optional[str] = None
+    media_id: Optional[str] = None
+    remove_media: bool = False
 
 
 class GroupAtmosphereCandidateTranslateRequest(BaseModel):
@@ -6067,6 +6562,7 @@ class Database:
                     group_name TEXT,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     auto_speaking_enabled INTEGER NOT NULL DEFAULT 1,
+                    trigger_speaking_enabled INTEGER NOT NULL DEFAULT 1,
                     group_send_permission_enabled INTEGER NOT NULL DEFAULT 1,
                     worker_base_url TEXT,
                     daily_max_messages INTEGER NOT NULL DEFAULT 4,
@@ -6083,6 +6579,43 @@ class Database:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     UNIQUE(role_key, account_key, group_index)
+                );
+
+                CREATE TABLE IF NOT EXISTS whatsapp_group_atmosphere_trigger_rules (
+                    rule_id TEXT PRIMARY KEY,
+                    relationship_key TEXT NOT NULL,
+                    rule_name TEXT NOT NULL,
+                    trigger_type TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    conditions_json TEXT NOT NULL DEFAULT '{}',
+                    message_sequence_json TEXT NOT NULL DEFAULT '[]',
+                    delay_min_seconds INTEGER NOT NULL DEFAULT 2,
+                    delay_max_seconds INTEGER NOT NULL DEFAULT 5,
+                    cooldown_seconds INTEGER NOT NULL DEFAULT 60,
+                    per_user_cooldown_seconds INTEGER NOT NULL DEFAULT 10,
+                    daily_max_triggers INTEGER NOT NULL DEFAULT 0,
+                    last_triggered_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS whatsapp_group_atmosphere_trigger_events (
+                    event_id TEXT PRIMARY KEY,
+                    rule_id TEXT,
+                    relationship_key TEXT,
+                    binding_id TEXT,
+                    account_key TEXT,
+                    target_group TEXT,
+                    sender_id TEXT,
+                    trigger_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    result_code TEXT,
+                    result_reason TEXT,
+                    trigger_payload_json TEXT NOT NULL DEFAULT '{}',
+                    message_sequence_snapshot TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    sent_at TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS whatsapp_group_atmosphere_learning_accounts (
@@ -6188,6 +6721,7 @@ class Database:
             "ALTER TABLE whatsapp_group_atmosphere_configs ADD COLUMN next_due_at TEXT",
             "ALTER TABLE whatsapp_group_atmosphere_role_bindings ADD COLUMN randomness_level TEXT NOT NULL DEFAULT 'medium'",
             "ALTER TABLE whatsapp_group_atmosphere_role_bindings ADD COLUMN phrase_send_order TEXT NOT NULL DEFAULT 'random'",
+            "ALTER TABLE whatsapp_group_atmosphere_role_bindings ADD COLUMN trigger_speaking_enabled INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE whatsapp_group_atmosphere_learning_accounts ADD COLUMN worker_base_url TEXT",
             "ALTER TABLE ops_intake_items ADD COLUMN template_copied_at TEXT",
             "ALTER TABLE ops_intake_items ADD COLUMN template_copied_by TEXT",
@@ -7328,6 +7862,55 @@ class Service:
     def stop_group_atmosphere_whatsapp_account_runtime(self, account_key: str) -> Dict[str, Any]:
         return self.stop_whatsapp_approval_account_runtime(account_key)
 
+
+    @staticmethod
+    def _group_atmosphere_config_kind(config_name: str, status: str = '') -> str:
+        name = str(config_name or '').strip()
+        state = str(status or '').strip()
+        if name.startswith('auto-') or state == 'candidate_pool':
+            return 'candidate_pool'
+        if name.startswith('role-') or state in {'role_container', 'plan_ready', 'library_only'}:
+            return 'speech_role'
+        if name.startswith('deliver-') or name.startswith('binding-') or state == 'enabled':
+            return 'delivery_runtime'
+        return 'generic_config'
+
+    @staticmethod
+    def _group_atmosphere_phrase_type_from_config(config_name: str, templates: Optional[List[Dict[str, Any]]] = None) -> str:
+        for item in list(templates or []):
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get('phrase_type') or item.get('role_positioning') or item.get('source_role') or item.get('category') or '').strip()
+            if value:
+                return value
+        name = str(config_name or '').strip()
+        if name.startswith('auto-') or name.startswith('role-'):
+            parts = name.split('-', 2)
+            if len(parts) >= 3 and parts[2]:
+                return parts[2]
+        for role in ['community_seed', 'newcomer_guide', 'faq_helper', 'motivation_admin']:
+            if role in name:
+                return role
+        return 'community_seed'
+
+    @classmethod
+    def _normalize_group_atmosphere_config_semantics(cls, *, config_name: str, status: str, enabled: bool) -> tuple[str, bool, str]:
+        name = str(config_name or '').strip()
+        state = str(status or '').strip() or ('enabled' if enabled else 'disabled')
+        next_enabled = bool(enabled)
+        kind = cls._group_atmosphere_config_kind(name, state)
+        if name.startswith('auto-'):
+            # Canonical root guard: auto-* is a candidate/phrase pool only. It cannot become a role or runnable plan.
+            state = 'candidate_pool'
+            next_enabled = False
+            kind = 'candidate_pool'
+        elif name.startswith('role-'):
+            kind = 'speech_role'
+            if state == 'candidate_pool':
+                state = 'role_container'
+            next_enabled = False
+        return state, next_enabled, kind
+
     def _row_to_group_atmosphere_config(self, row: sqlite3.Row) -> Dict[str, Any]:
         data = dict(row)
         template_pool = json.loads(data.get('template_pool') or '[]')
@@ -7338,6 +7921,8 @@ class Service:
         data['template_pool'] = template_pool
         data['faq_rules'] = faq_rules
         data['allowed_windows'] = allowed_windows
+        data['phrase_type'] = self._group_atmosphere_phrase_type_from_config(str(data.get('config_name') or ''), template_pool)
+        data['config_kind'] = self._group_atmosphere_config_kind(str(data.get('config_name') or ''), str(data.get('status') or ''))
         data['template_count'] = len(template_pool)
         data['faq_rule_count'] = len(faq_rules)
         return data
@@ -7364,8 +7949,20 @@ class Service:
     def upsert_group_atmosphere_config(self, payload: GroupAtmosphereConfigRequest) -> Dict[str, Any]:
         now = utc_now()
         status = str(payload.status or ('enabled' if payload.enabled else 'disabled')).strip() or 'enabled'
+        status, normalized_enabled, _config_kind = self._normalize_group_atmosphere_config_semantics(
+            config_name=payload.config_name,
+            status=status,
+            enabled=bool(payload.enabled),
+        )
         worker_base_url = self._validate_group_atmosphere_worker_base_url(payload.worker_base_url)
         template_pool = [item.model_dump() for item in payload.template_pool]
+        for item in template_pool:
+            phrase_type = str(item.get('phrase_type') or item.get('role_positioning') or item.get('source_role') or item.get('category') or '').strip()
+            if phrase_type:
+                item['phrase_type'] = phrase_type
+                item.setdefault('role_positioning', phrase_type)
+                item.setdefault('source_role', phrase_type)
+                item.setdefault('category', phrase_type)
         faq_rules = [item.model_dump() for item in payload.faq_rules]
         conn = self.db.connect()
         conn.execute(
@@ -7385,7 +7982,7 @@ class Service:
                 faq_rules=excluded.faq_rules, status=excluded.status, updated_at=excluded.updated_at
             """,
             (
-                payload.config_name.strip(), 1 if payload.enabled else 0, payload.account_key.strip(),
+                payload.config_name.strip(), 1 if normalized_enabled else 0, payload.account_key.strip(),
                 payload.target_group.strip(), str(payload.group_name or '').strip() or None,
                 str(payload.language or 'en').strip() or 'en', str(payload.timezone or 'UTC').strip() or 'UTC',
                 worker_base_url, int(payload.daily_max_messages), int(payload.min_interval_minutes),
@@ -7495,6 +8092,112 @@ class Service:
             'list_mode': 'snapshot',
         }
 
+    def _group_atmosphere_template_match_keys(self, item: Dict[str, Any]) -> set[str]:
+        keys: set[str] = set()
+        for key_name in ('candidate_id', 'template_id'):
+            value = str((item or {}).get(key_name) or '').strip()
+            if value:
+                keys.add(f'{key_name}:{value}')
+        text = str((item or {}).get('text') or '').strip()
+        semantic = self._normalize_group_atmosphere_semantic_phrase_key(text) or text
+        role = str((item or {}).get('role_positioning') or (item or {}).get('source_role') or (item or {}).get('category') or '').strip()
+        if semantic and role:
+            keys.add(f'role_text:{role}:{semantic}')
+        return keys
+
+    @staticmethod
+    def _group_atmosphere_template_has_media(item: Dict[str, Any]) -> bool:
+        return bool((item or {}).get('media_id') or (item or {}).get('media_path') or str((item or {}).get('asset_type') or '').startswith('image'))
+
+    def _group_atmosphere_apply_media_fields(self, item: Dict[str, Any], source: Dict[str, Any]) -> bool:
+        changed = False
+        media_keys = ('asset_type', 'media_id', 'media_path', 'media_mime_type', 'media_filename', 'media_preview_url')
+        source_has_media = self._group_atmosphere_template_has_media(source)
+        for key in media_keys:
+            next_value = source.get(key) if source_has_media else None
+            if source_has_media and key == 'asset_type' and not next_value:
+                next_value = 'image_caption'
+            if source_has_media:
+                if next_value is not None and item.get(key) != next_value:
+                    item[key] = next_value
+                    changed = True
+            else:
+                if key in item:
+                    item.pop(key, None)
+                    changed = True
+        if not source_has_media and item.get('asset_type') != 'text':
+            item['asset_type'] = 'text'
+            changed = True
+        return changed
+
+    def _latest_group_atmosphere_candidate_media_index(self) -> Dict[str, Dict[str, Any]]:
+        latest: Dict[str, Dict[str, Any]] = {}
+        for config in self.list_group_atmosphere_configs():
+            config_name = str((config or {}).get('config_name') or '').strip()
+            if config_name.startswith('binding-') or config_name.startswith('deliver-') or config_name.startswith('role-'):
+                continue
+            status = str((config or {}).get('status') or '').strip()
+            if status == 'enabled':
+                continue
+            for raw_item in list((config or {}).get('template_pool') or []):
+                item = dict(raw_item or {})
+                if not item.get('candidate_id') and not item.get('template_id') and not item.get('text'):
+                    continue
+                for key in self._group_atmosphere_template_match_keys(item):
+                    latest[key] = item
+        return latest
+
+    def _refresh_group_atmosphere_templates_with_latest_media(self, templates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        latest = self._latest_group_atmosphere_candidate_media_index()
+        if not latest:
+            return templates
+        refreshed: List[Dict[str, Any]] = []
+        for raw_item in templates:
+            item = dict(raw_item or {})
+            source = None
+            for key in self._group_atmosphere_template_match_keys(item):
+                if key in latest:
+                    source = latest[key]
+                    break
+            if source:
+                self._group_atmosphere_apply_media_fields(item, source)
+            refreshed.append(item)
+        return refreshed
+
+    def _cascade_group_atmosphere_candidate_media_update(self, source_item: Dict[str, Any], *, source_config_name: str = '') -> int:
+        match_keys = self._group_atmosphere_template_match_keys(source_item)
+        if not match_keys:
+            return 0
+        now = utc_now()
+        changed_configs = 0
+        with self.db.connect() as conn:
+            rows = conn.execute("SELECT config_name, template_pool FROM whatsapp_group_atmosphere_configs").fetchall()
+            for row in rows:
+                config_name = str(row['config_name'] or '').strip()
+                try:
+                    templates = json.loads(row['template_pool'] or '[]')
+                except Exception:
+                    templates = []
+                if not isinstance(templates, list):
+                    continue
+                changed = False
+                next_templates = []
+                for raw_item in templates:
+                    item = dict(raw_item or {})
+                    item_keys = self._group_atmosphere_template_match_keys(item)
+                    if item_keys & match_keys:
+                        if self._group_atmosphere_apply_media_fields(item, source_item):
+                            changed = True
+                    next_templates.append(item)
+                if changed:
+                    conn.execute(
+                        "UPDATE whatsapp_group_atmosphere_configs SET template_pool=?, updated_at=? WHERE config_name=?",
+                        (json.dumps(next_templates, ensure_ascii=False), now, config_name),
+                    )
+                    changed_configs += 1
+            conn.commit()
+        return changed_configs
+
     @staticmethod
     def _enabled_group_atmosphere_templates(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         templates = [dict(item or {}) for item in list((config or {}).get('template_pool') or [])]
@@ -7504,10 +8207,12 @@ class Service:
         if not has_review_fields:
             return templates
         def is_sendable(item: Dict[str, Any]) -> bool:
+            if item.get('enabled') is False:
+                return False
             source = str(item.get('source_type') or '').strip()
-            if source in {'manual', 'custom', 'role_save'} or item.get('customized') is True:
+            if source in {'manual', 'manual_upload', 'custom', 'role_save'} or item.get('customized') is True:
                 return True
-            return item.get('enabled') is not False and item.get('safe_to_send') is True
+            return item.get('safe_to_send') is True
         return [item for item in templates if is_sendable(item)]
 
     def dispatch_group_atmosphere_once(self, payload: GroupAtmosphereDispatchRequest) -> Dict[str, Any]:
@@ -7533,6 +8238,10 @@ class Service:
         message_text = str(payload.message_text or '').strip()
         selected_template: Dict[str, Any] = {}
         if not message_text:
+            refreshed_pool = self._refresh_group_atmosphere_templates_with_latest_media([dict(item or {}) for item in list(config.get('template_pool') or [])])
+            if refreshed_pool != list(config.get('template_pool') or []):
+                config = dict(config)
+                config['template_pool'] = refreshed_pool
             templates = self._enabled_group_atmosphere_templates(config)
             if not templates:
                 return {'sent': False, 'result_code': 'template_pool_empty', 'result_reason': 'no enabled message template configured'}
@@ -7546,9 +8255,9 @@ class Service:
             if runtime_state.get('active') and runtime_state.get('base_url'):
                 worker_base_url = self._validate_group_atmosphere_worker_base_url(runtime_state.get('base_url'))
         raw_result: Dict[str, Any] = {'dry_run': True}
-        status = 'success'
+        status = 'skipped'
         result_code = 'dry_run'
-        result_reason = 'worker_base_url not configured; logged as dry run'
+        result_reason = 'worker_base_url not configured; no WhatsApp message was sent'
         if worker_base_url:
             send_payload = {
                 'target_group': config['target_group'],
@@ -7599,12 +8308,14 @@ class Service:
                 status = 'failed'
                 result_code = 'worker_send_exception'
                 result_reason = str(exc)
+        worker_message_id = str((raw_result or {}).get('message_id') or ((raw_result or {}).get('raw_result') or {}).get('message_id') or '').strip()
+        actual_sent = status == 'success' and result_code != 'dry_run' and bool(worker_message_id) and not bool((raw_result or {}).get('dry_run'))
         self._log_group_atmosphere_event(
             config_name=config['config_name'], account_key=config['account_key'], target_group=config['target_group'],
             direction='outbound', trigger_type=payload.trigger_type, message_text=message_text,
             status=status, result_code=result_code, result_reason=result_reason, raw_result=raw_result,
         )
-        if status == 'success':
+        if actual_sent:
             now = utc_now()
             next_due_at = self._next_group_atmosphere_due_at(config)
             conn = self.db.connect()
@@ -7614,7 +8325,7 @@ class Service:
             )
             conn.commit()
         return {
-            'sent': status == 'success',
+            'sent': actual_sent,
             'dry_run': not bool(worker_base_url),
             'message_text': message_text,
             'status': status,
@@ -7628,7 +8339,11 @@ class Service:
         if not normalized_key:
             raise HTTPException(status_code=400, detail='account_key_required')
         message_text = str(payload.message_text or '').strip()
-        if not message_text:
+        media: Optional[Dict[str, Any]] = None
+        media_id = str(payload.media_id or '').strip()
+        if media_id:
+            media = self.get_group_atmosphere_media_asset(media_id)
+        if not message_text and not media:
             raise HTTPException(status_code=400, detail='message_text_required')
         row = self._get_whatsapp_approval_account_row(normalized_key)
         if not row or str(row.get('responsible_type') or '').strip() != 'group_atmosphere':
@@ -7659,19 +8374,27 @@ class Service:
         result_code = 'sent'
         result_reason = 'message sent via whatsapp web worker'
         raw_result: Dict[str, Any] = {}
+        send_payload = {
+            'target_group': target_group,
+            'message_text': message_text,
+            'metadata': {
+                'account_key': normalized_key,
+                'group_index': idx,
+                'group_name': group.get('group_name'),
+                'trigger_type': payload.trigger_type,
+            },
+        }
+        if media:
+            send_payload.update({
+                'media_id': media.get('media_id'),
+                'media_path': media.get('media_path'),
+                'media_mime_type': media.get('mime_type'),
+                'media_filename': media.get('filename'),
+            })
         try:
             resp = requests.post(
                 f'{base_url}/send-group-message',
-                json={
-                    'target_group': target_group,
-                    'message_text': message_text,
-                    'metadata': {
-                        'account_key': normalized_key,
-                        'group_index': idx,
-                        'group_name': group.get('group_name'),
-                        'trigger_type': payload.trigger_type,
-                    },
-                },
+                json=send_payload,
                 timeout=30,
             )
             try:
@@ -7698,7 +8421,7 @@ class Service:
             status=status,
             result_code=result_code,
             result_reason=result_reason,
-            raw_result=raw_result,
+            raw_result={**(raw_result or {}), 'manual_media_id': media.get('media_id') if media else ''},
         )
         return {
             'sent': status == 'success',
@@ -7708,6 +8431,8 @@ class Service:
             'group_name': group.get('group_name') or target_group,
             'target_group': target_group,
             'message_text': message_text,
+            'media_id': media.get('media_id') if media else '',
+            'media_filename': media.get('filename') if media else '',
             'status': status,
             'result_code': result_code,
             'result_reason': result_reason,
@@ -7717,6 +8442,9 @@ class Service:
         }
 
     def handle_group_atmosphere_inbound_message(self, payload: GroupAtmosphereInboundMessageRequest) -> Dict[str, Any]:
+        trigger_result = self.evaluate_group_atmosphere_trigger_rules_for_inbound(payload)
+        if trigger_result.get('should_respond') or trigger_result.get('result_code') in {'trigger_speaking_disabled', 'group_send_permission_disabled', 'system_message_ignored', 'rule_cooldown_active', 'per_user_cooldown_active'}:
+            return trigger_result
         rows = self.list_group_atmosphere_configs()
         config = next((row for row in rows if row.get('account_key') == payload.account_key and row.get('target_group') == payload.target_group), None)
         if not config:
@@ -7873,36 +8601,65 @@ class Service:
         return output
 
     @staticmethod
+    def _group_atmosphere_candidate_risk_reasons(text: str) -> List[str]:
+        lower = str(text or '').lower()
+        reasons: List[str] = []
+        if any(token in lower for token in ['http://', 'https://', '@g.us']):
+            reasons.append('unsafe_link')
+        if re.search(r'\b\+?\d[\d\s().-]{7,}\d\b', lower) or re.search(r'\b\d{8,}\b', lower):
+            reasons.append('long_number')
+        return reasons
+
+    @staticmethod
+    def _group_atmosphere_candidate_has_risk(text: str) -> bool:
+        return bool(Service._group_atmosphere_candidate_risk_reasons(text))
+
+    @staticmethod
+    def _group_atmosphere_candidate_is_manual(item: Dict[str, Any]) -> bool:
+        source = str((item or {}).get('source_type') or '').strip()
+        label = str((item or {}).get('source_label') or '').strip()
+        return source in {'manual', 'manual_upload', 'custom', 'role_save', '人工写入', '自定义'} or label == '人工写入' or (item or {}).get('customized') is True
+
+    @staticmethod
+    def _group_atmosphere_candidate_has_media(item: Dict[str, Any]) -> bool:
+        return bool((item or {}).get('media_id') or (item or {}).get('media_path') or str((item or {}).get('asset_type') or '').strip() == 'image_caption')
+
+    @staticmethod
     def _score_group_atmosphere_phrase(text: str, *, role: str = '') -> int:
         lower = str(text or '').lower()
+        role_key = str(role or '').strip()
         score = 0
-        useful_tokens = ['kak', 'halo', 'admin', 'kode', 'id', 'data', 'panduan', 'grup', 'mulai', 'kirim', 'krm', 'gmn', 'dmn', 'semangat']
+        useful_tokens = ['kak', 'halo', 'admin', 'kode', 'id', 'data', 'panduan', 'grup', 'mulai', 'kirim', 'krm', 'gmn', 'dmn', 'semangat', 'daftar', 'undangan', 'gabung', 'verifikasi', 'screenshot', 'profil', 'tugas', 'bonus', 'penghasilan', 'ngobrol', 'sapa']
         score += sum(3 for token in useful_tokens if token in lower)
         if 18 <= len(str(text or '')) <= 140:
             score += 10
-        if '?' in lower:
+        if '?' in lower and role_key == 'faq_helper':
             score += 2
         if any(token in lower for token in ['http://', 'https://', '@g.us']):
-            score -= 20
-        if re.search(r'\b\d{5,}\b', lower):
-            score -= 6
+            score -= 40
+        if re.search(r'\b\+?\d[\d\s().-]{7,}\d\b', lower) or re.search(r'\b\d{8,}\b', lower):
+            score -= 24
+        elif re.search(r'\b\d{5,}\b', lower):
+            score -= 10
         role_tokens = {
             'faq_helper': ['kode', 'gmn', 'dmn', 'apa', 'bagaimana', '?'],
-            'newcomer_guide': ['id', 'data', 'kirim', 'krm', 'panduan', 'mulai'],
-            'motivation_admin': ['semangat', 'bonus', 'income', 'pelan', 'mulai'],
-            'community_seed': ['halo', 'join', 'gabung', 'grup', 'ramai'],
-        }.get(str(role or '').strip(), [])
+            'newcomer_guide': ['id', 'data', 'kirim', 'krm', 'panduan', 'mulai', 'daftar', 'undangan', 'gabung', 'verifikasi', 'screenshot', 'profil'],
+            'motivation_admin': ['semangat', 'bonus', 'income', 'penghasilan', 'tugas', 'pelan', 'mulai'],
+            'community_seed': ['halo', 'join', 'gabung', 'grup', 'ramai', 'ngobrol', 'sapa'],
+        }.get(role_key, [])
         score += sum(4 for token in role_tokens if token in lower)
         return score
 
     @classmethod
     def _sort_group_atmosphere_candidates(cls, templates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         def sort_key(item: Dict[str, Any]):
-            role = str(item.get('source_role') or item.get('category') or '').strip()
+            role = str(item.get('role_positioning') or item.get('source_role') or item.get('category') or '').strip()
             text = str(item.get('text') or '')
             score = int(item.get('score') or cls._score_group_atmosphere_phrase(text, role=role))
-            source = str(item.get('source_type') or '').strip()
-            source_priority = 0 if source == 'manual' else 1
+            is_manual = cls._group_atmosphere_candidate_is_manual(item)
+            has_media = cls._group_atmosphere_candidate_has_media(item)
+            is_risky = cls._group_atmosphere_candidate_has_risk(text)
+            usable = (item.get('enabled') is True and item.get('safe_to_send') is True and not is_risky)
             customized_priority = 0 if item.get('customized') is True else 1
             customized_at = str(item.get('customized_at') or '').strip()
             try:
@@ -7918,7 +8675,18 @@ class Service:
                 manual_order_value = 0
             if has_manual_order:
                 return (0, manual_order_value, str(item.get('candidate_id') or item.get('template_id') or ''))
-            return (1, source_priority, customized_priority, -customized_ts, -score, -int(item.get('frequency') or 1), len(text), str(item.get('candidate_id') or item.get('template_id') or ''))
+            return (
+                1,
+                0 if usable else (2 if is_risky else 1),
+                0 if is_manual else 1,
+                0 if has_media else 1,
+                customized_priority,
+                -customized_ts,
+                -score,
+                -int(item.get('frequency') or 1),
+                len(text),
+                str(item.get('candidate_id') or item.get('template_id') or ''),
+            )
         return sorted([dict(item or {}) for item in templates], key=sort_key)
 
     @staticmethod
@@ -8401,6 +9169,24 @@ class Service:
         fallback['text_zh_updated_at'] = utc_now()
         return fallback
 
+    def translate_group_atmosphere_manual_upload_text(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        text = str((payload or {}).get('text') or '').strip()
+        if not text:
+            raise HTTPException(status_code=400, detail='candidate_text_required')
+        language = str((payload or {}).get('language') or '').strip()
+        region = str((payload or {}).get('region') or '').strip()
+        if not language:
+            language = self._guess_group_atmosphere_manual_upload_language(text, self._group_atmosphere_language_from_region(region) or 'id')
+        if not region:
+            region = self._group_atmosphere_region_from_language(language)
+        translated = self._build_group_atmosphere_candidate_translation(
+            text,
+            role=str((payload or {}).get('role_positioning') or (payload or {}).get('role') or 'community_seed'),
+            language=language,
+            region=region,
+        )
+        return {'ok': True, **translated}
+
     def upsert_group_atmosphere_manual_phrases(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         role_key = str((payload or {}).get('role_key') or (payload or {}).get('config_name') or '').strip()
         payload_phrases = list((payload or {}).get('phrases') or [])
@@ -8409,8 +9195,11 @@ class Service:
             raise HTTPException(status_code=400, detail='role_key_or_phrases_required')
         region = str((payload or {}).get('region') or self._group_atmosphere_region_from_language(str((payload or {}).get('language') or 'id'))).strip()
         language = str((payload or {}).get('language') or self._group_atmosphere_language_from_region(region)).strip() or 'id'
+        source_type = str((payload or {}).get('source_type') or 'manual').strip() or 'manual'
+        if role_key.startswith('auto-') and source_type not in {'upload_file', 'auto_learn', 'learning_account', 'learning_bot', 'manual_upload'}:
+            role_key = ''
         if not role_key:
-            role_positioning_for_key = str((payload or {}).get('role_positioning') or 'community_seed').strip()
+            role_positioning_for_key = str((payload or {}).get('phrase_type') or (payload or {}).get('role_positioning') or 'community_seed').strip()
             role_name_for_key = str((payload or {}).get('role_name') or (payload or {}).get('plan_display_name') or '').strip()
             base_slug = re.sub(r'[^a-z0-9]+', '-', role_name_for_key.lower()).strip('-')[:36] if role_name_for_key else ''
             base_key = f'role-{language}-{role_positioning_for_key}' + (f'-{base_slug}' if base_slug else '')
@@ -8423,19 +9212,19 @@ class Service:
                 while f'{base_key}-{idx}' in existing_keys:
                     idx += 1
                 role_key = f'{base_key}-{idx}'
-        role_positioning = str((payload or {}).get('role_positioning') or self._group_atmosphere_role_from_key(role_key)).strip()
+        role_positioning = str((payload or {}).get('role_positioning') or role_positioning_for_key or self._group_atmosphere_role_from_key(role_key)).strip()
         role_name = str((payload or {}).get('role_name') or (payload or {}).get('plan_display_name') or self._default_group_atmosphere_plan_display_name(role_positioning, region)).strip()
         raw_phrases = [str(item or '').strip() for item in list((payload or {}).get('phrases') or []) if str(item or '').strip()]
         if not raw_phrases:
             phrase_text = str((payload or {}).get('text') or '').strip()
             if phrase_text:
                 raw_phrases = [line.strip() for line in phrase_text.splitlines() if line.strip()]
-        source_type = str((payload or {}).get('source_type') or 'manual').strip() or 'manual'
         replace_role_phrases = bool((payload or {}).get('replace_role_phrases') or (payload or {}).get('replace_phrases'))
-        is_manual_source = source_type in {'manual', 'custom', 'role_save', '人工写入'}
+        is_manual_source = self._group_atmosphere_candidate_is_manual({'source_type': source_type, 'customized': (payload or {}).get('customized') is True})
         phrases = []
         quality_by_key: Dict[str, Dict[str, Any]] = {}
         rejected_items: List[Dict[str, Any]] = []
+        added_items: List[Dict[str, Any]] = []
         for text in raw_phrases:
             if is_manual_source:
                 # 人工写入是运营明确确认的文案：不做清洗、过滤、润色或去重，非空即通过。
@@ -8466,44 +9255,103 @@ class Service:
         safe_to_send = bool((payload or {}).get('safe_to_send', True))
         enabled = bool((payload or {}).get('enabled', True))
         if replace_role_phrases:
-            # 保存话术角色是“当前勾选结果”的替换，不是人工文案追加；否则每点保存都会复制一批候选话术。
+            # 保存话术角色只更新“允许该角色发送哪些话术”，不能把未勾选的话术从话术类型/话术库里物理删除。
+            # 未勾选的话术仍保留在 template_pool 中，只把 enabled 置为 False，使调度发送时不选它。
             deduped_phrases: List[str] = []
-            seen_replace_keys: set[str] = set()
+            selected_replace_keys: set[str] = set()
             for text in phrases:
                 key = self._normalize_group_atmosphere_semantic_phrase_key(text) or str(text or '').strip()
-                if not key or key in seen_replace_keys:
+                if not key or key in selected_replace_keys:
                     continue
-                seen_replace_keys.add(key)
+                selected_replace_keys.add(key)
                 deduped_phrases.append(text)
+            selected_order_by_key = {
+                (self._normalize_group_atmosphere_semantic_phrase_key(text) or str(text or '').strip()): idx
+                for idx, text in enumerate(deduped_phrases, start=1)
+            }
+            source_candidates_by_text: Dict[str, Dict[str, Any]] = {}
+            for source_config in self.list_group_atmosphere_configs():
+                for source_item in list((source_config or {}).get('template_pool') or []):
+                    if not isinstance(source_item, dict):
+                        continue
+                    source_text = str(source_item.get('text') or '').strip()
+                    source_key = self._normalize_group_atmosphere_semantic_phrase_key(source_text) or source_text
+                    source_role = str(source_item.get('source_role') or source_item.get('role_positioning') or source_item.get('category') or self._group_atmosphere_role_from_key(str(source_config.get('config_name') or ''))).strip()
+                    if not source_key or source_role != role_positioning:
+                        continue
+                    current = source_candidates_by_text.get(source_key) or {}
+                    source_has_media = bool(source_item.get('media_id') or source_item.get('media_path') or str(source_item.get('asset_type') or '').startswith('image'))
+                    current_has_media = bool(current.get('media_id') or current.get('media_path') or str(current.get('asset_type') or '').startswith('image'))
+                    if source_has_media or not current_has_media:
+                        source_candidates_by_text[source_key] = dict(source_item)
             rebuilt_templates: List[Dict[str, Any]] = []
+            existing_seen_keys: set[str] = set()
+            for item in templates:
+                existing_item = dict(item or {})
+                text = str(existing_item.get('text') or '').strip()
+                if not text:
+                    continue
+                text_key = self._normalize_group_atmosphere_semantic_phrase_key(text) or text
+                if text_key in existing_seen_keys:
+                    continue
+                existing_seen_keys.add(text_key)
+                selected = text_key in selected_replace_keys
+                existing_item['category'] = role_positioning
+                existing_item['source_role'] = role_positioning
+                existing_item['role_positioning'] = role_positioning
+                existing_item['source_type'] = existing_item.get('source_type') or source_type
+                source_item = source_candidates_by_text.get(text_key) or {}
+                if selected and source_item and not (existing_item.get('media_id') or existing_item.get('media_path')):
+                    for media_key in ['asset_type', 'media_id', 'media_path', 'media_mime_type', 'media_filename', 'media_preview_url']:
+                        if source_item.get(media_key):
+                            existing_item[media_key] = source_item.get(media_key)
+                existing_item['role_selected'] = bool(selected)
+                existing_item['role_selection_order'] = selected_order_by_key.get(text_key, 0) if selected else 0
+                existing_item['safe_to_send'] = safe_to_send if is_manual_source else bool(existing_item.get('safe_to_send') is True)
+                existing_item['enabled'] = bool(enabled and selected) if is_manual_source else bool(selected and existing_item.get('enabled') is not False and existing_item.get('safe_to_send') is True)
+                existing_item['role_send_enabled'] = bool(selected)
+                rebuilt_templates.append(existing_item)
             for text in deduped_phrases:
-                text_key = self._normalize_group_atmosphere_semantic_phrase_key(text)
-                existing_item = dict(existing_by_text.get(text_key) or {}) if text_key else {}
-                translation = dict(existing_item) if existing_item.get('text_zh') else self._build_group_atmosphere_candidate_translation(text, role=role_positioning, language=language, region=region)
-                rebuilt_templates.append({
-                    'template_id': existing_item.get('template_id') or create_id('gatpl'),
-                    'candidate_id': existing_item.get('candidate_id') or create_id('gacand'),
+                text_key = self._normalize_group_atmosphere_semantic_phrase_key(text) or str(text or '').strip()
+                if not text_key or text_key in existing_seen_keys:
+                    continue
+                source_item = dict(source_candidates_by_text.get(text_key) or {})
+                translation = dict(source_item) if source_item.get('text_zh') else self._build_group_atmosphere_candidate_translation(text, role=role_positioning, language=language, region=region)
+                new_item = {
+                    'template_id': source_item.get('template_id') or create_id('gatpl'),
+                    'candidate_id': source_item.get('candidate_id') or create_id('gacand'),
                     'category': role_positioning,
                     'source_role': role_positioning,
-                    'source_type': existing_item.get('source_type') or source_type,
+                    'source_type': source_item.get('source_type') or source_type,
                     'text': text,
                     'text_zh': translation.get('text_zh') or '',
                     'text_zh_source': translation.get('text_zh_source') or '',
                     'text_zh_status': translation.get('text_zh_status') or '',
                     'text_zh_updated_at': translation.get('text_zh_updated_at') or '',
-                    'score': int(existing_item.get('score') or self._score_group_atmosphere_phrase(text, role=role_positioning)),
-                    'frequency': int(existing_item.get('frequency') or 1),
+                    'score': int(source_item.get('score') or self._score_group_atmosphere_phrase(text, role=role_positioning)),
+                    'frequency': int(source_item.get('frequency') or 1),
                     'safe_to_send': safe_to_send if is_manual_source else False,
                     'enabled': enabled if is_manual_source else False,
-                    'quality_decision': existing_item.get('quality_decision') or ('accept' if is_manual_source else (quality_by_key.get(text_key, {}).get('decision') or 'accept')),
-                    'quality_status': existing_item.get('quality_status') or ('manual_approved' if is_manual_source else (quality_by_key.get(text_key, {}).get('quality_status') or 'pending_review')),
-                    'quality_score': int(existing_item.get('quality_score') or quality_by_key.get(text_key, {}).get('quality_score') or self._score_group_atmosphere_phrase(text, role=role_positioning)),
-                    'quality_reasons': list(existing_item.get('quality_reasons') or quality_by_key.get(text_key, {}).get('reasons') or []),
-                    'normalized_key': existing_item.get('normalized_key') or quality_by_key.get(text_key, {}).get('normalized_key') or self._normalize_group_atmosphere_phrase_key(text),
-                    'semantic_key': existing_item.get('semantic_key') or quality_by_key.get(text_key, {}).get('semantic_key') or self._normalize_group_atmosphere_semantic_phrase_key(text),
-                })
+                    'role_send_enabled': True,
+                    'role_selected': True,
+                    'role_selection_order': selected_order_by_key.get(text_key, 0),
+                    'quality_decision': 'accept' if is_manual_source else (quality_by_key.get(text_key, {}).get('decision') or 'accept'),
+                    'quality_status': 'manual_approved' if is_manual_source else (quality_by_key.get(text_key, {}).get('quality_status') or 'pending_review'),
+                    'quality_score': int(quality_by_key.get(text_key, {}).get('quality_score') or self._score_group_atmosphere_phrase(text, role=role_positioning)),
+                    'quality_reasons': list(quality_by_key.get(text_key, {}).get('reasons') or []),
+                    'normalized_key': quality_by_key.get(text_key, {}).get('normalized_key') or self._normalize_group_atmosphere_phrase_key(text),
+                    'semantic_key': quality_by_key.get(text_key, {}).get('semantic_key') or self._normalize_group_atmosphere_semantic_phrase_key(text),
+                    'customized': source_item.get('customized', is_manual_source),
+                    'customized_at': source_item.get('customized_at') or (utc_now() if is_manual_source else ''),
+                }
+                for media_key in ['asset_type', 'media_id', 'media_path', 'media_mime_type', 'media_filename', 'media_preview_url']:
+                    if source_item.get(media_key):
+                        new_item[media_key] = source_item.get(media_key)
+                rebuilt_templates.append(new_item)
+                added_items.append(dict(new_item))
+                existing_seen_keys.add(text_key)
             templates = rebuilt_templates
-            added = len(rebuilt_templates)
+            added = len(deduped_phrases)
         else:
             existing_texts = set(existing_by_text.keys())
             added = 0
@@ -8545,6 +9393,7 @@ class Service:
                     'customized_at': utc_now() if is_manual_source else '',
                 }
                 templates.append(new_item)
+                added_items.append(dict(new_item))
                 existing_by_text[text_key] = new_item
                 added += 1
         templates = self._sort_group_atmosphere_candidates(self._cap_group_atmosphere_template_pool(templates, limit=100))
@@ -8567,16 +9416,28 @@ class Service:
             status='plan_ready' if any(item.get('enabled') and item.get('safe_to_send') for item in templates) else ('library_only' if templates else 'role_container'),
         ))
         rejected_reasons = sorted({reason for item in rejected_items for reason in list(item.get('reasons') or [])})
-        return {'ok': True, 'role': self._group_atmosphere_role_summary(config), 'config': config, 'added_count': added, 'rejected_count': len(rejected_items), 'rejected_reasons': rejected_reasons, 'rejected_items': rejected_items[:20]}
+        return {'ok': True, 'role': self._group_atmosphere_role_summary(config), 'config': config, 'added_count': added, 'added_items': added_items, 'rejected_count': len(rejected_items), 'rejected_reasons': rejected_reasons, 'rejected_items': rejected_items[:20]}
 
     def _group_atmosphere_role_summary(self, config: Dict[str, Any]) -> Dict[str, Any]:
         config_name = str((config or {}).get('config_name') or '').strip()
         language = str((config or {}).get('language') or 'id').strip()
         region = self._group_atmosphere_region_from_language(language)
         templates = [dict(item or {}) for item in list((config or {}).get('template_pool') or [])]
-        role_positioning = str((templates[0].get('source_role') if templates else '') or self._group_atmosphere_role_from_key(config_name)).strip()
+        role_templates = [item for item in templates if item.get('role_selected') is True or item.get('role_send_enabled') is True]
+        if role_templates:
+            role_templates = sorted(
+                role_templates,
+                key=lambda item: (
+                    int(item.get('role_selection_order') or 0),
+                    int(item.get('sort_order') or 0),
+                    str(item.get('text') or ''),
+                ),
+            )
+        else:
+            role_templates = templates
+        role_positioning = str((role_templates[0].get('source_role') if role_templates else '') or self._group_atmosphere_role_from_key(config_name)).strip()
         role_name = str((config or {}).get('group_name') or '').strip() or self._default_group_atmosphere_plan_display_name(role_positioning, region)
-        source_types = sorted({str(item.get('source_type') or 'upload_file').strip() for item in templates if item.get('source_type')})
+        source_types = sorted({str(item.get('source_type') or 'upload_file').strip() for item in role_templates if item.get('source_type')})
         return {
             'role_key': config_name,
             'config_name': config_name,
@@ -8585,17 +9446,34 @@ class Service:
             'region': region,
             'language': language,
             'role_positioning': role_positioning,
-            'phrase_count': len(templates),
-            'enabled_phrase_count': sum(1 for item in templates if item.get('enabled') is True and item.get('safe_to_send') is True),
+            'phrase_type': role_positioning,
+            'phrase_count': len(role_templates),
+            'available_phrase_count': len(templates),
+            'enabled_phrase_count': sum(1 for item in role_templates if item.get('enabled') is True and item.get('safe_to_send') is True),
             'source_types': source_types,
             'status': (config or {}).get('status'),
             'updated_at': (config or {}).get('updated_at'),
-            'candidates': templates,
-            'template_pool': templates,
+            'candidates': role_templates,
+            'template_pool': role_templates,
         }
+
+    def _group_atmosphere_available_counts_by_role(self) -> Dict[tuple[str, str], int]:
+        counts: Dict[tuple[str, str], int] = {}
+        try:
+            pool_rows = list(self.list_group_atmosphere_candidate_pool().get('rows') or [])
+        except Exception:
+            pool_rows = []
+        for row in pool_rows:
+            language = str(row.get('language') or 'id').strip() or 'id'
+            role = str(row.get('role_positioning') or '').strip()
+            if not role:
+                continue
+            counts[(language, role)] = counts.get((language, role), 0) + int(row.get('candidate_count') or len(row.get('candidates') or []) or 0)
+        return counts
 
     def list_group_atmosphere_roles(self) -> Dict[str, Any]:
         rows = []
+        available_counts = self._group_atmosphere_available_counts_by_role()
         for config in self.list_group_atmosphere_configs():
             name = str(config.get('config_name') or '').strip()
             if name.startswith('deliver-') or name.startswith('binding-'):
@@ -8606,13 +9484,16 @@ class Service:
                 continue
             enabled_safe_count = sum(1 for item in templates if item.get('enabled') is True and item.get('safe_to_send') is True)
             source_types = {str(item.get('source_type') or '').strip() for item in templates}
-            # 话术和角色解耦：上传/学习生成的候选话术，即使被“确认可用”，也仍只是话术弹药，不能自动变成话术角色。
-            # 只有显式创建/保存过的角色容器，或人工/角色保存/加入角色产生的模板，才出现在“话术角色”列表。
-            explicit_role_sources = {'role_save', 'candidate_pool'}
-            manual_role_sources = {'manual', '人工写入', 'manual_upload'}
-            has_explicit_role_content = bool(source_types & explicit_role_sources) or bool(source_types and source_types <= manual_role_sources)
-            if status == 'role_container' or has_explicit_role_content:
-                rows.append(self._group_atmosphere_role_summary(config))
+            # 话术和角色解耦：候选池/上传/移动/自动学习产生的配置只能是话术弹药，不能自动变成话术角色。
+            # 话术角色必须来自人工“新增/保存话术角色”产生的角色容器或历史 plan/library 角色配置。
+            has_role_selection = any(item.get('role_selected') is True or item.get('role_send_enabled') is True for item in templates)
+            is_explicit_role_config = name.startswith('role-') or status == 'role_container'
+            if is_explicit_role_config or (name.startswith('role-') and has_role_selection):
+                summary = self._group_atmosphere_role_summary(config)
+                key = (str(summary.get('language') or 'id').strip() or 'id', str(summary.get('role_positioning') or '').strip())
+                if available_counts.get(key, 0) > 0:
+                    summary['available_phrase_count'] = available_counts[key]
+                rows.append(summary)
         return {'rows': rows, 'count': len(rows)}
 
     def _ensure_default_group_atmosphere_phrase_types(self, conn: sqlite3.Connection) -> None:
@@ -8667,12 +9548,19 @@ class Service:
             self._ensure_default_group_atmosphere_phrase_types(conn)
             existing = conn.execute("SELECT * FROM whatsapp_group_atmosphere_phrase_types WHERE type_key=?", (type_key,)).fetchone()
             is_system = bool(existing['is_system']) if existing else bool((payload or {}).get('is_system'))
+            if 'sort_order' in (payload or {}) and str((payload or {}).get('sort_order') or '').strip():
+                sort_order = int((payload or {}).get('sort_order') or 0)
+            elif existing:
+                sort_order = int(existing['sort_order'] or 100)
+            else:
+                max_sort = conn.execute("SELECT COALESCE(MAX(sort_order), 40) FROM whatsapp_group_atmosphere_phrase_types WHERE enabled=1").fetchone()[0]
+                sort_order = int(max_sort or 40) + 10
             conn.execute(
                 """INSERT INTO whatsapp_group_atmosphere_phrase_types
                 (type_key, type_name, description, enabled, is_system, sort_order, region_scope, created_by, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(type_key) DO UPDATE SET type_name=excluded.type_name, description=excluded.description, enabled=excluded.enabled, sort_order=excluded.sort_order, region_scope=excluded.region_scope, updated_at=excluded.updated_at""",
-                (type_key, type_name, str((payload or {}).get('description') or '').strip(), 0 if (payload or {}).get('enabled') is False else 1, 1 if is_system else 0, int((payload or {}).get('sort_order') or 100), json.dumps(region_scope, ensure_ascii=False), str((payload or {}).get('created_by') or '').strip(), now, now),
+                (type_key, type_name, str((payload or {}).get('description') or '').strip(), 0 if (payload or {}).get('enabled') is False else 1, 1 if is_system else 0, sort_order, json.dumps(region_scope, ensure_ascii=False), str((payload or {}).get('created_by') or '').strip(), now, now),
             )
             conn.commit()
         rows = self.list_group_atmosphere_phrase_types(include_disabled=True)['rows']
@@ -8783,10 +9671,16 @@ class Service:
         return {'ok': True, 'media': self._group_atmosphere_media_row_to_dict(row), 'deduped': False}
 
     def manual_upload_group_atmosphere_phrases(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        role_key = str((payload or {}).get('role_key') or '').strip()
-        if not role_key:
-            role_positioning = str((payload or {}).get('role_positioning') or 'community_seed').strip()
-            role_key = f"role-{self._group_atmosphere_language_from_region(str((payload or {}).get('region') or '印尼'))}-{role_positioning}"
+        # 人工上传/图片话术只写入“话术类型/候选池”，不能创建或升级为话术角色。
+        # 话术角色只能通过“新增话术角色”按钮走 /roles/manual-phrases 产生 role-* 容器。
+        requested_key = str((payload or {}).get('config_name') or (payload or {}).get('role_key') or '').strip()
+        role_positioning_for_key = str((payload or {}).get('phrase_type') or (payload or {}).get('role_positioning') or self._group_atmosphere_phrase_type_from_config(requested_key) or 'community_seed').strip() or 'community_seed'
+        language_for_key = str((payload or {}).get('language') or self._group_atmosphere_language_from_region(str((payload or {}).get('region') or '印尼'))).strip() or 'id'
+        # 人工上传/图片话术必须落到 auto-* 候选池；即使旧前端/旧测试误传 role-*，也不能写进话术角色容器。
+        if requested_key.startswith('auto-'):
+            role_key = requested_key
+        else:
+            role_key = f"auto-{language_for_key}-{role_positioning_for_key}"
         content = str((payload or {}).get('content') or (payload or {}).get('text') or '').strip()
         media: Optional[Dict[str, Any]] = None
         media_id = str((payload or {}).get('media_id') or '').strip()
@@ -8810,13 +9704,15 @@ class Service:
         if not phrases:
             raise HTTPException(status_code=400, detail='phrases_required')
         enriched = []
-        role_positioning = str((payload or {}).get('role_positioning') or self._group_atmosphere_role_from_key(role_key)).strip()
+        role_positioning = str((payload or {}).get('phrase_type') or (payload or {}).get('role_positioning') or self._group_atmosphere_phrase_type_from_config(role_key)).strip()
         for text in phrases:
             enriched.append({
                 'template_id': create_id('gatpl'),
                 'candidate_id': create_id('gacand'),
                 'category': role_positioning,
                 'source_role': role_positioning,
+                'role_positioning': role_positioning,
+                'phrase_type': role_positioning,
                 'source_type': 'manual_upload',
                 'text': text,
                 'text_zh': '',
@@ -8825,7 +9721,7 @@ class Service:
                 'safe_to_send': True,
                 'enabled': True,
                 'quality_decision': 'accept',
-                'quality_status': 'approved_manual',
+                'quality_status': str((payload or {}).get('quality_status') or 'approved_manual'),
                 'quality_score': 100,
                 'quality_reasons': [],
                 'normalized_key': self._normalize_group_atmosphere_phrase_key(text),
@@ -8846,8 +9742,8 @@ class Service:
             enabled=False,
             account_key=str((existing or {}).get('account_key') or role_key),
             target_group=str((existing or {}).get('target_group') or role_key),
-            group_name=str((payload or {}).get('role_name') or (existing or {}).get('group_name') or role_key),
-            language=str((payload or {}).get('language') or self._group_atmosphere_language_from_region(str((payload or {}).get('region') or '印尼'))),
+            group_name=str((payload or {}).get('role_name') or (existing or {}).get('group_name') or self._default_group_atmosphere_plan_display_name(role_positioning, self._group_atmosphere_region_from_language(language_for_key)) or role_key),
+            language=language_for_key,
             timezone=str((existing or {}).get('timezone') or 'UTC'),
             worker_base_url='',
             daily_max_messages=int((existing or {}).get('daily_max_messages') or 4),
@@ -8857,9 +9753,133 @@ class Service:
             template_pool=[GroupAtmosphereTemplate(**item) for item in templates],
             mention_reply_enabled=bool((existing or {}).get('mention_reply_enabled', True)),
             faq_rules=[GroupAtmosphereFaqRule(**item) for item in list((existing or {}).get('faq_rules') or [])],
-            status='plan_ready',
+            status='candidate_pool',
         ))
-        return {'ok': True, 'role': self._group_atmosphere_role_summary(config), 'imported_count': len(enriched), 'duplicate_count': duplicate_count, 'review_required': False, 'source_type': 'manual_upload'}
+        return {'ok': True, 'config': config, 'config_name': config.get('config_name'), 'imported_count': len(enriched), 'duplicate_count': duplicate_count, 'review_required': bool((payload or {}).get('review_required', False)), 'source_type': 'manual_upload'}
+
+    @staticmethod
+    def _manual_upload_review_dedupe_key(text: str) -> str:
+        value = str(text or '').strip().lower()
+        value = re.sub(r'[\u200e\u200f\ufeff]', '', value)
+        value = re.sub(r'[!！?？。.,，、;；:：~～\-—–_"“”\'‘’`]+$', '', value)
+        value = re.sub(r'\s+', ' ', value)
+        return value.strip()
+
+    @staticmethod
+    def _guess_group_atmosphere_manual_upload_language(text: str, fallback: str = 'id') -> str:
+        value = str(text or '').lower()
+        if re.search(r'\b(oi|ol[aá]|tudo bem|voc[eê]|obrigad[ao]|grupo|d[uú]vida|b[oô]nus|cadastro)\b', value):
+            return 'pt'
+        if re.search(r'\b(hola|gracias|grupo|pregunta|bono|registro|comparte|experiencia|amiga|amigo)\b', value):
+            return 'es'
+        if re.search(r'\b(kak|admin|grup|daftar|bonus|aktif|tanya|cerita|jangan|kalau|boleh|selamat)\b', value):
+            return 'id'
+        return str(fallback or 'unknown') or 'unknown'
+
+    def _existing_group_atmosphere_manual_upload_keys(self) -> set:
+        keys = set()
+        try:
+            rows = self.list_group_atmosphere_candidate_pool().get('rows', [])
+        except Exception:
+            rows = []
+        for row in rows:
+            for item in list(row.get('candidates') or []):
+                key = self._manual_upload_review_dedupe_key(str(item.get('text') or ''))
+                if key:
+                    keys.add(key)
+        return keys
+
+    def preview_manual_upload_group_atmosphere_phrases(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        content = str((payload or {}).get('content') or (payload or {}).get('text') or '')
+        raw_phrases = [str(x or '').strip() for x in list((payload or {}).get('phrases') or []) if str(x or '').strip()]
+        raw_phrases.extend([line.strip() for line in content.splitlines() if line.strip()])
+        default_region = str((payload or {}).get('region') or '印尼')
+        default_language = str((payload or {}).get('language') or self._group_atmosphere_language_from_region(default_region) or 'id')
+        default_role = str((payload or {}).get('role_positioning') or 'community_seed')
+        existing_keys = self._existing_group_atmosphere_manual_upload_keys()
+        seen = set()
+        items: List[Dict[str, Any]] = []
+        duplicates: List[Dict[str, Any]] = []
+        invalid_items: List[Dict[str, Any]] = []
+        for index, text in enumerate(raw_phrases):
+            clean = str(text or '').strip()
+            key = self._manual_upload_review_dedupe_key(clean)
+            if not clean or len(clean) < 4 or re.fullmatch(r'[\d\s:.,/\-+()]+', clean):
+                invalid_items.append({'text': clean, 'reason': 'invalid_content', 'row_index': index})
+                continue
+            if re.search(r'[\u4e00-\u9fff]', clean):
+                invalid_items.append({'text': clean, 'reason': 'cjk_non_target_language', 'row_index': index})
+                continue
+            if key in seen:
+                duplicates.append({'text': clean, 'duplicate_status': 'batch_duplicate', 'row_index': index})
+                continue
+            seen.add(key)
+            if key in existing_keys:
+                duplicates.append({'text': clean, 'duplicate_status': 'existing', 'row_index': index})
+                continue
+            lang = self._guess_group_atmosphere_manual_upload_language(clean, default_language)
+            region = self._group_atmosphere_region_from_language(lang)
+            if region == '未知':
+                region = default_region if lang == default_language else '未识别'
+            item = {
+                'draft_id': create_id('gaup'),
+                'row_index': index,
+                'text': clean,
+                'language': lang,
+                'region': region,
+                'role_positioning': default_role,
+                'duplicate_status': 'new',
+                'duplicate_reason': '',
+                'selected': lang != 'unknown',
+            }
+            items.append(item)
+        language_groups = Counter(str(item.get('language') or 'unknown') for item in items)
+        role_groups = Counter(str(item.get('role_positioning') or default_role) for item in items)
+        return {
+            'ok': True,
+            'review_required': True,
+            'items': items,
+            'duplicates': duplicates,
+            'invalid_items': invalid_items,
+            'summary': {
+                'total': len(raw_phrases),
+                'new_count': len(items),
+                'duplicate_count': len(duplicates),
+                'existing_duplicate_count': len([d for d in duplicates if d.get('duplicate_status') == 'existing']),
+                'invalid_count': len(invalid_items),
+                'unknown_language_count': len([item for item in items if item.get('language') == 'unknown']),
+                'language_groups': dict(language_groups),
+                'role_groups': dict(role_groups),
+            },
+        }
+
+    def confirm_manual_upload_group_atmosphere_phrases(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        selected_items = [dict(item or {}) for item in list((payload or {}).get('items') or []) if (item or {}).get('selected', True) is not False and str((item or {}).get('text') or '').strip()]
+        if not selected_items:
+            raise HTTPException(status_code=400, detail='review_items_required')
+        grouped: Dict[tuple, List[str]] = {}
+        for item in selected_items:
+            language = str(item.get('language') or self._group_atmosphere_language_from_region(str(item.get('region') or '印尼')) or 'id')
+            region = str(item.get('region') or self._group_atmosphere_region_from_language(language) or '印尼')
+            role = str(item.get('role_positioning') or 'community_seed')
+            grouped.setdefault((language, region, role), []).append(str(item.get('text') or '').strip())
+        configs = []
+        imported = 0
+        duplicate = 0
+        for (language, region, role), phrases in grouped.items():
+            result = self.manual_upload_group_atmosphere_phrases({
+                'region': region,
+                'language': language,
+                'role_positioning': role,
+                'role_name': self._default_group_atmosphere_plan_display_name(role, region),
+                'phrases': phrases,
+                'quality_status': 'manual_approved',
+                'review_required': True,
+            })
+            imported += int(result.get('imported_count') or 0)
+            duplicate += int(result.get('duplicate_count') or 0)
+            configs.append({'config_name': result.get('config_name'), 'language': language, 'region': region, 'role_positioning': role, 'imported_count': result.get('imported_count')})
+        return {'ok': True, 'review_required': True, 'imported_count': imported, 'duplicate_count': duplicate, 'configs': configs, 'source_type': 'manual_upload'}
 
     def move_group_atmosphere_phrases(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         source_key = str((payload or {}).get('source_role_key') or (payload or {}).get('source_config_name') or '').strip()
@@ -9080,13 +10100,14 @@ class Service:
                     """
                     INSERT INTO whatsapp_group_atmosphere_role_bindings (
                         binding_id, role_key, account_key, group_index, target_group, group_name, enabled,
-                        auto_speaking_enabled, group_send_permission_enabled, worker_base_url,
+                        auto_speaking_enabled, trigger_speaking_enabled, group_send_permission_enabled, worker_base_url,
                         daily_max_messages, min_interval_minutes, max_interval_minutes, randomness_level, phrase_send_order, allowed_windows,
                         status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enabled', ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enabled', ?, ?)
                     ON CONFLICT(role_key, account_key, group_index) DO UPDATE SET
                         target_group=excluded.target_group, group_name=excluded.group_name,
                         enabled=excluded.enabled, auto_speaking_enabled=excluded.auto_speaking_enabled,
+                        trigger_speaking_enabled=excluded.trigger_speaking_enabled,
                         group_send_permission_enabled=excluded.group_send_permission_enabled,
                         worker_base_url=excluded.worker_base_url,
                         daily_max_messages=excluded.daily_max_messages, min_interval_minutes=excluded.min_interval_minutes,
@@ -9098,6 +10119,7 @@ class Service:
                         binding_id, role_key, account_key, idx, target_group, str(group.get('group_name') or '').strip() or target_group,
                         0 if (payload or {}).get('enabled') is False else 1,
                         0 if (payload or {}).get('auto_speaking_enabled') is False else 1,
+                        0 if (payload or {}).get('trigger_speaking_enabled') is False else 1,
                         0 if (payload or {}).get('group_send_permission_enabled') is False or group.get('enabled') is False else 1,
                         self._validate_group_atmosphere_worker_base_url((payload or {}).get('worker_base_url')),
                         daily_max, min_interval, max(max_interval, min_interval),
@@ -9149,7 +10171,7 @@ class Service:
             raise HTTPException(status_code=404, detail='role_binding_not_found')
         current = self._row_to_group_atmosphere_role_binding(row)
         merged = dict(current)
-        for key in ['role_key', 'enabled', 'auto_speaking_enabled', 'group_send_permission_enabled', 'worker_base_url', 'daily_max_messages', 'min_interval_minutes', 'max_interval_minutes', 'randomness_level', 'phrase_send_order', 'allowed_windows']:
+        for key in ['role_key', 'enabled', 'auto_speaking_enabled', 'trigger_speaking_enabled', 'group_send_permission_enabled', 'worker_base_url', 'daily_max_messages', 'min_interval_minutes', 'max_interval_minutes', 'randomness_level', 'phrase_send_order', 'allowed_windows']:
             if key in (payload or {}):
                 merged[key] = (payload or {}).get(key)
         next_role_key = str(merged.get('role_key') or '').strip()
@@ -9169,11 +10191,45 @@ class Service:
             if conflict:
                 raise HTTPException(status_code=409, detail='role_binding_target_already_exists')
             conn.execute(
-                """UPDATE whatsapp_group_atmosphere_role_bindings SET role_key=?, enabled=?, auto_speaking_enabled=?, group_send_permission_enabled=?, worker_base_url=?, daily_max_messages=?, min_interval_minutes=?, max_interval_minutes=?, randomness_level=?, phrase_send_order=?, allowed_windows=?, updated_at=? WHERE binding_id=?""",
-                (next_role_key, 1 if merged.get('enabled') else 0, 1 if merged.get('auto_speaking_enabled') else 0, 1 if merged.get('group_send_permission_enabled') else 0, self._validate_group_atmosphere_worker_base_url(merged.get('worker_base_url')), int(merged.get('daily_max_messages') or 4), int(merged.get('min_interval_minutes') or 60), int(merged.get('max_interval_minutes') or 240), str(merged.get('randomness_level') or 'medium'), str(merged.get('phrase_send_order') or 'random'), json.dumps(allowed_windows or [], ensure_ascii=False), utc_now(), normalized),
+                """UPDATE whatsapp_group_atmosphere_role_bindings SET role_key=?, enabled=?, auto_speaking_enabled=?, trigger_speaking_enabled=?, group_send_permission_enabled=?, worker_base_url=?, daily_max_messages=?, min_interval_minutes=?, max_interval_minutes=?, randomness_level=?, phrase_send_order=?, allowed_windows=?, updated_at=? WHERE binding_id=?""",
+                (next_role_key, 1 if merged.get('enabled') else 0, 1 if merged.get('auto_speaking_enabled') else 0, 1 if merged.get('trigger_speaking_enabled') else 0, 1 if merged.get('group_send_permission_enabled') else 0, self._validate_group_atmosphere_worker_base_url(merged.get('worker_base_url')), int(merged.get('daily_max_messages') or 4), int(merged.get('min_interval_minutes') or 60), int(merged.get('max_interval_minutes') or 240), str(merged.get('randomness_level') or 'medium'), str(merged.get('phrase_send_order') or 'random'), json.dumps(allowed_windows or [], ensure_ascii=False), utc_now(), normalized),
             )
             conn.commit()
         return {'ok': True, 'binding': self.get_group_atmosphere_role_binding(normalized)}
+
+    def _trusted_group_atmosphere_sent_count_today(self, *, binding_id: str = '', account_key: str = '', target_group: str = '') -> int:
+        """Count only WhatsApp sends with worker evidence, not dry-run/cache increments."""
+        today = datetime.now(timezone.utc).date().isoformat()
+        config_name = f"binding-{str(binding_id or '').strip()}" if str(binding_id or '').strip() else ''
+        clauses = ["substr(created_at,1,10)=?", "direction='outbound'", "LOWER(COALESCE(status,'')) IN ('success','sent')"]
+        params: List[Any] = [today]
+        if config_name:
+            clauses.append("config_name=?")
+            params.append(config_name)
+        else:
+            if account_key:
+                clauses.append("account_key=?")
+                params.append(str(account_key or '').strip())
+            if target_group:
+                clauses.append("target_group=?")
+                params.append(str(target_group or '').strip())
+        try:
+            rows = self.db.connect().execute(
+                f"SELECT raw_result FROM whatsapp_group_atmosphere_logs WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT 2000",
+                tuple(params),
+            ).fetchall()
+        except Exception:
+            return 0
+        count = 0
+        for row in rows:
+            try:
+                raw = json.loads((row['raw_result'] if hasattr(row, 'keys') else row[0]) or '{}')
+            except Exception:
+                raw = {}
+            message_id = str((raw or {}).get('message_id') or ((raw or {}).get('raw_result') or {}).get('message_id') or '').strip()
+            if message_id and not bool((raw or {}).get('dry_run')):
+                count += 1
+        return count
 
     def _row_to_group_atmosphere_role_binding(self, row: sqlite3.Row) -> Dict[str, Any]:
         item = dict(row)
@@ -9193,6 +10249,11 @@ class Service:
             distribution_status = '群权限关闭'
         elif not item.get('auto_speaking_enabled'):
             distribution_status = '自动发言已暂停'
+        trusted_sent_count_today = self._trusted_group_atmosphere_sent_count_today(
+            binding_id=str(item.get('binding_id') or '').strip(),
+            account_key=str(item.get('account_key') or '').strip(),
+            target_group=str(item.get('target_group') or '').strip(),
+        )
         return {
             'binding_id': item.get('binding_id'),
             'role_key': item.get('role_key'),
@@ -9208,6 +10269,7 @@ class Service:
             'group_name': group_name,
             'enabled': bool(item.get('enabled')),
             'auto_speaking_enabled': bool(item.get('auto_speaking_enabled')),
+            'trigger_speaking_enabled': bool(item.get('trigger_speaking_enabled', 1)),
             'group_send_permission_enabled': bool(item.get('group_send_permission_enabled')),
             'worker_base_url': item.get('worker_base_url') or '',
             'daily_max_messages': int(item.get('daily_max_messages') or 0),
@@ -9217,8 +10279,8 @@ class Service:
             'phrase_send_order': str(item.get('phrase_send_order') or 'random'),
             'allowed_windows': json.loads(item.get('allowed_windows') or '[]'),
             'last_sent_at': item.get('last_sent_at'),
-            'sent_count_today': int(item.get('sent_count_today') or 0),
-            'sent_count_date': item.get('sent_count_date'),
+            'sent_count_today': trusted_sent_count_today,
+            'sent_count_date': datetime.now(timezone.utc).date().isoformat(),
             'next_due_at': item.get('next_due_at'),
             'status': item.get('status'),
             'distribution_status': distribution_status,
@@ -9244,6 +10306,7 @@ class Service:
                     'account_key': row.get('account_key'),
                     'enabled': bool(row.get('enabled')),
                     'auto_speaking_enabled': bool(row.get('auto_speaking_enabled')),
+                    'trigger_speaking_enabled': bool(row.get('trigger_speaking_enabled', True)),
                     'daily_max_messages': int(row.get('daily_max_messages') or 0),
                     'min_interval_minutes': int(row.get('min_interval_minutes') or 0),
                     'max_interval_minutes': int(row.get('max_interval_minutes') or 0),
@@ -9263,6 +10326,7 @@ class Service:
                 'assigned_account_label': row.get('assigned_account_label'),
                 'role_deleted': bool(row.get('role_deleted')),
                 'group_send_permission_enabled': bool(row.get('group_send_permission_enabled')),
+                'trigger_speaking_enabled': bool(row.get('trigger_speaking_enabled', True)),
                 'enabled': bool(row.get('enabled')),
                 'distribution_status': row.get('distribution_status'),
                 'last_sent_at': row.get('last_sent_at'),
@@ -9275,8 +10339,15 @@ class Service:
                 grouped[key]['enabled'] = False
             if not row.get('auto_speaking_enabled'):
                 grouped[key]['auto_speaking_enabled'] = False
+            if not row.get('trigger_speaking_enabled', True):
+                grouped[key]['trigger_speaking_enabled'] = False
+        rule_counts = self._group_atmosphere_trigger_rule_counts_by_relationship()
         for key in order:
             grouped[key]['groups'].sort(key=lambda item: int(item.get('group_index') or 0))
+            counts = rule_counts.get(key, {'total': 0, 'enabled': 0, 'types': []})
+            grouped[key]['trigger_rule_count'] = int(counts.get('total') or 0)
+            grouped[key]['trigger_rule_enabled_count'] = int(counts.get('enabled') or 0)
+            grouped[key]['trigger_rule_types'] = list(counts.get('types') or [])
         return [grouped[key] for key in order]
 
     def list_group_atmosphere_role_bindings(self) -> Dict[str, Any]:
@@ -9290,6 +10361,384 @@ class Service:
         if not row:
             raise HTTPException(status_code=404, detail='role_binding_not_found')
         return self._row_to_group_atmosphere_role_binding(row)
+
+    @staticmethod
+    def is_group_atmosphere_regular_group_message(message: Dict[str, Any]) -> bool:
+        kind = str((message or {}).get('message_type') or (message or {}).get('type') or 'text').strip().lower()
+        event_type = str((message or {}).get('event_type') or '').strip().lower()
+        system_kinds = {'system', 'group_update', 'notification', 'status', 'participant_update'}
+        system_events = {'member_join', 'member_leave', 'group_name_changed', 'group_announcement_changed', 'permission_changed'}
+        return kind not in system_kinds and event_type not in system_events
+
+    def _row_to_group_atmosphere_trigger_rule(self, row: sqlite3.Row) -> Dict[str, Any]:
+        item = dict(row)
+        try:
+            conditions = json.loads(item.get('conditions_json') or '{}')
+        except Exception:
+            conditions = {}
+        try:
+            message_sequence = json.loads(item.get('message_sequence_json') or '[]')
+        except Exception:
+            message_sequence = []
+        return {
+            'rule_id': item.get('rule_id'),
+            'relationship_key': item.get('relationship_key'),
+            'rule_name': item.get('rule_name'),
+            'trigger_type': item.get('trigger_type'),
+            'enabled': bool(item.get('enabled')),
+            'priority': int(item.get('priority') or 0),
+            'conditions': conditions if isinstance(conditions, dict) else {},
+            'message_sequence': message_sequence if isinstance(message_sequence, list) else [],
+            'delay_min_seconds': int(item.get('delay_min_seconds') or 2),
+            'delay_max_seconds': int(item.get('delay_max_seconds') or 5),
+            'cooldown_seconds': int(item.get('cooldown_seconds') if item.get('cooldown_seconds') is not None else 60),
+            'per_user_cooldown_seconds': int(item.get('per_user_cooldown_seconds') if item.get('per_user_cooldown_seconds') is not None else 10),
+            'daily_max_triggers': int(item.get('daily_max_triggers') or 0),
+            'last_triggered_at': item.get('last_triggered_at'),
+            'created_at': item.get('created_at'),
+            'updated_at': item.get('updated_at'),
+        }
+
+    def _group_atmosphere_trigger_rule_counts_by_relationship(self) -> Dict[str, Dict[str, Any]]:
+        try:
+            rows = self.db.connect().execute("SELECT relationship_key, trigger_type, enabled FROM whatsapp_group_atmosphere_trigger_rules").fetchall()
+        except Exception:
+            return {}
+        output: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            key = str(row['relationship_key'] or '').strip()
+            if not key:
+                continue
+            item = output.setdefault(key, {'total': 0, 'enabled': 0, 'types': []})
+            item['total'] += 1
+            if bool(row['enabled']):
+                item['enabled'] += 1
+            trigger_type = str(row['trigger_type'] or '').strip()
+            if trigger_type and trigger_type not in item['types']:
+                item['types'].append(trigger_type)
+        return output
+
+    def list_group_atmosphere_trigger_rules(self, relationship_key: str = '') -> Dict[str, Any]:
+        normalized = str(relationship_key or '').strip()
+        conn = self.db.connect()
+        if normalized:
+            rows = conn.execute("SELECT * FROM whatsapp_group_atmosphere_trigger_rules WHERE relationship_key=? ORDER BY priority ASC, updated_at DESC", (normalized,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM whatsapp_group_atmosphere_trigger_rules ORDER BY priority ASC, updated_at DESC").fetchall()
+        rules = [self._row_to_group_atmosphere_trigger_rule(row) for row in rows]
+        return {'rows': rules, 'count': len(rules)}
+
+    def upsert_group_atmosphere_trigger_rule(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        relationship_key = str((payload or {}).get('relationship_key') or '').strip()
+        if not relationship_key:
+            raise HTTPException(status_code=400, detail='relationship_key_required')
+        if not self.db.connect().execute("SELECT 1 FROM whatsapp_group_atmosphere_role_bindings WHERE role_key=? LIMIT 1", (relationship_key,)).fetchone():
+            raise HTTPException(status_code=404, detail='relationship_not_found')
+        trigger_type = str((payload or {}).get('trigger_type') or '').strip()
+        if trigger_type not in {'keyword_match', 'member_join', 'group_silence'}:
+            raise HTTPException(status_code=400, detail='unsupported_trigger_type')
+        message_sequence = [dict(item or {}) for item in list((payload or {}).get('message_sequence') or []) if isinstance(item, dict) and (str(item.get('text') or '').strip() or str(item.get('media_id') or '').strip())]
+        if len(message_sequence) > 3:
+            raise HTTPException(status_code=400, detail='trigger_message_sequence_max_3')
+        for idx, segment in enumerate(message_sequence):
+            segment['delay_seconds'] = max(0, int(segment.get('delay_seconds') if segment.get('delay_seconds') is not None else (idx * 3)))
+            if str(segment.get('media_id') or '').strip():
+                segment['type'] = 'image_text'
+            else:
+                segment['type'] = 'text'
+        if not message_sequence:
+            raise HTTPException(status_code=400, detail='message_sequence_required')
+        conditions = (payload or {}).get('conditions') if isinstance((payload or {}).get('conditions'), dict) else {}
+        if trigger_type == 'keyword_match':
+            keywords = [str(item or '').strip() for item in list(conditions.get('keywords') or []) if str(item or '').strip()]
+            single_keyword = str(conditions.get('keyword') or '').strip()
+            if single_keyword and single_keyword not in keywords:
+                keywords.append(single_keyword)
+            if not keywords:
+                raise HTTPException(status_code=400, detail='keywords_required')
+            conditions['keywords'] = keywords
+        if trigger_type == 'group_silence':
+            silence_seconds = int(conditions.get('silence_seconds') or conditions.get('threshold_seconds') or 60)
+            conditions['silence_seconds'] = max(10, silence_seconds)
+        rule_id = str((payload or {}).get('rule_id') or '').strip() or f"gatr_{uuid.uuid4().hex[:16]}"
+        now = utc_now()
+        delay_min = max(0, int((payload or {}).get('delay_min_seconds') if (payload or {}).get('delay_min_seconds') is not None else 2))
+        delay_max = max(delay_min, int((payload or {}).get('delay_max_seconds') if (payload or {}).get('delay_max_seconds') is not None else 5))
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO whatsapp_group_atmosphere_trigger_rules (
+                    rule_id, relationship_key, rule_name, trigger_type, enabled, priority, conditions_json, message_sequence_json,
+                    delay_min_seconds, delay_max_seconds, cooldown_seconds, per_user_cooldown_seconds, daily_max_triggers,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(rule_id) DO UPDATE SET
+                    relationship_key=excluded.relationship_key, rule_name=excluded.rule_name, trigger_type=excluded.trigger_type,
+                    enabled=excluded.enabled, priority=excluded.priority, conditions_json=excluded.conditions_json,
+                    message_sequence_json=excluded.message_sequence_json, delay_min_seconds=excluded.delay_min_seconds,
+                    delay_max_seconds=excluded.delay_max_seconds, cooldown_seconds=excluded.cooldown_seconds,
+                    per_user_cooldown_seconds=excluded.per_user_cooldown_seconds, daily_max_triggers=excluded.daily_max_triggers,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    rule_id, relationship_key, str((payload or {}).get('rule_name') or trigger_type).strip(), trigger_type,
+                    0 if (payload or {}).get('enabled') is False else 1, int((payload or {}).get('priority') or 0),
+                    json.dumps(conditions, ensure_ascii=False), json.dumps(message_sequence[:5], ensure_ascii=False),
+                    delay_min, delay_max, int((payload or {}).get('cooldown_seconds') or 0), int((payload or {}).get('per_user_cooldown_seconds') or 10),
+                    int((payload or {}).get('daily_max_triggers') or 0), now, now,
+                ),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM whatsapp_group_atmosphere_trigger_rules WHERE rule_id=?", (rule_id,)).fetchone()
+        return {'ok': True, 'rule': self._row_to_group_atmosphere_trigger_rule(row)}
+
+    def delete_group_atmosphere_trigger_rule(self, rule_id: str) -> Dict[str, Any]:
+        normalized = str(rule_id or '').strip()
+        if not normalized:
+            raise HTTPException(status_code=400, detail='rule_id_required')
+        with self.db.connect() as conn:
+            cur = conn.execute("DELETE FROM whatsapp_group_atmosphere_trigger_rules WHERE rule_id=?", (normalized,))
+            conn.commit()
+        if cur.rowcount <= 0:
+            raise HTTPException(status_code=404, detail='trigger_rule_not_found')
+        return {'ok': True, 'deleted': True, 'rule_id': normalized}
+
+    def test_group_atmosphere_trigger_rule(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        relationship_key = str((payload or {}).get('relationship_key') or '').strip()
+        trigger_type = str((payload or {}).get('trigger_type') or 'keyword_match').strip()
+        if not relationship_key:
+            raise HTTPException(status_code=400, detail='relationship_key_required')
+        binding_row = self.db.connect().execute(
+            "SELECT * FROM whatsapp_group_atmosphere_role_bindings WHERE role_key=? AND enabled=1 ORDER BY created_at ASC LIMIT 1",
+            (relationship_key,),
+        ).fetchone()
+        if not binding_row:
+            raise HTTPException(status_code=404, detail='relationship_not_found')
+        binding = self._row_to_group_atmosphere_role_binding(binding_row)
+        if trigger_type == 'keyword_match':
+            req = GroupAtmosphereInboundMessageRequest(
+                account_key=str(binding.get('account_key') or ''),
+                target_group=str(binding.get('target_group') or ''),
+                sender_id=str((payload or {}).get('sender_id') or 'preview-user'),
+                text=str((payload or {}).get('text') or ''),
+                message_type='text',
+            )
+            result = self.evaluate_group_atmosphere_trigger_rules_for_inbound(req)
+        else:
+            result = self.evaluate_group_atmosphere_trigger_rules_for_event(
+                binding,
+                trigger_type=trigger_type,
+                event_payload={k: v for k, v in dict(payload or {}).items() if k not in {'relationship_key'}},
+                dry_run=True,
+            )
+        result['dry_run'] = True
+        result['would_send'] = bool(result.get('should_respond'))
+        return result
+
+    def _find_group_atmosphere_binding_for_event(self, account_key: str, target_group: str) -> Optional[Dict[str, Any]]:
+        normalized_account_key = str(account_key or '').strip()
+        normalized_target = str(target_group or '').strip()
+        if not normalized_account_key or not normalized_target:
+            return None
+        conn = self.db.connect()
+        row = conn.execute(
+            "SELECT * FROM whatsapp_group_atmosphere_role_bindings WHERE account_key=? AND target_group=? AND enabled=1 ORDER BY created_at ASC LIMIT 1",
+            (normalized_account_key, normalized_target),
+        ).fetchone()
+        if row:
+            return self._row_to_group_atmosphere_role_binding(row)
+        account_row = self._get_whatsapp_approval_account_row(normalized_account_key) or {}
+        try:
+            raw_groups = json.loads(account_row.get('group_links') or '[]')
+        except Exception:
+            raw_groups = []
+        if not isinstance(raw_groups, list):
+            raw_groups = []
+        matching_targets: set[str] = set()
+        matching_indexes: set[int] = set()
+        for idx, group in enumerate(raw_groups):
+            if not isinstance(group, dict):
+                continue
+            candidates = {
+                str(group.get('target_group') or '').strip(),
+                str(group.get('link') or '').strip(),
+                str(group.get('group_id') or '').strip(),
+                str(group.get('group_name') or '').strip(),
+            }
+            if normalized_target in candidates:
+                matching_indexes.add(idx)
+                for candidate in candidates:
+                    if candidate:
+                        matching_targets.add(candidate)
+        if matching_indexes:
+            placeholders = ','.join('?' for _ in matching_indexes)
+            params = [normalized_account_key, *sorted(matching_indexes)]
+            row = conn.execute(
+                f"SELECT * FROM whatsapp_group_atmosphere_role_bindings WHERE account_key=? AND enabled=1 AND group_index IN ({placeholders}) ORDER BY created_at ASC LIMIT 1",
+                params,
+            ).fetchone()
+            if row:
+                return self._row_to_group_atmosphere_role_binding(row)
+        if matching_targets:
+            placeholders = ','.join('?' for _ in matching_targets)
+            params = [normalized_account_key, *sorted(matching_targets)]
+            row = conn.execute(
+                f"SELECT * FROM whatsapp_group_atmosphere_role_bindings WHERE account_key=? AND enabled=1 AND target_group IN ({placeholders}) ORDER BY created_at ASC LIMIT 1",
+                params,
+            ).fetchone()
+            if row:
+                return self._row_to_group_atmosphere_role_binding(row)
+        return None
+
+    @staticmethod
+    def _keyword_trigger_rule_matches(rule: Dict[str, Any], text: str) -> tuple[bool, str]:
+        conditions = rule.get('conditions') or {}
+        keywords = [str(item or '').strip() for item in list(conditions.get('keywords') or []) if str(item or '').strip()]
+        if not keywords:
+            single = str(conditions.get('keyword') or '').strip()
+            keywords = [single] if single else []
+        case_sensitive = bool(conditions.get('case_sensitive'))
+        match_type = str(conditions.get('match_type') or 'contains').strip()
+        haystack = str(text or '') if case_sensitive else str(text or '').lower()
+        for keyword in sorted(keywords, key=len, reverse=True):
+            needle = keyword if case_sensitive else keyword.lower()
+            if match_type == 'exact' and haystack.strip() == needle:
+                return True, keyword
+            if match_type == 'word_boundary' and re.search(rf'(?<!\w){re.escape(needle)}(?!\w)', haystack):
+                return True, keyword
+            if match_type not in {'exact', 'word_boundary'} and needle in haystack:
+                return True, keyword
+        return False, ''
+
+    def _group_atmosphere_trigger_cooldown_state(self, binding: Dict[str, Any], rule: Dict[str, Any], *, sender_id: str = '') -> Dict[str, Any]:
+        rule_id = str(rule.get('rule_id') or '').strip()
+        binding_id = str(binding.get('binding_id') or '').strip()
+        target_group = str(binding.get('target_group') or '').strip()
+        account_key = str(binding.get('account_key') or '').strip()
+        if not rule_id or not target_group:
+            return {}
+        now_dt = datetime.now(timezone.utc)
+        cooldown_seconds = max(0, int(rule.get('cooldown_seconds') or 0))
+        per_user_seconds = max(0, int(rule.get('per_user_cooldown_seconds') or 0))
+        with self.db.connect() as conn:
+            def latest_created(extra_sql: str = '', params: tuple = ()) -> str:
+                row = conn.execute(
+                    "SELECT created_at FROM whatsapp_group_atmosphere_trigger_events WHERE rule_id=? AND status='matched' AND target_group=? " + extra_sql + " ORDER BY created_at DESC LIMIT 1",
+                    (rule_id, target_group, *params),
+                ).fetchone()
+                if row:
+                    return str(row['created_at'] if hasattr(row, 'keys') else row[0] or '')
+                if binding_id:
+                    row2 = conn.execute(
+                        "SELECT created_at FROM whatsapp_group_atmosphere_trigger_events WHERE rule_id=? AND status='matched' AND binding_id=? " + extra_sql + " ORDER BY created_at DESC LIMIT 1",
+                        (rule_id, binding_id, *params),
+                    ).fetchone()
+                    if row2:
+                        return str(row2['created_at'] if hasattr(row2, 'keys') else row2[0] or '')
+                if account_key:
+                    row3 = conn.execute(
+                        "SELECT created_at FROM whatsapp_group_atmosphere_trigger_events WHERE rule_id=? AND status='matched' AND account_key=? AND target_group=? " + extra_sql + " ORDER BY created_at DESC LIMIT 1",
+                        (rule_id, account_key, target_group, *params),
+                    ).fetchone()
+                    if row3:
+                        return str(row3['created_at'] if hasattr(row3, 'keys') else row3[0] or '')
+                return ''
+            if cooldown_seconds > 0:
+                last = latest_created()
+                if last:
+                    try:
+                        elapsed = (now_dt - parse_iso_datetime(last)).total_seconds()
+                    except Exception:
+                        elapsed = cooldown_seconds + 1
+                    if elapsed < cooldown_seconds:
+                        return {'should_respond': False, 'result_code': 'rule_cooldown_active', 'cooldown_scope': 'group', 'remaining_seconds': int(max(1, cooldown_seconds - elapsed))}
+            normalized_sender = str(sender_id or '').strip()
+            if per_user_seconds > 0 and normalized_sender:
+                last_user = latest_created(" AND sender_id=?", (normalized_sender,))
+                if last_user:
+                    try:
+                        elapsed_user = (now_dt - parse_iso_datetime(last_user)).total_seconds()
+                    except Exception:
+                        elapsed_user = per_user_seconds + 1
+                    if elapsed_user < per_user_seconds:
+                        return {'should_respond': False, 'result_code': 'per_user_cooldown_active', 'cooldown_scope': 'group_user', 'remaining_seconds': int(max(1, per_user_seconds - elapsed_user))}
+        return {}
+
+    def _matched_group_atmosphere_trigger_result(self, binding: Dict[str, Any], rule: Dict[str, Any], event_payload: Dict[str, Any], *, sender_id: str = '', matched_keyword: str = '', dry_run: bool = False) -> Dict[str, Any]:
+        sequence = list(rule.get('message_sequence') or [])
+        if not dry_run:
+            now = utc_now()
+            with self.db.connect() as conn:
+                conn.execute(
+                    "INSERT INTO whatsapp_group_atmosphere_trigger_events (event_id, rule_id, relationship_key, binding_id, account_key, target_group, sender_id, trigger_type, status, result_code, trigger_payload_json, message_sequence_snapshot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'matched', 'trigger_rule_matched', ?, ?, ?)",
+                    (f"gate_{uuid.uuid4().hex[:16]}", rule.get('rule_id'), rule.get('relationship_key'), binding.get('binding_id'), binding.get('account_key'), binding.get('target_group'), sender_id or '', rule.get('trigger_type'), json.dumps(event_payload or {}, ensure_ascii=False), json.dumps(sequence, ensure_ascii=False), now),
+                )
+                conn.execute("UPDATE whatsapp_group_atmosphere_trigger_rules SET last_triggered_at=?, updated_at=? WHERE rule_id=?", (now, now, rule.get('rule_id')))
+                conn.commit()
+        result = {
+            'should_respond': True,
+            'result_code': 'trigger_rule_matched',
+            'matched_rule': rule,
+            'reply_sequence': sequence,
+            'delay_min_seconds': rule.get('delay_min_seconds'),
+            'delay_max_seconds': rule.get('delay_max_seconds'),
+            'binding_id': binding.get('binding_id'),
+            'relationship_key': rule.get('relationship_key'),
+            'trigger_type': rule.get('trigger_type'),
+        }
+        if matched_keyword:
+            result['matched_keyword'] = matched_keyword
+        return result
+
+    def evaluate_group_atmosphere_trigger_rules_for_event(self, binding: Dict[str, Any], *, trigger_type: str, event_payload: Dict[str, Any], dry_run: bool = False) -> Dict[str, Any]:
+        if not binding:
+            return {'should_respond': False, 'result_code': 'role_binding_not_found'}
+        if not binding.get('group_send_permission_enabled'):
+            return {'should_respond': False, 'result_code': 'group_send_permission_disabled'}
+        if not binding.get('trigger_speaking_enabled'):
+            return {'should_respond': False, 'result_code': 'trigger_speaking_disabled'}
+        rules = [rule for rule in self.list_group_atmosphere_trigger_rules(str(binding.get('role_key') or '')).get('rows') or [] if rule.get('enabled') and rule.get('trigger_type') == trigger_type]
+        if not rules:
+            return {'should_respond': False, 'result_code': 'trigger_rule_not_matched'}
+        if trigger_type == 'keyword_match':
+            text = str((event_payload or {}).get('text') or '')
+            matched: List[tuple[Dict[str, Any], str]] = []
+            for rule in rules:
+                ok, keyword = self._keyword_trigger_rule_matches(rule, text)
+                if ok:
+                    matched.append((rule, keyword))
+            if not matched:
+                return {'should_respond': False, 'result_code': 'trigger_rule_not_matched'}
+            matched.sort(key=lambda pair: (int(pair[0].get('priority') or 999), -len(pair[1])))
+            rule, keyword = matched[0]
+            sender_id = str((event_payload or {}).get('sender_id') or '')
+            if not dry_run:
+                cooldown = self._group_atmosphere_trigger_cooldown_state(binding, rule, sender_id=sender_id)
+                if cooldown:
+                    cooldown.update({'matched_rule': rule, 'binding_id': binding.get('binding_id'), 'relationship_key': rule.get('relationship_key'), 'trigger_type': rule.get('trigger_type'), 'matched_keyword': keyword})
+                    return cooldown
+            return self._matched_group_atmosphere_trigger_result(binding, rule, {'text': text, 'matched_keyword': keyword}, sender_id=sender_id, matched_keyword=keyword, dry_run=dry_run)
+        rules.sort(key=lambda rule: int(rule.get('priority') or 999))
+        rule = rules[0]
+        if trigger_type == 'group_silence':
+            conditions = rule.get('conditions') or {}
+            observed = int((event_payload or {}).get('silence_seconds') or conditions.get('silence_seconds') or 0)
+            required = int(conditions.get('silence_seconds') or 60)
+            if observed < required:
+                return {'should_respond': False, 'result_code': 'silence_threshold_not_reached', 'required_silence_seconds': required, 'observed_silence_seconds': observed}
+        sender_id = str((event_payload or {}).get('sender_id') or '')
+        if not dry_run:
+            cooldown = self._group_atmosphere_trigger_cooldown_state(binding, rule, sender_id=sender_id)
+            if cooldown:
+                cooldown.update({'matched_rule': rule, 'binding_id': binding.get('binding_id'), 'relationship_key': rule.get('relationship_key'), 'trigger_type': rule.get('trigger_type')})
+                return cooldown
+        return self._matched_group_atmosphere_trigger_result(binding, rule, event_payload or {}, sender_id=sender_id, dry_run=dry_run)
+
+    def evaluate_group_atmosphere_trigger_rules_for_inbound(self, payload: GroupAtmosphereInboundMessageRequest) -> Dict[str, Any]:
+        if not self.is_group_atmosphere_regular_group_message(payload.dict()):
+            return {'should_respond': False, 'result_code': 'system_message_ignored'}
+        binding = self._find_group_atmosphere_binding_for_event(payload.account_key, payload.target_group)
+        return self.evaluate_group_atmosphere_trigger_rules_for_event(binding or {}, trigger_type='keyword_match', event_payload={'text': payload.text, 'sender_id': payload.sender_id}, dry_run=False)
 
     def _dispatch_group_atmosphere_binding_once(self, binding: Dict[str, Any], *, trigger_type: str = 'scheduled_auto', require_auto_enabled: bool = True) -> Dict[str, Any]:
         if not binding.get('enabled'):
@@ -9315,7 +10764,7 @@ class Service:
         if require_auto_enabled and not due:
             return {'sent': False, 'binding_id': binding.get('binding_id'), 'role_key': binding.get('role_key'), 'target_group': binding.get('target_group'), 'result_code': 'not_due_yet', 'result_reason': due_reason}
         runtime_base = str(binding.get('worker_base_url') or '').strip().rstrip('/')
-        template_pool_for_dispatch = list(role.get('template_pool') or [])
+        template_pool_for_dispatch = self._refresh_group_atmosphere_templates_with_latest_media([dict(item or {}) for item in list(role.get('template_pool') or [])])
         sorted_message_text = ''
         if str(binding.get('phrase_send_order') or 'random') == 'sorted':
             enabled_templates_for_order = self._enabled_group_atmosphere_templates({'template_pool': template_pool_for_dispatch})
@@ -9349,7 +10798,7 @@ class Service:
         ))
         result = self.dispatch_group_atmosphere_once(GroupAtmosphereDispatchRequest(config_name=config['config_name'], trigger_type=trigger_type, message_text=sorted_message_text or None))
         result.update({'binding_id': binding.get('binding_id'), 'role_key': binding.get('role_key'), 'target_group': binding.get('target_group'), 'group_name': binding.get('group_name')})
-        if result.get('sent'):
+        if result.get('sent') and not result.get('dry_run'):
             now = utc_now()
             next_due_at = self._next_group_atmosphere_due_at(binding)
             with self.db.connect() as conn:
@@ -9805,11 +11254,23 @@ class Service:
             added_count = int(upsert_result.get('added_count') or 0)
             imported_count += len(role_records)
             candidate_count += added_count
-            for phrase in phrases[:added_count]:
-                translation = self._build_group_atmosphere_candidate_translation(phrase, role=self._group_atmosphere_role_from_key(role_key), language=account.get('language'), region=account.get('region'))
+            for added_item in list(upsert_result.get('added_items') or [])[:added_count]:
+                if not isinstance(added_item, dict):
+                    continue
+                phrase = str(added_item.get('text') or '').strip()
+                if not phrase:
+                    continue
+                translation = {
+                    'text_zh': added_item.get('text_zh') or '',
+                    'text_zh_source': added_item.get('text_zh_source') or '',
+                    'text_zh_status': added_item.get('text_zh_status') or '',
+                }
+                if not translation['text_zh']:
+                    translation = self._build_group_atmosphere_candidate_translation(phrase, role=self._group_atmosphere_role_from_key(role_key), language=account.get('language'), region=account.get('region'))
                 learned_items.append({
                     'role_key': role_key,
                     'role_positioning': self._group_atmosphere_role_from_key(role_key),
+                    'candidate_id': added_item.get('candidate_id') or '',
                     'text': phrase,
                     'text_zh': translation.get('text_zh') or '',
                     'text_zh_source': translation.get('text_zh_source') or '',
@@ -9914,23 +11375,26 @@ class Service:
             for item in templates:
                 if not item.get('candidate_id'):
                     continue
-                role = config_role if config_name.startswith('auto-') else str(item.get('role_positioning') or item.get('source_role') or item.get('category') or config_role).strip()
+                role = str(item.get('role_positioning') or item.get('source_role') or item.get('category') or config_role).strip()
                 if not role:
                     role = 'community_seed'
                 source_type = str(item.get('source_type') or 'upload_file').strip()
-                is_manual_source = source_type in {'manual', 'manual_upload', 'custom', 'role_save'} or item.get('customized') is True
+                is_manual_source = self._group_atmosphere_candidate_is_manual(item)
+                risk_reasons = self._group_atmosphere_candidate_risk_reasons(str(item.get('text') or ''))
+                has_risk = bool(risk_reasons)
                 source_types.add(source_type)
                 key = (language, role)
                 preferred_config = f'auto-{language}-{role}'
                 if key not in grouped:
                     plan_display_name = str(config.get('group_name') or '').strip() or self._default_group_atmosphere_plan_display_name(role, region)
                     grouped[key] = {
-                        'config_name': preferred_config if config_name == preferred_config else config_name,
+                        'config_name': config_name,
                         'storage_config_names': [],
                         'plan_display_name': plan_display_name,
                         'language': language,
                         'region': region,
                         'role_positioning': role,
+                        'phrase_type': role,
                         'status': 'candidate_pool',
                         'enabled': False,
                         'bound_account_key': '',
@@ -9954,6 +11418,7 @@ class Service:
                     'language': language,
                     'region': region,
                     'role_positioning': role,
+                    'phrase_type': role,
                     'source_role': item.get('source_role') or role,
                     'category': item.get('category') or role,
                     'source_type': source_type,
@@ -9973,12 +11438,12 @@ class Service:
                     'customized_at': item.get('customized_at') or '',
                     'score': int(item.get('score') or self._score_group_atmosphere_phrase(str(item.get('text') or ''), role=role)),
                     'frequency': int(item.get('frequency') or 1),
-                    'safe_to_send': True if is_manual_source else (item.get('safe_to_send') is True and (source_type != 'learning_account' or str(item.get('quality_status') or '').strip() == 'manual_approved')),
-                    'enabled': True if is_manual_source else (item.get('enabled') is True and (source_type != 'learning_account' or str(item.get('quality_status') or '').strip() == 'manual_approved')),
-                    'quality_decision': item.get('quality_decision') or ('accept' if is_manual_source else ''),
-                    'quality_status': item.get('quality_status') or ('manual_approved' if is_manual_source else ('pending_review' if source_type == 'learning_account' else '')),
+                    'safe_to_send': False if has_risk else (True if is_manual_source else (item.get('safe_to_send') is True and (source_type != 'learning_account' or str(item.get('quality_status') or '').strip() == 'manual_approved'))),
+                    'enabled': False if has_risk else (True if is_manual_source else (item.get('enabled') is True and (source_type != 'learning_account' or str(item.get('quality_status') or '').strip() == 'manual_approved'))),
+                    'quality_decision': 'quarantine' if has_risk else (item.get('quality_decision') or ('accept' if is_manual_source else '')),
+                    'quality_status': 'risk_review' if has_risk else (item.get('quality_status') or ('manual_approved' if is_manual_source else ('pending_review' if source_type == 'learning_account' else ''))),
                     'quality_score': int(item.get('quality_score') or 0),
-                    'quality_reasons': list(item.get('quality_reasons') or []),
+                    'quality_reasons': (list(item.get('quality_reasons') or []) + [reason for reason in risk_reasons if reason not in list(item.get('quality_reasons') or [])]),
                     'normalized_key': item.get('normalized_key') or self._normalize_group_atmosphere_phrase_key(str(item.get('text') or '')),
                     'semantic_key': item.get('semantic_key') or self._normalize_group_atmosphere_semantic_phrase_key(str(item.get('text') or '')),
                     'bound_account_key': '',
@@ -9994,9 +11459,7 @@ class Service:
             deduped_candidates = []
             for candidate in self._sort_group_atmosphere_candidates(row['candidates']):
                 phrase_key = self._normalize_group_atmosphere_semantic_phrase_key(str(candidate.get('text') or '')) or str(candidate.get('candidate_id') or '')
-                is_manual_candidate = candidate.get('customized') is True or str(candidate.get('source_type') or '') in {'manual', 'manual_upload', 'custom', '人工写入'}
-                if is_manual_candidate:
-                    phrase_key = str(candidate.get('candidate_id') or phrase_key)
+                is_manual_candidate = self._group_atmosphere_candidate_is_manual(candidate)
                 source_key = (str(candidate.get('role_positioning') or ''), phrase_key)
                 if source_key in seen_candidate_keys:
                     continue
@@ -10041,14 +11504,21 @@ class Service:
     def _candidate_translation_fallback(self, text: str) -> Dict[str, Any]:
         text_zh = self._translate_group_atmosphere_candidate_to_zh(text)
         if self._group_atmosphere_translation_has_source_language_residue(text_zh):
-            return {'text_zh': '', 'text_zh_source': 'unavailable', 'text_zh_status': 'needs_translation'}
+            return {'text_zh': '暂未生成准确中文翻译，请人工确认原文含义。', 'text_zh_source': 'unavailable', 'text_zh_status': 'needs_translation'}
         status = 'needs_review' if '暂未生成准确中文翻译' in text_zh else 'ok'
         return {'text_zh': text_zh, 'text_zh_source': 'rule', 'text_zh_status': status}
 
     def translate_group_atmosphere_candidate(self, payload: GroupAtmosphereCandidateTranslateRequest) -> Dict[str, Any]:
         config = self._get_group_atmosphere_config(payload.config_name)
         if not config:
-            raise HTTPException(status_code=404, detail='group_atmosphere_config_not_found')
+            candidate_key_probe = str(payload.candidate_id or '').strip()
+            for row in self.list_group_atmosphere_configs():
+                templates_probe = [dict(item or {}) for item in list((row or {}).get('template_pool') or [])]
+                if any(str(item.get('candidate_id') or item.get('template_id') or '').strip() == candidate_key_probe for item in templates_probe):
+                    config = row
+                    break
+            if not config:
+                raise HTTPException(status_code=404, detail='group_atmosphere_config_not_found')
         candidate_key = str(payload.candidate_id or '').strip()
         templates = [dict(item or {}) for item in list(config.get('template_pool') or [])]
         target = None
@@ -10084,9 +11554,31 @@ class Service:
         return {'ok': True, 'config_name': config['config_name'], 'candidate': target}
 
     def save_group_atmosphere_custom_candidate(self, payload: GroupAtmosphereCandidateCustomRequest) -> Dict[str, Any]:
-        config = self._get_group_atmosphere_config(payload.config_name)
+        config_key = str(payload.config_name or '').strip()
+        config = self._get_group_atmosphere_config(config_key)
         if not config:
-            raise HTTPException(status_code=404, detail='group_atmosphere_config_not_found')
+            if str(payload.candidate_id or '').strip():
+                raise HTTPException(status_code=404, detail='group_atmosphere_config_not_found')
+            role_for_new = str(payload.role_positioning or '').strip() or self._group_atmosphere_role_from_key(config_key)
+            language_for_new = 'id'
+            parts = config_key.split('-', 2)
+            if len(parts) >= 3 and parts[0] in {'auto', 'role'} and parts[1]:
+                language_for_new = parts[1]
+            region_for_new = self._group_atmosphere_region_from_language(language_for_new)
+            config = self.upsert_group_atmosphere_config(GroupAtmosphereConfigRequest(
+                config_name=config_key or f'auto-{language_for_new}-{role_for_new or "community_seed"}',
+                enabled=False,
+                account_key=config_key or f'auto-{language_for_new}-{role_for_new or "community_seed"}',
+                target_group=config_key or f'auto-{language_for_new}-{role_for_new or "community_seed"}',
+                group_name=self._default_group_atmosphere_plan_display_name(role_for_new or 'community_seed', region_for_new),
+                language=language_for_new,
+                worker_base_url='',
+                daily_max_messages=0,
+                min_interval_minutes=120,
+                template_pool=[],
+                faq_rules=[],
+                status='candidate_pool',
+            ))
         # 人工写入/编辑的候选文案由运营明确确认：不走上传/学习文案的清洗、过滤、润色、去重机制。
         text = str(payload.text or '').strip()
         if not text:
@@ -10095,6 +11587,11 @@ class Service:
         now = utc_now()
         candidate_id = str(payload.candidate_id or '').strip()
         role = str(payload.role_positioning or '').strip()
+        media_asset = None
+        if payload.remove_media and str(payload.media_id or '').strip():
+            raise HTTPException(status_code=400, detail='media_replace_or_remove_only')
+        if str(payload.media_id or '').strip():
+            media_asset = self.get_group_atmosphere_media_asset(str(payload.media_id or '').strip())
         saved_item = None
         if candidate_id:
             for item in templates:
@@ -10108,6 +11605,17 @@ class Service:
                 item['customized'] = True
                 item['customized_at'] = now
                 item['score'] = self._score_group_atmosphere_phrase(text, role=str(item.get('source_role') or item.get('category') or role)) + 30
+                if payload.remove_media:
+                    for key in ('media_id', 'media_path', 'media_mime_type', 'media_filename', 'media_preview_url'):
+                        item.pop(key, None)
+                    item['asset_type'] = 'text'
+                elif media_asset:
+                    item['asset_type'] = 'image_caption'
+                    item['media_id'] = media_asset.get('media_id')
+                    item['media_path'] = media_asset.get('media_path')
+                    item['media_mime_type'] = media_asset.get('mime_type')
+                    item['media_filename'] = media_asset.get('filename')
+                    item['media_preview_url'] = media_asset.get('preview_url')
                 saved_item = item
                 break
             if saved_item is None:
@@ -10130,6 +11638,15 @@ class Service:
                 'customized': True,
                 'customized_at': now,
             }
+            if media_asset:
+                saved_item.update({
+                    'asset_type': 'image_caption',
+                    'media_id': media_asset.get('media_id'),
+                    'media_path': media_asset.get('media_path'),
+                    'media_mime_type': media_asset.get('mime_type'),
+                    'media_filename': media_asset.get('filename'),
+                    'media_preview_url': media_asset.get('preview_url'),
+                })
             templates.append(saved_item)
         templates = self._sort_group_atmosphere_candidates(self._cap_group_atmosphere_template_pool(templates, limit=100))
         conn = self.db.connect()
@@ -10138,7 +11655,8 @@ class Service:
             (json.dumps(templates, ensure_ascii=False), now, config['config_name']),
         )
         conn.commit()
-        return {'ok': True, 'candidate': saved_item, 'config_name': config['config_name']}
+        cascaded = self._cascade_group_atmosphere_candidate_media_update(saved_item, source_config_name=str(config.get('config_name') or ''))
+        return {'ok': True, 'candidate': saved_item, 'config_name': config['config_name'], 'cascaded_media_configs': cascaded}
 
     def reorder_group_atmosphere_candidates(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         config_key = str((payload or {}).get('config_name') or '').strip()
@@ -10262,6 +11780,7 @@ class Service:
         if not source:
             raise HTTPException(status_code=404, detail='source_config_not_found')
         source_templates = [dict(item or {}) for item in list(source.get('template_pool') or [])]
+        source_role = str((source.get('role_positioning') or (source_templates[0].get('source_role') if source_templates else '') or (source_templates[0].get('role_positioning') if source_templates else '') or (source_templates[0].get('category') if source_templates else '') or self._group_atmosphere_role_from_key(source_config_name)) or '').strip()
         moved: List[Dict[str, Any]] = []
         kept: List[Dict[str, Any]] = []
         for item in source_templates:
@@ -10274,10 +11793,18 @@ class Service:
             raise HTTPException(status_code=404, detail='candidate_not_found')
         language = str(source.get('language') or '').strip() or 'id'
         target_config_name = str((payload or {}).get('target_config_name') or '').strip() or f"auto-{language}-{target_role}"
+        if target_role == source_role or target_config_name == source_config_name:
+            raise HTTPException(status_code=400, detail='target_type_same_as_source')
         target = self._get_group_atmosphere_config(target_config_name)
         target_templates = [dict(item or {}) for item in list((target or {}).get('template_pool') or [])]
         existing_ids = {str(item.get('candidate_id') or item.get('template_id') or '').strip(): idx for idx, item in enumerate(target_templates)}
+        existing_texts = {
+            (self._normalize_group_atmosphere_semantic_phrase_key(str(item.get('text') or '').strip()) or str(item.get('text') or '').strip()): idx
+            for idx, item in enumerate(target_templates)
+            if str(item.get('text') or '').strip()
+        }
         now = utc_now()
+        media_fields = ['asset_type', 'media_id', 'media_path', 'media_mime_type', 'media_filename', 'media_preview_url']
         for item in moved:
             item['role_positioning'] = target_role
             item['source_role'] = target_role
@@ -10286,10 +11813,28 @@ class Service:
             item['moved_from_role_positioning'] = str(source.get('role_positioning') or self._group_atmosphere_role_from_key(source_config_name))
             item['moved_at'] = now
             item_id = str(item.get('candidate_id') or item.get('template_id') or '').strip()
+            text_key = self._normalize_group_atmosphere_semantic_phrase_key(str(item.get('text') or '').strip()) or str(item.get('text') or '').strip()
             if item_id in existing_ids:
                 target_templates[existing_ids[item_id]] = item
+            elif text_key and text_key in existing_texts:
+                existing_item = target_templates[existing_texts[text_key]]
+                existing_item['role_positioning'] = target_role
+                existing_item['source_role'] = target_role
+                existing_item['category'] = target_role
+                existing_item['moved_from_config_name'] = source_config_name
+                existing_item['moved_from_role_positioning'] = item.get('moved_from_role_positioning')
+                existing_item['moved_at'] = now
+                for field in media_fields:
+                    if item.get(field) and (field != 'asset_type' or str(existing_item.get('asset_type') or 'text') in {'', 'text'}):
+                        existing_item[field] = item.get(field)
+                if item.get('media_id') and str(existing_item.get('asset_type') or 'text') == 'text':
+                    existing_item['asset_type'] = item.get('asset_type') or 'image_caption'
+                existing_item['safe_to_send'] = bool(existing_item.get('safe_to_send', item.get('safe_to_send', True)))
+                existing_item['enabled'] = bool(existing_item.get('enabled', item.get('enabled', True)))
             else:
                 target_templates.append(item)
+                if text_key:
+                    existing_texts[text_key] = len(target_templates) - 1
         source_status = str(source.get('status') or '').strip() or 'candidate_pool'
         next_source_status = 'candidate_pool' if not kept else source_status
         with self.db.connect() as conn:
@@ -10394,7 +11939,14 @@ class Service:
     def enable_group_atmosphere_candidates(self, payload: GroupAtmosphereCandidateEnableRequest) -> Dict[str, Any]:
         config = self._get_group_atmosphere_config(payload.config_name)
         if not config:
-            raise HTTPException(status_code=404, detail='group_atmosphere_config_not_found')
+            selected_ids = {str(item).strip() for item in list(payload.candidate_ids or []) if str(item).strip()}
+            for row in self.list_group_atmosphere_configs():
+                templates_probe = [dict(item or {}) for item in list((row or {}).get('template_pool') or [])]
+                if any(str(item.get('candidate_id') or item.get('template_id') or '').strip() in selected_ids for item in templates_probe):
+                    config = row
+                    break
+            if not config:
+                raise HTTPException(status_code=404, detail='group_atmosphere_config_not_found')
         selected_ids = {str(item).strip() for item in list(payload.candidate_ids or []) if str(item).strip()}
         templates = [dict(item or {}) for item in list(config.get('template_pool') or [])]
         enabled_count = 0
@@ -10408,17 +11960,35 @@ class Service:
             item['quality_decision'] = item.get('quality_decision') or 'accept'
             enabled_count += 1
         if enabled_count <= 0:
-            raise HTTPException(status_code=400, detail='candidate_not_found')
+            for row in self.list_group_atmosphere_configs():
+                templates_probe = [dict(item or {}) for item in list((row or {}).get('template_pool') or [])]
+                if any(str(item.get('candidate_id') or item.get('template_id') or '').strip() in selected_ids for item in templates_probe):
+                    config = row
+                    templates = templates_probe
+                    enabled_count = 0
+                    for item in templates:
+                        candidate_id = str(item.get('candidate_id') or item.get('template_id') or '').strip()
+                        if selected_ids and candidate_id not in selected_ids:
+                            continue
+                        item['safe_to_send'] = True
+                        item['enabled'] = True
+                        item['quality_status'] = 'manual_approved'
+                        item['quality_decision'] = item.get('quality_decision') or 'accept'
+                        enabled_count += 1
+                    if enabled_count > 0:
+                        break
+            if enabled_count <= 0:
+                raise HTTPException(status_code=400, detail='candidate_not_found')
         now = utc_now()
         if not str(payload.account_key or '').strip() and not str(payload.target_group or '').strip():
             conn = self.db.connect()
             conn.execute(
                 """
                 UPDATE whatsapp_group_atmosphere_configs
-                SET enabled=0, template_pool=?, status='plan_ready', updated_at=?
+                SET enabled=0, template_pool=?, status=?, updated_at=?
                 WHERE config_name=?
                 """,
-                (json.dumps(templates, ensure_ascii=False), now, config['config_name']),
+                (json.dumps(templates, ensure_ascii=False), 'candidate_pool' if str(config.get('config_name') or '').startswith('auto-') else 'plan_ready', now, config['config_name']),
             )
             conn.commit()
             updated = self._get_group_atmosphere_config(config['config_name'])
@@ -12153,10 +13723,13 @@ class Service:
                     with self.db.connect() as conn:
                         updated_system_status = self._classify_ops_intake_result_status({**reply_envelope, 'reply_text': reply_text})
                         updated_feedback_status = self._ops_intake_feedback_status_for_system_status(updated_system_status)
+                        async_result_snapshot = dict(result or {})
+                        async_result_snapshot.update(reply_envelope)
+                        async_result_snapshot['reply_text'] = reply_text
                         conn.execute(
                             """
                             UPDATE ops_intake_items
-                            SET system_status = ?, feedback_status = ?, reply_text = ?, result_code = ?, result_reason = ?, processed_at = ?
+                            SET system_status = ?, feedback_status = ?, reply_text = ?, result_code = ?, result_reason = ?, result_snapshot = ?, processed_at = ?
                             WHERE result_snapshot LIKE ?
                             """,
                             (
@@ -12165,6 +13738,7 @@ class Service:
                                 reply_text,
                                 str(result.get('result_code') or ''),
                                 str(result.get('result_reason') or result.get('reason') or ''),
+                                json.dumps(async_result_snapshot, ensure_ascii=False, default=str),
                                 utc_now(),
                                 f'%"task_id": "{row["task_id"]}"%',
                             ),
@@ -13218,12 +14792,23 @@ class Service:
         normalized_type = str(responsible_type or '').strip()
         if normalized_type not in {'registration_group', 'official_group'}:
             return {}
-        pending_count = max(int(probe.get('pending_count') or 0), 0)
+        zero_pending_unverified = bool((probe or {}).get('zero_pending_unverified'))
+        pending_count = max(int((probe or {}).get('pending_count') or 0), 0)
         oldest_pending_at = self._binding_oldest_pending_at(probe)
         batch_size = max(int(binding.get('approval_count_threshold') or 0), 1)
         timeout_minutes = max(int(binding.get('approval_timeout_minutes') or 0), 1)
         now = parse_iso_datetime(utc_now())
         cycle_anchor_at = str(binding.get('cycle_anchor_at') or '').strip() or None
+        probe_quality_fields = {
+            'zero_pending_unverified': zero_pending_unverified,
+            'zero_pending_unverified_reason': (probe or {}).get('zero_pending_unverified_reason'),
+            'zero_pending_verified_by': (probe or {}).get('zero_pending_verified_by'),
+            'pending_zero_confidence': (probe or {}).get('pending_zero_confidence'),
+            'probe_data_quality': (probe or {}).get('probe_data_quality') or (probe or {}).get('data_quality'),
+            'empty_queue_visible': bool((probe or {}).get('empty_queue_visible')),
+            'has_pending_section': bool((probe or {}).get('has_pending_section')),
+            'has_pending_request_row': bool((probe or {}).get('has_pending_request_row')),
+        }
         if cycle_anchor_at:
             try:
                 parsed_cycle_anchor = parse_iso_datetime(cycle_anchor_at)
@@ -13246,9 +14831,10 @@ class Service:
             remaining_seconds = max(int((cycle_end - now).total_seconds()), 0)
             remaining_minutes = max((remaining_seconds + 59) // 60, 0)
             return {
+                **probe_quality_fields,
                 'next_approval_ready': False,
-                'next_approval_reason_code': 'waiting_next_cycle',
-                'next_approval_eta_text': self._binding_next_approval_eta_text(
+                'next_approval_reason_code': 'zero_pending_unverified' if zero_pending_unverified else 'waiting_next_cycle',
+                'next_approval_eta_text': '待核验，暂不按 0 人展示' if zero_pending_unverified else self._binding_next_approval_eta_text(
                     pending_count=pending_count,
                     batch_size=batch_size,
                     timeout_minutes=timeout_minutes,
@@ -13257,7 +14843,7 @@ class Service:
                     reason_code='waiting_next_cycle',
                     remaining_minutes=remaining_minutes,
                 ),
-                'next_approval_pending_count': pending_count,
+                'next_approval_pending_count': None if zero_pending_unverified else pending_count,
                 'next_approval_batch_size': batch_size,
                 'next_approval_timeout_minutes': timeout_minutes,
                 'next_approval_elapsed_minutes': elapsed_minutes,
@@ -13272,6 +14858,7 @@ class Service:
         else:
             if not oldest_pending_at:
                 return {
+                    **probe_quality_fields,
                     'next_approval_ready': False,
                     'next_approval_reason_code': 'oldest_pending_unknown',
                     'next_approval_eta_text': '已有待审批，等待更多实时数据后再计算',
@@ -13292,6 +14879,7 @@ class Service:
         remaining_seconds = 0 if ready else max(int((cycle_end - now).total_seconds()), 0)
         remaining_minutes = 0 if ready else max((remaining_seconds + 59) // 60, 0)
         return {
+            **probe_quality_fields,
             'next_approval_ready': ready,
             'next_approval_reason_code': reason_code,
             'next_approval_eta_text': self._binding_next_approval_eta_text(
@@ -13373,10 +14961,14 @@ class Service:
 
     @staticmethod
     def _whatsapp_binding_probe_target(binding: Dict[str, Any]) -> str:
+        # Prefer a resolved WhatsApp chat id when present. Existing group_id is the
+        # stable target for an account that is already in the group; invite-link
+        # resolution can fail in whatsapp-web.js and should not make live monitoring
+        # unusable. If the group has not been resolved yet, fall back to registration_group/link.
         return (
             str(binding.get('group_id') or '').strip()
-            or str(binding.get('link') or '').strip()
             or str(binding.get('registration_group') or '').strip()
+            or str(binding.get('link') or '').strip()
             or str(binding.get('group_name') or '').strip()
         )
 
@@ -13469,9 +15061,12 @@ class Service:
         )
         live_group_name = str(probe.get('group_name') or '').strip()
         live_group_id = str(probe.get('group_id') or '').strip()
-        if live_group_name and (overwrite_existing_name or not str(binding.get('group_name') or '').strip()):
+        current_group_id = str(binding.get('group_id') or '').strip()
+        # 如果按 link 探测出的 group_id 与旧缓存不同，说明群链接已指向新群；此时必须覆盖旧群名/ID。
+        link_resolved_new_group = bool(str(binding.get('link') or '').strip() and live_group_id and live_group_id != current_group_id)
+        if live_group_name and (overwrite_existing_name or link_resolved_new_group or not str(binding.get('group_name') or '').strip()):
             binding['group_name'] = live_group_name
-        if live_group_id and not str(binding.get('group_id') or '').strip():
+        if live_group_id and (link_resolved_new_group or not current_group_id):
             binding['group_id'] = live_group_id
         return probe
 
@@ -13493,12 +15088,14 @@ class Service:
             status = str((verifier or {}).get('status') or '').strip()
             live_group_name = str((runtime_row or {}).get('runtime_probe_group_name') or '').strip()
             live_group_id = str((runtime_row or {}).get('runtime_probe_group_id') or '').strip()
-            if status in live_ready_statuses:
+            current_group_id = str(current.get('group_id') or '').strip()
+            link_resolved_new_group = bool(str(current.get('link') or '').strip() and live_group_id and live_group_id != current_group_id)
+            if status in live_ready_statuses or link_resolved_new_group:
                 current_group_name = str(current.get('group_name') or '').strip()
-                if live_group_name and not current_group_name:
+                if live_group_name and (link_resolved_new_group or not current_group_name):
                     current['group_name'] = live_group_name
                     changed = True
-                if live_group_id and live_group_id != str(current.get('group_id') or '').strip():
+                if live_group_id and live_group_id != current_group_id:
                     current['group_id'] = live_group_id
                     changed = True
             updated_bindings.append(current)
@@ -13518,7 +15115,10 @@ class Service:
         seen_groups: set[str] = set()
         cycle_anchor_map = self._production_ops_cycle_anchor_maps(self._production_ops_daemon_snapshot()).get('registration_group') or {}
         try:
-            accounts_payload = self.list_whatsapp_approval_accounts(lightweight=True) or {}
+            try:
+                accounts_payload = self.list_whatsapp_approval_accounts(lightweight=True) or {}
+            except TypeError:
+                accounts_payload = self.list_whatsapp_approval_accounts() or {}
             accounts = list(accounts_payload.get('rows') or accounts_payload.get('accounts') or [])
         except Exception:
             accounts = []
@@ -13538,18 +15138,15 @@ class Service:
                     continue
                 if binding.get('enabled') is False:
                     continue
-                schedule_runtime = binding.get('schedule_runtime') or self._schedule_runtime(binding.get('schedule_windows') or [])
-                if not bool(schedule_runtime.get('active_now')):
-                    continue
                 queue_group = (
-                    str(binding.get('registration_group') or '').strip()
+                    str(binding.get('link') or '').strip()
+                    or str(binding.get('registration_group') or '').strip()
                     or str(binding.get('group_id') or '').strip()
-                    or str(binding.get('link') or '').strip()
                     or str(binding.get('group_name') or '').strip()
                 )
                 binding_target = (
-                    str(binding.get('group_id') or '').strip()
-                    or str(binding.get('link') or '').strip()
+                    str(binding.get('link') or '').strip()
+                    or str(binding.get('group_id') or '').strip()
                     or str(binding.get('group_name') or '').strip()
                     or queue_group
                 )
@@ -13561,6 +15158,8 @@ class Service:
                     pending_count = binding.get('next_approval_pending_count')
                 group_name = str(binding.get('group_name') or '').strip()
                 group_id = str(binding.get('group_id') or '').strip()
+                if bool(binding.get('zero_pending_unverified')) or str(binding.get('pending_zero_confidence') or '').strip() == 'unverified':
+                    continue
                 if pending_count is None:
                     pending_count = 0
                 pending_count = max(int(pending_count or 0), 0)
@@ -13626,7 +15225,10 @@ class Service:
         seen_targets: set[str] = set()
         cycle_anchor_map = self._production_ops_cycle_anchor_maps(self._production_ops_daemon_snapshot()).get('official_group') or {}
         try:
-            accounts_payload = self.list_whatsapp_approval_accounts(lightweight=True) or {}
+            try:
+                accounts_payload = self.list_whatsapp_approval_accounts(lightweight=True) or {}
+            except TypeError:
+                accounts_payload = self.list_whatsapp_approval_accounts() or {}
             accounts = list(accounts_payload.get('rows') or accounts_payload.get('accounts') or [])
         except Exception:
             accounts = []
@@ -13645,9 +15247,6 @@ class Service:
                 if not isinstance(binding, dict):
                     continue
                 if binding.get('enabled') is False:
-                    continue
-                schedule_runtime = binding.get('schedule_runtime') or self._schedule_runtime(binding.get('schedule_windows') or [])
-                if not bool(schedule_runtime.get('active_now')):
                     continue
                 binding_target = (
                     str(binding.get('group_id') or '').strip()
@@ -15891,21 +17490,31 @@ class Service:
             if not guild_name or not bool(executor.get('enabled')):
                 continue
             health = health_rows.get(guild_name, {})
-            if str(health.get('effective_status') or '').strip() != 'active':
-                continue
             if not self._ops_intake_user_can_access_guild(user, guild_name):
                 continue
             assignees = self._ops_intake_assignees_for_guild(guild_name)
             effective_proxy_url = self._resolve_executor_proxy_url(executor)
+            effective_status = str(health.get('effective_status') or 'active').strip() or 'active'
+            cms_configured = bool(executor.get('platform_authorization_configured'))
+            cms_refresh_configured = bool(executor.get('cms_refresh_token_configured'))
+            oauth_configured = bool(executor.get('oauth_configured'))
+            cms_channel_status = 'valid' if effective_status == 'active' and cms_configured else ('invalid' if cms_configured or cms_refresh_configured else 'not_configured')
+            code_channel_status = 'valid' if oauth_configured else 'not_configured'
             rows.append({
                 'guild_name': guild_name,
-                'effective_status': health.get('effective_status') or 'active',
+                'effective_status': effective_status,
                 'effective_reason': health.get('effective_reason') or '',
-                'route_type': 'cms_id' if bool(executor.get('platform_authorization_configured')) else 'invite_code',
-                'code_required': not bool(executor.get('platform_authorization_configured')),
+                'submission_enabled': effective_status == 'active',
+                'route_type': 'cms_id' if cms_configured else 'invite_code',
+                'code_required': not cms_configured,
                 'default_app': self.lark_default_app_name or 'Linky',
                 'default_agency': guild_name,
                 'assignees': assignees,
+                'cms_channel_status': cms_channel_status,
+                'code_channel_status': code_channel_status,
+                'cms_token_configured': cms_configured,
+                'cms_refresh_token_configured': cms_refresh_configured,
+                'oauth_configured': oauth_configured,
                 'proxy_region': str(executor.get('proxy_region') or ''),
                 'proxy_effective_configured': bool(effective_proxy_url),
                 'proxy_region_mapping_configured': bool(str(executor.get('proxy_region') or '').strip() and self.guild_executor_proxy_region_urls.get(str(executor.get('proxy_region') or '').strip())),
@@ -24093,6 +25702,75 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
     def reset_whatsapp_approval_account_session(self, account_key: str) -> Dict[str, Any]:
         return self.start_whatsapp_approval_account_session(account_key, reset=True)
 
+    def recover_whatsapp_approval_account_runtime(self, account_key: str) -> Dict[str, Any]:
+        normalized_key = str(account_key or '').strip()
+        if not normalized_key:
+            raise HTTPException(status_code=400, detail='account_key is required')
+        account_row = self._get_whatsapp_approval_account_row(normalized_key)
+        if not account_row:
+            raise HTTPException(status_code=404, detail='whatsapp approval account not found')
+        meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
+        runtime_state = self._build_whatsapp_approval_runtime_state(
+            normalized_key,
+            allow_shared_fallback=False,
+            skip_health_check=True,
+        )
+        cached_session = self._cached_whatsapp_approval_session_snapshot(normalized_key, max_age_seconds=300.0)
+        if bool(cached_session.get('login_verified')) or bool(cached_session.get('can_probe')) or (
+            bool(runtime_state.get('ready')) and bool(runtime_state.get('authenticated'))
+        ):
+            meta.pop('manual_recovery_in_progress', None)
+            meta.pop('manual_recovery_started_ts', None)
+            meta.pop('manual_recovery_started_at', None)
+            if meta:
+                self._write_whatsapp_approval_runtime_meta(normalized_key, meta)
+            return {
+                'started': False,
+                'recovery_locked': False,
+                'already_production_ready': True,
+                'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=runtime_state, worker_health={}),
+                'runtime': runtime_state,
+                'session': cached_session,
+            }
+        now_ts = time.time()
+        try:
+            recovery_started_ts = float(meta.get('manual_recovery_started_ts') or 0.0)
+        except (TypeError, ValueError):
+            recovery_started_ts = 0.0
+        if meta.get('manual_recovery_in_progress') and recovery_started_ts and now_ts - recovery_started_ts < 180.0:
+            return {
+                'started': False,
+                'recovery_locked': True,
+                'recovery_in_progress': True,
+                'recovery_lock_remaining_seconds': round(max(0.0, 180.0 - (now_ts - recovery_started_ts)), 3),
+                'account': self._build_whatsapp_approval_account_runtime(account_row, runtime_state=runtime_state, worker_health={}),
+                'runtime': runtime_state,
+                'session': cached_session,
+            }
+        meta['manual_recovery_in_progress'] = True
+        meta['manual_recovery_started_ts'] = now_ts
+        meta['manual_recovery_started_at'] = utc_now()
+        self._write_whatsapp_approval_runtime_meta(normalized_key, meta)
+        result = self.start_whatsapp_approval_account_session(normalized_key, reset=False)
+        session_state = dict(result.get('session') or {})
+        runtime_state = dict(result.get('runtime') or {})
+        if bool(session_state.get('login_verified')) or bool(session_state.get('can_probe')) or (
+            bool(runtime_state.get('ready')) and bool(runtime_state.get('authenticated'))
+        ):
+            meta = self._read_whatsapp_approval_runtime_meta(normalized_key)
+            meta.pop('manual_recovery_in_progress', None)
+            meta.pop('manual_recovery_started_ts', None)
+            meta.pop('manual_recovery_started_at', None)
+            if meta:
+                self._write_whatsapp_approval_runtime_meta(normalized_key, meta)
+        result['recovery_locked'] = not (
+            bool(session_state.get('login_verified')) or bool(session_state.get('can_probe')) or (
+                bool(runtime_state.get('ready')) and bool(runtime_state.get('authenticated'))
+            )
+        )
+        result['recovery_in_progress'] = bool(result.get('recovery_locked'))
+        return result
+
     def _maybe_auto_recover_whatsapp_approval_account_session(
         self,
         account_key: str,
@@ -24488,6 +26166,59 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'next_approval_runtime': next_approval_runtime,
         }
 
+    def _persist_whatsapp_approval_binding_probe_identity(
+        self,
+        account_key: str,
+        binding_index: int,
+        binding: Dict[str, Any],
+        live_probe: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        normalized_key = str(account_key or '').strip()
+        if not normalized_key or binding_index < 0 or not isinstance(live_probe, dict):
+            return binding
+        probed_group_id = str(live_probe.get('group_id') or '').strip()
+        probed_group_name = str(live_probe.get('group_name') or '').strip()
+        if not probed_group_id and not probed_group_name:
+            return binding
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "SELECT group_links FROM whatsapp_approval_accounts WHERE account_key = ?",
+                (normalized_key,),
+            ).fetchone()
+            if row is None:
+                return binding
+            try:
+                raw_bindings = json.loads(str(row['group_links'] or '[]'))
+            except Exception:
+                raw_bindings = []
+            if not isinstance(raw_bindings, list) or binding_index >= len(raw_bindings):
+                return binding
+            normalized_bindings = _normalize_group_link_bindings([dict(item or {}) for item in raw_bindings if isinstance(item, dict)])
+            if binding_index >= len(normalized_bindings):
+                return binding
+            target = dict(normalized_bindings[binding_index] or {})
+            changed = False
+            if probed_group_id and str(target.get('group_id') or '').strip() != probed_group_id:
+                target['group_id'] = probed_group_id
+                target['registration_group'] = probed_group_id
+                changed = True
+            elif probed_group_id and not str(target.get('registration_group') or '').strip():
+                target['registration_group'] = probed_group_id
+                changed = True
+            if probed_group_name and str(target.get('group_name') or '').strip() != probed_group_name:
+                target['group_name'] = probed_group_name
+                changed = True
+            if not changed:
+                return {**binding, **target}
+            target['config_fingerprint'] = _whatsapp_approval_binding_config_fingerprint(target)
+            normalized_bindings[binding_index] = target
+            conn.execute(
+                "UPDATE whatsapp_approval_accounts SET group_links = ?, verification_status = ?, updated_at = ? WHERE account_key = ?",
+                (json.dumps(normalized_bindings, ensure_ascii=False), 'pending_verification', utc_now(), normalized_key),
+            )
+            conn.commit()
+        return {**binding, **target}
+
     def refresh_whatsapp_approval_binding_probe(self, account_key: str, binding_index: int) -> Dict[str, Any]:
         account = self._get_whatsapp_approval_account_runtime_row(account_key)
         bindings = list(account.get('group_binding_runtimes') or account.get('group_link_bindings') or [])
@@ -24529,6 +26260,13 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 allow_shared_fallback=True,
                 attempts=2,
                 timeout_seconds=10.0,
+            )
+        if isinstance(live_probe, dict):
+            binding = self._persist_whatsapp_approval_binding_probe_identity(
+                str(account.get('account_key') or '').strip(),
+                binding_index,
+                binding,
+                live_probe,
             )
         verifier = self._binding_membership_verifier_state(
             binding,
@@ -25033,11 +26771,26 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             cycle_binding_link = str(cycle_context.get('binding_link') or '').strip()
             payload_group_id = str(payload.get('group_id') or '').strip()
             payload_group_name = str(payload.get('group_name') or '').strip()
+            expected_config_fingerprint = str(binding.get('config_fingerprint') or '').strip()
+            incoming_config_fingerprint = str(
+                monitor_target.get('config_fingerprint')
+                or cycle_context.get('config_fingerprint')
+                or decision_group_state.get('config_fingerprint')
+                or payload.get('config_fingerprint')
+                or ''
+            ).strip()
+            if expected_config_fingerprint and incoming_config_fingerprint and incoming_config_fingerprint != expected_config_fingerprint:
+                return {}
+            monitor_registration_group = str(monitor_target.get('registration_group') or cycle_registration_group).strip()
+            # 群链接是配置真源。若 daemon 状态仍是旧 group_id 目标，不能仅因为 binding_link/旧群名相同就复用旧探针结果。
+            if binding_link and monitor_registration_group and monitor_registration_group != binding_link:
+                if not (binding_group_id and payload_group_id and payload_group_id == binding_group_id):
+                    return {}
             target_matches_monitor = any([
-                bool(binding_group and str(monitor_target.get('registration_group') or cycle_registration_group).strip() == binding_group),
+                bool(binding_group and monitor_registration_group == binding_group),
                 bool(binding_group_id and str(payload_group_id or monitor_target.get('group_id') or cycle_group_id or cycle_registration_group).strip() == binding_group_id),
-                bool(binding_link and str(monitor_target.get('binding_link') or cycle_binding_link).strip() == binding_link),
-                bool(binding_group_name and str(monitor_target.get('group_name') or monitor_target.get('binding_group_name') or payload_group_name or cycle_group_name).strip() == binding_group_name),
+                bool(binding_link and monitor_registration_group == binding_link),
+                bool(binding_group_name and not binding_link and str(monitor_target.get('group_name') or monitor_target.get('binding_group_name') or payload_group_name or cycle_group_name).strip() == binding_group_name),
             ])
             if not target_matches_monitor:
                 return {}
@@ -25049,6 +26802,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 **payload,
                 'source': decision_group_state.get('source') or payload.get('source') or 'production_ops_daemon',
                 'source_base_url': str(monitor_target.get('worker_base_url') or cycle_context.get('worker_base_url') or '').strip() or None,
+                'config_fingerprint': incoming_config_fingerprint or expected_config_fingerprint or None,
                 'probe_target': binding_group_id or binding_group or binding_link or binding_group_name or str(payload.get('group_id') or '').strip() or str(payload.get('group_name') or '').strip(),
                 'zero_pending_unverified': bool(decision_group_state.get('zero_pending_unverified', payload.get('zero_pending_unverified'))),
                 'zero_pending_unverified_reason': decision_group_state.get('zero_pending_unverified_reason') or payload.get('zero_pending_unverified_reason'),
@@ -25347,22 +27101,6 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 'requires_manual_seed': True,
                 'status': 'monitor_disabled',
                 'detail': '不监控',
-            }
-        schedule_runtime = dict(binding.get('schedule_runtime') or {})
-        if schedule_runtime.get('configured') and not bool(schedule_runtime.get('active_now')):
-            outside_pending_raw = live_probe.get('pending_count') if isinstance(live_probe, dict) and live_probe.get('pending_count') is not None else binding.get('next_approval_pending_count')
-            try:
-                outside_pending_count = max(int(outside_pending_raw or 0), 0)
-            except (TypeError, ValueError):
-                outside_pending_count = 0
-            return {
-                'ready': True,
-                'requires_manual_seed': False,
-                'status': 'outside_schedule',
-                'detail': f'时段外待命；当前审批列表 {outside_pending_count} 人；配置有效，自动审批暂停。',
-                'source': 'schedule_window',
-                'probe': dict(live_probe or {}),
-                'truth_state': {},
             }
         binding_probe = dict(live_probe or {})
         binding_probe_has_authoritative_data = bool(
@@ -25813,6 +27551,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             item['schedule_runtime'] = self._schedule_runtime(item['schedule_windows'])
             item['notify_robot_name'] = self._notify_robot_name(item.get('notify_profile_name'))
             item['approval_rule_text'] = _approval_condition_text(item['approval_count_threshold'], item['approval_timeout_minutes'])
+            item['config_fingerprint'] = _whatsapp_approval_binding_config_fingerprint(item)
         serialized['group_link_bindings'] = group_link_bindings
         serialized['group_links'] = [str(item.get('link') or '').strip() for item in group_link_bindings if str(item.get('link') or '').strip()]
         if not default_area and group_link_bindings:
@@ -25835,7 +27574,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         enabled_binding_count = 0
         binding_runtime_rows: list[dict[str, Any]] = []
         for item in group_link_bindings:
-            link = str(item.get('link') or '').strip()
+            link = _normalize_whatsapp_group_invite_link(item.get('link'))
             area = str(item.get('area') or '').strip()
             notify_profile_name = str(item.get('notify_profile_name') or '').strip()
             registration_group = str(item.get('registration_group') or '').strip()
@@ -25868,6 +27607,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 'auto_recover_worker': bool(item.get('auto_recover_worker')),
                 'schedule_windows': item.get('schedule_windows') or [],
                 'schedule_runtime': item.get('schedule_runtime') or self._schedule_runtime(item.get('schedule_windows') or []),
+                'config_fingerprint': item.get('config_fingerprint') or _whatsapp_approval_binding_config_fingerprint(item),
                 'link_ok': link_ok,
             })
 
@@ -25900,7 +27640,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
 
         monitor_runtime_active = daemon_enabled and bool(production_runtime.get('launch_agent_installed'))
 
-        active_binding_count = sum(1 for item in binding_runtime_rows if item.get('enabled') and (item.get('schedule_runtime') or {}).get('active_now'))
+        active_binding_count = sum(1 for item in binding_runtime_rows if item.get('enabled'))
         all_binding_areas_ok = not invalid_binding_areas
         all_binding_notify_ok = not missing_binding_notify
         all_binding_rules_ok = all(
@@ -25985,9 +27725,8 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 binding=runtime_row,
                 probe=probe if isinstance(probe, dict) else {},
             ))
-            binding_schedule_active = bool((runtime_row.get('schedule_runtime') or {}).get('active_now'))
             binding_enabled = bool(runtime_row.get('enabled'))
-            runtime_row['monitoring_effective'] = bool(serialized.get('enabled')) and daemon_enabled and binding_enabled and binding_schedule_active
+            runtime_row['monitoring_effective'] = bool(serialized.get('enabled')) and daemon_enabled and binding_enabled
             if not serialized.get('enabled'):
                 runtime_row['monitoring_status_text'] = '账号已关闭'
                 runtime_row.update(self._paused_binding_next_approval_runtime(
@@ -26014,15 +27753,6 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                     timeout_minutes=runtime_row.get('next_approval_timeout_minutes') or runtime_row.get('approval_timeout_minutes') or 1,
                     reason_code='binding_monitor_disabled',
                     eta_text='已暂停',
-                ))
-            elif not binding_schedule_active:
-                runtime_row['monitoring_status_text'] = '已登录·待命时段' if session_state.get('login_verified') else '时段外未生效'
-                runtime_row.update(self._paused_binding_next_approval_runtime(
-                    pending_count=runtime_row.get('next_approval_pending_count') or 0,
-                    batch_size=runtime_row.get('next_approval_batch_size') or runtime_row.get('approval_count_threshold') or 1,
-                    timeout_minutes=runtime_row.get('next_approval_timeout_minutes') or runtime_row.get('approval_timeout_minutes') or 1,
-                    reason_code='binding_outside_schedule',
-                    eta_text='待命时段' if session_state.get('login_verified') else '时段外',
                 ))
             else:
                 runtime_row['monitoring_status_text'] = '监控中'
@@ -26142,7 +27872,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             {
                 'code': 'binding_schedule_window',
                 'ok': True,
-                'detail': f'当前有 {active_binding_count}/{enabled_binding_count or 0} 条已监控群绑定在监控时段内生效',
+                'detail': f'当前有 {active_binding_count}/{enabled_binding_count or 0} 条已开启群绑定处于监控中',
             },
             {
                 'code': 'binding_monitor_enabled',
@@ -26185,13 +27915,12 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         account_schedule_runtime = self._schedule_runtime(account_schedule_windows)
         enabled_binding_rows = [item for item in binding_runtime_rows if item.get('enabled')]
         if enabled_binding_rows:
-            account_active_now = active_binding_count > 0
-            binding_schedule_configured = any((item.get('schedule_runtime') or {}).get('configured') for item in enabled_binding_rows)
+            account_active_now = True
             schedule_runtime = {
-                'configured': bool(binding_schedule_configured),
-                'active_now': bool(account_active_now),
-                'status': 'active_window' if account_active_now else 'outside_window',
-                'label': '任一群绑定当前时段生效中' if account_active_now else '当前不在任一群绑定监控时段',
+                'configured': False,
+                'active_now': True,
+                'status': 'always_on',
+                'label': '账号已开启，全部已启用群绑定持续监控中',
                 'active_binding_count': active_binding_count,
                 'enabled_binding_count': len(enabled_binding_rows),
             }
@@ -26298,11 +28027,6 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             status_color = 'amber'
             status_text = '待登录'
             next_action = '先完成扫码登录并通过可用性检测'
-        elif not account_active_now:
-            runtime_status = 'off_schedule'
-            status_color = 'blue'
-            status_text = '已登录·待命时段'
-            next_action = '等待进入任一群绑定监控时段后自动生效'
         else:
             runtime_status = 'active'
             status_color = 'green'
@@ -26592,7 +28316,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             raise HTTPException(status_code=400, detail='responsible_type must be registration_group or official_group')
         with self.db.connect() as conn:
             existing_row_raw = conn.execute(
-                "SELECT account_key, assigned_customer_service_user_id, assigned_customer_service_username, assigned_customer_service_display_name FROM whatsapp_approval_accounts WHERE account_key = ?",
+                "SELECT account_key, assigned_customer_service_user_id, assigned_customer_service_username, assigned_customer_service_display_name, group_links FROM whatsapp_approval_accounts WHERE account_key = ?",
                 (normalized_key,),
             ).fetchone()
         existing_row = dict(existing_row_raw) if existing_row_raw is not None else None
@@ -26672,8 +28396,17 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 'schedule_windows': fallback_schedule_windows,
             } for link in fallback_links]
         group_link_bindings = []
+        existing_bindings: List[Dict[str, Any]] = []
+        if existing_row:
+            try:
+                existing_raw = json.loads(str(existing_row.get('group_links') or '[]'))
+                if isinstance(existing_raw, list):
+                    existing_bindings = [dict(item or {}) for item in existing_raw if isinstance(item, dict)]
+            except Exception:
+                existing_bindings = []
+        probe_refresh_bindings: list[int] = []
         for index, item in enumerate(raw_bindings, start=1):
-            link = str(item.get('link') or '').strip()
+            link = _normalize_whatsapp_group_invite_link(item.get('link'))
             area = str(item.get('area') or '').strip()
             notify_profile_name = str(item.get('notify_profile_name') or '').strip()
             registration_group = str(item.get('registration_group') or '').strip()
@@ -26687,11 +28420,22 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             if not notify_profile_name:
                 raise HTTPException(status_code=400, detail=f'group link #{index} must select a notify robot')
             schedule_windows = _normalize_schedule_windows_payload(item.get('schedule_windows') or [])
+            existing_binding = existing_bindings[index - 1] if index - 1 < len(existing_bindings) else {}
+            existing_link = _normalize_whatsapp_group_invite_link(existing_binding.get('link')) if existing_binding else ''
+            link_changed = bool(existing_link and link and existing_link != link)
+            if link_changed:
+                # 运营换群链接后，旧 group_id/group_name/registration_group 不能继续随表单隐藏字段提交回来。
+                registration_group = ''
+                group_id = ''
+                probe_refresh_bindings.append(index - 1)
+            elif link and not (registration_group or group_id):
+                # 新增/未解析群组需要保存后自动探测一次，拿到稳定 group_id 后 daemon 才能持续监控。
+                probe_refresh_bindings.append(index - 1)
             if any(not re.fullmatch(r'\d{2}:\d{2}', str(window.get('start') or '')) or not re.fullmatch(r'\d{2}:\d{2}', str(window.get('end') or '')) for window in (item.get('schedule_windows') or [])):
                 raise HTTPException(status_code=400, detail=f'group link #{index} schedule window must use HH:MM format')
             group_link_bindings.append({
                 'link': link,
-                'group_name': str(item.get('group_name') or '').strip(),
+                'group_name': '' if link_changed else str(item.get('group_name') or '').strip(),
                 'area': area,
                 'notify_profile_name': notify_profile_name,
                 'enabled': False if item.get('enabled') is False else True,
@@ -26731,6 +28475,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             if item['approval_timeout_minutes'] <= 0:
                 raise HTTPException(status_code=400, detail=f'group link #{index} approval_timeout_minutes must be a positive integer')
             item['auto_recover_worker'] = bool(item.get('auto_recover_worker')) if item.get('auto_recover_worker') is not None else bool(payload.auto_recover_worker)
+            item['config_fingerprint'] = _whatsapp_approval_binding_config_fingerprint(item)
         # 保存配置必须是纯配置写入，不能同步等待 WhatsApp runtime / health / live probe。
         # 真实群名、group_id、成员/待审批探针由列表页轻量快照或显式刷新动作处理，避免点击保存后长时间无响应。
         runtime_state = self._build_whatsapp_approval_runtime_state(
@@ -26798,6 +28543,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             conn.commit()
         return {
             'saved': True,
+            'probe_refresh_bindings': sorted(set(index for index in probe_refresh_bindings if 0 <= index < len(group_link_bindings))),
             'account': self._build_whatsapp_approval_account_runtime(row, runtime_state=runtime_state, session_state={}, skip_live_probe=True),
         }
 
@@ -27123,6 +28869,8 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 'requires_human_action': human_visible,
                 'human_action_type': human.get('human_action_type') if human_visible else None,
                 'human_action_task_id': human.get('task_id') if human_visible else None,
+                'cms_channel_status': 'valid' if cms_keepalive_ok and cms_token_configured else ('invalid' if cms_token_configured or cms_refresh_configured else 'not_configured'),
+                'code_channel_status': 'valid' if bool(executor.get('oauth_configured')) else 'not_configured',
             })
         return {'rows': rows}
 
@@ -28429,7 +30177,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
     auth_enabled = (
         bool(cfg.get('AUTH_ENABLED'))
         if 'AUTH_ENABLED' in cfg
-        else cfg['DB_PATH'] != ':memory:'
+        else (settings is None and cfg['DB_PATH'] != ':memory:')
     )
     auth_cookie_secure = (
         bool(cfg.get('AUTH_COOKIE_SECURE'))
@@ -28934,7 +30682,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         if path.startswith('/api/ops/local-intake-bot-gateway/') and normalized_method == 'POST':
             return OPS_AUTH_ROLE_CUSTOMER_SERVICE
         if path.startswith('/api/ops/intake-bot-presets/') and normalized_method in {'POST', 'DELETE'}:
-            return OPS_AUTH_ROLE_CUSTOMER_SERVICE
+            return OPS_AUTH_ROLE_ADMIN
         if path in {
             '/api/ops/registration-group-approval-executor-warmup',
             '/api/ops/group-approvals/executor/warmup',
@@ -30243,6 +31991,48 @@ Promise.all([loadAccounts(), loadRegionOptions()]);
             raise HTTPException(status_code=404, detail='media_file_not_found')
         return Response(content=path.read_bytes(), media_type=str(media.get('mime_type') or 'application/octet-stream'))
 
+    def _extract_group_atmosphere_phrase_lines_from_rows(rows: List[List[Any]]) -> List[str]:
+        if not rows:
+            return []
+        header_values = [str(value or '').strip().lower() for value in rows[0]]
+        phrase_headers = {'话术', '话术内容', '文案', '内容', 'caption', 'text', 'phrase', 'message', 'message_text', 'content'}
+        phrase_col = next((idx for idx, value in enumerate(header_values) if value in phrase_headers), None)
+        data_rows = rows[1:] if phrase_col is not None else rows
+        if phrase_col is None:
+            max_cols = max((len(row) for row in data_rows), default=0)
+            def _score_cell(value: Any) -> int:
+                text = str(value or '').strip()
+                if not text:
+                    return 0
+                if re.fullmatch(r'\d{1,5}', text):
+                    return -20
+                if len(text) <= 3:
+                    return -5
+                score = min(len(text), 160)
+                if re.search(r'[.!?。！？,，]\s*|\s', text):
+                    score += 20
+                if re.search(r'[A-Za-z]{3,}|[\u4e00-\u9fff]{3,}', text):
+                    score += 20
+                if re.search(r'(kak|admin|grup|daftar|bonus|aktif|tanya|share|cerita|hola|oi|amiga)', text, flags=re.I):
+                    score += 30
+                return score
+            col_scores = []
+            for idx in range(max_cols):
+                values = [row[idx] for row in data_rows if idx < len(row)]
+                non_empty = [str(v or '').strip() for v in values if str(v or '').strip()]
+                score = sum(_score_cell(v) for v in values) + len(non_empty)
+                col_scores.append((score, idx))
+            phrase_col = max(col_scores, default=(0, 0))[1]
+        phrases: List[str] = []
+        for row in data_rows:
+            if phrase_col >= len(row):
+                continue
+            text = str(row[phrase_col] or '').strip()
+            if not text:
+                continue
+            phrases.extend([line.strip() for line in text.splitlines() if line.strip()])
+        return phrases
+
     def _parse_group_atmosphere_phrase_upload_file(filename: str, raw: bytes) -> str:
         name = str(filename or '')
         if re.search(r'\.xlsx$', name, flags=re.I):
@@ -30251,62 +32041,58 @@ Promise.all([loadAccounts(), loadRegionOptions()]);
             except Exception:
                 raise HTTPException(status_code=400, detail='xlsx_parse_failed')
             sheet = workbook.active
-            rows = list(sheet.iter_rows(values_only=True))
-            if not rows:
-                return ''
-            header_values = [str(value or '').strip().lower() for value in rows[0]]
-            phrase_headers = {'话术', '话术内容', '文案', '内容', 'caption', 'text', 'phrase', 'message', 'message_text', 'content'}
-            phrase_col = next((idx for idx, value in enumerate(header_values) if value in phrase_headers), None)
-            data_rows = rows[1:] if phrase_col is not None else rows
-            if phrase_col is None:
-                max_cols = max((len(row) for row in data_rows), default=0)
-                def _score_cell(value: Any) -> int:
-                    text = str(value or '').strip()
-                    if not text:
-                        return 0
-                    if re.fullmatch(r'\d{1,5}', text):
-                        return -20
-                    if len(text) <= 3:
-                        return -5
-                    score = min(len(text), 160)
-                    if re.search(r'[.!?。！？,，]\s*|\s', text):
-                        score += 20
-                    if re.search(r'[A-Za-z]{3,}|[\u4e00-\u9fff]{3,}', text):
-                        score += 20
-                    if re.search(r'(kak|admin|grup|daftar|bonus|aktif|tanya|share|cerita)', text, flags=re.I):
-                        score += 30
-                    return score
-                col_scores = []
-                for idx in range(max_cols):
-                    values = [row[idx] for row in data_rows if idx < len(row)]
-                    non_empty = [str(v or '').strip() for v in values if str(v or '').strip()]
-                    score = sum(_score_cell(v) for v in values) + len(non_empty)
-                    col_scores.append((score, idx))
-                phrase_col = max(col_scores, default=(0, 0))[1]
-            phrases: List[str] = []
-            for row in data_rows:
-                if phrase_col >= len(row):
-                    continue
-                value = row[phrase_col]
-                text = str(value or '').strip()
-                if not text:
-                    continue
-                phrases.extend([line.strip() for line in text.splitlines() if line.strip()])
-            return '\n'.join(phrases)
-        if re.search(r'\.xls$', name, flags=re.I):
-            # 兼容部分后台导出的“伪 xls”（本质是文本/TSV）；真正二进制 xls 需要额外 xlrd 依赖，暂不强装。
+            rows = [list(row) for row in sheet.iter_rows(values_only=True)]
+            return '\n'.join(_extract_group_atmosphere_phrase_lines_from_rows(rows))
+        if re.search(r'\.csv$', name, flags=re.I):
             content = raw.decode('utf-8-sig', errors='ignore')
-            if content.strip() and not content.lstrip().startswith('<'):
-                lines = []
-                for line in content.splitlines():
-                    first_cell = line.split('\t', 1)[0].split(',', 1)[0].strip()
-                    if first_cell and first_cell.lower() not in {'话术', '文案', 'caption', 'text', 'phrase', 'message', 'content'}:
-                        lines.append(first_cell)
-                return '\n'.join(lines)
-            raise HTTPException(status_code=400, detail='xls_binary_parser_not_available')
-        if re.search(r'\.(txt|csv)$', name, flags=re.I):
+            rows = [row for row in csv.reader(io.StringIO(content))]
+            return '\n'.join(_extract_group_atmosphere_phrase_lines_from_rows(rows))
+        if re.search(r'\.xls$', name, flags=re.I):
+            content = raw.decode('utf-8-sig', errors='ignore')
+            if content.strip() and not content.lstrip().startswith('<') and not raw.startswith(b'\xd0\xcf\x11\xe0'):
+                rows = [line.split('\t') if '\t' in line else line.split(',') for line in content.splitlines()]
+                return '\n'.join(_extract_group_atmosphere_phrase_lines_from_rows(rows))
+            try:
+                import xlrd  # type: ignore
+                workbook = xlrd.open_workbook(file_contents=raw)
+                sheet = workbook.sheet_by_index(0)
+                rows = [[sheet.row(r)[c].value for c in range(sheet.ncols)] for r in range(sheet.nrows)]
+                return '\n'.join(_extract_group_atmosphere_phrase_lines_from_rows(rows))
+            except ImportError:
+                raise HTTPException(status_code=400, detail='xls_parser_not_installed')
+            except Exception:
+                raise HTTPException(status_code=400, detail='xls_parse_failed')
+        if re.search(r'\.txt$', name, flags=re.I):
             return raw.decode('utf-8-sig', errors='ignore')
         raise HTTPException(status_code=400, detail='unsupported_phrase_file_type')
+
+    @app.post('/api/ops/group-atmosphere/phrases/manual-upload-preview-file')
+    async def group_atmosphere_phrases_manual_upload_preview_file(
+        file: UploadFile = File(...),
+        region: str = Form('印尼'),
+        language: str = Form('id'),
+        role_positioning: str = Form('community_seed'),
+    ) -> Dict[str, Any]:
+        raw = await file.read()
+        content = _parse_group_atmosphere_phrase_upload_file(str(file.filename or ''), raw)
+        return service.preview_manual_upload_group_atmosphere_phrases({
+            'region': region,
+            'language': language,
+            'role_positioning': role_positioning,
+            'content': content,
+        })
+
+    @app.post('/api/ops/group-atmosphere/phrases/manual-upload-preview')
+    def group_atmosphere_phrases_manual_upload_preview(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+        return service.preview_manual_upload_group_atmosphere_phrases(payload)
+
+    @app.post('/api/ops/group-atmosphere/phrases/manual-upload-translate')
+    def group_atmosphere_phrases_manual_upload_translate(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+        return service.translate_group_atmosphere_manual_upload_text(payload)
+
+    @app.post('/api/ops/group-atmosphere/phrases/manual-upload-confirm')
+    def group_atmosphere_phrases_manual_upload_confirm(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+        return service.confirm_manual_upload_group_atmosphere_phrases(payload)
 
     @app.post('/api/ops/group-atmosphere/phrases/manual-upload-file')
     async def group_atmosphere_phrases_manual_upload_file(
@@ -30343,6 +32129,26 @@ Promise.all([loadAccounts(), loadRegionOptions()]);
     @app.get('/api/ops/group-atmosphere/role-bindings')
     def group_atmosphere_role_bindings() -> Dict[str, Any]:
         return service.list_group_atmosphere_role_bindings()
+
+    @app.get('/api/ops/group-atmosphere/trigger-rules')
+    def group_atmosphere_trigger_rules(relationship_key: str = '') -> Dict[str, Any]:
+        return service.list_group_atmosphere_trigger_rules(relationship_key)
+
+    @app.post('/api/ops/group-atmosphere/trigger-rules')
+    def group_atmosphere_trigger_rules_upsert(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+        return service.upsert_group_atmosphere_trigger_rule(payload)
+
+    @app.delete('/api/ops/group-atmosphere/trigger-rules/{rule_id}')
+    def group_atmosphere_trigger_rules_delete(rule_id: str) -> Dict[str, Any]:
+        return service.delete_group_atmosphere_trigger_rule(rule_id)
+
+
+    @app.post('/api/ops/group-atmosphere/role-bindings/{binding_id}/trigger-rules')
+    def group_atmosphere_role_binding_trigger_rules_upsert(binding_id: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+        binding = service.get_group_atmosphere_role_binding(binding_id)
+        data = dict(payload or {})
+        data['relationship_key'] = str(binding.get('role_key') or '')
+        return service.upsert_group_atmosphere_trigger_rule(data)
 
     @app.post('/api/ops/group-atmosphere/role-bindings')
     def group_atmosphere_role_bindings_upsert(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
@@ -30487,6 +32293,10 @@ Promise.all([loadAccounts(), loadRegionOptions()]);
     def group_atmosphere_inbound_message(payload: GroupAtmosphereInboundMessageRequest) -> Dict[str, Any]:
         return service.handle_group_atmosphere_inbound_message(payload)
 
+    @app.post('/api/internal/group-atmosphere/inbound-message')
+    def internal_group_atmosphere_inbound_message(payload: GroupAtmosphereInboundMessageRequest) -> Dict[str, Any]:
+        return service.handle_group_atmosphere_inbound_message(payload)
+
     @app.post('/api/ops/group-atmosphere/import-chat-records')
     def group_atmosphere_import_chat_records(payload: GroupAtmosphereImportChatRecordsRequest) -> Dict[str, Any]:
         return service.import_group_atmosphere_chat_records(payload)
@@ -30589,14 +32399,11 @@ Promise.all([loadAccounts(), loadRegionOptions()]);
         ]
         customer_service_items = [
             ('/ops/intake-submit', '绑定中心'),
-            ('/ops/intake-bot-presets', '收口配置中心'),
             ('/ops/production-ops', '群审批控制台'),
             ('/ops/registration-group-approval-batch-members', '注册群审批留存页'),
-            ('/ops/accounts', '账号设置'),
         ]
         operator_items = [
             ('/ops/group-atmosphere', '群聊天助手'),
-            ('/ops/accounts', '账号设置'),
         ]
         if normalized_role == OPS_AUTH_ROLE_OPERATOR:
             items = operator_items
@@ -30837,7 +32644,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
 
     @app.get('/ops/accounts', response_class=HTMLResponse)
     def ops_accounts_page(request: Request) -> str:
-        user = _require_ops_user(request)
+        user = _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
         role = normalize_ops_role(user.get('role'))
         return _with_ops_shell_style(
             _ops_accounts_page_html(role),
@@ -31074,9 +32881,8 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
 
     @app.get('/ops/intake-bot-presets', response_class=HTMLResponse)
     def intake_bot_presets_page(request: Request) -> str:
-        user = _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
-        html = INTAKE_BOT_PRESETS_PAGE_HTML.replace('__OPS_USER_ROLE__', str(user.get('role') or '').strip())
-        return _with_ops_shell_style(html, str(user.get('role') or '').strip(), page='intake-bot-presets')
+        _require_ops_user(request, role=OPS_AUTH_ROLE_CUSTOMER_SERVICE)
+        return RedirectResponse(url='/ops/intake-submit', status_code=303)
 
     @app.get('/ops/production-ops', response_class=HTMLResponse)
     def production_ops_page(request: Request) -> str:
@@ -31590,11 +33396,18 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
 
     def _approval_realtime_seed_snapshot_if_empty() -> Dict[str, Any]:
         store = _approval_realtime_store()
-        snapshot = store.snapshot()
-        if int(snapshot.get('snapshot_version') or 0) > 0:
-            return snapshot
+        # Always try to refresh from the server-side lightweight snapshot on HTTP reload.
+        # This endpoint is the page's polling source; returning the first in-memory
+        # snapshot forever made pending approval counts look stale even when the
+        # daemon/status files had newer group-state data. This remains side-effect
+        # free: lightweight=True reads backend/runtime snapshots only and does not
+        # trigger WhatsApp probes, QR generation, or approval actions.
         payload = service.list_whatsapp_approval_accounts(lightweight=True) or {}
-        return store.ingest_snapshot(payload, source='lightweight_snapshot_seed')['snapshot']
+        rows = payload.get('rows') if isinstance(payload, dict) else []
+        snapshot = store.snapshot()
+        if rows or int(snapshot.get('snapshot_version') or 0) <= 0:
+            return store.ingest_snapshot(payload, source='lightweight_snapshot_refresh')['snapshot']
+        return snapshot
 
     @app.get('/api/ops/whatsapp-approval-accounts/realtime-snapshot')
     def ops_whatsapp_approval_accounts_realtime_snapshot():
@@ -31749,6 +33562,11 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     def ops_whatsapp_approval_account_runtime_stop(account_key: str, request: Request):
         service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
         return service.stop_whatsapp_approval_account_runtime(account_key)
+
+    @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/recover')
+    def ops_whatsapp_approval_account_runtime_recover(account_key: str, request: Request):
+        service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
+        return service.recover_whatsapp_approval_account_runtime(account_key)
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/runtime/internal/stop')
     def ops_whatsapp_approval_account_runtime_internal_stop(account_key: str):
@@ -32160,10 +33978,16 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
             configured_scopes: set[str] = set()
             active_targets: Dict[str, set[str]] = {'registration_group': set(), 'official_group': set()}
             try:
-                current_accounts_payload = service.list_whatsapp_approval_accounts(lightweight=True) if hasattr(service, 'list_whatsapp_approval_accounts') else {}
+                if hasattr(service, 'list_whatsapp_approval_accounts'):
+                    try:
+                        current_accounts_payload = service.list_whatsapp_approval_accounts(lightweight=True)
+                    except TypeError:
+                        current_accounts_payload = service.list_whatsapp_approval_accounts()
+                else:
+                    current_accounts_payload = {}
             except Exception:
                 return configured_scopes, active_targets
-            current_account_rows = current_accounts_payload.get('rows') if isinstance(current_accounts_payload, dict) else None
+            current_account_rows = (current_accounts_payload.get('rows') or current_accounts_payload.get('accounts')) if isinstance(current_accounts_payload, dict) else None
             if not isinstance(current_account_rows, list):
                 return configured_scopes, active_targets
             for account in current_account_rows:

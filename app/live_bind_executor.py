@@ -237,7 +237,7 @@ class LiveChromeBindExecutor:
                     'raw_result': raw_result,
                 }
         try:
-            request_timeout_seconds = min(8.0, max(2.0, float(context.get('executor_request_timeout_seconds') or 8.0)))
+            request_timeout_seconds = min(30.0, max(10.0, float(context.get('executor_request_timeout_seconds') or 20.0)))
             guild = self._cms_find_target_guild(
                 base_url=base_url,
                 authorization=authorization,
@@ -250,35 +250,7 @@ class LiveChromeBindExecutor:
             raw_result['cms_guild_id'] = guild.get('id')
             raw_result['cms_guild_name'] = guild.get('guild_name')
             raw_result['cms_guild_sid'] = guild.get('sid')
-            before = self._cms_query_sid(base_url=base_url, authorization=authorization, proxy_url=proxy_url, sid=account_id, timeout_seconds=request_timeout_seconds)
-            before_match = self._cms_match_target_guild(before, guild)
-            if before_match == 'target':
-                raw_result['precheck'] = 'already_in_target_guild'
-                return {
-                    'status': 'failed',
-                    'result_code': 'already_in_target_guild',
-                    'result_reason': 'Previously registered in this agency',
-                    'raw_result': raw_result,
-                }
-            if before_match == 'other':
-                raw_result['precheck'] = 'already_in_other_guild'
-                raw_result['existing_guild_name'] = str((before[0] or {}).get('guild_name') or '') if before else ''
-                raw_result['existing_guild_id'] = str((before[0] or {}).get('guild_id') or '') if before else ''
-                return {
-                    'status': 'failed',
-                    'result_code': 'already_in_other_guild',
-                    'result_reason': 'The streamer was in another agency',
-                    'raw_result': raw_result,
-                }
-            if not before:
-                raw_result['precheck'] = 'sid_not_found'
-                return {
-                    'status': 'failed',
-                    'result_code': 'cms_sid_not_found',
-                    'result_reason': 'SID not found or not available as anchor',
-                    'raw_result': raw_result,
-                }
-            raw_result['precheck'] = 'sid_found_without_guild'
+            raw_result['cms_bind_flow'] = 'ka_addanchor_only'
             try:
                 submit = self._cms_add_anchor(base_url=base_url, authorization=authorization, proxy_url=proxy_url, sid=account_id, guild_id=str(guild.get('id') or ''), timeout_seconds=request_timeout_seconds)
             except urllib.error.HTTPError as exc:
@@ -286,60 +258,31 @@ class LiveChromeBindExecutor:
                 if exc.code in (401, 403):
                     return {
                         'status': 'failed',
-                        'result_code': 'cms_authorization_scope_denied',
-                        'result_reason': 'CMS authorization does not allow adding this SID to the target guild',
+                        'result_code': 'cms_authorization_invalid',
+                        'result_reason': f'CMS KA-AddAnchor authorization rejected with HTTP {exc.code}',
                         'raw_result': raw_result,
                     }
                 raise
             raw_result['cms_submit_code'] = submit.get('code')
             raw_result['cms_submit_success'] = submit.get('success')
-            submit_message = str(submit.get('message') or submit.get('msg') or submit.get('error') or '').strip()
-            submit_error = self._classify_cms_add_anchor_response(submit)
-            raw_result['cms_submit_error_category'] = submit_error.get('category')
-            after: list[dict[str, Any]] = []
-            after_match = 'none'
-            for attempt in range(1, self.cms_postcheck_max_attempts + 1):
-                after = self._cms_query_sid(base_url=base_url, authorization=authorization, proxy_url=proxy_url, sid=account_id, timeout_seconds=request_timeout_seconds)
-                after_match = self._cms_match_target_guild(after, guild)
-                raw_result['postcheck_attempts'] = attempt
-                if after_match == 'target':
-                    raw_result['postcheck'] = 'verified_target_guild'
-                    return {
-                        'status': 'success',
-                        'result_code': 'bind_success',
-                        'result_reason': 'CMS bind verified',
-                        'raw_result': raw_result,
-                    }
-                if after_match == 'other':
-                    raw_result['postcheck'] = 'mismatched_other_guild'
-                    break
-                if attempt < self.cms_postcheck_max_attempts and self.cms_postcheck_retry_delay_seconds:
-                    time.sleep(self.cms_postcheck_retry_delay_seconds)
-            message = submit_message or 'CMS bind was not verified'
-            if after_match == 'none':
-                raw_result['postcheck'] = 'sid_not_found_or_not_anchor'
-                submit_category = str(submit_error.get('category') or '').strip()
-                if submit_category == 'authorization_scope_denied':
-                    result_code = 'cms_authorization_scope_denied'
-                    message = submit_message or 'CMS authorization does not allow binding this guild'
-                elif after and submit_category == 'invalid_arguments_manual_check':
-                    result_code = 'cms_add_anchor_invalid_arguments_manual_check'
-                    message = 'CMS returned invalid arguments while SID still exists without target guild; keep for manual check'
-                elif submit_category in {'submitted', 'invalid_arguments_manual_check'} or submit.get('code') in (1000, '1000', 1001, '1001') or submit.get('success') is True:
-                    result_code = 'cms_postcheck_timeout'
-                    message = 'CMS bind submitted but postcheck did not verify target guild'
-                else:
-                    result_code = 'cms_add_anchor_unexpected_error'
-                    message = submit_message or 'CMS addAnchor returned an unexpected response'
-            elif after_match == 'other':
-                result_code = 'cms_postcheck_mismatch'
-                message = message or 'CMS postcheck found another guild after bind submit'
-            else:
-                result_code = 'cms_bind_not_verified'
+            submit_result = self._classify_cms_add_anchor_response(submit)
+            raw_result['cms_submit_error_category'] = submit_result.get('category')
+            raw_result['cms_submit_success_count'] = submit_result.get('success_count')
+            raw_result['cms_submit_fail_count'] = submit_result.get('fail_count')
+            raw_result['cms_submit_fail_items'] = submit_result.get('fail_items')
+            category = str(submit_result.get('category') or '').strip()
+            if category == 'submitted':
+                raw_result['postcheck'] = 'ka_addanchor_success_count'
+                return {
+                    'status': 'success',
+                    'result_code': 'bind_success',
+                    'result_reason': 'CMS KA-AddAnchor accepted',
+                    'raw_result': raw_result,
+                }
             return {
                 'status': 'failed',
-                'result_code': result_code,
-                'result_reason': message,
+                'result_code': submit_result.get('result_code') or 'cms_add_anchor_unexpected_error',
+                'result_reason': submit_result.get('result_reason') or 'CMS KA-AddAnchor returned an unexpected response',
                 'raw_result': raw_result,
             }
         except CmsBindFlowError as exc:
@@ -367,21 +310,42 @@ class LiveChromeBindExecutor:
             'accept': 'application/json, text/plain, */*',
             'accept-language': 'zh-CN,zh;q=0.9',
             'origin': 'https://cms.linke.ai',
-            'referer': 'https://cms.linke.ai/anchorDetails',
+            'referer': 'https://cms.linke.ai/KA-AddAnchor',
             'cookie': 'locale=zh-cn',
             'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
         }
 
-    def _cms_request_json(self, *, method: str, url: str, authorization: str, body: Optional[dict[str, Any]] = None, proxy_url: str = '', timeout_seconds: float = 8.0) -> Any:
+    def _cms_request_json(self, *, method: str, url: str, authorization: str, body: Optional[dict[str, Any]] = None, proxy_url: str = '', timeout_seconds: float = 20.0) -> Any:
         data = None if body is None else json.dumps(body, separators=(',', ':')).encode('utf-8')
-        req = urllib.request.Request(url, data=data, headers=self._cms_headers(authorization), method=method)
-        opener = urllib.request.build_opener()
-        normalized_proxy = str(proxy_url or '').strip()
-        if normalized_proxy:
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({'http': normalized_proxy, 'https': normalized_proxy}))
-        with opener.open(req, timeout=max(2.0, min(float(timeout_seconds or 8.0), 8.0))) as resp:
-            text = resp.read().decode('utf-8', errors='replace')
-        return json.loads(text) if text else {}
+        timeout = max(10.0, min(float(timeout_seconds or 20.0), 30.0))
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            req = urllib.request.Request(url, data=data, headers=self._cms_headers(authorization), method=method)
+            opener = urllib.request.build_opener()
+            normalized_proxy = str(proxy_url or '').strip()
+            if normalized_proxy:
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({'http': normalized_proxy, 'https': normalized_proxy}))
+            try:
+                with opener.open(req, timeout=timeout) as resp:
+                    text = resp.read().decode('utf-8', errors='replace')
+                return json.loads(text) if text else {}
+            except urllib.error.HTTPError:
+                raise
+            except (TimeoutError, socket.timeout) as exc:
+                last_exc = exc
+                if attempt < 3:
+                    time.sleep(0.8 * attempt)
+                    continue
+                raise TimeoutError(f'CMS KA-AddAnchor request timed out after {attempt} attempts') from exc
+            except urllib.error.URLError as exc:
+                last_exc = exc
+                if 'timed out' in str(exc).lower() and attempt < 3:
+                    time.sleep(0.8 * attempt)
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        raise TimeoutError('CMS KA-AddAnchor request timed out')
 
     def _cms_find_target_guild(
         self,
@@ -514,47 +478,108 @@ class LiveChromeBindExecutor:
                 found_known_other = True
         return 'other' if found_known_other else 'none'
 
-    def _classify_cms_add_anchor_response(self, response: dict[str, Any]) -> dict[str, str]:
+    def _classify_cms_add_anchor_response(self, response: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(response, dict):
             return {
                 'category': 'unexpected_response',
                 'result_code': 'cms_add_anchor_unexpected_error',
                 'result_reason': 'CMS addAnchor returned an unsupported response shape',
+                'success_count': None,
+                'fail_count': None,
+                'fail_items': [],
             }
         code = response.get('code')
         success = response.get('success')
         message = str(response.get('message') or response.get('msg') or response.get('error') or '').strip()
-        lowered = message.lower()
-        if code in (1000, '1000') or success is True:
-            return {'category': 'success', 'result_code': '', 'result_reason': ''}
-        if code in (401, 403, '401', '403') or 'token' in lowered or 'authorization' in lowered or 'unauthorized' in lowered or 'forbidden' in lowered:
+        data = response.get('data') if isinstance(response.get('data'), dict) else {}
+        result_body = data if data else response
+        def to_int(value: Any) -> int | None:
+            try:
+                if value is None or value == '':
+                    return None
+                return int(value)
+            except Exception:
+                return None
+        success_count = to_int(result_body.get('success_count') or result_body.get('successCount'))
+        fail_count = to_int(result_body.get('fail_count') or result_body.get('failCount'))
+        fail_items_raw = result_body.get('fail_items') or result_body.get('failItems') or []
+        fail_items: list[dict[str, str]] = []
+        if isinstance(fail_items_raw, list):
+            for item in fail_items_raw:
+                if isinstance(item, dict):
+                    fail_items.append({
+                        'sid': str(item.get('sid') or item.get('user_id') or '').strip(),
+                        'reason': str(item.get('reason') or item.get('message') or item.get('msg') or '').strip(),
+                    })
+                else:
+                    fail_items.append({'sid': '', 'reason': str(item)[:200]})
+        reasons = '; '.join(item.get('reason', '') for item in fail_items).strip()
+        lowered = (message + ' ' + reasons).lower()
+        common = {'success_count': success_count, 'fail_count': fail_count, 'fail_items': fail_items}
+        if code in (401, 403, '401', '403') or 'token' in lowered or 'authorization' in lowered or 'unauthorized' in lowered or 'forbidden' in lowered or '登录失效' in lowered:
             return {
+                **common,
                 'category': 'authorization_invalid',
                 'result_code': 'cms_authorization_invalid',
                 'result_reason': message or 'CMS authorization rejected or expired',
             }
         if code in (1003, '1003') or 'permission denied' in lowered or 'scope mismatch' in lowered or 'no permission' in lowered:
             return {
+                **common,
                 'category': 'authorization_scope_denied',
                 'result_code': 'cms_authorization_scope_denied',
                 'result_reason': message or 'CMS authorization does not allow binding this guild',
             }
+        if code in (1000, '1000') or success is True:
+            if fail_count is not None and fail_count > 0:
+                if 'already_joined_another_guild' in lowered or 'another guild' in lowered or 'another agency' in lowered or 'other guild' in lowered:
+                    return {
+                        **common,
+                        'category': 'already_in_other_guild',
+                        'result_code': 'already_in_other_guild',
+                        'result_reason': 'The streamer was in another agency',
+                    }
+                if 'already in this guild' in lowered or 'already_joined_this_guild' in lowered or 'already_joined_current_guild' in lowered or 'already in target' in lowered:
+                    return {
+                        **common,
+                        'category': 'already_in_target_guild',
+                        'result_code': 'already_in_target_guild',
+                        'result_reason': 'Previously registered in this agency',
+                    }
+                if 'invalid' in lowered or 'not found' in lowered or 'not anchor' in lowered or 'unavailable' in lowered:
+                    return {
+                        **common,
+                        'category': 'invalid_sid',
+                        'result_code': 'cms_sid_not_found',
+                        'result_reason': 'Invalid or unavailable Linky ID',
+                    }
+                return {
+                    **common,
+                    'category': 'business_failed',
+                    'result_code': 'cms_add_anchor_business_failed',
+                    'result_reason': reasons or message or 'CMS KA-AddAnchor returned failed items',
+                }
+            if success_count is None or success_count > 0 or success is True:
+                return {**common, 'category': 'submitted', 'result_code': '', 'result_reason': ''}
         if code in (1001, '1001') or 'invalid arguments' in lowered:
             return {
+                **common,
                 'category': 'invalid_arguments_manual_check',
                 'result_code': 'cms_add_anchor_invalid_arguments_manual_check',
-                'result_reason': 'CMS returned invalid arguments while SID exists; verify CMS parameters/guild scope manually',
+                'result_reason': 'CMS returned invalid arguments; verify CMS parameters/guild scope manually',
             }
         if 'timeout' in lowered or 'temporarily' in lowered or 'gateway' in lowered or 'unavailable' in lowered:
             return {
+                **common,
                 'category': 'temporary_error',
                 'result_code': 'cms_add_anchor_temporary_error',
                 'result_reason': message or 'CMS addAnchor temporary error',
             }
         return {
+            **common,
             'category': 'unexpected_error',
             'result_code': 'cms_add_anchor_unexpected_error',
-            'result_reason': message or 'CMS addAnchor returned an unexpected error',
+            'result_reason': message or reasons or 'CMS addAnchor returned an unexpected error',
         }
 
     def _cms_add_anchor(self, *, base_url: str, authorization: str, proxy_url: str = '', sid: str, guild_id: str, timeout_seconds: float = 8.0) -> dict[str, Any]:
