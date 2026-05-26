@@ -70,6 +70,12 @@ NOTIFICATION_POLICY_BY_CODE: Dict[str, Dict[str, str]] = {
         'retry': 'until_all_targets_sent',
         'partial_sent': 'retry_unsent_targets_only',
     },
+    'independent_truth_conflict_p0': {
+        'family': 'incident',
+        'dedupe': 'cooldown',
+        'retry': 'after_cooldown',
+        'partial_sent': 'n/a',
+    },
     'registration_cycle_noop': {
         'family': 'success',
         'dedupe': 'one_shot_per_dedupe_key',
@@ -658,6 +664,37 @@ def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
                 'dedupe_key': f'startup_initial_batch_failed:{dedupe_suffix}',
             })
     cycle_error = str(cycle.get('cycle_error') or '').strip()
+    registration_cycles = list(cycle.get('registration_group_cycles') or []) if isinstance(cycle.get('registration_group_cycles'), list) else []
+    for cycle_row in registration_cycles:
+        if not isinstance(cycle_row, dict):
+            continue
+        independent_probe = cycle_row.get('independent_truth_probe') if isinstance(cycle_row.get('independent_truth_probe'), dict) else {}
+        conflict = independent_probe.get('conflict') if isinstance(independent_probe.get('conflict'), dict) else {}
+        if not conflict.get('present') or str(conflict.get('severity') or '').strip() != 'critical':
+            continue
+        monitor_target = cycle_row.get('monitor_target') if isinstance(cycle_row.get('monitor_target'), dict) else {}
+        group_label = str(
+            monitor_target.get('group_name')
+            or monitor_target.get('binding_group_name')
+            or monitor_target.get('registration_group')
+            or cycle_row.get('registration_group')
+            or ''
+        ).strip()
+        object_key = '|'.join(part for part in [str(monitor_target.get('account_key') or '').strip(), group_label] if part) or 'unknown'
+        incidents.append({
+            'severity': 'critical',
+            'code': 'independent_truth_conflict_p0',
+            'summary': '独立巡检发现注册群状态冲突',
+            'details': {
+                'group_name': group_label or None,
+                'conflict': conflict,
+                'side_channel_only': True,
+                'authoritative_action_blocked': True,
+            },
+            'notify_profile_name': str(monitor_target.get('notify_profile_name') or '').strip() or None,
+            'notify_robot_name': str(monitor_target.get('notify_robot_name') or '').strip() or None,
+            'dedupe_key': f'independent_truth_conflict_p0:{object_key}',
+        })
     if cycle_error:
         incidents.append({
             'severity': 'critical',

@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+import json
+import sqlite3
 
 from app.production_ops import build_incidents, build_success_notifications, format_lark_alert
-from scripts.production_ops_daemon import SUCCESS_NOTIFICATION_CODES, _build_formal_approval_command, _build_recovery_notifications, _build_worker_probe_recovery_notifications, _evaluate_release, _fetch_worker_group_state_with_passive_retry, _notification_delivery_summary, _notify_incidents, _recover_worker_for_target, _resolve_monitor_target, _run_registration_group_cycle, _session_state, _target_session_key, _worker_probe_timeout_seconds, classify_probe_data_quality, collect_empty_queue_evidence, run_cycle
+from scripts.production_ops_daemon import SUCCESS_NOTIFICATION_CODES, _build_formal_approval_command, _build_recovery_notifications, _build_registration_group_metrics, _build_registration_group_truth_snapshot, _build_worker_probe_recovery_notifications, _evaluate_release, _fetch_worker_group_state_with_passive_retry, _notification_delivery_summary, _notify_incidents, _recover_worker_for_target, _resolve_monitor_target, _run_registration_group_cycle, _session_state, _target_session_key, _worker_probe_timeout_seconds, classify_probe_data_quality, collect_empty_queue_evidence, publish_truth_snapshots, run_cycle
 
 
 class Args:
@@ -26,6 +28,8 @@ class Args:
     decided_by = 'Hermes'
     decided_by_name = 'Song Yuqi'
     fresh_probe_cmd = ''
+    independent_truth_probe_cmd = ''
+    independent_truth_probe_interval_seconds = 1800.0
     worker_restart_cmd = ''
     worker_event_log = ''
     command_timeout_seconds = 60.0
@@ -35,6 +39,85 @@ class Args:
     monitoring_session_id = ''
     registration_auto_approval_enabled = True
 
+
+def test_registration_group_truth_snapshot_uses_account_key_and_verified_pending():
+    cycle = {
+        'checked_at': '2026-05-25T04:00:00Z',
+        'registration_group': 'https://chat.whatsapp.com/new-link',
+        'monitor_target': {
+            'source': 'account_binding',
+            'account_key': 'registration-639974974871',
+            'link': 'https://chat.whatsapp.com/new-link',
+            'group_id': '120@g.us',
+            'group_name': 'ES 46',
+        },
+        'truth_state': {
+            'status': 'confirmed_pending',
+            'reason_code': 'pending_detected',
+            'source': 'decision_group_state',
+            'pending_count': 2,
+            'member_count': 88,
+            'group_id': '120@g.us',
+            'group_name': 'ES 46',
+            'requester_ids': ['1@c.us', '2@c.us'],
+            'requesters': [{'id': '1@c.us'}, {'id': '2@c.us'}],
+            'review_surface_ready': True,
+            'has_pending_section': True,
+            'data_quality': 'fresh',
+            'session_health': 'healthy',
+        },
+    }
+
+    snapshot = _build_registration_group_truth_snapshot(cycle, now_iso='2026-05-25T04:00:10Z')
+
+    assert snapshot is not None
+    assert snapshot['object_type'] == 'registration_group_binding'
+    assert snapshot['object_key'] == 'registration-639974974871:https://chat.whatsapp.com/new-link'
+    assert snapshot['snapshot_type'] == 'pending_truth'
+    assert snapshot['truth_status'] == 'confirmed_pending'
+    assert snapshot['confidence'] == 'verified'
+    assert snapshot['recommended_action'] == 'review_or_wait_for_release_rule'
+    facts = json.loads(snapshot['facts_json'])
+    assert facts['configured_link'] == 'https://chat.whatsapp.com/new-link'
+    assert facts['actual_group_name'] == 'ES 46'
+    assert facts['pending_count'] == 2
+    assert facts['requester_ids'] == ['1@c.us', '2@c.us']
+
+
+def test_publish_truth_snapshots_upserts_registration_group_pending_truth(tmp_path):
+    db_path = tmp_path / 'automation.db'
+    args = SimpleNamespace(db_path=str(db_path))
+    base_cycle = {
+        'checked_at': '2026-05-25T04:00:00Z',
+        'registration_group': 'RG',
+        'monitor_target': {'account_key': 'registration-a', 'group_name': 'RG'},
+        'truth_state': {
+            'status': 'empty_unverified',
+            'reason_code': 'same_runtime_family_zero_pending',
+            'pending_count': 0,
+            'group_name': 'RG',
+            'zero_pending_unverified': True,
+            'pending_zero_confidence': 'unverified',
+            'data_quality': 'fresh',
+        },
+    }
+
+    first = publish_truth_snapshots(args, base_cycle)
+    second_cycle = dict(base_cycle)
+    second_cycle['checked_at'] = '2026-05-25T04:01:00Z'
+    second_cycle['truth_state'] = dict(base_cycle['truth_state'], status='confirmed_empty', reason_code='empty_queue_confirmed', zero_pending_unverified=False, zero_pending_verified_by='admin_stable_zero', pending_zero_confidence='verified')
+    second = publish_truth_snapshots(args, second_cycle)
+
+    assert first['status'] == 'ok'
+    assert second['status'] == 'ok'
+    with sqlite3.connect(str(db_path)) as conn:
+        rows = conn.execute('SELECT object_key, truth_status, confidence, facts_json FROM mcn_truth_snapshots').fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 'registration-a:RG'
+    assert rows[0][1] == 'confirmed_empty'
+    assert rows[0][2] == 'verified'
+    facts = json.loads(rows[0][3])
+    assert facts['zero_pending_verified_by'] == 'admin_stable_zero'
 
 
 def test_recover_worker_skips_false_zero_runtime_rebuild(monkeypatch):
@@ -309,7 +392,7 @@ def test_collect_empty_queue_evidence_reports_probe_failed():
 
 
 
-def test_fetch_worker_group_state_uses_fast_mode_by_default(monkeypatch):
+def test_fetch_worker_group_state_uses_full_verify_mode_by_default(monkeypatch):
     calls = []
 
     def fake_fetch_json(url, *, method, payload, timeout):
@@ -330,7 +413,7 @@ def test_fetch_worker_group_state_uses_fast_mode_by_default(monkeypatch):
     assert calls == [{
         'url': 'http://worker-1/group-state',
         'method': 'POST',
-        'payload': {'registration_group': 'RG', 'mode': 'fast'},
+        'payload': {'registration_group': 'RG', 'mode': 'full_verify'},
         'timeout': 10.0,
     }]
 
@@ -361,6 +444,7 @@ def test_run_production_ops_daemon_script_exposes_worker_timeout_knob():
     script = Path('scripts/run_production_ops_daemon.sh').read_text()
 
     assert '--worker-timeout-seconds "${PRODUCTION_OPS_WORKER_TIMEOUT_SECONDS:-90}"' in script
+    assert '--independent-truth-probe-interval-seconds "${PRODUCTION_OPS_INDEPENDENT_TRUTH_PROBE_INTERVAL_SECONDS:-1800}"' in script
 
 
 def test_run_production_ops_daemon_script_archives_registration_auto_approval():
@@ -2639,3 +2723,172 @@ def test_run_cycle_drains_newly_surfaced_registration_pending_into_same_success_
                 },
             },
         }
+
+
+def test_registration_group_unverified_pending_does_not_trigger_auto_approval(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.registration_auto_approval_enabled = True
+    state = {}
+    target = {
+        'registration_group': 'RG',
+        'group_name': '注册群',
+        'worker_base_url': 'http://worker-1',
+        'account_key': 'registration-test',
+        'source': 'account_binding',
+        'auto_recover_worker': True,
+        'runtime_state': {'active': True, 'ready': True, 'authenticated': True},
+        'session_state': {'session_target_match': True, 'login_verified': True},
+    }
+
+    monkeypatch.setattr('scripts.production_ops_daemon._fetch_worker_group_state_with_passive_retry', lambda *a, **k: {
+        'ok': True,
+        'duration_seconds': 0.2,
+        'payload': {
+            'group_id': 'RG',
+            'group_name': '注册群',
+            'pending_count': 3,
+            'member_count': 10,
+            'requester_ids': [],
+            'approval_state_status': 'unverified_pending',
+            'unverified_pending_reason': 'pending_without_requester_ids',
+        },
+        'attempts': [],
+        'retry_count': 0,
+        'total_attempts': 1,
+    })
+
+    def fail_if_release_eval_runs(*_args, **_kwargs):
+        raise AssertionError('unverified pending must not reach release evaluation')
+
+    def fail_if_formal_approval_runs(*_args, **_kwargs):
+        raise AssertionError('unverified pending must not run formal approval')
+
+    monkeypatch.setattr('scripts.production_ops_daemon._evaluate_release_with_backend_recovery', fail_if_release_eval_runs)
+    monkeypatch.setattr('scripts.production_ops_daemon.run_formal_approval_command', fail_if_formal_approval_runs)
+
+    cycle = _run_registration_group_cycle(args, state, target, now=datetime(2026, 5, 14, 1, 0, tzinfo=timezone.utc))
+
+    assert cycle['truth_state']['status'] == 'pending_unverified'
+    assert cycle['release_evaluation']['skipped'] is True
+    assert cycle['release_evaluation']['reason'] == 'pending_unverified'
+    assert cycle['formal_approval']['triggered'] is False
+    assert cycle['formal_approval']['reason_code'] == 'pending_unverified'
+
+
+def test_independent_truth_probe_conflict_is_side_channel_and_does_not_trigger_formal(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.registration_auto_approval_enabled = True
+    args.independent_truth_probe_interval_seconds = 0.0
+    args.independent_truth_probe_cmd = 'independent-probe'
+    state = {}
+    target = {
+        'registration_group': 'RG',
+        'group_name': '注册群',
+        'worker_base_url': 'http://worker-1',
+        'account_key': 'registration-test',
+        'source': 'account_binding',
+        'auto_recover_worker': True,
+        'runtime_state': {'active': True, 'ready': True, 'authenticated': True},
+        'session_state': {'session_target_match': True, 'login_verified': True},
+    }
+    monkeypatch.setattr('scripts.production_ops_daemon._fetch_worker_group_state_with_passive_retry', lambda *a, **k: {
+        'ok': True,
+        'duration_seconds': 0.2,
+        'payload': {'group_id': 'RG', 'group_name': '注册群', 'pending_count': 0, 'member_count': 10, 'requester_ids': [], 'zero_pending_unverified': True},
+        'attempts': [],
+        'retry_count': 0,
+        'total_attempts': 1,
+    })
+    monkeypatch.setattr('scripts.production_ops_daemon._fetch_worker_review_surface_state', lambda *a, **k: {
+        'review_surface_ready': False,
+        'empty_queue_visible': False,
+        'pending_count': 0,
+    })
+    monkeypatch.setattr('scripts.production_ops_daemon._run_independent_truth_probe', lambda *a, **k: {
+        'ok': True,
+        'group_id': 'RG',
+        'group_name': '注册群',
+        'pending_count': 2,
+        'member_count': 10,
+        'requester_ids': ['u1', 'u2'],
+        'source': 'independent_review_surface',
+    })
+    monkeypatch.setattr('scripts.production_ops_daemon._evaluate_release_with_backend_recovery', lambda *a, **k: {
+        'ok': True,
+        'payload': {'ready': True, 'release_count': 2, 'reason_code': 'batch_threshold_reached', 'pending_count': 2},
+    })
+
+    def fail_if_formal_runs(*_args, **_kwargs):
+        raise AssertionError('independent truth probe is side-channel only and must not trigger formal approval')
+
+    monkeypatch.setattr('scripts.production_ops_daemon.run_formal_approval_command', fail_if_formal_runs)
+
+    cycle = _run_registration_group_cycle(args, state, target, now=datetime(2026, 5, 14, 1, 0, tzinfo=timezone.utc))
+
+    assert cycle['independent_truth_probe']['ok'] is True
+    assert cycle['independent_truth_probe']['side_channel_only'] is True
+    assert cycle['independent_truth_probe']['conflict']['severity'] == 'critical'
+    assert cycle['independent_truth_probe']['conflict']['code'] == 'independent_truth_conflict_p0'
+    assert cycle['formal_approval']['triggered'] is False
+    incidents = build_incidents({'backend_health': {'ok': True}, 'registration_group_cycles': [cycle]})
+    assert [item['code'] for item in incidents] == ['independent_truth_conflict_p0']
+
+
+def test_independent_truth_probe_interval_skips_between_30_minute_reconciliations(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.independent_truth_probe_interval_seconds = 1800.0
+    args.independent_truth_probe_cmd = 'independent-probe'
+    state = {}
+    target = {
+        'registration_group': 'RG',
+        'group_name': '注册群',
+        'worker_base_url': 'http://worker-1',
+        'account_key': 'registration-test',
+        'source': 'account_binding',
+        'auto_recover_worker': True,
+        'runtime_state': {'active': True, 'ready': True, 'authenticated': True},
+        'session_state': {'session_target_match': True, 'login_verified': True},
+    }
+    monkeypatch.setattr('scripts.production_ops_daemon._fetch_worker_group_state_with_passive_retry', lambda *a, **k: {
+        'ok': True,
+        'duration_seconds': 0.2,
+        'payload': {'group_id': 'RG', 'group_name': '注册群', 'pending_count': 1, 'member_count': 10, 'requester_ids': ['u1']},
+        'attempts': [],
+        'retry_count': 0,
+        'total_attempts': 1,
+    })
+    monkeypatch.setattr('scripts.production_ops_daemon._evaluate_release_with_backend_recovery', lambda *a, **k: {
+        'ok': True,
+        'payload': {'ready': False, 'release_count': 0, 'reason_code': 'waiting_next_cycle', 'pending_count': 1},
+    })
+    calls = []
+    monkeypatch.setattr('scripts.production_ops_daemon._run_independent_truth_probe', lambda *a, **k: calls.append(1) or {'ok': True, 'pending_count': 1, 'requester_ids': ['u1'], 'group_id': 'RG'})
+
+    first = _run_registration_group_cycle(args, state, target, now=datetime(2026, 5, 14, 1, 0, tzinfo=timezone.utc))
+    second = _run_registration_group_cycle(args, state, target, now=datetime(2026, 5, 14, 1, 10, tzinfo=timezone.utc))
+
+    assert len(calls) == 1
+    assert first['independent_truth_probe']['status'] == 'ok'
+    assert second['independent_truth_probe']['skipped'] is True
+    assert second['independent_truth_probe']['reason'] == 'interval_not_due'
+    assert second['independent_truth_probe']['side_channel_only'] is True
+
+
+def test_registration_group_metrics_aggregate_conflicts_and_probe_states():
+    cycle = {
+        'registration_group_cycles': [
+            {'truth_state': {'status': 'confirmed_pending'}, 'worker_state': {'probe_status': 'probe_slow'}, 'independent_truth_probe': {'conflict': {'severity': 'critical'}}},
+            {'truth_state': {'status': 'pending_unverified'}, 'worker_state': {'ok': False}},
+            {'truth_state': {'status': 'confirmed_empty'}, 'worker_state': {'ok': True}},
+        ]
+    }
+
+    metrics = _build_registration_group_metrics(cycle)
+
+    assert metrics['target_count'] == 3
+    assert metrics['confirmed_pending_count'] == 1
+    assert metrics['unverified_count'] == 1
+    assert metrics['worker_failed_count'] == 1
+    assert metrics['slow_probe_count'] == 1
+    assert metrics['independent_conflict_count'] == 1
+    assert metrics['p0_conflict_count'] == 1

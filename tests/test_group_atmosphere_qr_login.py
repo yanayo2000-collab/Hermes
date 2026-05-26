@@ -54,7 +54,8 @@ def test_group_atmosphere_candidate_pool_exposes_own_account_selector_and_action
     assert 'ga_candidate_role_filter' in html
     assert 'ga_candidate_account_select' not in html
     assert 'ga_candidate_group_select' not in html
-    assert '语言/地区' in html
+    assert '<select id="ga_candidate_language_filter"><option value="id" selected>印尼</option>' in html
+    assert '<option value="">语言/地区</option>' not in html
     assert '角色' in html
     assert '选择投放账号' not in html
     assert '选择发言群</option>' not in html
@@ -96,13 +97,19 @@ def test_group_atmosphere_candidate_pool_exposes_own_account_selector_and_action
     assert "ga_candidate_target_role_select" in html
     assert "ga_batch_add_candidates_to_role_btn" in html
     assert "新增话术" in html
+    assert "新增图片" in html
+    assert 'ga_open_image_candidate_modal_btn' in html
+    assert 'data-ga-image-candidate-entry="image"' in html
     assert "ga-candidate-manual-draft" in html
-    assert "addManualCandidateDraft" in html
+    assert "openImageCandidateModal" in html
+    assert "saveImageCandidate" in html
     assert "saveCustomCandidate" in html
     assert "/api/ops/group-atmosphere/candidate-pool/custom" in html
     assert "人工写入" in html
     assert "candidateSourceLabel(item)" in html
-    assert "保存自定义" in html
+    assert "保存自定义" not in html
+    assert ">编辑</button>" in html
+    assert "图片可选" in html
     assert "未真正发送" in html
 
 

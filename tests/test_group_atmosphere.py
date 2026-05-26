@@ -183,3 +183,53 @@ def test_group_atmosphere_dispatch_does_not_count_worker_success_without_message
     assert second.json()['result_code'] == 'sent'
     assert second.json()['sent'] is False
 
+def test_mcn_state_trust_tables_and_flags_are_initialized():
+    client = make_client()
+    service = client.app.state.service
+    conn = service.db.connect()
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert {'mcn_event_ledger', 'mcn_truth_snapshots', 'mcn_operation_tasks'} <= tables
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+    assert 'idx_mcn_event_ledger_type_created' in indexes
+    assert service.event_ledger_enabled is True
+    assert service.truth_snapshot_enabled is True
+    assert service.task_engine_enabled is False
+
+
+def test_group_atmosphere_successful_send_writes_event_ledger_and_card_count(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        text = '{"status":"success","result_code":"sent","message_id":"msg-ledger-1"}'
+
+        def json(self):
+            return {'status': 'success', 'result_code': 'sent', 'message_id': 'msg-ledger-1', 'group_name': 'ID Group'}
+
+    monkeypatch.setattr('app.main.requests.post', lambda url, json, timeout: FakeResponse())
+    client = make_client()
+    client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'indo-reg-01',
+        'enabled': True,
+        'account_key': 'wa-seed-01',
+        'target_group': 'group-a@g.us',
+        'worker_base_url': 'http://127.0.0.1:9010',
+        'daily_max_messages': 999,
+        'min_interval_minutes': 0,
+        'template_pool': [{'template_id': 't1', 'text': 'First message'}],
+    })
+
+    response = client.post('/api/ops/group-atmosphere/dispatch-once', json={'config_name': 'indo-reg-01'})
+    assert response.status_code == 200
+    assert response.json()['sent'] is True
+
+    service = client.app.state.service
+    rows = service.db.connect().execute(
+        "SELECT * FROM mcn_event_ledger WHERE event_type='group_message_sent'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]['object_type'] == 'group_atmosphere_config'
+    assert rows[0]['object_key'] == 'indo-reg-01'
+    assert rows[0]['evidence_level'] == 'whatsapp_message_id'
+    assert rows[0]['external_id'] == 'msg-ledger-1'
+
+    assert service._trusted_group_atmosphere_sent_count_today(account_key='wa-seed-01', target_group='group-a@g.us') == 1
+

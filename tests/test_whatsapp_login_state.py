@@ -683,3 +683,47 @@ def test_production_ops_runtime_recovery_button_and_qr_gate_marker():
     assert "onclick=\"recoverApprovalAccountRuntime('${accountKeyEscaped}')\"" in source
     assert "${qrActionDisabled ? 'disabled' : ''} onclick=\"startApprovalAccountSession" in source
     assert "showToast('服务已恢复至可投产状态', 'success')" in source
+
+
+def test_truth_state_zero_without_empty_queue_evidence_is_unverified():
+    from app.registration_group_truth import build_truth_state
+    truth = build_truth_state(status={'decision_group_state': {'source': 'group_state', 'payload': {'pending_count': 0, 'pending_zero_confidence': 'unverified'}}})
+    assert truth['status'] == 'empty_unverified'
+    assert truth['zero_pending_unverified'] is True
+    assert truth['pending_zero_confidence'] == 'unverified'
+
+
+def test_binding_verifier_blocks_not_member_and_not_admin_before_ready():
+    from app.main import Service
+    binding = {'enabled': True, 'link': 'https://chat.whatsapp.com/new', 'group_id': 'g1@g.us', 'group_name': 'Group 1'}
+    account_verifier = {'ready': False, 'status': 'probe_unavailable'}
+    not_member = Service._binding_membership_verifier_state(
+        binding,
+        account_verifier,
+        responsible_type='registration_group',
+        production_ops={},
+        live_probe={'group_id': 'g1@g.us', 'group_name': 'Group 1', 'pending_count': 0, 'member_count': 100, 'participants_load_status': 'complete', 'participants_count_raw': 100, 'self_participant_found': False, 'source': 'group_state'},
+    )
+    assert not_member['ready'] is False
+    assert not_member['status'] == 'not_group_member'
+    assert '未出现在已完整读取' in not_member['detail']
+
+    not_admin = Service._binding_membership_verifier_state(
+        binding,
+        account_verifier,
+        responsible_type='registration_group',
+        production_ops={},
+        live_probe={'group_id': 'g1@g.us', 'group_name': 'Group 1', 'pending_count': 2, 'member_count': 100, 'self_participant_found': True, 'self_is_admin': False, 'can_manage_membership_requests': False, 'source': 'group_state'},
+    )
+    assert not_admin['ready'] is False
+    assert not_admin['status'] == 'admin_unconfirmed'
+    assert '管理员身份未被探针可靠确认' in not_admin['detail']
+
+
+def test_binding_probe_target_prefers_current_invite_link_over_stale_group_id():
+    from app.main import Service
+    assert Service._whatsapp_binding_probe_target({
+        'link': 'https://chat.whatsapp.com/newInvite',
+        'group_id': '120363old@g.us',
+        'group_name': '旧群',
+    }) == 'https://chat.whatsapp.com/newInvite'

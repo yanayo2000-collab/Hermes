@@ -56,6 +56,7 @@ exec python3 "$ROOT_DIR/scripts/production_ops_daemon.py" \
   --registration-group "$resolved_registration_group" \
   --fresh-probe-cmd "$resolved_fresh_probe_cmd" \
   --independent-truth-probe-cmd "$resolved_independent_truth_probe_cmd" \
+  --independent-truth-probe-interval-seconds "${PRODUCTION_OPS_INDEPENDENT_TRUTH_PROBE_INTERVAL_SECONDS:-1800}" \
   --worker-restart-cmd "${PRODUCTION_OPS_WORKER_RESTART_CMD:-$ROOT_DIR/scripts/restart_registration_group_webjs_worker.sh}" \
   --backend-restart-cmd "${PRODUCTION_OPS_BACKEND_RESTART_CMD:-$ROOT_DIR/scripts/ensure_registration_group_backend.sh}" \
   --state-path "${PRODUCTION_OPS_STATE_PATH:-$ROOT_DIR/data/production_ops_daemon_state.json}" \

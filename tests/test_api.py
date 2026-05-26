@@ -123,7 +123,141 @@ def test_approval_batch_summary_uses_daemon_snapshot_without_slow_fallback(monke
     assert response.status_code == 200
     body = response.json()
     assert body['registration_groups'] == []
-    assert body['registration_summary'] == {'monitored_group_count': 0, 'pending_count': 0}
+    assert body['registration_summary']['monitored_group_count'] == 0
+    assert body['registration_summary']['pending_count'] == 0
+
+
+def test_approval_batch_summary_dedupes_same_group_aliases(monkeypatch):
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    service = client.app.state.service
+
+    monkeypatch.setattr(service, 'list_whatsapp_approval_accounts', lambda *args, **kwargs: {
+        'rows': [{
+            'account_key': 'wa01',
+            'enabled': True,
+            'responsible_type': 'registration_group',
+            'group_link_bindings': [
+                {'enabled': True, 'group_name': 'Carote-01', 'registration_group': 'Carote-01', 'group_id': '120363@group'},
+                {'enabled': True, 'group_name': 'Carote-01', 'registration_group': 'Carote-01', 'group_id': '120363@group'},
+            ],
+        }],
+    })
+    monkeypatch.setattr(service, '_production_ops_daemon_snapshot', lambda: {
+        'runtime': {'status': {'checked_at': '2026-05-20T12:00:00+00:00', 'registration_group_cycles': [
+            {'monitor_target': {'registration_group': 'Carote-01', 'group_id': '120363@group'}, 'decision_group_state': {'payload': {'group_id': '120363@group', 'group_name': 'Carote-01', 'pending_count': 2}}},
+            {'monitor_target': {'registration_group': 'Carote-01', 'group_id': '120363@group'}, 'decision_group_state': {'payload': {'group_id': '120363@group', 'group_name': 'Carote-01', 'pending_count': 3}}},
+        ]}},
+    })
+
+    response = client.get('/api/ops/approval-batch-queue/summary')
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['registration_summary']['monitored_group_count'] == 1
+    assert body['registration_summary']['unique_group_count'] == 1
+    assert body['registration_summary']['configured_binding_count'] == 2
+    assert body['registration_summary']['pending_count'] == 3
+
+
+def test_official_group_summary_does_not_fall_back_to_historical_leads_when_monitor_configured(monkeypatch):
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    service = client.app.state.service
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO leads (lead_id, trace_id, source_platform, source_page_id, country, area_code, mobile, yw_id,
+                               app_name, dept_name, pendaftaran_group, current_status, matched_customer_id,
+                               parser_status, review_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('lead-old', 'trace-old', 'manual', 'page', 'Indonesia', 62, '81200000001', '', 'Tugao', 'Carote', 'RegGroup', 'bind_success', '', 'parsed', 'not_needed', '2026-05-01T00:00:00+00:00', '2026-05-01T00:00:00+00:00'),
+        )
+        conn.commit()
+    monkeypatch.setattr(service, 'list_whatsapp_approval_accounts', lambda *args, **kwargs: {
+        'rows': [{
+            'account_key': 'wa-official',
+            'enabled': True,
+            'responsible_type': 'official_group',
+            'group_link_bindings': [{'enabled': True, 'group_name': 'Official A', 'group_id': 'official@group'}],
+        }],
+    })
+    monkeypatch.setattr(service, '_official_group_runtime_queue_rows', lambda **kwargs: [])
+    monkeypatch.setattr(service, '_fetch_official_group_bridge_pending_counts', lambda: None)
+
+    body = service.official_group_approval_summary()
+
+    assert body['pending_count'] == 0
+    assert body['view_scope'] == 'current_active_scope'
+
+
+def test_production_ops_daemon_default_endpoint_returns_light_payload(monkeypatch):
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    service = client.app.state.service
+    huge_requesters = [{'id': f'user-{idx}', 'displayName': 'x' * 200, 'phone': f'+62{idx}', 'extra': 'y' * 500} for idx in range(50)]
+    monkeypatch.setattr(service, 'get_production_ops_daemon_config', lambda: {
+        'config': {'enabled': True},
+        'runtime': {'status': {'registration_group_cycles': [
+            {'monitor_target': {'registration_group': 'Carote'}, 'decision_group_state': {'payload': {'group_id': 'g1', 'group_name': 'Carote', 'pending_count': 5, 'requesters': huge_requesters}}, 'debug_blob': 'z' * 10000}
+        ], 'debug_events': [{'line': 'z' * 1000} for _ in range(100)]}, 'state': {'running': True, 'large_cache': 'z' * 10000}},
+    })
+
+    light = client.get('/api/ops/production-ops-daemon').json()
+    debug = client.get('/api/ops/production-ops-daemon?view=debug').json()
+
+    assert light['payload_mode'] == 'light'
+    assert len(light['runtime']['status']['registration_group_cycles'][0]['decision_group_state']['payload']['requesters']) == 20
+    assert 'large_cache' not in light['runtime']['state']
+    assert debug['payload_mode'] == 'debug'
+    assert debug['runtime']['status']['registration_group_cycles'][0]['debug_blob']
+
+
+def test_sla_summary_uses_current_ops_intake_items_not_legacy_submissions():
+    client = make_client({'AUTH_ENABLED': True})
+    bootstrap_admin_and_login(client)
+    service = client.app.state.service
+    with service.db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO leads (lead_id, trace_id, source_platform, source_page_id, country, area_code, mobile, yw_id,
+                               app_name, dept_name, pendaftaran_group, current_status, matched_customer_id,
+                               parser_status, review_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('lead-legacy', 'trace-legacy', 'manual', 'page', 'Indonesia', 62, '81200000002', '', 'Tugao', 'LegacyGuild', 'RegGroup', 'new', '', 'parsed', 'not_needed', '2026-05-01T00:00:00+00:00', '2026-05-01T00:00:00+00:00'),
+        )
+        conn.execute(
+            """
+            INSERT INTO account_submissions (submission_id, lead_id, submission_type, account_id, source_channel, submitted_by, recognition_status, submitted_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('sub-legacy', 'lead-legacy', 'manual', 'sid-1', 'legacy', 'qa', 'not_needed', '2026-05-01T00:00:00+00:00', '2026-05-01T00:00:00+00:00', '2026-05-01T00:00:00+00:00'),
+        )
+        conn.execute(
+            """
+            INSERT INTO ops_intake_items (item_id, guild_name, raw_text, system_status, feedback_status, result_code, result_snapshot, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('item-pending', 'Carote', 'Phone +62812', 'processing', 'pending_feedback', '', '{}', '2026-05-01T00:00:00+00:00'),
+        )
+        conn.execute(
+            """
+            INSERT INTO ops_intake_items (item_id, guild_name, raw_text, system_status, feedback_status, result_code, result_snapshot, created_at, feedback_done_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ('item-success', 'Carote', 'Phone +62813', 'fully_success', 'feedback_done', 'bind_success', '{}', '2026-05-01T00:00:00+00:00', '2026-05-01T00:05:00+00:00'),
+        )
+        conn.commit()
+
+    body = service.sla_summary()
+
+    assert body['scope'] == 'ops_intake_items_current'
+    assert body['submission_total'] == 2
+    assert body['pending_count'] == 1
+    assert body['success_count'] == 1
+    assert body['timeout_over_5m_count'] == 1
 
 
 def test_production_ops_and_batch_member_pages_include_overflow_guards():
@@ -4602,7 +4736,7 @@ def test_production_ops_page_loads():
     assert 'bindingActionRowHtml' not in body
     assert 'class="binding-action-row"' not in body
     assert '<div class="binding-meta-actions">${manualApproveButtonHtml || \'<span class="muted">—</span>\'}</div>' in body
-    assert '<div class="binding-meta-actions">${probeRefreshButtonHtml}</div>' in body
+    assert '<div class="binding-meta-actions">${probeRefreshButtonHtml}${rebuildIdentityButtonHtml}</div>' in body
     assert "? { level: 'blue', title: '等待扫码'" not in body
     assert 'bindingVerifierStatusText' in body
     assert 'bindingVerifierReadinessText' in body
@@ -4673,17 +4807,27 @@ def test_production_ops_page_loads():
     assert 'wa_group_enabled_1' in body
     assert '新增群组' in body
     assert 'id="wa_binding_editor_list" data-approval-binding-editor-list="true"' in body
+    assert 'const groupLinkBindings = collectGroupBindings(APPROVAL_BINDING_MAX_COUNT);' in body
+    assert 'const groupLinkBindings = collectGroupBindings(3);' not in body
     assert "const list = document.getElementById('wa_binding_editor_list') || document.querySelector('#approvalAccountEditorModal .binding-list');" in body
     assert "if (existing && existing.parentElement !== list) list.appendChild(existing);" in body
     assert "const list = document.querySelector('.binding-list');" not in body
     assert 'addApprovalBindingCard' in body
     assert 'removeApprovalBindingCard' in body
+    assert 'data-binding-delete-button="1" onclick="removeApprovalBindingCard(1)"' in body
+    assert 'function approvalBindingFormValue(index)' in body
+    assert 'function setApprovalBindingFormValue(index, binding = {})' in body
+    assert 'remaining.forEach((binding, idx) => setApprovalBindingFormValue(idx + 1, binding));' in body
+    assert '已删除第${normalized}组群组，后续群组已自动前移' in body
     assert 'deleteApprovalBinding' in body
     assert '删除群组' in body
     assert '确认删除这个群组配置吗' in body
     assert '实时刷新' in body
     assert '实时刷新探针' not in body
     assert 'refreshApprovalBindingProbe' in body
+    assert 'window.__approvalManualProbeBindingLocks[pendingKey] = {expiresAt: Date.now() + 90000, binding_runtime: refreshedBinding};' in body
+    assert 'mergeApprovalAccountRowsWithManualProbeLocks' in body
+    assert 'mergeApprovalBindingRuntimeWithManualLock(accountKey, bindingIndex, binding, bindings[bindingIndex] || {})' in body
     assert '/probe-refresh' in body
     assert '群探针状态已实时刷新' in body
     assert '距离下次审批' not in body
@@ -4699,7 +4843,16 @@ def test_production_ops_page_loads():
     assert '<div class="binding-action-control-row">' in body
     assert '<div class="binding-action-cell monitor-cell"><button type="button" class="card-monitor-toggle ${monitorButtonClass}"' in body
     assert '<div class="binding-action-cell manual-cell"><div class="binding-meta-actions">${manualApproveButtonHtml || \'<span class="muted">—</span>\'}</div></div>' in body
-    assert '<div class="binding-action-cell verifier-cell"><div class="binding-meta-actions">${probeRefreshButtonHtml}</div></div>' in body
+    assert '<div class="binding-action-cell verifier-cell"><div class="binding-meta-actions">${probeRefreshButtonHtml}${rebuildIdentityButtonHtml}</div></div>' in body
+    assert 'const rebuildIdentityPending = Boolean((window.__approvalBindingRebuildPendingByKey || {})[bindingPendingKey]);' in body
+    assert "${rebuildIdentityPending ? 'button-loading' : ''}" in body
+    assert "${rebuildIdentityPending ? 'disabled' : ''}" in body
+    assert "${rebuildIdentityPending ? '重建中…' : '重建群绑定'}" in body
+    assert 'window.__approvalBindingRebuildPendingByKey[pendingKey] = true;' in body
+    assert "showToast('已重建成功，探针已排队', 'success');" in body
+    assert '重建群绑定' in body
+    assert 'rebuildApprovalBindingIdentity' in body
+    assert '/rebuild-identity' in body
     assert '<div class="binding-action-cell verifier-cell"><div class="status-line">${bindingVerifierStatusText(verifier)}</div><div class="binding-meta-actions">${probeRefreshButtonHtml}</div></div>' not in body
     assert '${bindingVerifierReadinessText(verifier)} · ${bindingVerifierStatusText(verifier)}' not in body
     assert '.binding-action-strip { display:flex; flex-direction:column; gap:4px; margin-top:8px; }' in body
@@ -4920,9 +5073,10 @@ def test_whatsapp_approval_binding_probe_refresh_returns_live_binding_runtime(mo
     runtime = body['binding_runtime']
     assert runtime['next_approval_pending_count'] == 0
     assert runtime['runtime_probe_group_id'] == '120363417671114118@g.us'
-    assert runtime['membership_verifier']['ready'] is True
+    assert runtime['membership_verifier']['ready'] is False
+    assert runtime['membership_verifier']['status'] == 'zero_pending_unverified'
     assert runtime['membership_verifier']['probe']['pending_count'] == 0
-    assert runtime['membership_verifier']['detail'].startswith('已接探针：待审批 0 人')
+    assert '零待审批待核验' in runtime['membership_verifier']['detail']
 
 
 def test_registration_group_approval_batch_members_page_loads():
@@ -5538,9 +5692,122 @@ def test_whatsapp_approval_group_link_change_invalidates_cached_identity_and_con
     assert binding['schedule_windows'] == [{'start': '10:00', 'end': '11:00'}]
     assert binding['config_fingerprint']
     assert binding['config_fingerprint'] != original['config_fingerprint']
+    task_payload = changed.json().get('probe_refresh_tasks') or []
+    assert len(task_payload) == 1
+    assert task_payload[0]['task_type'] == 'probe_registration_group_truth'
+    assert task_payload[0]['binding_index'] == 0
+    with app.state.service.db.connect() as conn:
+        task = conn.execute(
+            "SELECT task_type, object_type, object_key, status, stage, priority, input_json FROM mcn_operation_tasks WHERE task_id = ?",
+            (task_payload[0]['task_id'],),
+        ).fetchone()
+    assert task is not None
+    assert task['task_type'] == 'probe_registration_group_truth'
+    assert task['object_type'] == 'registration_group_binding'
+    assert task['object_key'] == 'wa-change-link:0'
+    assert task['status'] == 'pending'
+    assert task['stage'] == 'queued_after_config_change'
+    assert task['priority'] == 10
+    task_input = json.loads(task['input_json'])
+    assert task_input['account_key'] == 'wa-change-link'
+    assert task_input['binding_index'] == 0
+    assert task_input['link'] == 'https://chat.whatsapp.com/NewInvite222'
+    assert task_input['config_fingerprint'] == binding['config_fingerprint']
 
     listed = client.get('/api/ops/whatsapp-approval-accounts').json()['rows'][0]['group_link_bindings'][0]
     assert listed['config_fingerprint'] == binding['config_fingerprint']
+
+
+def test_operation_task_worker_consumes_registration_probe_task(monkeypatch):
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    service = app.state.service
+    client = TestClient(app)
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-worker-probe', json={
+        'account_name': 'WA Worker Probe',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/WorkerProbe',
+            'group_name': '',
+            'registration_group': '',
+            'group_id': '',
+            'area': 'Brazil',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 25,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+        }],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+    task_id = saved.json()['probe_refresh_tasks'][0]['task_id']
+    calls = []
+
+    def fake_refresh(account_key, binding_index):
+        calls.append((account_key, binding_index))
+        return {'account_key': account_key, 'binding_index': binding_index, 'binding_runtime': {'runtime_probe_group_id': '120363WORKER@g.us', 'runtime_probe_group_name': 'Worker Probe Group'}, 'probe': {'group_id': '120363WORKER@g.us', 'group_name': 'Worker Probe Group', 'pending_count': 2, 'requester_ids': ['requester-1']}}
+
+    monkeypatch.setattr(service, 'refresh_whatsapp_approval_binding_probe', fake_refresh)
+
+    result = service.process_operation_tasks_once(limit=5)
+    task = service.get_operation_task(task_id)
+
+    assert result['processed'] == 1
+    assert calls == [('wa-worker-probe', 0)]
+    assert task['status'] == 'success'
+    assert task['stage'] == 'probe_completed_verified'
+    assert task['result']['probe']['pending_count'] == 2
+
+
+def test_operation_task_worker_requeues_registration_probe_task_on_first_failure(monkeypatch):
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    service = app.state.service
+    client = TestClient(app)
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-worker-retry', json={
+        'account_name': 'WA Worker Retry',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/WorkerRetry',
+            'group_name': '',
+            'registration_group': '',
+            'group_id': '',
+            'area': 'Brazil',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 25,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+        }],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+    task_id = saved.json()['probe_refresh_tasks'][0]['task_id']
+
+    def fake_refresh(account_key, binding_index):
+        raise RuntimeError('worker temporary unavailable')
+
+    monkeypatch.setattr(service, 'refresh_whatsapp_approval_binding_probe', fake_refresh)
+
+    result = service.process_operation_tasks_once(limit=5)
+    task = service.get_operation_task(task_id)
+
+    assert result['processed'] == 1
+    assert task['status'] == 'pending'
+    assert task['stage'] == 'retry_waiting'
+    assert task['retry_count'] == 1
+    assert task['error_code'] == 'probe_registration_group_truth_failed'
 
 
 def test_whatsapp_approval_probe_refresh_persists_detected_group_identity(monkeypatch):
@@ -27711,3 +27978,238 @@ def test_production_ops_page_uses_slow_snapshot_polling_not_five_second_refresh(
     body = response.text
     assert 'PRODUCTION_OPS_REFRESH_INTERVAL_MS=15000' in body
     assert '}, 5000);' not in body
+
+
+
+def test_registration_probe_task_marks_identity_unresolved_when_probe_has_no_group_identity(monkeypatch):
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    service = app.state.service
+    client = TestClient(app)
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-probe-unresolved', json={
+        'account_name': 'WA Probe Unresolved',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/UnresolvedProbe',
+            'group_name': '',
+            'registration_group': '',
+            'group_id': '',
+            'area': 'Brazil',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 25,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+        }],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+    task_id = saved.json()['probe_refresh_tasks'][0]['task_id']
+
+    def fake_refresh(account_key, binding_index):
+        return {
+            'account_key': account_key,
+            'binding_index': binding_index,
+            'binding_runtime': {
+                'link': 'https://chat.whatsapp.com/UnresolvedProbe',
+                'group_id': '',
+                'registration_group': '',
+                'group_name': '',
+                'runtime_probe_group_id': None,
+                'runtime_probe_group_name': None,
+                'next_approval_pending_count': 0,
+            },
+            'probe': {'pending_count': 0},
+        }
+
+    monkeypatch.setattr(service, 'refresh_whatsapp_approval_binding_probe', fake_refresh)
+    service.process_operation_tasks_once(limit=5)
+    task = service.get_operation_task(task_id)
+    assert task['status'] == 'success'
+    assert task['stage'] == 'identity_unresolved'
+    assert task['result']['probe_outcome']['identity_status'] == 'unresolved'
+    assert task['result']['probe_outcome']['reason'] == 'identity_unresolved'
+
+
+def test_registration_probe_task_marks_queue_unverified_for_zero_without_empty_surface(monkeypatch):
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    service = app.state.service
+    client = TestClient(app)
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-zero-unverified', json={
+        'account_name': 'WA Zero Unverified',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/ZeroUnverified',
+            'group_name': '',
+            'registration_group': '',
+            'group_id': '',
+            'area': 'Brazil',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 25,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+        }],
+        'enabled': True,
+    })
+    task_id = saved.json()['probe_refresh_tasks'][0]['task_id']
+
+    def fake_refresh(account_key, binding_index):
+        return {
+            'account_key': account_key,
+            'binding_index': binding_index,
+            'binding_runtime': {
+                'link': 'https://chat.whatsapp.com/ZeroUnverified',
+                'group_id': '120363ZERO@g.us',
+                'registration_group': '120363ZERO@g.us',
+                'group_name': 'Zero Unverified Group',
+                'runtime_probe_group_id': '120363ZERO@g.us',
+                'runtime_probe_group_name': 'Zero Unverified Group',
+                'next_approval_pending_count': 0,
+                'review_surface_ready': False,
+                'empty_queue_visible': False,
+                'has_pending_section': False,
+                'has_pending_request_row': False,
+                'requester_ids': [],
+            },
+            'probe': {
+                'group_id': '120363ZERO@g.us',
+                'group_name': 'Zero Unverified Group',
+                'pending_count': 0,
+                'requester_ids': [],
+                'review_surface_ready': False,
+                'empty_queue_visible': False,
+            },
+        }
+
+    monkeypatch.setattr(service, 'refresh_whatsapp_approval_binding_probe', fake_refresh)
+    service.process_operation_tasks_once(limit=5)
+    task = service.get_operation_task(task_id)
+    assert task['status'] == 'success'
+    assert task['stage'] == 'queue_unverified'
+    assert task['result']['probe_outcome']['queue_status'] == 'empty_unverified'
+
+
+def test_same_link_save_force_rebuilds_stale_registration_binding_identity():
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    client = TestClient(app)
+    first = client.post('/api/ops/whatsapp-approval-accounts/wa-stale-binding', json={
+        'account_name': 'WA Stale Binding',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/StaleBinding',
+            'group_name': '',
+            'registration_group': '',
+            'group_id': '',
+            'area': 'Brazil',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 25,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+        }],
+        'enabled': True,
+    })
+    assert first.status_code == 200
+    with app.state.service.db.connect() as conn:
+        stale = first.json()['account']['group_link_bindings'][0]
+        stale.update({
+            'group_name': 'Stale Name',
+            'registration_group': '120363STALE@g.us',
+            'group_id': '120363STALE@g.us',
+            'identity_status': 'unresolved',
+            'runtime_probe_group_id': None,
+            'last_probe_reason': 'group_not_found',
+            'last_probe_self_participant_found': False,
+        })
+        conn.execute('UPDATE whatsapp_approval_accounts SET group_links=? WHERE account_key=?', (json.dumps([stale], ensure_ascii=False), 'wa-stale-binding'))
+        conn.commit()
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-stale-binding', json={
+        'account_name': 'WA Stale Binding',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/StaleBinding',
+            'group_name': 'Stale Name',
+            'registration_group': '120363STALE@g.us',
+            'group_id': '120363STALE@g.us',
+            'area': 'Brazil',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 25,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+        }],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+    binding = saved.json()['account']['group_link_bindings'][0]
+    assert binding['registration_group'] == ''
+    assert binding['group_id'] == ''
+    assert binding['group_name'] == ''
+    assert binding['identity_status'] == 'needs_rebuild'
+    assert binding['identity_rebuild_reason'] == 'stale_identity'
+    assert saved.json()['probe_refresh_bindings'] == [0]
+    task = saved.json()['probe_refresh_tasks'][0]
+    assert task['stage'] == 'queued_after_identity_rebuild'
+    with app.state.service.db.connect() as conn:
+        row = conn.execute('SELECT input_json FROM mcn_operation_tasks WHERE task_id=?', (task['task_id'],)).fetchone()
+    task_input = json.loads(row['input_json'])
+    assert task_input['reason'] == 'stale_identity_rebuild'
+
+
+def test_rebuild_registration_group_binding_endpoint_clears_identity_and_queues_force_probe():
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    client = TestClient(app)
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-rebuild-binding', json={
+        'account_name': 'WA Rebuild Binding',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/RebuildBinding',
+            'group_name': 'Old Group',
+            'registration_group': '120363OLD@g.us',
+            'group_id': '120363OLD@g.us',
+            'area': 'Brazil',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 25,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+        }],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+    resp = client.post('/api/ops/whatsapp-approval-accounts/wa-rebuild-binding/bindings/0/rebuild-identity')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['rebuilt'] is True
+    binding = body['binding']
+    assert binding['link'] == 'https://chat.whatsapp.com/RebuildBinding'
+    assert binding['registration_group'] == ''
+    assert binding['group_id'] == ''
+    assert binding['group_name'] == ''
+    assert binding['identity_status'] == 'needs_rebuild'
+    assert body['probe_refresh_tasks'][0]['stage'] == 'queued_after_identity_rebuild'

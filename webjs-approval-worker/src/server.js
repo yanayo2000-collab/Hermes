@@ -39,6 +39,10 @@ function inferGroupAtmosphereAccountKey(clientId) {
 }
 const GROUP_ATMOSPHERE_ACCOUNT_KEY = String(process.env.GROUP_ATMOSPHERE_ACCOUNT_KEY || process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_ACCOUNT_KEY || inferGroupAtmosphereAccountKey(CLIENT_ID)).trim();
 const GROUP_ATMOSPHERE_INBOUND_ENABLED = String(process.env.GROUP_ATMOSPHERE_INBOUND_ENABLED || (GROUP_ATMOSPHERE_ACCOUNT_KEY.startsWith('atmosphere-') ? 'true' : 'false')).trim().toLowerCase() !== 'false';
+const GROUP_ATMOSPHERE_SILENCE_CHECK_ENABLED = String(process.env.GROUP_ATMOSPHERE_SILENCE_CHECK_ENABLED || (GROUP_ATMOSPHERE_INBOUND_ENABLED ? 'true' : 'false')).trim().toLowerCase() !== 'false';
+const GROUP_ATMOSPHERE_SILENCE_CHECK_INTERVAL_MS = Math.max(10000, Number(process.env.GROUP_ATMOSPHERE_SILENCE_CHECK_INTERVAL_MS || 30000));
+const GROUP_ATMOSPHERE_MEMBER_JOIN_DEBOUNCE_MS = Math.max(0, Number(process.env.GROUP_ATMOSPHERE_MEMBER_JOIN_DEBOUNCE_MS || 6000));
+const GROUP_ATMOSPHERE_MEMBER_JOIN_MAX_WAIT_MS = Math.max(GROUP_ATMOSPHERE_MEMBER_JOIN_DEBOUNCE_MS, Number(process.env.GROUP_ATMOSPHERE_MEMBER_JOIN_MAX_WAIT_MS || 30000));
 const PUPPETEER_PROTOCOL_TIMEOUT_MS = Math.max(30000, Number(process.env.REGISTRATION_GROUP_APPROVAL_WEBJS_PROTOCOL_TIMEOUT_MS || 180000));
 
 const stateAuthStrategy = REUSE_CHROME_PROFILE ? 'ChromeProfileCopy+NoAuth' : 'LocalAuth';
@@ -97,6 +101,9 @@ let approvalReadyWaiters = [];
 let approvalQrWaiters = [];
 let runtimeChromeUserDataDir = null;
 let runtimeApprovalChromeUserDataDir = null;
+let groupAtmosphereSilenceTimer = null;
+const groupAtmosphereLastOrdinaryMessageAt = new Map();
+const groupAtmosphereMemberJoinBatches = new Map();
 
 function updateState(patch) {
   Object.assign(state, patch || {});
@@ -307,6 +314,18 @@ function buildParticipantIdentitySet(participants) {
   return identitySet;
 }
 
+function clientRuntimeIdentity(activeClient) {
+  const info = activeClient && activeClient.info ? activeClient.info : {};
+  const wid = info.wid || info.me || info.id || null;
+  const serialized = safeString(wid) || safeString(info.pushname) || null;
+  const phone = String((wid && wid.user) || serialized || '').replace(/\D/g, '') || null;
+  return {
+    runtime_account_id: serialized,
+    runtime_phone: phone,
+    runtime_pushname: info.pushname || null,
+  };
+}
+
 function clientIdentityKeys(activeClient) {
   const info = activeClient && activeClient.info ? activeClient.info : {};
   return participantIdentityKeys({
@@ -317,16 +336,56 @@ function clientIdentityKeys(activeClient) {
   });
 }
 
-function findClientParticipant(group, activeClient) {
-  const participants = Array.isArray(group && group.participants) ? group.participants : [];
+function findClientParticipantEvidence(group, activeClient) {
+  const participantsRaw = group && group.participants;
+  const participants = Array.isArray(participantsRaw) ? participantsRaw : [];
+  const participantsLoadStatus = !Array.isArray(participantsRaw)
+    ? 'unavailable'
+    : (participants.length > 0 ? 'complete' : 'empty');
   const selfKeys = new Set(clientIdentityKeys(activeClient));
-  if (!participants.length || !selfKeys.size) return null;
-  return participants.find((participant) => participantIdentityKeys(participant).some((key) => selfKeys.has(key))) || null;
+  const sample = participants.slice(0, 5).map((participant) => participantIdentityKeys(participant).slice(0, 3));
+  if (!participants.length || !selfKeys.size) {
+    return {
+      participant: null,
+      participants_load_status: participantsLoadStatus,
+      participants_count_raw: participants.length,
+      self_participant_found: participantsLoadStatus === 'complete' ? false : null,
+      self_match_strategy: 'none',
+      debug_participants_sample: sample,
+    };
+  }
+  for (const participant of participants) {
+    const keys = participantIdentityKeys(participant);
+    const matchedKey = keys.find((key) => selfKeys.has(key));
+    if (matchedKey) {
+      return {
+        participant,
+        participants_load_status: 'complete',
+        participants_count_raw: participants.length,
+        self_participant_found: true,
+        self_match_strategy: matchedKey.includes('@') ? 'serialized_id' : 'digits',
+        debug_participants_sample: sample,
+      };
+    }
+  }
+  return {
+    participant: null,
+    participants_load_status: 'complete',
+    participants_count_raw: participants.length,
+    self_participant_found: false,
+    self_match_strategy: 'none',
+    debug_participants_sample: sample,
+  };
 }
 
-function participantAdminState(participant) {
+function findClientParticipant(group, activeClient) {
+  return findClientParticipantEvidence(group, activeClient).participant;
+}
+
+function participantAdminState(participant, evidence = {}) {
   if (!participant || typeof participant !== 'object') {
-    return { self_participant_found: false, self_is_admin: null, self_is_super_admin: null };
+    const found = evidence.self_participant_found === false ? false : null;
+    return { self_participant_found: found, self_is_admin: null, self_is_super_admin: null };
   }
   const isAdmin = Boolean(participant.isAdmin || participant.isSuperAdmin || participant.admin === true || participant.is_admin === true);
   const isSuperAdmin = Boolean(participant.isSuperAdmin || participant.is_super_admin === true);
@@ -335,6 +394,19 @@ function participantAdminState(participant) {
     self_is_admin: isAdmin,
     self_is_super_admin: isSuperAdmin,
   };
+}
+
+function expectedRuntimePhoneFromContext(context) {
+  const raw = String((context && (context.expected_runtime_phone || context.expected_phone || context.account_key)) || '').trim();
+  const digits = raw.replace(/\D/g, '');
+  return digits || null;
+}
+
+function runtimeIdentityMatch(runtimePhone, expectedPhone) {
+  if (!expectedPhone || !runtimePhone) return null;
+  const left = String(runtimePhone).replace(/\D/g, '');
+  const right = String(expectedPhone).replace(/\D/g, '');
+  return Boolean(left && right && (left === right || left.endsWith(right) || right.endsWith(left)));
 }
 
 function selectedCandidateIdentityKeys(candidate) {
@@ -677,6 +749,7 @@ async function ensureClientStarted(options = {}) {
     syncApprovalStateFromPrimary();
     settleWaiters(approvalReadyWaiters, { kind: 'ready' });
     settleWaiters(readyWaiters, { kind: 'ready' });
+    startGroupAtmosphereSilenceChecker(client);
   });
 
   client.on('message', (message) => {
@@ -693,6 +766,27 @@ async function ensureClientStarted(options = {}) {
       logEvent('group_atmosphere_inbound_error', {
         account_key: GROUP_ATMOSPHERE_ACCOUNT_KEY || null,
         result_code: 'group_atmosphere_inbound_error',
+        result_reason: String(error && error.message ? error.message : error),
+      });
+    });
+  });
+
+  client.on('message_create', (message) => {
+    if (!message || !message.fromMe) return;
+    recordGroupAtmosphereOrdinaryMessage(client, message).catch((error) => {
+      logEvent('group_atmosphere_message_create_record_error', {
+        account_key: GROUP_ATMOSPHERE_ACCOUNT_KEY || null,
+        result_code: 'group_atmosphere_message_create_record_error',
+        result_reason: String(error && error.message ? error.message : error),
+      });
+    });
+  });
+
+  client.on('group_join', (notification) => {
+    scheduleGroupAtmosphereMemberJoinEvent(client, notification).catch((error) => {
+      logEvent('group_atmosphere_member_join_error', {
+        account_key: GROUP_ATMOSPHERE_ACCOUNT_KEY || null,
+        result_code: 'group_atmosphere_member_join_error',
         result_reason: String(error && error.message ? error.message : error),
       });
     });
@@ -982,9 +1076,16 @@ async function resolveGroupWithClient(activeClient, target) {
     try {
       const inviteInfo = await activeClient.getInviteInfo(inviteCode);
       const groupId = inviteInfoGroupId(inviteInfo);
+      const inviteName = candidateGroupDisplayName(
+        inviteInfo && (inviteInfo.subject || inviteInfo.groupName || inviteInfo.name || inviteInfo.formattedTitle),
+        groupId,
+      );
       if (groupId) {
         const inviteChat = await activeClient.getChatById(groupId);
-        if (inviteChat && inviteChat.isGroup) return inviteChat;
+        if (inviteChat && inviteChat.isGroup) {
+          if (inviteName) inviteChat.__inviteInfoGroupName = inviteName;
+          return inviteChat;
+        }
       }
     } catch (_) {
       // fall through to chat list resolution
@@ -1037,11 +1138,13 @@ async function sendGroupMessageWithClient(activeClient, payload) {
   } else {
     sent = await group.sendMessage(messageText);
   }
+  const resolvedGroupId = safeString(group.id) || targetGroup;
+  if (resolvedGroupId) groupAtmosphereLastOrdinaryMessageAt.set(resolvedGroupId, Date.now());
   return {
     status: 'success',
     result_code: 'sent',
     result_reason: 'message sent to whatsapp group',
-    group_id: safeString(group.id) || targetGroup,
+    group_id: resolvedGroupId,
     group_name: group.name || targetGroup,
     message_id: safeString(sent && sent.id),
     sent_at: new Date().toISOString(),
@@ -1107,22 +1210,39 @@ async function dispatchGroupAtmosphereTriggerSequence(activeClient, targetGroup,
   return sent;
 }
 
+async function recordGroupAtmosphereOrdinaryMessage(activeClient, message) {
+  if (!message) return { recorded: false, result_code: 'empty_message_ignored' };
+  const chat = typeof message.getChat === 'function' ? await message.getChat() : null;
+  if (!chat || !chat.isGroup) return { recorded: false, result_code: 'non_group_message_ignored' };
+  const targetGroup = safeString(chat.id) || safeString(message.from);
+  if (!targetGroup) return { recorded: false, result_code: 'missing_group' };
+  const kind = String(message.type || message.message_type || (message.hasMedia ? 'media' : 'text')).trim().toLowerCase();
+  const eventType = String(message.event_type || '').trim().toLowerCase();
+  const systemKinds = new Set(['system', 'group_update', 'notification', 'status', 'participant_update']);
+  const systemEvents = new Set(['member_join', 'member_leave', 'group_name_changed', 'group_announcement_changed', 'permission_changed']);
+  if (systemKinds.has(kind) || systemEvents.has(eventType)) return { recorded: false, result_code: 'system_message_ignored', target_group: targetGroup };
+  const ts = message.timestamp ? Number(message.timestamp) * 1000 : Date.now();
+  const at = Number.isFinite(ts) ? ts : Date.now();
+  groupAtmosphereLastOrdinaryMessageAt.set(targetGroup, at);
+  return { recorded: true, result_code: 'ordinary_message_recorded', target_group: targetGroup, recorded_at_ms: at, chat };
+}
+
 async function handleGroupAtmosphereIncomingMessage(activeClient, message, options = {}) {
   if (!GROUP_ATMOSPHERE_INBOUND_ENABLED && options.enabled !== true) {
     return { handled: false, result_code: 'group_atmosphere_inbound_disabled' };
   }
+  const ordinary = await recordGroupAtmosphereOrdinaryMessage(activeClient, message);
+  if (!ordinary.recorded) {
+    return { handled: false, result_code: ordinary.result_code || 'message_ignored' };
+  }
   if (!message || message.fromMe) {
-    return { handled: false, result_code: 'own_or_empty_message_ignored' };
+    return { handled: false, result_code: 'own_message_recorded' };
   }
   const text = String(message.body || message.text || message.caption || '').trim();
   if (!text) {
-    return { handled: false, result_code: 'empty_text_ignored' };
+    return { handled: false, result_code: 'ordinary_non_text_recorded' };
   }
-  const chat = typeof message.getChat === 'function' ? await message.getChat() : null;
-  if (!chat || !chat.isGroup) {
-    return { handled: false, result_code: 'non_group_message_ignored' };
-  }
-  const targetGroup = safeString(chat.id) || safeString(message.from);
+  const targetGroup = ordinary.target_group;
   const accountKey = String(options.accountKey || GROUP_ATMOSPHERE_ACCOUNT_KEY || '').trim();
   if (!accountKey || !targetGroup) {
     return { handled: false, result_code: 'missing_account_or_group' };
@@ -1141,6 +1261,194 @@ async function handleGroupAtmosphereIncomingMessage(activeClient, message, optio
   }
   const sent = await dispatchGroupAtmosphereTriggerSequence(activeClient, targetGroup, triggerResult, { skipDelay: Boolean(options.skipDelay) });
   return { handled: true, result_code: 'trigger_response_sent', trigger_result: triggerResult, sent };
+}
+
+function extractGroupAtmosphereEventTargetGroup(event) {
+  return safeString(event && (event.chatId || event.chat_id || event.groupId || event.group_id || event.from || (event.id && event.id.remote) || (event.chat && event.chat.id)));
+}
+
+function extractGroupAtmosphereEventSender(event) {
+  const ids = event && (event.recipientIds || event.recipient_ids || event.participantIds || event.participant_ids);
+  if (Array.isArray(ids) && ids.length) return safeString(ids[0]) || '';
+  return safeString(event && (event.recipientId || event.recipient_id || event.participantId || event.participant_id || event.author || event.from)) || '';
+}
+
+async function handleGroupAtmosphereTriggerEvent(activeClient, eventType, event, options = {}) {
+  if (!GROUP_ATMOSPHERE_INBOUND_ENABLED && options.enabled !== true) {
+    return { handled: false, result_code: 'group_atmosphere_inbound_disabled' };
+  }
+  const triggerType = String(eventType || '').trim();
+  const targetGroup = extractGroupAtmosphereEventTargetGroup(event);
+  const accountKey = String(options.accountKey || GROUP_ATMOSPHERE_ACCOUNT_KEY || '').trim();
+  if (!triggerType || !accountKey || !targetGroup) {
+    return { handled: false, result_code: 'missing_trigger_account_or_group' };
+  }
+  const backendUrl = String(options.backendUrl || GROUP_ATMOSPHERE_BACKEND_URL || '').replace(/\/+$/, '');
+  const senderId = String((options.senderId || extractGroupAtmosphereEventSender(event) || '')).trim();
+  const eventPayload = { ...(event && typeof event === 'object' ? event : {}) };
+  delete eventPayload.getChat;
+  const triggerResult = await postJson(options.fetchImpl, `${backendUrl}/api/internal/group-atmosphere/trigger-event`, {
+    account_key: accountKey,
+    target_group: targetGroup,
+    trigger_type: triggerType,
+    sender_id: senderId,
+    event_payload: eventPayload,
+  });
+  if (!triggerResult || !triggerResult.should_respond) {
+    return { handled: false, result_code: triggerResult && triggerResult.result_code ? triggerResult.result_code : 'trigger_rule_not_matched', trigger_result: triggerResult || {} };
+  }
+  const sent = await dispatchGroupAtmosphereTriggerSequence(activeClient, targetGroup, triggerResult, { skipDelay: Boolean(options.skipDelay) });
+  return { handled: true, result_code: 'trigger_response_sent', trigger_result: triggerResult, sent };
+}
+
+function memberJoinBatchKey(accountKey, targetGroup) {
+  return `${String(accountKey || '').trim()}::${String(targetGroup || '').trim()}`;
+}
+
+async function flushGroupAtmosphereMemberJoinBatch(activeClient, key, options = {}) {
+  const batch = groupAtmosphereMemberJoinBatches.get(key);
+  if (!batch) return { handled: false, result_code: 'member_join_batch_not_found' };
+  if (batch.timer) clearTimeout(batch.timer);
+  groupAtmosphereMemberJoinBatches.delete(key);
+  const memberIds = Array.from(batch.memberIds || []);
+  const eventPayload = {
+    chatId: batch.targetGroup,
+    recipientIds: memberIds,
+    batch_member_count: memberIds.length,
+    member_ids: memberIds,
+    first_join_at: batch.firstJoinAt,
+    last_join_at: batch.lastJoinAt,
+    debounce_ms: batch.debounceMs,
+    max_wait_ms: batch.maxWaitMs,
+  };
+  const result = await handleGroupAtmosphereTriggerEvent(activeClient, 'member_join', eventPayload, {
+    ...batch.options,
+    ...options,
+    accountKey: batch.accountKey,
+    enabled: true,
+  });
+  if (result && result.handled) {
+    logEvent('group_atmosphere_member_join_response', {
+      account_key: batch.accountKey || null,
+      target_group: batch.targetGroup || null,
+      batch_member_count: memberIds.length,
+      result_code: result.result_code || null,
+      sent_count: Array.isArray(result.sent) ? result.sent.length : 0,
+    });
+  }
+  if (typeof batch.resolve === 'function') batch.resolve(result);
+  return result;
+}
+
+async function scheduleGroupAtmosphereMemberJoinEvent(activeClient, event, options = {}) {
+  if (!GROUP_ATMOSPHERE_INBOUND_ENABLED && options.enabled !== true) {
+    return { scheduled: false, result_code: 'group_atmosphere_inbound_disabled' };
+  }
+  const targetGroup = extractGroupAtmosphereEventTargetGroup(event);
+  const accountKey = String(options.accountKey || GROUP_ATMOSPHERE_ACCOUNT_KEY || '').trim();
+  if (!accountKey || !targetGroup) {
+    return { scheduled: false, result_code: 'missing_trigger_account_or_group' };
+  }
+  const debounceMs = Math.max(0, Number(options.debounceMs ?? GROUP_ATMOSPHERE_MEMBER_JOIN_DEBOUNCE_MS));
+  const maxWaitMs = Math.max(debounceMs, Number(options.maxWaitMs ?? GROUP_ATMOSPHERE_MEMBER_JOIN_MAX_WAIT_MS));
+  const key = memberJoinBatchKey(accountKey, targetGroup);
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  let batch = groupAtmosphereMemberJoinBatches.get(key);
+  if (!batch) {
+    let resolvePromise;
+    const promise = new Promise((resolve) => { resolvePromise = resolve; });
+    batch = {
+      accountKey,
+      targetGroup,
+      memberIds: new Set(),
+      firstJoinAt: nowIso,
+      firstJoinMs: nowMs,
+      lastJoinAt: nowIso,
+      debounceMs,
+      maxWaitMs,
+      options: { ...options },
+      promise,
+      resolve: resolvePromise,
+      timer: null,
+    };
+    groupAtmosphereMemberJoinBatches.set(key, batch);
+  }
+  const sender = extractGroupAtmosphereEventSender(event);
+  if (sender) batch.memberIds.add(sender);
+  batch.lastJoinAt = nowIso;
+  batch.debounceMs = debounceMs;
+  batch.maxWaitMs = maxWaitMs;
+  batch.options = { ...batch.options, ...options };
+  if (batch.timer) clearTimeout(batch.timer);
+  const elapsedMs = Math.max(0, nowMs - Number(batch.firstJoinMs || nowMs));
+  const remainingMaxMs = Math.max(0, maxWaitMs - elapsedMs);
+  const waitMs = Math.min(debounceMs, remainingMaxMs);
+  batch.timer = setTimeout(() => {
+    flushGroupAtmosphereMemberJoinBatch(activeClient, key).catch((error) => {
+      if (typeof batch.resolve === 'function') batch.resolve({ handled: false, result_code: 'member_join_batch_flush_error', result_reason: String(error && error.message ? error.message : error) });
+      logEvent('group_atmosphere_member_join_error', {
+        account_key: accountKey || null,
+        target_group: targetGroup || null,
+        result_code: 'group_atmosphere_member_join_error',
+        result_reason: String(error && error.message ? error.message : error),
+      });
+    });
+  }, waitMs);
+  if (typeof batch.timer.unref === 'function' && options.keepTimerRef !== true) batch.timer.unref();
+  return { scheduled: true, result_code: 'member_join_batch_scheduled', target_group: targetGroup, batch_member_count: batch.memberIds.size, wait_ms: waitMs, promise: batch.promise };
+}
+
+async function checkGroupAtmosphereSilenceOnce(activeClient, options = {}) {
+  if (!GROUP_ATMOSPHERE_SILENCE_CHECK_ENABLED && options.enabled !== true) {
+    return { checked: false, result_code: 'group_atmosphere_silence_check_disabled' };
+  }
+  if (!activeClient || typeof activeClient.getChats !== 'function') {
+    return { checked: false, result_code: 'client_get_chats_unavailable' };
+  }
+  const chats = await activeClient.getChats();
+  const now = Date.now();
+  const results = [];
+  for (const chat of Array.isArray(chats) ? chats : []) {
+    if (!chat || !chat.isGroup) continue;
+    const targetGroup = safeString(chat.id);
+    if (!targetGroup) continue;
+    let lastAt = groupAtmosphereLastOrdinaryMessageAt.get(targetGroup);
+    if (!lastAt) {
+      const chatTs = Number(chat.timestamp || 0);
+      lastAt = chatTs > 0 ? chatTs * 1000 : now;
+      groupAtmosphereLastOrdinaryMessageAt.set(targetGroup, lastAt);
+    }
+    const silenceSeconds = Math.max(0, Math.floor((now - lastAt) / 1000));
+    const result = await handleGroupAtmosphereTriggerEvent(activeClient, 'group_silence', {
+      chatId: targetGroup,
+      silence_seconds: silenceSeconds,
+    }, { ...options, enabled: true });
+    if (result && result.handled) {
+      groupAtmosphereLastOrdinaryMessageAt.set(targetGroup, now);
+    }
+    results.push({ target_group: targetGroup, silence_seconds: silenceSeconds, ...result });
+  }
+  return { checked: true, result_code: 'group_atmosphere_silence_checked', count: results.length, results };
+}
+
+function startGroupAtmosphereSilenceChecker(activeClient) {
+  if (!GROUP_ATMOSPHERE_SILENCE_CHECK_ENABLED || groupAtmosphereSilenceTimer) return;
+  groupAtmosphereSilenceTimer = setInterval(() => {
+    checkGroupAtmosphereSilenceOnce(activeClient).then((result) => {
+      const sent = (result.results || []).filter((item) => item && item.handled).length;
+      if (sent > 0) {
+        logEvent('group_atmosphere_silence_trigger_response', { account_key: GROUP_ATMOSPHERE_ACCOUNT_KEY || null, sent_count: sent });
+      }
+    }).catch((error) => {
+      logEvent('group_atmosphere_silence_check_error', {
+        account_key: GROUP_ATMOSPHERE_ACCOUNT_KEY || null,
+        result_code: 'group_atmosphere_silence_check_error',
+        result_reason: String(error && error.message ? error.message : error),
+      });
+    });
+  }, GROUP_ATMOSPHERE_SILENCE_CHECK_INTERVAL_MS);
+  if (typeof groupAtmosphereSilenceTimer.unref === 'function') groupAtmosphereSilenceTimer.unref();
 }
 
 async function fetchGroupMessagesWithClient(activeClient, payload) {
@@ -1613,6 +1921,29 @@ async function inspectApprovalReviewSurface(context, options = {}) {
   };
 }
 
+async function readMembershipRequestsWithRefresh(activeClient, groupId, options = {}) {
+  const waitFn = typeof options.waitFn === 'function' ? options.waitFn : sleep;
+  const refreshWaitMs = Math.max(0, Number(options.refreshWaitMs ?? 1500));
+  const group = await activeClient.getChatById(groupId);
+  if (refreshWaitMs > 0) await waitFn(refreshWaitMs);
+  const rawRequests = typeof group.getGroupMembershipRequests === 'function'
+    ? await group.getGroupMembershipRequests()
+    : [];
+  const requesterIds = (Array.isArray(rawRequests) ? rawRequests : [])
+    .map((item) => safeString(item && item.id))
+    .filter(Boolean);
+  return {
+    success: true,
+    group,
+    group_id: safeString(group && group.id) || safeString(groupId),
+    group_name: resolveGroupDisplayName(group, { registration_group: groupId }),
+    pending_count: requesterIds.length,
+    requester_ids: requesterIds,
+    source: 'approval_client_getGroupMembershipRequests',
+    read_at: new Date().toISOString(),
+  };
+}
+
 async function forceRefreshApprovalGroupBeforeRead(context, group, options = {}) {
   const activeClient = options.client || approvalClient;
   const page = activeClient && activeClient.pupPage;
@@ -1703,12 +2034,54 @@ function groupStateFingerprint(groupId, requesterIds, requestedAtValues) {
   return `gs_${Math.abs(hash).toString(16)}`;
 }
 
+function candidateGroupDisplayName(value, groupId) {
+  const normalized = safeString(value);
+  if (!normalized) return '';
+  const idText = safeString(groupId);
+  if (idText && normalized === idText) return '';
+  if (/^\d+@g\.us$/i.test(normalized)) return '';
+  if (/^https?:\/\/chat\.whatsapp\.com\//i.test(normalized)) return '';
+  return normalized;
+}
+
+function resolveGroupDisplayName(group, context = {}) {
+  const groupId = safeString(group && group.id) || safeString(context && context.registration_group);
+  const candidates = [
+    group && group.__inviteInfoGroupName,
+    group && group.formattedTitle,
+    group && group.name,
+    group && group.subject,
+    group && group.title,
+    group && group.description,
+    group && group.contact && group.contact.name,
+    group && group.contact && group.contact.pushname,
+    group && group.contact && group.contact.shortName,
+    group && group.groupMetadata && group.groupMetadata.subject,
+    group && group.groupMetadata && group.groupMetadata.desc,
+    group && group._data && group._data.subject,
+    group && group._data && group._data.formattedTitle,
+    group && group._data && group._data.name,
+    group && group._data && group._data.__x_subject,
+    group && group._data && group._data.__x_formattedTitle,
+    group && group._data && group._data.__x_name,
+  ];
+  for (const candidate of candidates) {
+    const displayName = candidateGroupDisplayName(candidate, groupId);
+    if (displayName) return displayName;
+  }
+  return safeString(group && group.name) || String(context.registration_group || '').trim();
+}
+
 async function buildGroupStateFromGroup(context, group, options = {}) {
   const groupId = safeString(group && group.id) || safeString(context && context.registration_group);
-  const groupName = safeString(group && group.name) || String(context.registration_group || '').trim();
+  const groupName = resolveGroupDisplayName(group, context);
   const mode = normalizeGroupStateMode({ ...(context || {}), ...(options || {}) });
   const activeClientForRole = options.activeClient || options.client || approvalClient;
-  const selfAdminState = participantAdminState(findClientParticipant(group, activeClientForRole));
+  const participantEvidence = findClientParticipantEvidence(group, activeClientForRole);
+  const runtimeIdentity = clientRuntimeIdentity(activeClientForRole);
+  const expectedRuntimePhone = expectedRuntimePhoneFromContext(context);
+  const runtimeMatch = runtimeIdentityMatch(runtimeIdentity.runtime_phone, expectedRuntimePhone);
+  const selfAdminState = participantAdminState(participantEvidence.participant, participantEvidence);
   const sourceTs = new Date().toISOString();
 
   if (mode === 'fast') {
@@ -1728,9 +2101,19 @@ async function buildGroupStateFromGroup(context, group, options = {}) {
       group_id: groupId,
       group_name: groupName,
       pending_count: requesterRows.length,
-      member_count: null,
+      member_count: participantEvidence.participants_count_raw,
+      participants_load_status: participantEvidence.participants_load_status,
+      participants_count_raw: participantEvidence.participants_count_raw,
+      participants_load_error: participantEvidence.participants_load_status === 'complete' ? null : 'participants_not_loaded',
+      self_match_strategy: participantEvidence.self_match_strategy,
+      debug_participants_sample: participantEvidence.debug_participants_sample,
+      ...runtimeIdentity,
+      expected_runtime_phone: expectedRuntimePhone,
+      runtime_identity_match: runtimeMatch,
       ...selfAdminState,
-      can_manage_membership_requests: selfAdminState.self_is_admin,
+      membership_requests_readable: true,
+      approval_action_visible: true,
+      can_manage_membership_requests: true,
       requester_ids: requesterIds,
       requested_at_unix: requestedAtValues,
       requesters: [],
@@ -1761,8 +2144,18 @@ async function buildGroupStateFromGroup(context, group, options = {}) {
     group_name: groupName,
     pending_count: requests.length,
     member_count: memberCount,
+    participants_load_status: participantEvidence.participants_load_status,
+    participants_count_raw: participantEvidence.participants_count_raw,
+    participants_load_error: participantEvidence.participants_load_status === 'complete' ? null : 'participants_not_loaded',
+    self_match_strategy: participantEvidence.self_match_strategy,
+    debug_participants_sample: participantEvidence.debug_participants_sample,
+    ...runtimeIdentity,
+    expected_runtime_phone: expectedRuntimePhone,
+    runtime_identity_match: runtimeMatch,
     ...selfAdminState,
-    can_manage_membership_requests: selfAdminState.self_is_admin,
+    membership_requests_readable: true,
+    approval_action_visible: true,
+    can_manage_membership_requests: true,
     requester_ids: requesterIds,
     requested_at_unix: requestedAtValues,
     requesters: requests,
@@ -1796,6 +2189,22 @@ async function probeGroupState(context, options = {}) {
   return buildGroupStateFromGroup(context, group, { ...options, client });
 }
 
+function requesterIdsFromPayload(payload) {
+  return Array.isArray(payload && payload.requester_ids)
+    ? payload.requester_ids.map((item) => safeString(item)).filter(Boolean)
+    : [];
+}
+
+function groupIdentityChanged(previousPayload, nextPayload) {
+  const previousId = safeString(previousPayload && previousPayload.group_id);
+  const nextId = safeString(nextPayload && nextPayload.group_id);
+  if (previousId && nextId && previousId !== nextId) return true;
+  const previousName = safeString(previousPayload && previousPayload.group_name);
+  const nextName = safeString(nextPayload && nextPayload.group_name);
+  if (previousName && nextName && previousName !== nextName) return true;
+  return false;
+}
+
 function buildAuthoritativeGroupState(statePayload, options = {}) {
   const normalizedOptions = options || {};
   const basePayload = {
@@ -1807,34 +2216,55 @@ function buildAuthoritativeGroupState(statePayload, options = {}) {
     data_quality: (statePayload && statePayload.data_quality) || 'fresh',
     session_health: (statePayload && statePayload.session_health) || 'healthy',
   };
+  const requesterIds = requesterIdsFromPayload(basePayload);
   const basePendingCount = Math.max(0, Number(basePayload.pending_count || 0));
   const confirmedEmpty = Boolean(normalizedOptions.confirmedEmpty);
-  if (basePendingCount > 0) {
+  if (requesterIds.length > 0) {
     return {
       ...basePayload,
+      pending_count: Math.max(basePendingCount, requesterIds.length),
+      requester_ids: requesterIds,
       pending_zero_confidence: null,
       zero_pending_unverified: false,
       zero_pending_unverified_reason: null,
       zero_pending_verified_by: null,
+      unverified_pending_reason: null,
       approval_state_status: 'confirmed_pending',
+    };
+  }
+  if (basePendingCount > 0) {
+    return {
+      ...basePayload,
+      requester_ids: [],
+      pending_zero_confidence: null,
+      zero_pending_unverified: false,
+      zero_pending_unverified_reason: null,
+      zero_pending_verified_by: null,
+      unverified_pending_reason: normalizedOptions.unverifiedPendingReason || basePayload.unverified_pending_reason || 'pending_without_requester_ids',
+      approval_state_status: 'unverified_pending',
+      data_quality: basePayload.data_quality || 'unverified',
     };
   }
   if (confirmedEmpty) {
     return {
       ...basePayload,
+      requester_ids: [],
       pending_zero_confidence: 'confirmed',
       zero_pending_unverified: false,
       zero_pending_unverified_reason: null,
       zero_pending_verified_by: 'consecutive_group_state_refresh',
+      unverified_pending_reason: null,
       approval_state_status: 'confirmed_empty',
     };
   }
   return {
     ...basePayload,
+    requester_ids: [],
     pending_zero_confidence: 'unverified',
     zero_pending_unverified: true,
     zero_pending_unverified_reason: normalizedOptions.unverifiedReason || 'group_state_zero_not_stable',
     zero_pending_verified_by: null,
+    unverified_pending_reason: null,
     approval_state_status: 'unverified_empty',
   };
 }
@@ -1868,14 +2298,16 @@ async function resolveAuthoritativeGroupState(context, options = {}) {
     throw error;
   }
   const initialPendingCount = Math.max(0, Number(initialStatePayload && initialStatePayload.pending_count || 0));
-  const initialRequesterIds = Array.isArray(initialStatePayload && initialStatePayload.requester_ids)
-    ? initialStatePayload.requester_ids.filter(Boolean)
-    : [];
-  if (initialPendingCount > 0 || initialRequesterIds.length > 0) {
+  const initialRequesterIds = requesterIdsFromPayload(initialStatePayload);
+  if (initialRequesterIds.length > 0) {
     return buildAuthoritativeGroupState({
       ...(initialStatePayload || {}),
       pending_count: Math.max(initialPendingCount, initialRequesterIds.length),
+      requester_ids: initialRequesterIds,
     });
+  }
+  if (initialPendingCount > 0) {
+    return buildAuthoritativeGroupState(initialStatePayload, { unverifiedPendingReason: 'pending_without_requester_ids' });
   }
 
   const rechecks = [];
@@ -1884,23 +2316,43 @@ async function resolveAuthoritativeGroupState(context, options = {}) {
     if (retryWaitMs > 0) await waitFn(retryWaitMs);
     try {
       const nextPayload = await stateLoader({ attempt, reason: `stable_zero_recheck_${attempt}` });
+      if (groupIdentityChanged(latestZeroPayload || initialStatePayload, nextPayload)) {
+        rechecks.push({
+          attempt: attempt - 1,
+          source: 'group_object',
+          pending_count: 0,
+          zero_pending_unverified: true,
+          zero_pending_verified_by: null,
+          error: 'group_identity_changed_during_zero_recheck',
+        });
+        return attachZeroPendingRecheckEvidence(
+          buildAuthoritativeGroupState(latestZeroPayload || initialStatePayload, { unverifiedReason: 'group_identity_changed_during_zero_recheck' }),
+          rechecks,
+        );
+      }
       const pendingCount = Math.max(0, Number(nextPayload && nextPayload.pending_count || 0));
-      const requesterIds = Array.isArray(nextPayload && nextPayload.requester_ids)
-        ? nextPayload.requester_ids.filter(Boolean)
-        : [];
+      const requesterIds = requesterIdsFromPayload(nextPayload);
       rechecks.push({
         attempt: attempt - 1,
         source: 'group_object',
         pending_count: Math.max(pendingCount, requesterIds.length),
+        requester_ids: requesterIds,
         zero_pending_unverified: false,
         zero_pending_verified_by: null,
         error: null,
       });
-      if (pendingCount > 0 || requesterIds.length > 0) {
+      if (requesterIds.length > 0) {
         return attachZeroPendingRecheckEvidence(buildAuthoritativeGroupState({
           ...(nextPayload || {}),
           pending_count: Math.max(pendingCount, requesterIds.length),
+          requester_ids: requesterIds,
         }), rechecks);
+      }
+      if (pendingCount > 0) {
+        return attachZeroPendingRecheckEvidence(
+          buildAuthoritativeGroupState(nextPayload, { unverifiedPendingReason: 'pending_without_requester_ids' }),
+          rechecks,
+        );
       }
       latestZeroPayload = nextPayload;
     } catch (error) {
@@ -1919,14 +2371,8 @@ async function resolveAuthoritativeGroupState(context, options = {}) {
     }
   }
   const finalZeroPayload = latestZeroPayload || initialStatePayload || {};
-  const finalSelfIsAdmin = finalZeroPayload.self_is_admin === true || finalZeroPayload.can_manage_membership_requests === true;
   return attachZeroPendingRecheckEvidence(
-    buildAuthoritativeGroupState(
-      finalZeroPayload,
-      finalSelfIsAdmin
-        ? { confirmedEmpty: true }
-        : { unverifiedReason: 'same_runtime_family_zero_pending' },
-    ),
+    buildAuthoritativeGroupState(finalZeroPayload, { confirmedEmpty: true }),
     rechecks,
   );
 }
@@ -2635,6 +3081,7 @@ module.exports = {
   inspectApprovalReviewSurface,
   isUnconfirmedZeroSurface,
   forceRefreshApprovalGroupBeforeRead,
+  readMembershipRequestsWithRefresh,
   buildAuthoritativeGroupState,
   resolveAuthoritativeGroupState,
   resolveLocalAuthSessionDir,
@@ -2645,6 +3092,10 @@ module.exports = {
   sendGroupMessage,
   dispatchGroupAtmosphereTriggerSequence,
   handleGroupAtmosphereIncomingMessage,
+  handleGroupAtmosphereTriggerEvent,
+  scheduleGroupAtmosphereMemberJoinEvent,
+  recordGroupAtmosphereOrdinaryMessage,
+  checkGroupAtmosphereSilenceOnce,
   inferGroupAtmosphereAccountKey,
   fetchGroupMessagesWithClient,
   fetchGroupMessages,

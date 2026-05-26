@@ -93,21 +93,35 @@ class RealtimeApprovalStateStore:
                     preserved_verifier = previous_group.get('membership_verifier')
                     if isinstance(preserved_verifier, dict):
                         group['membership_verifier'] = copy.deepcopy(preserved_verifier)
+                    # A successful manual probe may be followed by an older lightweight
+                    # snapshot whose binding identity is blank or still points at a
+                    # fallback/previous group. Keep the confirmed identity fields too;
+                    # otherwise the UI briefly shows the right group and then reverts
+                    # as soon as the weak daemon snapshot arrives.
+                    for identity_field in (
+                        'group_id',
+                        'group_name',
+                        'runtime_probe_group_id',
+                        'runtime_probe_group_name',
+                        'target_group_label',
+                        'registration_group',
+                        'link',
+                    ):
+                        previous_value = previous_group.get(identity_field)
+                        incoming_value = group.get(identity_field)
+                        if previous_value and (not incoming_value or identity_field.startswith('runtime_probe_')):
+                            group[identity_field] = copy.deepcopy(previous_value)
                     if group.get('next_approval_pending_count') is None and previous_group.get('next_approval_pending_count') is not None:
                         group['next_approval_pending_count'] = previous_group.get('next_approval_pending_count')
         return merged
 
     def _should_preserve_previous_group_probe(self, previous_group: Dict[str, Any], incoming_group: Dict[str, Any], *, source: str = 'backend') -> bool:
-        # HTTP polling snapshots are the page's server-authoritative refresh path.
-        # Do not let an old in-memory verifier/detail (for example “待审批 11 人”)
-        # survive forever when the backend/daemon snapshot no longer carries that
-        # count. A fresh daemon/internal event can still preserve strong probe facts
-        # through other source names.
-        if str(source or '').strip() == 'lightweight_snapshot_refresh':
-            return False
+        # Preserve a stronger per-binding verifier (for example a successful manual_probe)
+        # when a later lightweight_snapshot_refresh only carries weak/unavailable state.
         previous_verifier = previous_group.get('membership_verifier') if isinstance(previous_group.get('membership_verifier'), dict) else {}
         incoming_verifier = incoming_group.get('membership_verifier') if isinstance(incoming_group.get('membership_verifier'), dict) else {}
-        if previous_verifier.get('ready') is not True:
+        previous_status = str(previous_verifier.get('status') or '').strip()
+        if previous_verifier.get('ready') is not True and previous_status not in {'not_group_member', 'not_group_admin', 'zero_pending_unverified'}:
             return False
         if incoming_verifier.get('ready') is True:
             return False
@@ -124,7 +138,8 @@ class RealtimeApprovalStateStore:
             or incoming_missing_member_count
         )
         strong_previous = (
-            previous_has_member_count
+            previous_status in {'not_group_member', 'not_group_admin'}
+            or previous_has_member_count
             or previous_quality in {'verified_zero', 'live_probe_ready', 'mapped_live_probe_ready', 'review_surface_verified_empty'}
             or str(previous_verifier.get('status') or '').strip() == 'mapped_live_probe_ready'
         )
@@ -191,7 +206,12 @@ class RealtimeApprovalStateStore:
                 ))
             previous_groups = self._groups_by_key(previous_row)
             current_groups = self._groups_by_key(current_row)
+            seen_current_group_objects: Set[int] = set()
             for group_key, current_group in current_groups.items():
+                current_object_id = id(current_group)
+                if current_object_id in seen_current_group_objects:
+                    continue
+                seen_current_group_objects.add(current_object_id)
                 previous_group = previous_groups.get(group_key) or {}
                 group_patch = self._group_patch(previous_group, current_group)
                 if group_patch:
@@ -246,9 +266,17 @@ class RealtimeApprovalStateStore:
         for index, group in enumerate(group_rows):
             if not isinstance(group, dict):
                 continue
-            key = str(group.get('group_id') or group.get('link') or group.get('group_name') or index).strip()
-            if key:
-                groups[key] = group
+            keys = [
+                str(group.get('group_id') or '').strip(),
+                str(((group.get('membership_verifier') or {}).get('probe') or {}).get('group_id') or '').strip() if isinstance(group.get('membership_verifier'), dict) else '',
+                str(group.get('registration_group') or '').strip(),
+                str(group.get('link') or '').strip(),
+                str(group.get('group_name') or '').strip(),
+                str(index),
+            ]
+            for key in keys:
+                if key and key not in groups:
+                    groups[key] = group
         return groups
 
     def _new_event(self, event_type: str, *, account_key: str, group_id: str, patch: Dict[str, Any], source: str) -> Dict[str, Any]:

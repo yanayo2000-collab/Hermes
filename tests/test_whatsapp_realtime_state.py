@@ -113,8 +113,24 @@ def test_realtime_store_preserves_successful_manual_probe_against_weak_daemon_sn
         ]
     }
 
+    strong['rows'][0]['group_binding_runtimes'][0]['membership_verifier']['ready'] = False
+    strong['rows'][0]['group_binding_runtimes'][0]['membership_verifier']['status'] = 'not_group_member'
+    strong['rows'][0]['group_binding_runtimes'][0]['membership_verifier']['detail'] = '当前审批账号未加入目标群'
+    strong['rows'][0]['group_binding_runtimes'][0]['membership_verifier']['probe']['self_participant_found'] = False
     store.ingest_snapshot(strong, source='manual_probe')
-    result = store.ingest_snapshot(weak, source='daemon')
+    result = store.ingest_snapshot(weak, source='lightweight_snapshot_refresh')
+
+    group = result['snapshot']['rows'][0]['group_binding_runtimes'][0]
+    verifier = group['membership_verifier']
+    assert verifier['status'] == 'not_group_member'
+    assert verifier['probe']['self_participant_found'] is False
+
+    strong['rows'][0]['group_binding_runtimes'][0]['membership_verifier']['ready'] = True
+    strong['rows'][0]['group_binding_runtimes'][0]['membership_verifier']['status'] = 'mapped_live_probe_ready'
+    strong['rows'][0]['group_binding_runtimes'][0]['membership_verifier']['detail'] = '已接探针：待审批 12 人。已有管理员权限。'
+    strong['rows'][0]['group_binding_runtimes'][0]['membership_verifier']['probe']['self_participant_found'] = True
+    store.ingest_snapshot(strong, source='manual_probe')
+    result = store.ingest_snapshot(weak, source='lightweight_snapshot_refresh')
 
     group = result['snapshot']['rows'][0]['group_binding_runtimes'][0]
     verifier = group['membership_verifier']
@@ -123,6 +139,81 @@ def test_realtime_store_preserves_successful_manual_probe_against_weak_daemon_sn
     assert verifier['probe']['member_count'] == 529
     assert verifier['probe']['data_quality'] == 'verified_zero'
     assert result['events'] == []
+
+
+def test_realtime_store_preserves_manual_probe_identity_against_blank_weak_snapshot():
+    store = RealtimeApprovalStateStore()
+    manual = {
+        'rows': [
+            {
+                'account_key': 'registration-a',
+                'session_state': {'login_state': 'logged_in', 'login_verified': True, 'can_probe': True},
+                'group_binding_runtimes': [
+                    {
+                        'binding_index': 0,
+                        'link': 'https://chat.whatsapp.com/new',
+                        'group_id': 'new-group@g.us',
+                        'group_name': '新注册群',
+                        'runtime_probe_group_id': 'new-group@g.us',
+                        'runtime_probe_group_name': '新注册群',
+                        'target_group_label': '新注册群',
+                        'next_approval_pending_count': 3,
+                        'membership_verifier': {
+                            'ready': True,
+                            'status': 'mapped_live_probe_ready',
+                            'detail': '已接探针：待审批 3 人。已有管理员权限。',
+                            'probe': {
+                                'group_id': 'new-group@g.us',
+                                'group_name': '新注册群',
+                                'pending_count': 3,
+                                'member_count': 88,
+                                'data_quality': 'fresh',
+                            },
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    weak = {
+        'rows': [
+            {
+                'account_key': 'registration-a',
+                'session_state': {'login_state': 'logged_in', 'login_verified': True, 'can_probe': True},
+                'group_binding_runtimes': [
+                    {
+                        'binding_index': 0,
+                        'link': 'https://chat.whatsapp.com/new',
+                        'group_id': '',
+                        'group_name': '',
+                        'runtime_probe_group_id': '',
+                        'runtime_probe_group_name': '',
+                        'target_group_label': '',
+                        'next_approval_pending_count': None,
+                        'membership_verifier': {
+                            'ready': False,
+                            'status': 'probe_unavailable',
+                            'detail': '当前未拿到可用的实时群状态探针结果。',
+                            'probe': {'member_count': None, 'data_quality': 'unavailable'},
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+    store.ingest_snapshot(manual, source='manual_probe')
+    result = store.ingest_snapshot(weak, source='lightweight_snapshot_refresh')
+    group = result['snapshot']['rows'][0]['group_binding_runtimes'][0]
+
+    assert group['group_id'] == 'new-group@g.us'
+    assert group['group_name'] == '新注册群'
+    assert group['runtime_probe_group_id'] == 'new-group@g.us'
+    assert group['runtime_probe_group_name'] == '新注册群'
+    assert group['target_group_label'] == '新注册群'
+    assert group['membership_verifier']['ready'] is True
+    assert group['membership_verifier']['status'] == 'mapped_live_probe_ready'
+    assert group['next_approval_pending_count'] == 3
 
 
 def test_realtime_internal_ingest_and_snapshot_endpoint_publish_authoritative_state():
@@ -250,7 +341,7 @@ def test_realtime_snapshot_endpoint_refreshes_lightweight_server_snapshot():
     assert 'service.list_whatsapp_approval_accounts(lightweight=True)' in source
     assert "source: str = 'backend'" in store_source
     assert "lightweight_snapshot_refresh" in store_source
-    assert "return False" in store_source
+    assert "stronger per-binding verifier" in store_source
 
 
 def test_daemon_can_publish_realtime_snapshot_without_browser_probe():

@@ -383,6 +383,8 @@ def test_trigger_rules_simple_operator_modal_markers_priority_and_image_segments
         'saveTriggerRuleFromModal',
         'deleteTriggerRuleFromModal',
         'addTriggerMessageSegment',
+        "flex:0 0 auto!important;min-height:0!important;overflow:visible!important;",
+        "window.__gaTriggerSegments.forEach((_,idx)=>syncTriggerSegmentFromDom(idx))",
         'renderTriggerMessageSegments',
         'onTriggerSegmentPaste',
         'openTriggerSegmentMediaPreview',
@@ -394,12 +396,16 @@ def test_trigger_rules_simple_operator_modal_markers_priority_and_image_segments
         '<span>状态</span><select id="ga_trigger_rule_enabled">',
         'ga-trigger-rule-row',
         'ga-trigger-rule-actions',
+        'data-ga-trigger-rule-card',
+        'data-ga-trigger-rule-toggle',
+        'toggleTriggerRuleEnabled',
         '新人入群',
         '关键词',
         '群冷场',
     ]:
         assert marker in html
     assert 'testTriggerRuleFromModal' not in html
+    assert '<div class="mini-note ga-trigger-rule-item" onclick=' not in html
     assert '<input type="checkbox" id="ga_trigger_rule_enabled"' not in html
     assert '测试只预览，不会真实发 WhatsApp' not in html
     assert '规则只作用于当前桥接关系' not in html
@@ -407,6 +413,72 @@ def test_trigger_rules_simple_operator_modal_markers_priority_and_image_segments
     assert '多个关键词用逗号隔开' not in html
     assert '数字越大，优先级越低' not in html
     assert '/api/ops/group-atmosphere/trigger-rules/test' not in html
+
+
+def test_internal_trigger_event_endpoint_matches_member_join_and_group_silence():
+    client = make_client()
+    seed_role_and_account(client)
+    created = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'role-id-community_seed',
+        'account_key': 'atmosphere-indo-01',
+        'group_indexes': [0],
+        'enabled': True,
+        'auto_speaking_enabled': False,
+        'trigger_speaking_enabled': True,
+        'group_send_permission_enabled': True,
+    })
+    assert created.status_code == 200
+    client.post('/api/ops/group-atmosphere/trigger-rules', json={
+        'relationship_key': 'role-id-community_seed',
+        'rule_name': '入群欢迎',
+        'trigger_type': 'member_join',
+        'enabled': True,
+        'priority': 1,
+        'message_sequence': [{'type': 'text', 'text': 'Halo kak, selamat datang ya'}],
+        'cooldown_seconds': 0,
+    })
+    client.post('/api/ops/group-atmosphere/trigger-rules', json={
+        'relationship_key': 'role-id-community_seed',
+        'rule_name': '群沉默破冰',
+        'trigger_type': 'group_silence',
+        'enabled': True,
+        'priority': 2,
+        'conditions': {'silence_seconds': 120},
+        'message_sequence': [{'type': 'text', 'text': 'Sepi ya kak, ada yang mau ditanyakan?'}],
+        'cooldown_seconds': 0,
+    })
+
+    join = client.post('/api/internal/group-atmosphere/trigger-event', json={
+        'account_key': 'atmosphere-indo-01',
+        'target_group': 'group-a@g.us',
+        'trigger_type': 'member_join',
+        'sender_id': '62812@c.us',
+        'event_payload': {'recipientIds': ['62812@c.us']},
+    })
+    assert join.status_code == 200
+    assert join.json()['should_respond'] is True
+    assert join.json()['trigger_type'] == 'member_join'
+    assert join.json()['reply_sequence'][0]['text'] == 'Halo kak, selamat datang ya'
+
+    too_early = client.post('/api/internal/group-atmosphere/trigger-event', json={
+        'account_key': 'atmosphere-indo-01',
+        'target_group': 'group-a@g.us',
+        'trigger_type': 'group_silence',
+        'event_payload': {'silence_seconds': 30},
+    })
+    assert too_early.status_code == 200
+    assert too_early.json()['result_code'] == 'silence_threshold_not_reached'
+
+    silence = client.post('/api/internal/group-atmosphere/trigger-event', json={
+        'account_key': 'atmosphere-indo-01',
+        'target_group': 'group-a@g.us',
+        'trigger_type': 'group_silence',
+        'event_payload': {'silence_seconds': 180},
+    })
+    assert silence.status_code == 200
+    assert silence.json()['should_respond'] is True
+    assert silence.json()['trigger_type'] == 'group_silence'
+    assert silence.json()['reply_sequence'][0]['text'] == 'Sepi ya kak, ada yang mau ditanyakan?'
 
 
 def test_silence_event_counts_any_normal_group_message_but_not_system_messages():
@@ -3514,7 +3586,8 @@ def test_group_atmosphere_page_keeps_learning_control_single_entry():
     assert "?'待质检'" not in html
     assert 'const GA_MAX_GROUPS=5;' in html
     assert 'const GA_LEARNING_MAX_GROUPS=10;' in html
-    assert '<select id="ga_candidate_language_filter"><option value="">语言/地区</option><option value="id" selected>印尼</option>' in html
+    assert '<select id="ga_candidate_language_filter"><option value="id" selected>印尼</option>' in html
+    assert '<option value="">语言/地区</option>' not in html
     assert '立即学习一次</button>' not in html
     assert '立即学习</button>' not in html
 
@@ -3906,7 +3979,7 @@ def test_group_atmosphere_phrase_type_delete_hides_only_custom_types_and_page_ha
     assert '#ga_candidate_role_tabs::-webkit-scrollbar-thumb{background:#94a3b8!important;border-radius:999px!important;border:2px solid #e2e8f0!important;}' in html
     assert '#ga_candidate_role_tabs .ga-candidate-tab{flex:0 0 auto!important;}' in html
     assert '#ga_add_phrase_type_btn{flex:0 0 auto!important;margin:0!important;}' in html
-    assert '<div id="ga_candidate_type_bar"><div id="ga_candidate_role_tabs" class="ga-candidate-tabs"></div><button type="button" class="ga-candidate-tab ga-add-phrase-type-tab" id="ga_add_phrase_type_btn">+</button></div>' in html
+    assert '<div class="ga-candidate-type-label">话术类型</div><div id="ga_candidate_type_bar"><div id="ga_candidate_role_tabs" class="ga-candidate-tabs"></div><button type="button" class="ga-candidate-tab ga-add-phrase-type-tab" id="ga_add_phrase_type_btn" title="新增话术类型" aria-label="新增话术类型">+</button></div>' in html
 
     deleted = client.delete('/api/ops/group-atmosphere/phrase-types/retention_recall')
     assert deleted.status_code == 200
@@ -4108,6 +4181,27 @@ def test_group_atmosphere_manual_upload_preview_requires_review_groups_languages
     assert client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows'] == []
 
 
+def test_group_atmosphere_manual_upload_preview_classifies_long_spanish_copy_as_mexico_without_default_region(tmp_path):
+    client = make_client({'GROUP_ATMOSPHERE_MEDIA_DIR': str(tmp_path / 'ga-media')})
+    spanish_lines = [
+        'Si el código aparece como inválido, no sigas intentando muchas veces. Envíanos una captura de la pantalla donde te sale el error y revisamos si estás en la sección correcta o si hay una incidencia temporal del sistema.',
+        'Para completar tu perfil, revisa estos puntos: foto clara, nombre/nickname, descripción llamativa, datos básicos y publicaciones/fotos. Cuando termines, manda captura para que una administradora revise qué falta.',
+        'Hoy vamos a refrescar el perfil. Cambien la foto principal por una imagen clara, bonita y llamativa. Un perfil actualizado ayuda a que más usuarios se interesen y respondan los mensajes.',
+        'Chicas, ¿quién tiene dudas en este momento? Pueden preguntar sin pena: descarga, perfil, código de agencia, mensajes, diamantes o retiro. Estamos aquí para guiarlas paso a paso.',
+    ]
+    preview = client.post('/api/ops/group-atmosphere/phrases/manual-upload-preview', json={
+        'role_positioning': 'newcomer_guide',
+        'content': '\n'.join(spanish_lines),
+    })
+    assert preview.status_code == 200
+    data = preview.json()
+    assert data['summary']['new_count'] == len(spanish_lines)
+    assert data['summary']['language_groups'] == {'es': len(spanish_lines)}
+    assert {item['language'] for item in data['items']} == {'es'}
+    assert {item['region'] for item in data['items']} == {'墨西哥'}
+    assert all(item['selected'] is True for item in data['items'])
+
+
 def test_group_atmosphere_manual_upload_confirm_writes_only_reviewed_items_to_candidate_pool(tmp_path):
     client = make_client({'GROUP_ATMOSPHERE_MEDIA_DIR': str(tmp_path / 'ga-media')})
     preview = client.post('/api/ops/group-atmosphere/phrases/manual-upload-preview', json={
@@ -4128,6 +4222,57 @@ def test_group_atmosphere_manual_upload_confirm_writes_only_reviewed_items_to_ca
     assert candidates[0]['enabled'] is True
     assert candidates[0]['quality_status'] == 'manual_approved'
     assert candidates[0]['source_type'] == 'manual_upload'
+
+
+def test_group_atmosphere_manual_upload_confirm_preserves_original_language_after_translation_preview(tmp_path):
+    client = make_client({'GROUP_ATMOSPHERE_MEDIA_DIR': str(tmp_path / 'ga-media')})
+    preview = client.post('/api/ops/group-atmosphere/phrases/manual-upload-preview', json={
+        'region': '印尼',
+        'language': 'id',
+        'role_positioning': 'community_seed',
+        'content': 'Oi amiga, tudo bem?',
+    })
+    assert preview.status_code == 200
+    item = preview.json()['items'][0]
+    assert item['language'] == 'pt'
+    assert item['region'] == '巴西'
+    confirm = client.post('/api/ops/group-atmosphere/phrases/manual-upload-confirm', json={'items': [{
+        **item,
+        'selected': True,
+        'text': '嗨朋友，一切都好吗？',
+        'original_text': 'Oi amiga, tudo bem?',
+        'translated_text': '嗨朋友，一切都好吗？',
+    }]})
+    assert confirm.status_code == 200, confirm.text
+    config = confirm.json()['configs'][0]
+    assert config['language'] == 'pt'
+    assert config['region'] == '巴西'
+    rows = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    assert len(rows) == 1
+    assert rows[0]['language'] == 'pt'
+    assert rows[0]['region'] == '巴西'
+    candidates = [c for row in rows for c in row['candidates']]
+    assert [c['text'] for c in candidates] == ['Oi amiga, tudo bem?']
+    assert all('嗨朋友' not in c['text'] for c in candidates)
+
+
+def test_group_atmosphere_manual_upload_confirm_inferrs_region_from_original_text_when_translation_preview_drops_metadata(tmp_path):
+    client = make_client({'GROUP_ATMOSPHERE_MEDIA_DIR': str(tmp_path / 'ga-media')})
+    confirm = client.post('/api/ops/group-atmosphere/phrases/manual-upload-confirm', json={'items': [{
+        'selected': True,
+        'text': '嗨朋友，一切都好吗？',
+        'original_text': 'Oi amiga, tudo bem?',
+        'translated_text': '嗨朋友，一切都好吗？',
+        'role_positioning': 'community_seed',
+    }]})
+    assert confirm.status_code == 200, confirm.text
+    config = confirm.json()['configs'][0]
+    assert config['language'] == 'pt'
+    assert config['region'] == '巴西'
+    rows = client.get('/api/ops/group-atmosphere/candidate-pool').json()['rows']
+    assert rows[0]['language'] == 'pt'
+    assert rows[0]['region'] == '巴西'
+    assert rows[0]['candidates'][0]['text'] == 'Oi amiga, tudo bem?'
 
 
 def test_group_atmosphere_manual_upload_preview_filters_chinese_headers_and_offers_translate(tmp_path):
@@ -4240,13 +4385,40 @@ def test_group_atmosphere_manual_upload_page_exposes_review_modal_and_preview_fl
     assert 'function autoResizeManualUploadReviewTextarea' in html
     assert "rows=\"${manualUploadReviewTextareaRows(item.text||'')}\"" in html
     assert 'max-height:240px' in html
+    assert '#ga_manual_upload_review_card .ga-review-row textarea{min-height:38px!important;height:auto!important' not in html
+    assert 'height:var(--ga-review-textarea-height,auto)!important' in html
+    assert 'resize:none!important' in html
+    assert 'box-sizing:border-box!important' in html
     assert "split(new RegExp('\\r\\n|\\r|\\n'))" in html
     assert "el.setAttribute('rows',String(rows))" in html
+    assert "el.style.setProperty('height',`${next}px`,'important')" in html
+    assert "el.style.setProperty('overflow-y',scrollHeight>maxHeight?'auto':'hidden','important')" in html
+    assert 'data-original-text="${esc(item.original_text||item.text||\'\')}"' in html
+    assert "const originalText=String(el?.dataset?.originalText||item.original_text||item.text||'').trim()" in html
+    assert "const showingZh=el?.dataset?.showingZh==='1'" in html
+    assert 'const text=showingZh&&originalText?originalText:rawValue' in html
+    assert 'translated_text:showingZh?rawValue' in html
     assert 'function toggleManualUploadReviewTranslation' in html
     assert 'ga-review-translate-btn' in html
     assert '/api/ops/group-atmosphere/phrases/manual-upload-translate' in html
-    assert 'data-ga-review-region' not in html
-    assert 'data-ga-review-role' not in html
+    assert 'data-ga-review-region' in html
+    assert 'data-ga-review-role' in html
+    assert 'ga-review-bulk-controls' in html
+    assert 'ga_manual_review_bulk_region' in html
+    assert 'ga_manual_review_bulk_role' in html
+    assert '按语言自动分配' in html
+    assert '__auto_by_language__' in html
+    assert "manualUploadReviewRegionOptionsHtml('__auto_by_language__',true)" in html
+    assert 'function manualUploadReviewRegionByLanguage' in html
+    assert 'function manualUploadReviewAutoRegionForItem' in html
+    assert 'manualUploadReviewAutoRegionForItem(item):region' in html
+    assert 'let applied=0' in html
+    assert '请先勾选要应用的话术' in html
+    assert '确认无误后点击“确认导入已选话术”' in html
+    assert 'showTip(msg,\'success\')' in html
+    assert 'function applyManualUploadReviewBulk' in html
+    assert 'function setManualUploadReviewRegion' in html
+    assert 'function setManualUploadReviewRole' in html
     assert 'ga-review-row-meta' not in html
     assert '<span class="pill green">新话术</span>' not in html
     assert "item.source_label||item.source||'人工导入'" not in html
@@ -4732,7 +4904,7 @@ def test_group_atmosphere_page_removes_teaching_copy_and_prioritizes_account_ope
     assert 'id="ga_learning_upload_card"' in html
     assert '<h2>话术学习</h2>' not in html
     assert '<h2>发送日志</h2>' not in html
-    assert '/api/ops/group-atmosphere/logs' not in html
+    assert '/api/ops/group-atmosphere/logs?limit=8' in html
     assert 'id="ga_editor_modal"' in html
     assert 'ga-bridge-layout' in html
 
@@ -4781,10 +4953,11 @@ def test_group_atmosphere_manual_upload_is_first_generation_card_without_library
     assert 'ga-manual-upload-compact' in candidate_card
     assert 'ga-manual-upload-head' in candidate_card
     assert 'ga-manual-upload-row' in candidate_card
-    assert candidate_card.index('id="ga_manual_upload_btn"') < candidate_card.index('id="ga_manual_upload_region"')
+    assert 'id="ga_manual_upload_region"' not in candidate_card
+    assert 'id="ga_manual_upload_type"' not in candidate_card
     assert '每行一条；或选择 txt/csv/xlsx 文件导入' in candidate_card
     assert '#ga_manual_upload_card.ga-manual-upload-compact{width:100%!important;max-width:none!important;padding:16px!important;margin:0!important;display:grid!important;gap:10px!important;}' in html
-    assert '#ga_manual_upload_card .ga-manual-upload-row{display:grid!important;grid-template-columns:120px 160px minmax(220px,1fr)!important' in html
+    assert '#ga_manual_upload_card .ga-manual-upload-row{display:grid!important;grid-template-columns:minmax(220px,1fr)!important' in html
     assert '#ga_manual_upload_card textarea#ga_manual_phrase_text{min-height:72px!important;margin:0!important;resize:vertical!important;}' in html
 
 
@@ -4897,10 +5070,11 @@ def test_group_atmosphere_page_matches_next_product_iteration_requirements():
     assert 'ga-manual-upload-compact' in candidate_card
     assert 'ga-manual-upload-head' in candidate_card
     assert 'ga-manual-upload-row' in candidate_card
-    assert candidate_card.index('id="ga_manual_upload_btn"') < candidate_card.index('id="ga_manual_upload_region"')
+    assert 'id="ga_manual_upload_region"' not in candidate_card
+    assert 'id="ga_manual_upload_type"' not in candidate_card
     assert '每行一条；或选择 txt/csv/xlsx 文件导入' in candidate_card
     assert '#ga_manual_upload_card.ga-manual-upload-compact{width:100%!important;max-width:none!important;padding:16px!important;margin:0!important;display:grid!important;gap:10px!important;}' in html
-    assert '#ga_manual_upload_card .ga-manual-upload-row{display:grid!important;grid-template-columns:120px 160px minmax(220px,1fr)!important' in html
+    assert '#ga_manual_upload_card .ga-manual-upload-row{display:grid!important;grid-template-columns:minmax(220px,1fr)!important' in html
     assert '#ga_manual_upload_card textarea#ga_manual_phrase_text{min-height:72px!important;margin:0!important;resize:vertical!important;}' in html
     assert 'id="ga_candidate_count"' not in candidate_card
     assert '<span class="pill gray" id="ga_candidate_count">' not in candidate_card
@@ -4963,7 +5137,8 @@ def test_group_atmosphere_page_matches_next_product_iteration_requirements():
     assert 'function toggleCandidateTranslation(configName,candidateId)' in html
     assert 'data-zh-text' in html
     assert '候选翻译' in html
-    assert '保存自定义' in html
+    assert '保存自定义' not in html
+    assert '>编辑</button>' in html
     assert '加入角色' in html
     assert '保存至此话术角色' not in html
     assert '保存至话术角色' not in html
@@ -5055,9 +5230,96 @@ def test_group_atmosphere_iteration_fixes_feedback_learning_isolation_and_candid
     assert "form.classList.remove('is-open')" in html
     assert 'saveInlinePhraseType' in html
     assert 'ga_open_image_candidate_modal_btn' in html
+    assert 'data-ga-image-candidate-entry="text"' in html
+    assert 'data-ga-image-candidate-entry="image"' in html
     assert 'ga_image_candidate_modal' in html
     assert 'saveImageCandidate' in html
     assert '新增图片' in html
+    assert '图片可选，不选择图片则保存为纯文本话术。' in html
+    assert 'openImageCandidateModal' in html
+
+
+def test_group_atmosphere_p2_ui_clarifies_bridge_generation_and_role_boundaries():
+    client = make_client()
+    page = client.get('/ops/group-atmosphere')
+    assert page.status_code == 200
+    html = page.text
+
+    # 桥接操作层级：卡片级批量发送、单群发送、发言测试必须有明确语义。
+    assert 'title="向该桥接关系下所有可发群发送"' in html
+    assert 'title="仅向本群发送"' in html
+    assert 'title="测试该桥接关系首个群的发言链路"' in html
+    assert 'openBridgeManualSendModal' in html
+    assert 'sendBridgeRelationshipManualMessage' in html
+    assert "trigger_type:'manual_role_bridge_batch'" in html
+
+    # 话术生成区：说明人工上传和文件学习的边界，避免运营误以为都会直接装载发送。
+    assert 'ga-generation-help' in html
+    assert '人工上传：先进入审核弹窗，确认后进入备选区' in html
+    assert '文件学习：AI 从聊天记录里提取候选话术' in html
+    assert '确认后才可加入话术角色' in html
+
+    # 话术类型与话术角色：视觉上分离，类型负责筛选，角色负责装载。
+    assert 'ga-candidate-type-label' in html
+    assert '话术类型' in html
+    assert 'ga-candidate-role-mount-panel' in html
+    assert '装载到话术角色' in html
+    assert '<option value="">选择要装载的话术角色</option>' in html
+
+
+def test_group_atmosphere_p3_ui_adds_tooltips_upload_polish_and_runtime_summary():
+    client = make_client()
+    page = client.get('/ops/group-atmosphere')
+    assert page.status_code == 200
+    html = page.text
+
+    # 关键短按钮要有 tooltip/aria，避免运营不知道 + 和 译 的含义。
+    assert 'id="ga_add_phrase_type_btn" title="新增话术类型" aria-label="新增话术类型"' in html
+    assert 'title="候选翻译" aria-label="候选翻译"' in html
+    assert 'title="刷新自动调度状态" aria-label="刷新自动调度状态"' in html
+
+    # 文件上传控件统一成清晰的轻量样式。
+    assert 'ga-file-upload-shell' in html
+    assert 'ga_manual_phrase_file_label' in html
+    assert 'ga_chat_file_label' in html
+    assert '选择 txt/csv/xlsx 文件' in html
+    assert '选择聊天记录文件' in html
+    assert '#ga_candidate_card .ga-file-upload-shell{display:flex!important;align-items:center!important;' in html
+
+    # 右侧/顶部可观测性区域补最近日志与调度摘要，页面加载只读拉取，不触发发送。
+    assert 'id="ga_runtime_summary_card"' in html
+    assert '最近发送/调度摘要' in html
+    assert 'id="ga_recent_runtime_logs"' in html
+    assert 'loadExecutionSummary' in html
+    assert '/api/ops/group-atmosphere/logs?limit=8' in html
+    assert 'renderExecutionSummaryLogs' in html
+    assert '暂无发送或调度记录' in html
+
+
+def test_group_atmosphere_scheduler_status_is_visible_and_read_only():
+    client = make_client({'GROUP_ATMOSPHERE_SCHEDULER_ENABLED': False})
+    page = client.get('/ops/group-atmosphere')
+    assert page.status_code == 200
+    html = page.text
+
+    assert 'id="ga_scheduler_overview_card"' in html
+    assert 'id="ga_scheduler_runtime_status"' in html
+    assert 'loadSchedulerStatus' in html
+    assert '/api/ops/group-atmosphere/scheduler/status' in html
+    assert '调度器未启用' in html
+    assert '桥接自动发言开关' in html
+    assert '最近调度' in html
+    assert '最近跳过原因' in html
+
+    resp = client.get('/api/ops/group-atmosphere/scheduler/status')
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['scheduler_enabled'] is False
+    assert data['scheduler_running'] is False
+    assert data['status_label'] == '调度器未启用'
+    assert data['auto_enabled_binding_count'] == 0
+    assert data['group_send_enabled_count'] == 0
+    assert data['last_skip_reason'] == 'scheduler_disabled'
 
 
 def test_group_atmosphere_role_delete_keeps_related_bindings_as_invalid_relationships():
@@ -5790,4 +6052,47 @@ def test_role_binding_today_count_uses_worker_message_id_logs_not_cache():
 
     row = service.get_group_atmosphere_role_binding(binding_id)
     assert row['sent_count_today'] == 1
+
+def test_role_binding_successful_trigger_writes_binding_event_ledger_and_count(monkeypatch):
+    client = make_client()
+    seed_role_and_account(client)
+
+    class FakeResponseWithMessageId:
+        status_code = 200
+        text = '{"status":"sent","message_id":"msg-binding-ledger-1"}'
+
+        def json(self):
+            return {'status': 'sent', 'message_id': 'msg-binding-ledger-1', 'result_code': 'sent'}
+
+    monkeypatch.setattr('app.main.requests.post', lambda url, json=None, timeout=None: FakeResponseWithMessageId())
+    created = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': 'role-id-community_seed',
+        'account_key': 'atmosphere-indo-01',
+        'group_indexes': [0],
+        'enabled': True,
+        'auto_speaking_enabled': True,
+        'group_send_permission_enabled': True,
+        'daily_max_messages': 999,
+        'min_interval_minutes': 0,
+        'worker_base_url': 'http://worker.local',
+    })
+    assert created.status_code == 200
+    binding_id = created.json()['bindings'][0]['binding_id']
+
+    triggered = client.post(f'/api/ops/group-atmosphere/role-bindings/{binding_id}/trigger')
+    assert triggered.status_code == 200
+    assert triggered.json()['sent'] is True
+
+    service = client.app.state.service
+    rows = service.db.connect().execute(
+        "SELECT * FROM mcn_event_ledger WHERE object_type='group_atmosphere_binding' AND object_key=?",
+        (binding_id,),
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]['event_type'] == 'group_message_sent'
+    assert rows[0]['evidence_level'] == 'whatsapp_message_id'
+    assert rows[0]['external_id'] == 'msg-binding-ledger-1'
+
+    binding = service.get_group_atmosphere_role_binding(binding_id)
+    assert binding['sent_count_today'] == 1
 

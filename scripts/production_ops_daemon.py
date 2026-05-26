@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,7 @@ from app.whatsapp_login_state import enrich_whatsapp_login_state
 
 
 SERVICE_NAME = 'production-ops-daemon'
+DEFAULT_DB_PATH = ROOT_DIR / 'data' / 'automation.db'
 
 
 def _build_default_fresh_probe_cmd(registration_group: str) -> str:
@@ -607,6 +609,157 @@ def _resolve_decision_group_state(worker_payload: Dict[str, Any], fresh_payload:
     }
 
 
+def _safe_pending_count(payload: Any) -> int:
+    data = payload if isinstance(payload, dict) else {}
+    try:
+        return max(int(data.get('pending_count') or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _independent_probe_interval_seconds(args: argparse.Namespace) -> float:
+    return max(float(getattr(args, 'independent_truth_probe_interval_seconds', 1800.0) or 0.0), 0.0)
+
+
+def _independent_probe_state_key(target: Dict[str, Any]) -> str:
+    return '|'.join(part for part in [
+        str(target.get('account_key') or '').strip(),
+        str(target.get('registration_group') or target.get('group_id') or target.get('binding_link') or '').strip(),
+    ] if part) or 'fallback'
+
+
+def _independent_probe_conflict(decision_payload: Dict[str, Any], independent_payload: Dict[str, Any]) -> Dict[str, Any]:
+    decision_pending = _safe_pending_count(decision_payload)
+    independent_pending = _safe_pending_count(independent_payload)
+    decision_sig = _group_state_signature(decision_payload)
+    independent_sig = _group_state_signature(independent_payload)
+    mismatch_reasons = [
+        key
+        for key in ('group_id', 'pending_count', 'member_count', 'fingerprint')
+        if decision_sig.get(key) != independent_sig.get(key)
+    ]
+    if not mismatch_reasons:
+        return {'present': False, 'severity': 'none', 'mismatch_reasons': []}
+    if independent_pending > 0 and decision_pending <= 0:
+        severity = 'critical'
+        code = 'independent_truth_conflict_p0'
+        reason = 'independent_probe_positive_while_authoritative_zero'
+    elif decision_pending > 0 and independent_pending <= 0:
+        severity = 'warning'
+        code = 'independent_truth_conflict_observation'
+        reason = 'independent_probe_zero_while_authoritative_positive'
+    else:
+        severity = 'warning'
+        code = 'independent_truth_conflict_observation'
+        reason = 'probe_count_or_identity_mismatch'
+    return {
+        'present': True,
+        'severity': severity,
+        'code': code,
+        'reason': reason,
+        'mismatch_reasons': mismatch_reasons,
+        'decision_signature': decision_sig,
+        'independent_signature': independent_sig,
+    }
+
+
+def _maybe_run_independent_truth_probe(
+    args: argparse.Namespace,
+    state: Dict[str, Any],
+    target: Dict[str, Any],
+    decision_group: Dict[str, Any],
+    *,
+    now: datetime,
+) -> Dict[str, Any]:
+    interval_seconds = _independent_probe_interval_seconds(args)
+    key = _independent_probe_state_key(target)
+    bucket = state.setdefault('independent_truth_probe', {})
+    if not isinstance(bucket, dict):
+        bucket = {}
+        state['independent_truth_probe'] = bucket
+    record = bucket.get(key) if isinstance(bucket.get(key), dict) else {}
+    last_checked = _parse_iso_datetime(record.get('last_checked_at'))
+    base_payload: Dict[str, Any] = {
+        'side_channel_only': True,
+        'target_key': key,
+        'interval_seconds': interval_seconds,
+    }
+    if interval_seconds > 0 and last_checked is not None:
+        elapsed = max((now - last_checked).total_seconds(), 0.0)
+        if elapsed < interval_seconds:
+            return {
+                **base_payload,
+                'ok': False,
+                'skipped': True,
+                'reason': 'interval_not_due',
+                'last_checked_at': last_checked.isoformat(),
+                'next_check_after_seconds': max(int(interval_seconds - elapsed), 0),
+                'last_result': record.get('last_result') if isinstance(record.get('last_result'), dict) else None,
+            }
+    group_name = str(target.get('group_name') or target.get('binding_group_name') or target.get('registration_group') or '').strip()
+    configured_cmd = str(target.get('independent_truth_probe_cmd') or getattr(args, 'independent_truth_probe_cmd', '') or '').strip()
+    cmd = configured_cmd
+    if not cmd and str(target.get('source') or '').strip() == 'account_binding':
+        cmd = _build_default_independent_truth_probe_cmd(group_name)
+    if not cmd:
+        reason = 'async_reconcile_only_not_authoritative' if str(target.get('source') or '').strip() == 'fallback_config' else 'independent_truth_probe_cmd_missing'
+        return {**base_payload, 'ok': False, 'skipped': True, 'reason': reason}
+    checked_at = now.isoformat()
+    try:
+        payload = _run_independent_truth_probe(cmd, timeout=getattr(args, 'command_timeout_seconds', 120.0))
+        decision_payload = dict((decision_group.get('payload') or {}) if isinstance(decision_group.get('payload'), dict) else {})
+        conflict = _independent_probe_conflict(decision_payload, payload)
+        result = {
+            **base_payload,
+            'ok': True,
+            'status': 'ok',
+            'checked_at': checked_at,
+            'payload': payload,
+            'conflict': conflict,
+        }
+        bucket[key] = {'last_checked_at': checked_at, 'last_result': result}
+        return result
+    except Exception as exc:
+        result = {**base_payload, 'ok': False, 'status': 'failed', 'checked_at': checked_at, 'error': str(exc)}
+        bucket[key] = {'last_checked_at': checked_at, 'last_result': result}
+        return result
+
+
+def _build_registration_group_metrics(cycle: Dict[str, Any]) -> Dict[str, Any]:
+    rows = cycle.get('registration_group_cycles') if isinstance(cycle.get('registration_group_cycles'), list) else []
+    metrics = {
+        'target_count': len([row for row in rows if isinstance(row, dict)]),
+        'confirmed_pending_count': 0,
+        'confirmed_empty_count': 0,
+        'unverified_count': 0,
+        'worker_failed_count': 0,
+        'slow_probe_count': 0,
+        'independent_conflict_count': 0,
+        'p0_conflict_count': 0,
+    }
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        truth_status = str(((row.get('truth_state') or {}).get('status') if isinstance(row.get('truth_state'), dict) else '') or '').strip()
+        if truth_status == 'confirmed_pending':
+            metrics['confirmed_pending_count'] += 1
+        elif truth_status == 'confirmed_empty':
+            metrics['confirmed_empty_count'] += 1
+        elif truth_status in {'pending_unverified', 'empty_unverified', 'unverified_pending', 'unverified_empty'} or 'unverified' in truth_status:
+            metrics['unverified_count'] += 1
+        worker_state = row.get('worker_state') if isinstance(row.get('worker_state'), dict) else {}
+        if worker_state.get('ok') is False:
+            metrics['worker_failed_count'] += 1
+        if str(worker_state.get('probe_status') or '').strip() == 'probe_slow':
+            metrics['slow_probe_count'] += 1
+        conflict = ((row.get('independent_truth_probe') or {}).get('conflict') if isinstance(row.get('independent_truth_probe'), dict) else {})
+        if isinstance(conflict, dict) and (conflict.get('present') or str(conflict.get('severity') or '').strip() in {'critical', 'warning'}):
+            metrics['independent_conflict_count'] += 1
+            if str(conflict.get('severity') or '').strip() == 'critical':
+                metrics['p0_conflict_count'] += 1
+    return metrics
+
+
 def _review_surface_positive_suspected_residue(review_surface_payload: Optional[Dict[str, Any]]) -> bool:
     payload = dict(review_surface_payload or {})
     try:
@@ -644,6 +797,17 @@ def _safe_pending_count(payload: Optional[Dict[str, Any]]) -> int:
     except (TypeError, ValueError):
         return 0
 
+
+
+def _has_stable_requester_ids(payload: Optional[Dict[str, Any]]) -> bool:
+    data = dict(payload or {})
+    requester_ids = [str(item or '').strip() for item in (data.get('requester_ids') or []) if str(item or '').strip()]
+    if requester_ids:
+        return True
+    for item in data.get('requesters') or []:
+        if isinstance(item, dict) and str(item.get('requesterId') or item.get('requester_id') or '').strip():
+            return True
+    return False
 
 
 def _has_requester_evidence(payload: Optional[Dict[str, Any]]) -> bool:
@@ -710,11 +874,17 @@ def collect_empty_queue_evidence(
             'error': str(probe_error),
             'reasons': ['probe_error'],
         }
-    has_pending_evidence = pending_count > 0 or _has_requester_evidence(selected)
+    has_requester_ids = _has_stable_requester_ids(selected)
+    has_pending_evidence = has_requester_ids
+    has_unverified_pending = pending_count > 0 and not has_requester_ids
     has_empty_evidence = _has_empty_queue_evidence(selected, review)
     if has_pending_evidence:
         classification = 'confirmed_pending'
         zero_unverified = False
+    elif has_unverified_pending:
+        classification = 'unverified_pending'
+        zero_unverified = False
+        reasons.append('pending_without_requester_ids')
     elif pending_count <= 0 and has_empty_evidence and not bool(selected.get('zero_pending_unverified')):
         classification = 'confirmed_empty'
         zero_unverified = False
@@ -956,6 +1126,7 @@ def _target_session_config_payload(target: Dict[str, Any]) -> Dict[str, Any]:
         'approval_count_threshold': int(target.get('approval_count_threshold') or 0),
         'approval_timeout_minutes': int(target.get('approval_timeout_minutes') or 0),
         'auto_recover_worker': bool(target.get('auto_recover_worker')),
+        'independent_truth_probe_cmd': str(target.get('independent_truth_probe_cmd') or '').strip(),
         'schedule_runtime': target.get('schedule_runtime') or {},
         'schedule_windows': target.get('schedule_windows') or [],
     }
@@ -1051,6 +1222,7 @@ def _normalize_monitor_target(target: Dict[str, Any], fallback_worker_base_url: 
         'approval_count_threshold': int(target.get('approval_count_threshold') or 0),
         'approval_timeout_minutes': int(target.get('approval_timeout_minutes') or 0),
         'auto_recover_worker': bool(target.get('auto_recover_worker')),
+        'independent_truth_probe_cmd': str(target.get('independent_truth_probe_cmd') or '').strip(),
         'schedule_runtime': target.get('schedule_runtime') or {},
         'schedule_windows': target.get('schedule_windows') or [],
         'runtime_state': target.get('runtime_state') if isinstance(target.get('runtime_state'), dict) else {},
@@ -1762,7 +1934,7 @@ def _run_registration_group_cycle(
     if not target_worker_base_url and str(target.get('source') or '').strip() == 'fallback_config':
         target_worker_base_url = str(args.worker_base_url or '').strip()
     target_fresh_probe_cmd = _fresh_probe_cmd_for_target(args, target_registration_group)
-    target_independent_truth_probe_cmd = str(getattr(args, 'independent_truth_probe_cmd', '') or '').strip()
+    target_independent_truth_probe_cmd = str(target.get('independent_truth_probe_cmd') or getattr(args, 'independent_truth_probe_cmd', '') or '').strip()
     target_area = str(target.get('area') or args.area or '').strip() or 'Indonesia'
     registration_cycle_anchors = state.setdefault('registration_cycle_anchors', {})
     if not isinstance(registration_cycle_anchors, dict):
@@ -2380,9 +2552,34 @@ def _run_registration_group_cycle(
         session_state=dict(target.get('session_state') or {}),
         monitor_target=cycle.get('monitor_target'),
     )
+    cycle['independent_truth_probe'] = _maybe_run_independent_truth_probe(
+        args,
+        state,
+        cycle['monitor_target'],
+        decision_group,
+        now=now,
+    )
 
     authoritative_payload = decision_group['payload']
     session_id = str(getattr(args, 'monitoring_session_id', '') or '').strip()
+    pending_count = max(int(authoritative_payload.get('pending_count') or 0), 0)
+    if str((cycle.get('truth_state') or {}).get('status') or '').strip() == 'pending_unverified':
+        cycle['release_evaluation'] = {
+            'ok': True,
+            'skipped': True,
+            'reason': 'pending_unverified',
+            'pending_count': pending_count,
+            'requester_ids': list(authoritative_payload.get('requester_ids') or []),
+        }
+        cycle['formal_approval'] = {
+            'triggered': False,
+            'ready': False,
+            'pending_count': pending_count,
+            'fingerprint': requester_fingerprint(authoritative_payload),
+            'reason_code': 'pending_unverified',
+            'auto_approval_disabled': False,
+        }
+        return cycle
     schedule_end_flush_due = _schedule_end_flush_due(
         cycle['monitor_target'],
         now,
@@ -2395,7 +2592,6 @@ def _run_registration_group_cycle(
         checked_at=now.isoformat(),
         target=cycle['monitor_target'],
     )
-    pending_count = max(int(authoritative_payload.get('pending_count') or 0), 0)
     registration_auto_approval_enabled = bool(getattr(args, 'registration_auto_approval_enabled', False))
     if not registration_auto_approval_enabled:
         cycle['release_evaluation'] = {
@@ -2705,7 +2901,7 @@ def _run_registration_group_cycle(
     fingerprint = requester_fingerprint(authoritative_payload)
     cycle['requester_fingerprint'] = fingerprint
     pending_count = max(int(authoritative_payload.get('pending_count') or 0), 0)
-    ready = bool(release.get('ready')) and int(release.get('release_count') or 0) > 0
+    ready = bool(release.get('ready')) and int(release.get('release_count') or 0) > 0 and pending_count > 0
     trigger_cooldown_seconds = _trigger_cooldown_seconds(args, release)
     should_trigger = ready and should_trigger_action(
         state,
@@ -2970,6 +3166,7 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
 
     target_cycles = [_run_registration_group_cycle(args, state, target, now=now) for target in ordered_targets]
     cycle['registration_group_cycles'] = target_cycles
+    cycle['metrics'] = _build_registration_group_metrics(cycle)
     if target_cycles:
         primary_cycle = target_cycles[0]
         for key in (
@@ -2978,6 +3175,7 @@ def run_cycle(args: argparse.Namespace, state: Dict[str, Any]) -> Dict[str, Any]
             'worker_state',
             'fresh_probe',
             'decision_group_state',
+            'truth_state',
             'startup_initial_batch',
             'release_evaluation',
             'requester_fingerprint',
@@ -3382,6 +3580,210 @@ def _notification_delivery_summary(notifications: List[Dict[str, Any]]) -> List[
     return summary
 
 
+def _truth_snapshot_confidence(truth_state: Dict[str, Any]) -> str:
+    status = str(truth_state.get('status') or '').strip()
+    zero_confidence = str(truth_state.get('pending_zero_confidence') or '').strip()
+    data_quality = str(truth_state.get('data_quality') or '').strip()
+    if status == 'confirmed_pending':
+        return 'verified'
+    if status == 'confirmed_empty':
+        return 'verified' if zero_confidence in {'verified', 'high'} else 'unverified'
+    if status == 'empty_unverified':
+        return 'unverified'
+    if status in {'runtime_unhealthy', 'session_mismatch', 'probe_unavailable'}:
+        return 'failed' if data_quality == 'error' else 'stale'
+    return data_quality or 'unverified'
+
+
+def _truth_snapshot_recommended_action(truth_state: Dict[str, Any]) -> str:
+    status = str(truth_state.get('status') or '').strip()
+    if status == 'confirmed_pending':
+        return 'review_or_wait_for_release_rule'
+    if status == 'confirmed_empty':
+        return 'none'
+    if status == 'empty_unverified':
+        return 'refresh_probe_before_showing_zero'
+    if status == 'session_mismatch':
+        return 'restart_or_rebind_runtime_session'
+    if status == 'runtime_unhealthy':
+        return 'recover_whatsapp_runtime'
+    if status == 'probe_unavailable':
+        return 'wait_for_next_probe_or_check_runtime'
+    return 'inspect_probe_evidence'
+
+
+def _ensure_truth_snapshot_table(conn: sqlite3.Connection) -> None:
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA busy_timeout=30000')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS mcn_truth_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            object_type TEXT NOT NULL,
+            object_key TEXT NOT NULL,
+            snapshot_type TEXT NOT NULL,
+            truth_status TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            confidence_reason TEXT NOT NULL DEFAULT '',
+            facts_json TEXT NOT NULL DEFAULT '{}',
+            source_json TEXT NOT NULL DEFAULT '{}',
+            checked_at TEXT NOT NULL,
+            expires_at TEXT,
+            recommended_action TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            UNIQUE(object_type, object_key, snapshot_type)
+        )
+    ''')
+    conn.execute('''
+        CREATE INDEX IF NOT EXISTS idx_mcn_truth_snapshots_lookup
+        ON mcn_truth_snapshots(object_type, object_key, snapshot_type)
+    ''')
+    conn.execute('''
+        CREATE INDEX IF NOT EXISTS idx_mcn_truth_snapshots_expiry
+        ON mcn_truth_snapshots(expires_at)
+    ''')
+
+
+def _build_registration_group_truth_snapshot(cycle: Dict[str, Any], *, now_iso: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    truth_state = cycle.get('truth_state') if isinstance(cycle.get('truth_state'), dict) else {}
+    monitor_target = cycle.get('monitor_target') if isinstance(cycle.get('monitor_target'), dict) else {}
+    if not truth_state and not monitor_target:
+        return None
+    account_key = str(monitor_target.get('account_key') or monitor_target.get('binding_key') or '').strip()
+    group_key = str(
+        cycle.get('registration_group')
+        or monitor_target.get('registration_group')
+        or monitor_target.get('group_id')
+        or monitor_target.get('link')
+        or monitor_target.get('binding_link')
+        or ''
+    ).strip()
+    object_key = f'{account_key}:{group_key}' if account_key and group_key else (account_key or group_key)
+    if not object_key:
+        return None
+
+    checked_at = str(cycle.get('checked_at') or truth_state.get('source_ts') or now_iso or utc_now_iso()).strip()
+    parsed_checked_at = _parse_iso_datetime(checked_at) or utc_now()
+    expires_at = (parsed_checked_at + timedelta(seconds=90)).isoformat().replace('+00:00', 'Z')
+    updated_at = str(now_iso or utc_now_iso())
+    facts = {
+        'configured_registration_group': cycle.get('registration_group'),
+        'configured_link': monitor_target.get('link') or monitor_target.get('binding_link'),
+        'configured_group_id': monitor_target.get('group_id'),
+        'configured_group_name': monitor_target.get('group_name'),
+        'actual_group_id': truth_state.get('group_id'),
+        'actual_group_name': truth_state.get('group_name'),
+        'pending_count': truth_state.get('pending_count'),
+        'member_count': truth_state.get('member_count'),
+        'requester_ids': truth_state.get('requester_ids') or [],
+        'requesters': truth_state.get('requesters') or [],
+        'zero_pending_unverified': truth_state.get('zero_pending_unverified'),
+        'zero_pending_unverified_reason': truth_state.get('zero_pending_unverified_reason'),
+        'zero_pending_verified_by': truth_state.get('zero_pending_verified_by'),
+        'review_surface_ready': truth_state.get('review_surface_ready'),
+        'empty_queue_visible': truth_state.get('empty_queue_visible'),
+        'has_pending_section': truth_state.get('has_pending_section'),
+        'has_pending_request_row': truth_state.get('has_pending_request_row'),
+        'evidence_complete': truth_state.get('evidence_complete'),
+        'session_target_match': truth_state.get('session_target_match'),
+        'login_verified': truth_state.get('login_verified'),
+        'runtime_active': truth_state.get('runtime_active'),
+        'runtime_ready': truth_state.get('runtime_ready'),
+        'runtime_authenticated': truth_state.get('runtime_authenticated'),
+    }
+    source = {
+        'service': SERVICE_NAME,
+        'cycle_checked_at': cycle.get('checked_at'),
+        'truth_source': truth_state.get('source'),
+        'reason_code': truth_state.get('reason_code'),
+        'data_quality': truth_state.get('data_quality'),
+        'session_health': truth_state.get('session_health'),
+        'monitor_target': monitor_target,
+        'decision_group_state': cycle.get('decision_group_state'),
+        'worker_state': cycle.get('worker_state'),
+        'fresh_probe': cycle.get('fresh_probe'),
+    }
+    confidence = _truth_snapshot_confidence(truth_state)
+    return {
+        'snapshot_id': f'registration-group-binding:{object_key}:pending_truth',
+        'object_type': 'registration_group_binding',
+        'object_key': object_key,
+        'snapshot_type': 'pending_truth',
+        'truth_status': str(truth_state.get('status') or 'probe_unavailable'),
+        'confidence': confidence,
+        'confidence_reason': str(truth_state.get('reason_code') or ''),
+        'facts_json': json.dumps(facts, ensure_ascii=False, sort_keys=True, default=str),
+        'source_json': json.dumps(source, ensure_ascii=False, sort_keys=True, default=str),
+        'checked_at': checked_at,
+        'expires_at': expires_at,
+        'recommended_action': _truth_snapshot_recommended_action(truth_state),
+        'updated_at': updated_at,
+    }
+
+
+def publish_truth_snapshots(args: argparse.Namespace, cycle: Dict[str, Any]) -> Dict[str, Any]:
+    db_path = Path(str(getattr(args, 'db_path', DEFAULT_DB_PATH) or DEFAULT_DB_PATH)).expanduser()
+    result: Dict[str, Any] = {'attempted': False, 'status': 'skipped', 'reason': 'not_started', 'written': 0}
+    if str(os.getenv('TRUTH_SNAPSHOT_ENABLED', 'true')).strip().lower() in {'0', 'false', 'no', 'off'}:
+        result['reason'] = 'truth_snapshot_disabled'
+        return result
+    snapshots: List[Dict[str, Any]] = []
+    target_cycles = cycle.get('registration_group_cycles') if isinstance(cycle.get('registration_group_cycles'), list) else []
+    for item in target_cycles:
+        if isinstance(item, dict):
+            built = _build_registration_group_truth_snapshot(item)
+            if built:
+                snapshots.append(built)
+    if not snapshots:
+        built = _build_registration_group_truth_snapshot(cycle)
+        if built:
+            snapshots.append(built)
+    if not snapshots:
+        result['reason'] = 'no_registration_group_truth_snapshot'
+        return result
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(str(db_path), timeout=30) as conn:
+            _ensure_truth_snapshot_table(conn)
+            for snapshot in snapshots:
+                conn.execute(
+                    '''
+                    INSERT INTO mcn_truth_snapshots (
+                        snapshot_id, object_type, object_key, snapshot_type, truth_status,
+                        confidence, confidence_reason, facts_json, source_json, checked_at,
+                        expires_at, recommended_action, updated_at
+                    ) VALUES (
+                        :snapshot_id, :object_type, :object_key, :snapshot_type, :truth_status,
+                        :confidence, :confidence_reason, :facts_json, :source_json, :checked_at,
+                        :expires_at, :recommended_action, :updated_at
+                    )
+                    ON CONFLICT(object_type, object_key, snapshot_type) DO UPDATE SET
+                        truth_status=excluded.truth_status,
+                        confidence=excluded.confidence,
+                        confidence_reason=excluded.confidence_reason,
+                        facts_json=excluded.facts_json,
+                        source_json=excluded.source_json,
+                        checked_at=excluded.checked_at,
+                        expires_at=excluded.expires_at,
+                        recommended_action=excluded.recommended_action,
+                        updated_at=excluded.updated_at
+                    ''',
+                    snapshot,
+                )
+        first_snapshot = snapshots[0]
+        result.update({
+            'attempted': True,
+            'status': 'ok',
+            'written': len(snapshots),
+            'object_type': first_snapshot['object_type'],
+            'object_key': first_snapshot['object_key'],
+            'truth_status': first_snapshot['truth_status'],
+            'confidence': first_snapshot['confidence'],
+        })
+    except Exception as exc:
+        result.update({'attempted': True, 'status': 'failed', 'reason': str(exc), 'written': 0})
+    return result
+
+
 def publish_realtime_state_snapshot(args: argparse.Namespace, cycle: Dict[str, Any]) -> Dict[str, Any]:
     """Publish latest lightweight approval snapshot to backend realtime fanout.
 
@@ -3436,6 +3838,7 @@ def main() -> int:
     parser.add_argument('--registration-group', default='')
     parser.add_argument('--fresh-probe-cmd', default='')
     parser.add_argument('--independent-truth-probe-cmd', default='')
+    parser.add_argument('--independent-truth-probe-interval-seconds', type=float, default=1800.0)
     parser.add_argument('--worker-restart-cmd', default=str(ROOT_DIR / 'scripts' / 'restart_registration_group_webjs_worker.sh'))
     parser.add_argument('--backend-restart-cmd', default=str(ROOT_DIR / 'scripts' / 'ensure_registration_group_backend.sh'))
     parser.add_argument('--worker-event-log', default='')
@@ -3443,6 +3846,7 @@ def main() -> int:
     parser.add_argument('--run-once', action='store_true')
     parser.add_argument('--state-path', default=str(ROOT_DIR / 'data' / 'production_ops_daemon_state.json'))
     parser.add_argument('--status-path', default=str(ROOT_DIR / 'data' / 'production_ops_daemon_status.json'))
+    parser.add_argument('--db-path', default=str(DEFAULT_DB_PATH))
     parser.add_argument('--notify-enabled', action='store_true', default=True)
     parser.add_argument('--notify-disabled', dest='notify_enabled', action='store_false')
     parser.add_argument('--notify-chat-id', default=env_default('FEISHU_HOME_CHANNEL'))
@@ -3518,6 +3922,8 @@ def main() -> int:
         cycle['notification_delivery_summary'] = _notification_delivery_summary(notifications)
         realtime_state_publish = publish_realtime_state_snapshot(args, cycle)
         cycle['realtime_state_publish'] = realtime_state_publish
+        truth_snapshot_publish = publish_truth_snapshots(args, cycle)
+        cycle['truth_snapshot_publish'] = truth_snapshot_publish
         save_json_state(status_path, cycle)
         save_json_state(state_path, state)
         print(json.dumps({

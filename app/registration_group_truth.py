@@ -41,6 +41,19 @@ def _select_authoritative_probe(status: Dict[str, Any]) -> Tuple[str, Dict[str, 
     return '', {}, {}
 
 
+def _payload_requester_ids(payload: Dict[str, Any]) -> list:
+    requester_ids = [str(item or '').strip() for item in (payload.get('requester_ids') or []) if str(item or '').strip()]
+    if requester_ids:
+        return requester_ids
+    derived = []
+    for item in payload.get('requesters') or []:
+        if isinstance(item, dict):
+            candidate = str(item.get('requesterId') or item.get('requester_id') or '').strip()
+            if candidate:
+                derived.append(candidate)
+    return derived
+
+
 def build_truth_state(
     *,
     status: Optional[Dict[str, Any]] = None,
@@ -87,6 +100,9 @@ def build_truth_state(
     reason_code = 'probe_missing'
     recoverable = True
 
+    approval_state_status = str(payload.get('approval_state_status') or payload.get('status') or '').strip().lower()
+    unverified_pending_reason = str(payload.get('unverified_pending_reason') or '').strip()
+
     if session_state and session_target_match is False:
         status_code = 'session_mismatch'
         reason_code = 'session_target_mismatch'
@@ -102,13 +118,23 @@ def build_truth_state(
         if not data_quality:
             data_quality = 'stale' if payload else 'error'
     elif pending_count is not None and pending_count > 0:
-        status_code = 'confirmed_pending'
-        reason_code = 'pending_detected'
-        recoverable = False
-        if not session_health:
-            session_health = 'healthy'
-        if not data_quality:
-            data_quality = 'fresh'
+        requester_ids = _payload_requester_ids(payload)
+        if approval_state_status == 'unverified_pending' or not requester_ids:
+            status_code = 'pending_unverified'
+            reason_code = unverified_pending_reason or 'pending_without_requester_ids'
+            recoverable = True
+            if not session_health:
+                session_health = 'healthy'
+            if not data_quality:
+                data_quality = 'unverified'
+        else:
+            status_code = 'confirmed_pending'
+            reason_code = 'pending_detected'
+            recoverable = False
+            if not session_health:
+                session_health = 'healthy'
+            if not data_quality:
+                data_quality = 'fresh'
     elif pending_count == 0:
         status_code = 'confirmed_empty'
         if empty_queue_visible or bool(zero_pending_verified_by):
@@ -117,13 +143,16 @@ def build_truth_state(
         elif zero_pending_recheck_attempted and zero_pending_recheck_resolved and not zero_pending_unverified:
             reason_code = 'zero_pending_recheck_confirmed'
             pending_zero_confidence = pending_zero_confidence or 'high'
-        elif zero_pending_unverified:
+        elif zero_pending_unverified or pending_zero_confidence in {'unverified', 'unknown', 'low'}:
             status_code = 'empty_unverified'
             reason_code = zero_pending_reason or 'zero_pending_unverified'
             pending_zero_confidence = pending_zero_confidence or 'unverified'
+            zero_pending_unverified = True
         else:
-            reason_code = 'pending_zero_observed'
+            status_code = 'empty_unverified'
+            reason_code = 'pending_zero_observed_without_empty_queue_evidence'
             pending_zero_confidence = pending_zero_confidence or 'unverified'
+            zero_pending_unverified = True
         recoverable = False
         if not session_health:
             session_health = 'healthy'
@@ -151,7 +180,7 @@ def build_truth_state(
         'member_count': member_count,
         'group_name': str(payload.get('group_name') or monitor_target.get('group_name') or '').strip(),
         'group_id': str(payload.get('group_id') or monitor_target.get('group_id') or '').strip(),
-        'requester_ids': list(payload.get('requester_ids') or []),
+        'requester_ids': _payload_requester_ids(payload),
         'requesters': list(payload.get('requesters') or []),
         'zero_pending_unverified': zero_pending_unverified,
         'zero_pending_unverified_reason': zero_pending_reason or None,
