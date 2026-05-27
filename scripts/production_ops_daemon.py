@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -53,6 +54,15 @@ from app.whatsapp_login_state import enrich_whatsapp_login_state
 
 SERVICE_NAME = 'production-ops-daemon'
 DEFAULT_DB_PATH = ROOT_DIR / 'data' / 'automation.db'
+
+
+def _looks_like_whatsapp_group_jid(value: Any) -> bool:
+    return bool(re.fullmatch(r'\d+@g\.us', str(value or '').strip()))
+
+
+def _sanitize_whatsapp_group_jid(value: Any) -> str:
+    candidate = str(value or '').strip()
+    return candidate if _looks_like_whatsapp_group_jid(candidate) else ''
 
 
 def _build_default_fresh_probe_cmd(registration_group: str) -> str:
@@ -1615,9 +1625,9 @@ def _resolve_monitor_target(args: argparse.Namespace) -> Dict[str, Any]:
             # found" and made the monitor show unknown/0 instead of the real queue.
             # Keep binding_link separately for config matching/debugging, and only
             # fall back to link when no resolved group_id exists yet.
+            stable_group_id = _sanitize_whatsapp_group_jid(binding.get('group_id')) or _sanitize_whatsapp_group_jid(binding.get('registration_group')) or _sanitize_whatsapp_group_jid(binding.get('previous_verified_group_id')) or _sanitize_whatsapp_group_jid(binding.get('runtime_probe_group_id'))
             registration_group = (
-                str(binding.get('group_id') or '').strip()
-                or str(binding.get('registration_group') or '').strip()
+                stable_group_id
                 or str(binding.get('link') or '').strip()
                 or str(binding.get('group_name') or '').strip()
             )
@@ -3650,11 +3660,12 @@ def _build_registration_group_truth_snapshot(cycle: Dict[str, Any], *, now_iso: 
         return None
     account_key = str(monitor_target.get('account_key') or monitor_target.get('binding_key') or '').strip()
     group_key = str(
-        cycle.get('registration_group')
+        monitor_target.get('binding_link')
+        or monitor_target.get('link')
+        or cycle.get('binding_link')
+        or cycle.get('registration_group')
         or monitor_target.get('registration_group')
         or monitor_target.get('group_id')
-        or monitor_target.get('link')
-        or monitor_target.get('binding_link')
         or ''
     ).strip()
     object_key = f'{account_key}:{group_key}' if account_key and group_key else (account_key or group_key)

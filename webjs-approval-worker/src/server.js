@@ -2377,6 +2377,64 @@ async function resolveAuthoritativeGroupState(context, options = {}) {
   );
 }
 
+function buildFullQueueSyncResult(context, uiState, apiState) {
+  const uiCount = Math.max(0, Number(uiState && uiState.pending_count || 0));
+  const apiRequesterIds = requesterIdsFromPayload(apiState || {});
+  const apiCount = Math.max(0, Number((apiState && apiState.pending_count) || apiRequesterIds.length || 0));
+  let trustStatus = 'UNTRUSTED_SYNC_INCONCLUSIVE';
+  let ok = false;
+  let actionAllowed = false;
+  let reasonCode = 'ui_api_not_converged';
+  if (uiCount > 0 && apiCount === uiCount) {
+    trustStatus = 'TRUSTED_CONFIRMED_PENDING';
+    ok = true;
+    actionAllowed = true;
+    reasonCode = '';
+  } else if (uiCount === 0 && apiCount === 0 && uiState && uiState.empty_queue_visible) {
+    trustStatus = 'TRUSTED_CONFIRMED_EMPTY';
+    ok = true;
+    reasonCode = '';
+  } else if (uiCount === 0 && apiCount > 0) {
+    trustStatus = 'UNTRUSTED_API_STALE';
+    reasonCode = 'ui_empty_api_has_historical_requests';
+  } else if (uiCount > 0 && apiCount < uiCount) {
+    trustStatus = 'UNTRUSTED_API_UNDERCOUNT';
+    reasonCode = 'ui_count_greater_than_api_count';
+  }
+  const requesterIds = apiRequesterIds;
+  const requesterNames = Array.isArray(uiState && uiState.requesters) ? uiState.requesters.map((item) => safeString(item && (item.id || item.displayName || item))).filter(Boolean) : [];
+  const fingerprintParts = [safeString((uiState && uiState.group_id) || (apiState && apiState.group_id) || context.registration_group), String(uiCount), String(apiCount), ...requesterIds, ...requesterNames];
+  return {
+    ok,
+    trust_status: trustStatus,
+    display_trusted: trustStatus.startsWith('TRUSTED'),
+    action_allowed: actionAllowed,
+    can_manual_approve: actionAllowed,
+    trusted_pending_count: trustStatus === 'TRUSTED_CONFIRMED_PENDING' ? uiCount : (trustStatus === 'TRUSTED_CONFIRMED_EMPTY' ? 0 : null),
+    ui_pending_count: uiCount,
+    api_pending_count: apiCount,
+    pending_count: trustStatus.startsWith('TRUSTED') ? uiCount : null,
+    requester_ids: requesterIds,
+    requesters: Array.isArray(uiState && uiState.requesters) ? uiState.requesters : [],
+    group_id: safeString((uiState && uiState.group_id) || (apiState && apiState.group_id)),
+    group_name: safeString((uiState && uiState.group_name) || (apiState && apiState.group_name) || context.registration_group),
+    fingerprint: fingerprintParts.join('|'),
+    fingerprint_quality: requesterIds.length ? 'strong' : 'weak',
+    converged: ok,
+    reason_code: reasonCode,
+    ui_surface: uiState || {},
+    api_state: apiState || {},
+    source: 'full_queue_sync',
+    sync_finished_at: new Date().toISOString(),
+  };
+}
+
+async function fullQueueSyncWithRecovery(context) {
+  const uiState = await inspectApprovalReviewSurface(context, { allowReloadOnUnconfirmedZero: true });
+  const apiState = await groupStateWithRecovery({ ...context, mode: 'fast' });
+  return buildFullQueueSyncResult(context || {}, uiState, apiState);
+}
+
 async function groupStateWithRecovery(context) {
   const mode = normalizeGroupStateMode(context);
   try {
@@ -2867,6 +2925,33 @@ const server = http.createServer(async (req, res) => {
         group_name: result.group_name || payload.registration_group || null,
         pending_count: result.pending_count,
         member_count: result.member_count,
+        requester_ids: result.requester_ids || [],
+      });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/full-queue-sync') {
+      const payload = await collectJson(req);
+      state.last_action_at = new Date().toISOString();
+      approvalState.last_action_at = new Date().toISOString();
+      const result = await withActionLock(async () => {
+        await ensureApprovalClientStarted();
+        await waitForApprovalReady(QR_TIMEOUT_MS).catch(() => {
+          if (!approvalState.ready) {
+            throw new Error(approvalState.last_qr ? 'approval client awaiting qr scan' : 'approval client not ready');
+          }
+        });
+        return await fullQueueSyncWithRecovery(payload);
+      });
+      logEvent('full_queue_sync', {
+        registration_group: payload.registration_group || null,
+        auth_strategy: approvalState.auth_strategy,
+        group_id: result.group_id || null,
+        group_name: result.group_name || payload.registration_group || null,
+        trust_status: result.trust_status,
+        ui_pending_count: result.ui_pending_count,
+        api_pending_count: result.api_pending_count,
         requester_ids: result.requester_ids || [],
       });
       sendJson(res, 200, result);

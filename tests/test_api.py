@@ -327,6 +327,57 @@ def test_guild_executor_creation_reuses_existing_crm_guild_dept_without_duplicat
     assert crm.created_depts == []
 
 
+def test_guild_executor_country_blocks_mismatched_manual_bind_submission():
+    crm = SyncingCrmDeptAdapter(depts=[{'id': '2', 'name': 'Permata'}])
+    bind_calls = []
+    client = make_client({
+        'AUTH_ENABLED': True,
+        'CRM_ADAPTER': crm,
+        'INGRESS_WORKER_ENABLED': False,
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Permata',
+        'AUTO_BIND_SIMULATION': True,
+        'BIND_SIMULATOR': lambda context: bind_calls.append(context) or {
+            'status': 'success',
+            'result_code': 'bind_ok_simulated',
+            'result_reason': 'should not run for country mismatch',
+        },
+    })
+    bootstrap_admin_and_login(client)
+
+    saved = client.post('/api/ops/guild-executors/Permata', json={
+        'oauth_token': 'guild-oauth-token',
+        'oauth_token_secret': 'guild-oauth-secret',
+        'country': 'Brazil',
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+    assert saved.json()['country'] == 'Brazil'
+
+    response = client.post('/api/intake/manual-cs-submissions', json={
+        'mobile': '+62 81234567001',
+        'registration_group': 'Permata-01',
+        'app_name': 'Linky',
+        'dept_name': 'Permata',
+        'submission_type': 'account_id',
+        'account_id': '45670001',
+        'submitted_by': 'dewi01',
+        'source_channel': 'manual_cs_lark',
+        'submitted_at': '2026-04-14T18:00:00Z',
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['accepted'] is False
+    assert body['reason'] == 'country_guild_mismatch'
+    assert body['user_country'] == 'Indonesia'
+    assert body['guild_country'] == 'Brazil'
+    assert bind_calls == []
+    with client.app.state.service.db.connect() as conn:
+        bind_tasks = conn.execute("SELECT COUNT(*) FROM automation_tasks WHERE task_type='bind_check'").fetchone()[0]
+    assert bind_tasks == 0
+
+
 def test_whatsapp_approval_session_refresh_handles_stale_dedicated_runtime(monkeypatch):
     client = make_client()
     service = client.app.state.service
@@ -1017,6 +1068,8 @@ def test_ops_intake_submit_page_compacts_cards_and_shows_owner_time_and_history_
     assert 'renderItemList(guild,rows)' in html
     assert '更多记录' in html
     assert 'submitted_by_username' in html
+    assert "发起人：${esc(displayInitiator(row))}" in html
+    assert 'function displayInitiator(row)' in html
     assert 'formatBeijingTime' in html
     assert 'function formatSecondTime(value)' in html
     assert '${esc(formatSecondTime(e.updated_at))}' in html
@@ -1028,6 +1081,24 @@ def test_ops_intake_submit_page_compacts_cards_and_shows_owner_time_and_history_
     assert "setParseState(guild,'',false)" in html
     assert 'id="parse_${esc(g.guild_name)}"' in html
     assert '/api/ops/intake-workbench/items/${encodeURIComponent(itemId)}/fields' in html
+    assert 'translateResultTemplateToChinese' in html
+    assert 'data-translate-result-template' in html
+    assert '翻译中文' in html
+    assert '收起中文' in html
+    assert "if(target.style.display==='none'||!target.style.display)" in html
+    assert "btn.textContent='翻译中文'" in html
+    assert '绑定失败：CMS 拒绝绑定请求，请人工检查。' in html
+    assert '绑定失败：该用户此前已在本公会注册。' in html
+    assert '绑定失败：绑定后台登录态或授权异常，请人工检查。' in html
+    assert '国家/地区与当前公会不匹配，未发起绑定。' in html
+    assert '该用户已在其他公会注册。' in html
+    assert 'CMS 授权已失效或无权限，请人工检查。' in html
+    assert 'CMS 授权不允许添加该 SID 到目标公会，请人工检查。' in html
+    assert 'Code 无效。请使用 6 位个人 Code：字母或字母+数字，不能全数字。' in html
+    assert '缺少 Code。请补充 6 位个人 Code。' in html
+    assert "replace(/^Phone:\\s*/,'手机号：')" in html
+    assert "replace(/^Code:\\s*/,'Code：')" in html
+    assert '❌ 重复提交：用户已加入本公会。' not in html
     assert "prompt('更正 Phone'" in html
     assert "prompt('更正 ID / SID'" in html
     assert "prompt('更正 Group'" in html
@@ -1241,16 +1312,19 @@ def test_external_app_intake_tugao_submit_latest_and_feedback_guard():
     assert body['system_status'] == 'bind_queued'
     assert body['feedback_status'] == 'not_feedbackable'
     assert body['message'] == '已提交，系统处理中，请勿重复提交'
+    assert body['initiator'] == 'system001'
+    assert 'source_label' not in body
     submission_id = body['submission_id']
 
     with client.app.state.service.db.connect() as conn:
-        row = conn.execute('SELECT source, external_user_id, external_session_id, external_message_id, external_customer_service_id, external_customer_service_name, parsed_code, parsed_group, guild_name, reply_text FROM ops_intake_items WHERE item_id=?', (submission_id,)).fetchone()
+        row = conn.execute('SELECT source, external_user_id, external_session_id, external_message_id, external_customer_service_id, external_customer_service_name, submitted_by_username, parsed_code, parsed_group, guild_name, reply_text FROM ops_intake_items WHERE item_id=?', (submission_id,)).fetchone()
         assert row['source'] == 'tugao_app'
         assert row['external_user_id'] == 'tugao-user-001'
         assert row['external_session_id'] == 'im-session-001'
         assert row['external_message_id'] == 'msg-001'
         assert row['external_customer_service_id'] == 'system001'
         assert row['external_customer_service_name'] == 'Tugao客服A'
+        assert row['submitted_by_username'] == 'system001'
         assert row['parsed_code'] == ''
         assert row['parsed_group'] == '其他渠道'
         assert row['guild_name'] == 'Carote'
@@ -1262,6 +1336,19 @@ def test_external_app_intake_tugao_submit_latest_and_feedback_guard():
     assert latest_body['has_submission'] is True
     assert latest_body['submission_id'] == submission_id
     assert latest_body['system_status'] == 'bind_queued'
+    assert latest_body['initiator'] == 'system001'
+
+    workbench_items = client.get('/api/ops/intake-workbench/items?guild_name=Carote&limit=10')
+    assert workbench_items.status_code == 200
+    workbench_row = workbench_items.json()['rows'][0]
+    assert workbench_row['display_initiator'] == 'system001'
+    assert workbench_row['submitted_by_username'] == 'system001'
+    assert workbench_row['external_customer_service_name'] == 'Tugao客服A'
+
+    intake_page = client.get('/ops/intake-submit')
+    assert intake_page.status_code == 200
+    assert "发起人：${esc(displayInitiator(row))}" in intake_page.text
+    assert "function displayInitiator(row)" in intake_page.text
 
     duplicate = client.post('/api/external/app-intake/submissions', json=payload, headers=headers)
     assert duplicate.status_code == 200
@@ -1277,7 +1364,53 @@ def test_external_app_intake_tugao_submit_latest_and_feedback_guard():
 
     with client.app.state.service.db.connect() as conn:
         conn.execute(
-            "UPDATE ops_intake_items SET system_status='fully_success', feedback_status='pending_feedback', reply_text='绑定成功，请继续按照客服指引操作。' WHERE item_id=?",
+            """
+            UPDATE ops_intake_items
+            SET system_status='fully_success', feedback_status='pending_feedback',
+                reply_text='**✅ Success**\nPhone: +62 898978979\nID: 44898989\nGroup: 其他渠道\nCode: N/A (CMS ID bind)'
+            WHERE item_id=?
+            """,
+            (submission_id,),
+        )
+        conn.commit()
+
+    success_latest = client.get('/api/external/app-intake/users/tugao-user-001/latest', headers=headers)
+    assert success_latest.status_code == 200
+    success_body = success_latest.json()
+    assert success_body['reply_template_language'] == 'zh-CN'
+    assert success_body['reply_template'].startswith('✅ 成功')
+    assert '手机号：+62 898978979' in success_body['reply_template']
+    assert 'Group:' not in success_body['reply_template']
+    assert '群组：其他渠道' in success_body['reply_template']
+
+    with client.app.state.service.db.connect() as conn:
+        conn.execute(
+            """
+            UPDATE ops_intake_items
+            SET system_status='bind_failed', feedback_status='not_feedbackable',
+                reply_text='**🚫 Country does not match this agency.**\nPhone: +62 898978979\nID: 44898989\nGroup: 其他渠道\nCode: -'
+            WHERE item_id=?
+            """,
+            (submission_id,),
+        )
+        conn.commit()
+
+    failed_latest = client.get('/api/external/app-intake/users/tugao-user-001/latest', headers=headers)
+    assert failed_latest.status_code == 200
+    failed_body = failed_latest.json()
+    assert failed_body['reply_template_language'] == 'zh-CN'
+    assert failed_body['reply_template'].startswith('🚫 国家/地区与当前公会不匹配，未发起绑定。')
+    assert '手机号：+62 898978979' in failed_body['reply_template']
+    assert 'Code：-' in failed_body['reply_template']
+
+    with client.app.state.service.db.connect() as conn:
+        conn.execute(
+            """
+            UPDATE ops_intake_items
+            SET system_status='fully_success', feedback_status='pending_feedback',
+                reply_text='**✅ Success**\nPhone: +62 898978979\nID: 44898989\nGroup: 其他渠道\nCode: N/A (CMS ID bind)'
+            WHERE item_id=?
+            """,
             (submission_id,),
         )
         conn.commit()
@@ -2550,6 +2683,11 @@ def test_ops_intake_binding_history_page_uses_small_default_limit_and_history_en
     assert '/api/ops/intake-workbench/binding-history-items' in page.text
     assert '卡片最多两行' not in page.text
     assert ".join('\\n')" in page.text
+    assert "const guild=bindFailedGuildFilter.value.trim();" in page.text
+    assert "if(guild)params.set('guild_name',guild);" in page.text
+    assert "const guild=bindFailedGuildFilter.value||initialGuild" not in page.text
+    assert "bindFailedGuildFilter.value=''" in page.text
+    assert "bindFailedGuildFilter.value=initialGuild||''" not in page.text
     assert ".join('\n')" not in page.text
 
 
@@ -4735,8 +4873,22 @@ def test_production_ops_page_loads():
     assert '一键通过审批' not in body
     assert 'bindingActionRowHtml' not in body
     assert 'class="binding-action-row"' not in body
-    assert '<div class="binding-meta-actions">${manualApproveButtonHtml || \'<span class="muted">—</span>\'}</div>' in body
-    assert '<div class="binding-meta-actions">${probeRefreshButtonHtml}${rebuildIdentityButtonHtml}</div>' in body
+    binding_summary_segment = body[body.find('function bindingSummaryHtml'):body.find('function accountCardHtml')]
+    assert '<div class="binding-card-actions">' in binding_summary_segment
+    assert '<span class="binding-badge">' not in binding_summary_segment
+    assert '<div class="binding-action-strip ${canRebuildIdentity ? \'has-rebuild\' : \'no-rebuild\'}">' in body
+    assert 'binding-action-label-row' not in binding_summary_segment
+    assert '<div>人工审批</div><div>完整同步</div><div>刷新探针</div>' not in binding_summary_segment
+    assert '<div class="binding-action-cell monitor-cell">' not in binding_summary_segment
+    assert '<div class="binding-action-cell full-sync-cell"><div class="binding-meta-actions">${fullSyncButtonHtml}</div></div>' in body
+    assert '<div class="binding-action-cell probe-cell"><div class="binding-meta-actions">${probeRefreshButtonHtml}</div></div>' in body
+    assert '<div class="binding-action-cell rebuild-cell"><div class="binding-meta-actions">${rebuildIdentityButtonHtml}</div></div>' in body
+    assert '实时刷新' not in body
+    assert 'fullSyncApprovalBinding' in body
+    assert '/bindings/${bindingIndex}/full-sync' in body
+    binding_summary_segment = body[body.find('function bindingSummaryHtml'):body.find('function accountCardHtml')]
+    assert '[pendingKey]' not in binding_summary_segment
+    assert '[bindingPendingKey]' in binding_summary_segment
     assert "? { level: 'blue', title: '等待扫码'" not in body
     assert 'bindingVerifierStatusText' in body
     assert 'bindingVerifierReadinessText' in body
@@ -4822,14 +4974,15 @@ def test_production_ops_page_loads():
     assert 'deleteApprovalBinding' in body
     assert '删除群组' in body
     assert '确认删除这个群组配置吗' in body
-    assert '实时刷新' in body
+    assert '刷新探针' in body
     assert '实时刷新探针' not in body
+    assert '实时刷新' not in body
     assert 'refreshApprovalBindingProbe' in body
     assert 'window.__approvalManualProbeBindingLocks[pendingKey] = {expiresAt: Date.now() + 90000, binding_runtime: refreshedBinding};' in body
     assert 'mergeApprovalAccountRowsWithManualProbeLocks' in body
     assert 'mergeApprovalBindingRuntimeWithManualLock(accountKey, bindingIndex, binding, bindings[bindingIndex] || {})' in body
     assert '/probe-refresh' in body
-    assert '群探针状态已实时刷新' in body
+    assert '群探针状态已刷新' in body
     assert '距离下次审批' not in body
     assert 'formatApprovalCountdownText' not in body
     assert 'startApprovalCountdownTicker' not in body
@@ -4839,11 +4992,15 @@ def test_production_ops_page_loads():
     assert 'const adjustedRemainingSeconds = paused ? null : (Number.isFinite(remainingSeconds) ? Math.max(remainingSeconds - elapsedSeconds, 0) : null);' not in body
     assert '审批条件' not in body
     assert '自动恢复 worker' not in body
-    assert '<div class="binding-action-label-row"><div>本群监控</div><div>人工审批</div><div>真实校验·${bindingVerifierReadinessText(verifier)}</div></div>' in body
+    assert 'binding-action-label-row' not in binding_summary_segment
     assert '<div class="binding-action-control-row">' in body
-    assert '<div class="binding-action-cell monitor-cell"><button type="button" class="card-monitor-toggle ${monitorButtonClass}"' in body
+    assert '<div class="binding-card-actions">' in body
+    assert '<button type="button" class="card-monitor-toggle ${monitorButtonClass}" onclick="setApprovalBindingEnabled' in body
+    assert '<div class="binding-action-cell monitor-cell">' not in body
     assert '<div class="binding-action-cell manual-cell"><div class="binding-meta-actions">${manualApproveButtonHtml || \'<span class="muted">—</span>\'}</div></div>' in body
-    assert '<div class="binding-action-cell verifier-cell"><div class="binding-meta-actions">${probeRefreshButtonHtml}${rebuildIdentityButtonHtml}</div></div>' in body
+    assert '<div class="binding-action-cell full-sync-cell"><div class="binding-meta-actions">${fullSyncButtonHtml}</div></div>' in body
+    assert '<div class="binding-action-cell probe-cell"><div class="binding-meta-actions">${probeRefreshButtonHtml}</div></div>' in body
+    assert '<div class="binding-action-cell rebuild-cell"><div class="binding-meta-actions">${rebuildIdentityButtonHtml}</div></div>' in body
     assert 'const rebuildIdentityPending = Boolean((window.__approvalBindingRebuildPendingByKey || {})[bindingPendingKey]);' in body
     assert "${rebuildIdentityPending ? 'button-loading' : ''}" in body
     assert "${rebuildIdentityPending ? 'disabled' : ''}" in body
@@ -4855,21 +5012,23 @@ def test_production_ops_page_loads():
     assert '/rebuild-identity' in body
     assert '<div class="binding-action-cell verifier-cell"><div class="status-line">${bindingVerifierStatusText(verifier)}</div><div class="binding-meta-actions">${probeRefreshButtonHtml}</div></div>' not in body
     assert '${bindingVerifierReadinessText(verifier)} · ${bindingVerifierStatusText(verifier)}' not in body
-    assert '.binding-action-strip { display:flex; flex-direction:column; gap:4px; margin-top:8px; }' in body
-    assert '.binding-action-label-row > div { min-height:20px;' in body
-    assert '.binding-action-cell { min-height:38px;' in body
-    assert '.binding-meta-actions { display:flex; flex-direction:column; gap:4px; align-items:center; justify-content:flex-start; margin-top:0; }' in body
-    assert '.binding-action-label-row,.binding-action-control-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; align-items:center; }' in body
+    assert '.binding-action-strip { display:flex; flex-direction:column; gap:0; margin-top:6px; overflow:hidden; }' in body
+    assert '.binding-action-label-row' not in binding_summary_segment
+    assert '.binding-action-cell { min-height:36px;' in body
+    assert '.binding-meta-actions { display:flex; flex-direction:row; gap:0; align-items:center; justify-content:center; margin-top:0; width:100%; min-width:0; }' in body
+    assert '.binding-action-control-row { display:grid; gap:8px; align-items:center; width:100%; min-width:0; }' in body
+    assert '.binding-action-strip.has-rebuild .binding-action-control-row' in body
+    assert '.binding-action-strip.no-rebuild .binding-action-control-row' in body
     assert '.binding-action-label-row > div,.binding-action-cell { min-height:42px;' not in body
     assert '.binding-action-cell { gap:8px; }' not in body
-    assert '.binding-action-cell.verifier-cell { flex-wrap:wrap; }' in body
+    assert '.binding-action-cell.verifier-cell { flex-wrap:wrap; }' not in body
     assert '<div class="binding-meta-item manual-approval-meta">' not in body
     assert '<div class="binding-meta-item"><div class="field-hint">本群监控</div>' not in body
     assert '.binding-meta-actions { display:flex; flex-direction:column; gap:6px; align-items:center; justify-content:center; margin-top:2px; }' not in body
-    assert '.binding-meta-actions button { height:38px; margin:0!important; display:inline-flex; align-items:center; justify-content:center; }' in body
-    assert '.card-monitor-toggle { display:inline-flex; align-items:center; justify-content:center; min-width:96px; white-space:nowrap!important; word-break:keep-all!important; overflow-wrap:normal!important;' in body
+    assert '.binding-meta-actions button { width:100%; min-width:0; height:36px; min-height:36px!important; margin:0!important; display:inline-flex; align-items:center; justify-content:center; white-space:nowrap; padding:0 8px!important; }' in body
+    assert '.binding-card-actions .card-monitor-toggle { min-width:88px!important; height:38px!important; margin:0!important; }' in body
     assert '.binding-card .card-monitor-toggle{min-width:96px!important;flex:0 0 auto!important;white-space:nowrap!important;word-break:keep-all!important;overflow-wrap:normal!important;text-align:center!important;}' in body
-    assert '.binding-card .binding-badge{min-width:64px!important;flex:0 0 auto!important;white-space:nowrap!important;word-break:keep-all!important;overflow-wrap:normal!important;text-align:center!important;justify-content:center!important;}' in body
+    assert '.binding-card .binding-badge{min-width:64px!important;flex:0 0 auto!important;white-space:nowrap!important;word-break:keep-all!important;overflow-wrap:normal!important;text-align:center!important;justify-content:center!important;}' not in body
     assert '.delete-binding-button { height:38px; min-width:88px; display:inline-flex!important; align-items:center!important; justify-content:center!important;' in body
     assert 'class="secondary delete-binding-button" onclick="deleteApprovalBinding' in body
     assert '.status-line { display:inline-flex; align-items:center; gap:6px; }' in body
@@ -5642,8 +5801,8 @@ def test_whatsapp_approval_group_link_change_invalidates_cached_identity_and_con
         'group_link_bindings': [{
             'link': 'https://chat.whatsapp.com/OldInvite111',
             'group_name': '旧审批群',
-            'registration_group': '120363OLD@g.us',
-            'group_id': '120363OLD@g.us',
+            'registration_group': '120363123456789@g.us',
+            'group_id': '120363123456789@g.us',
             'area': 'Brazil',
             'notify_profile_name': 'wa-approval-broadcast',
             'enabled': True,
@@ -5665,8 +5824,8 @@ def test_whatsapp_approval_group_link_change_invalidates_cached_identity_and_con
             'link': 'https://chat.whatsapp.com/NewInvite222?mode=gi_t',
             # Simulate stale hidden fields coming back from the page after link replacement.
             'group_name': '旧审批群',
-            'registration_group': '120363OLD@g.us',
-            'group_id': '120363OLD@g.us',
+            'registration_group': '120363123456789@g.us',
+            'group_id': '120363123456789@g.us',
             'area': 'Mexico',
             'notify_profile_name': 'wa-approval-broadcast-02',
             'enabled': False,
@@ -12111,7 +12270,7 @@ def test_lark_reply_templates_include_code_field_for_success_and_failures():
         'reply_code': '-',
     })
     assert already_in_target_verified == (
-        '**❌ Previously registered in this agency**\n'
+        '**❌ Bind failed: Previously registered in this agency**\n'
         'Phone: +62 8989811289819\n'
         'ID: 46058697\n'
         'Group: 其他渠道\n'
@@ -12149,7 +12308,7 @@ def test_lark_reply_templates_include_code_field_for_success_and_failures():
         'reply_code': '-',
     })
     assert already_registered_crm_failed == (
-        '**❌ Previously registered in this agency**\n'
+        '**❌ Bind failed: Previously registered in this agency**\n'
         'Phone: +62 8989811289819\n'
         'ID: 46058697\n'
         'Group: 其他渠道\n'
@@ -12194,7 +12353,8 @@ def test_lark_reply_templates_include_code_field_for_success_and_failures():
         'reply_group': 'Piso-12',
         'reply_code': 'EKVFGQ',
     })
-    assert bind_failed_401.startswith('**❌ Failed：Error Code Unable to Bind**')
+    assert bind_failed_401.startswith('**❌ Bind failed: backend login or authorization expired. Check manually.**')
+    assert 'Failed：Error Code Unable to Bind' not in bind_failed_401
     assert 'Code: EKVFGQ' in bind_failed_401
 
     bind_backend_guild_mismatch = service._format_lark_reply_text({
@@ -12262,7 +12422,8 @@ def test_lark_reply_templates_include_code_field_for_success_and_failures():
         'reply_group': 'Piso-12',
         'reply_code': 'EKVFGQ',
     })
-    assert auth_manual_recovery.startswith('**❌ Failed：Error Code Unable to Bind**')
+    assert auth_manual_recovery.startswith('**❌ Bind failed: backend login or authorization expired. Check manually.**')
+    assert 'Failed：Error Code Unable to Bind' not in auth_manual_recovery
 
     generic_failed = service._format_lark_reply_text({
         'accepted': False,
@@ -12273,6 +12434,131 @@ def test_lark_reply_templates_include_code_field_for_success_and_failures():
         'reply_code': '-',
     })
     assert 'Code: -' in generic_failed
+
+    indonesian_cms_reason = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'bind_check_failed',
+        'result_code': 'cms_add_anchor_business_failed',
+        'result_reason': 'Gagal bergabung ke agency. Negara Anda tidak sama dengan negara agency tersebut',
+        'reply_phone': '+62 81234567890',
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': '-',
+    })
+    assert indonesian_cms_reason.startswith(
+        '**❌ Bind failed: Failed to join the agency. Your country does not match the agency country.**'
+    )
+    assert 'Gagal bergabung' not in indonesian_cms_reason
+    assert 'Negara Anda' not in indonesian_cms_reason
+
+    portuguese_cms_reason = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'bind_check_failed',
+        'result_code': 'cms_add_anchor_business_failed',
+        'result_reason': 'Falha ao entrar na Agência: seu país e o da Agência não correspondem.',
+        'reply_phone': '+55 11971090008',
+        'reply_id': '53539401',
+        'reply_group': '其他渠道',
+        'reply_code': '-',
+    })
+    assert portuguese_cms_reason.startswith(
+        '**❌ Bind failed: Failed to join the agency. Your country does not match the agency country.**'
+    )
+    assert 'Falha ao entrar' not in portuguese_cms_reason
+    assert 'não correspondem' not in portuguese_cms_reason
+
+    arbitrary_cms_language_reason = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'bind_check_failed',
+        'result_code': 'cms_add_anchor_business_failed',
+        'result_reason': 'Akun ini belum memenuhi syarat untuk bergabung ke agensi.',
+        'reply_phone': '+62 81234567890',
+        'reply_id': '55667788',
+        'reply_group': 'Piso-12',
+        'reply_code': '-',
+    })
+    assert arbitrary_cms_language_reason.startswith(
+        '**❌ Bind failed: CMS rejected bind request. Check manually.**'
+    )
+    assert 'Akun ini' not in arbitrary_cms_language_reason
+    assert 'bergabung' not in arbitrary_cms_language_reason
+
+    chinese_other_agency_reason = service._format_lark_reply_text({
+        'accepted': False,
+        'reason': 'bind_check_failed',
+        'result_code': 'cms_add_anchor_business_failed',
+        'result_reason': '已加入其他公会',
+        'reply_phone': '+55 11962266725',
+        'reply_id': '52225062',
+        'reply_group': '其他渠道',
+        'reply_code': '-',
+    })
+    assert chinese_other_agency_reason.startswith(
+        '**❌ Bind failed: The streamer was in another agency**'
+    )
+    assert 'Bind failed: Bind failed. Check manually.' not in chinese_other_agency_reason
+    assert '已加入其他公会' not in chinese_other_agency_reason
+
+
+def test_ops_intake_item_display_translates_existing_raw_cms_failure_reply():
+    client = make_client()
+    service = client.app.state.service
+
+    item = service._enhance_ops_intake_item_display({
+        'item_id': 'intake_existing_raw_cms_failure',
+        'system_status': 'bind_failed',
+        'feedback_status': 'pending_feedback',
+        'reply_text': '**❌ Bind failed: Gagal bergabung ke agency. Negara Anda tidak sama dengan negara agency tersebut**\nPhone: +62 81234567890\nID: 55667788\nGroup: Piso-12\nCode: -',
+        'result_code': 'cms_add_anchor_business_failed',
+        'result_reason': 'Gagal bergabung ke agency. Negara Anda tidak sama dengan negara agency tersebut',
+        'parsed_phone': '+62 81234567890',
+        'parsed_account_id': '55667788',
+        'parsed_group': 'Piso-12',
+        'parsed_code': '-',
+        'result_snapshot': '{}',
+    })
+
+    assert item['reply_text'].startswith(
+        '**❌ Bind failed: Failed to join the agency. Your country does not match the agency country.**'
+    )
+    assert 'Gagal bergabung' not in item['reply_text']
+    assert 'Negara Anda' not in item['reply_text']
+
+    auth_item = service._enhance_ops_intake_item_display({
+        'item_id': 'intake_existing_legacy_401_failure',
+        'system_status': 'bind_failed',
+        'feedback_status': 'pending_feedback',
+        'reply_text': '**❌ Failed：Error Code Unable to Bind**\nPhone: +55 31996114071\nID: 53513285\nGroup: 其他渠道\nCode: -',
+        'result_code': 'cms_authorization_invalid',
+        'result_reason': 'CMS KA-AddAnchor authorization rejected with HTTP 401',
+        'parsed_phone': '+55 31996114071',
+        'parsed_account_id': '53513285',
+        'parsed_group': '其他渠道',
+        'parsed_code': '-',
+        'result_snapshot': '{}',
+    })
+    assert auth_item['reply_text'].startswith(
+        '**❌ Bind failed: backend login or authorization expired. Check manually.**'
+    )
+    assert 'Failed：Error Code Unable to Bind' not in auth_item['reply_text']
+
+    generic_bind_failed_item = service._enhance_ops_intake_item_display({
+        'item_id': 'intake_existing_generic_chinese_other_agency_failure',
+        'system_status': 'bind_failed',
+        'feedback_status': 'not_feedbackable',
+        'reply_text': '**❌ Bind failed: Bind failed. Check manually.**\nPhone: +55 11962266725\nID: 52225062\nGroup: 其他渠道\nCode: -',
+        'result_code': 'cms_add_anchor_business_failed',
+        'result_reason': '已加入其他公会',
+        'parsed_phone': '+55 11962266725',
+        'parsed_account_id': '52225062',
+        'parsed_group': '其他渠道',
+        'parsed_code': '-',
+        'result_snapshot': '{}',
+    })
+    assert generic_bind_failed_item['reply_text'].startswith(
+        '**❌ Bind failed: The streamer was in another agency**'
+    )
+    assert 'Bind failed: Bind failed. Check manually.' not in generic_bind_failed_item['reply_text']
 
 
 
@@ -15007,7 +15293,8 @@ def test_lark_event_uses_english_duplicate_conflict_message_when_crm_reports_dup
     body = response.json()
     assert body['accepted'] is False
     assert body['reason'] == 'crm_sync_failed'
-    assert reply.calls[0]['text'].startswith('**❌ Duplicate submission**')
+    assert reply.calls[0]['text'].startswith('**❌ Bind failed: Previously registered in this agency**')
+    assert 'Duplicate submission' not in reply.calls[0]['text']
     assert 'Phone: +62 81234567891' in reply.calls[0]['text']
 
 
@@ -28175,7 +28462,7 @@ def test_same_link_save_force_rebuilds_stale_registration_binding_identity():
     assert task_input['reason'] == 'stale_identity_rebuild'
 
 
-def test_rebuild_registration_group_binding_endpoint_clears_identity_and_queues_force_probe():
+def test_rebuild_registration_group_binding_endpoint_preserves_verified_jid_until_new_identity_resolves():
     app = create_app({
         'DB_PATH': ':memory:',
         'AUTO_LARK_REPLY': False,
@@ -28190,8 +28477,8 @@ def test_rebuild_registration_group_binding_endpoint_clears_identity_and_queues_
         'group_link_bindings': [{
             'link': 'https://chat.whatsapp.com/RebuildBinding',
             'group_name': 'Old Group',
-            'registration_group': '120363OLD@g.us',
-            'group_id': '120363OLD@g.us',
+            'registration_group': '120363123456789@g.us',
+            'group_id': '120363123456789@g.us',
             'area': 'Brazil',
             'notify_profile_name': 'wa-approval-broadcast',
             'enabled': True,
@@ -28208,8 +28495,46 @@ def test_rebuild_registration_group_binding_endpoint_clears_identity_and_queues_
     assert body['rebuilt'] is True
     binding = body['binding']
     assert binding['link'] == 'https://chat.whatsapp.com/RebuildBinding'
-    assert binding['registration_group'] == ''
-    assert binding['group_id'] == ''
-    assert binding['group_name'] == ''
+    assert binding['registration_group'] == '120363123456789@g.us'
+    assert binding['group_id'] == '120363123456789@g.us'
+    assert binding['group_name'] == 'Old Group'
+    assert binding['previous_verified_group_id'] == '120363123456789@g.us'
+    assert binding['previous_verified_group_name'] == 'Old Group'
     assert binding['identity_status'] == 'needs_rebuild'
+    assert binding['last_probe_status'] == 'queued_for_rebuild'
     assert body['probe_refresh_tasks'][0]['stage'] == 'queued_after_identity_rebuild'
+
+
+def test_whatsapp_approval_binding_save_does_not_persist_invite_link_as_group_id():
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+        'LARK_APP_ID': 'cli_test_app',
+        'LARK_DEFAULT_APP_NAME': 'Linky',
+        'LARK_DEFAULT_DEPT_NAME': 'Piso',
+    })
+    client = TestClient(app)
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-link-group-id', json={
+        'account_name': 'WA Link Group ID',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/RebuildBinding',
+            'group_name': 'https://chat.whatsapp.com/RebuildBinding',
+            'registration_group': 'https://chat.whatsapp.com/RebuildBinding',
+            'group_id': 'https://chat.whatsapp.com/RebuildBinding',
+            'area': 'Brazil',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'enabled': True,
+            'approval_count_threshold': 25,
+            'approval_timeout_minutes': 30,
+            'auto_recover_worker': True,
+        }],
+        'enabled': True,
+    })
+
+    assert saved.status_code == 200
+    binding = saved.json()['account']['group_link_bindings'][0]
+    assert binding['group_id'] == ''
+    assert binding['registration_group'] == ''
+    assert binding['group_name'] == ''
+    assert saved.json()['probe_refresh_bindings'] == [0]

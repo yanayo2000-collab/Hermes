@@ -4949,15 +4949,18 @@ def test_group_atmosphere_manual_upload_is_first_generation_card_without_library
     assert candidate_card.index('id="ga_manual_upload_card"') < candidate_card.index('id="ga_learning_upload_card"')
     assert '人工上传话术' in candidate_card
     assert 'id="ga_manual_upload_btn"' in candidate_card
+    assert 'id="ga_clear_manual_phrase_file_btn"' in candidate_card
+    assert candidate_card.index('id="ga_manual_upload_btn"') < candidate_card.index('id="ga_clear_manual_phrase_file_btn"')
     assert 'id="ga_phrase_library_result"' in candidate_card
     assert 'ga-manual-upload-compact' in candidate_card
     assert 'ga-manual-upload-head' in candidate_card
+    assert 'ga-manual-upload-actions' in candidate_card
     assert 'ga-manual-upload-row' in candidate_card
     assert 'id="ga_manual_upload_region"' not in candidate_card
     assert 'id="ga_manual_upload_type"' not in candidate_card
     assert '每行一条；或选择 txt/csv/xlsx 文件导入' in candidate_card
     assert '#ga_manual_upload_card.ga-manual-upload-compact{width:100%!important;max-width:none!important;padding:16px!important;margin:0!important;display:grid!important;gap:10px!important;}' in html
-    assert '#ga_manual_upload_card .ga-manual-upload-row{display:grid!important;grid-template-columns:minmax(220px,1fr)!important' in html
+    assert '#ga_manual_upload_card .ga-manual-upload-row{display:grid!important;grid-template-columns:minmax(280px,520px)!important' in html
     assert '#ga_manual_upload_card textarea#ga_manual_phrase_text{min-height:72px!important;margin:0!important;resize:vertical!important;}' in html
 
 
@@ -5066,15 +5069,18 @@ def test_group_atmosphere_page_matches_next_product_iteration_requirements():
     assert candidate_card.index('id="ga_manual_upload_card"') < candidate_card.index('id="ga_learning_upload_card"')
     assert '人工上传话术' in candidate_card
     assert 'id="ga_manual_upload_btn"' in candidate_card
+    assert 'id="ga_clear_manual_phrase_file_btn"' in candidate_card
+    assert candidate_card.index('id="ga_manual_upload_btn"') < candidate_card.index('id="ga_clear_manual_phrase_file_btn"')
     assert 'id="ga_phrase_library_result"' in candidate_card
     assert 'ga-manual-upload-compact' in candidate_card
     assert 'ga-manual-upload-head' in candidate_card
+    assert 'ga-manual-upload-actions' in candidate_card
     assert 'ga-manual-upload-row' in candidate_card
     assert 'id="ga_manual_upload_region"' not in candidate_card
     assert 'id="ga_manual_upload_type"' not in candidate_card
     assert '每行一条；或选择 txt/csv/xlsx 文件导入' in candidate_card
     assert '#ga_manual_upload_card.ga-manual-upload-compact{width:100%!important;max-width:none!important;padding:16px!important;margin:0!important;display:grid!important;gap:10px!important;}' in html
-    assert '#ga_manual_upload_card .ga-manual-upload-row{display:grid!important;grid-template-columns:minmax(220px,1fr)!important' in html
+    assert '#ga_manual_upload_card .ga-manual-upload-row{display:grid!important;grid-template-columns:minmax(280px,520px)!important' in html
     assert '#ga_manual_upload_card textarea#ga_manual_phrase_text{min-height:72px!important;margin:0!important;resize:vertical!important;}' in html
     assert 'id="ga_candidate_count"' not in candidate_card
     assert '<span class="pill gray" id="ga_candidate_count">' not in candidate_card
@@ -5253,11 +5259,14 @@ def test_group_atmosphere_p2_ui_clarifies_bridge_generation_and_role_boundaries(
     assert 'sendBridgeRelationshipManualMessage' in html
     assert "trigger_type:'manual_role_bridge_batch'" in html
 
-    # 话术生成区：说明人工上传和文件学习的边界，避免运营误以为都会直接装载发送。
-    assert 'ga-generation-help' in html
-    assert '人工上传：先进入审核弹窗，确认后进入备选区' in html
-    assert '文件学习：AI 从聊天记录里提取候选话术' in html
-    assert '确认后才可加入话术角色' in html
+    # 话术生成区：运营端不展示低价值说明文案，保留实际操作入口。
+    assert 'ga-generation-help' not in html
+    assert '人工上传：先进入审核弹窗，确认后进入备选区' not in html
+    assert '文件学习：AI 从聊天记录里提取候选话术' not in html
+    assert '确认后才可加入话术角色' not in html
+    assert 'id="ga_manual_upload_card"' in html
+    assert 'id="ga_learning_upload_card"' in html
+    assert 'id="ga_learning_bot_card"' in html
 
     # 话术类型与话术角色：视觉上分离，类型负责筛选，角色负责装载。
     assert 'ga-candidate-type-label' in html
@@ -5276,7 +5285,7 @@ def test_group_atmosphere_p3_ui_adds_tooltips_upload_polish_and_runtime_summary(
     # 关键短按钮要有 tooltip/aria，避免运营不知道 + 和 译 的含义。
     assert 'id="ga_add_phrase_type_btn" title="新增话术类型" aria-label="新增话术类型"' in html
     assert 'title="候选翻译" aria-label="候选翻译"' in html
-    assert 'title="刷新自动调度状态" aria-label="刷新自动调度状态"' in html
+    assert 'title="刷新自动调度状态" aria-label="刷新自动调度状态"' not in html
 
     # 文件上传控件统一成清晰的轻量样式。
     assert 'ga-file-upload-shell' in html
@@ -5285,31 +5294,26 @@ def test_group_atmosphere_p3_ui_adds_tooltips_upload_polish_and_runtime_summary(
     assert '选择 txt/csv/xlsx 文件' in html
     assert '选择聊天记录文件' in html
     assert '#ga_candidate_card .ga-file-upload-shell{display:flex!important;align-items:center!important;' in html
+    assert 'width:min(520px,100%)!important;max-width:520px!important' in html
 
-    # 右侧/顶部可观测性区域补最近日志与调度摘要，页面加载只读拉取，不触发发送。
-    assert 'id="ga_runtime_summary_card"' in html
-    assert '最近发送/调度摘要' in html
-    assert 'id="ga_recent_runtime_logs"' in html
-    assert 'loadExecutionSummary' in html
-    assert '/api/ops/group-atmosphere/logs?limit=8' in html
-    assert 'renderExecutionSummaryLogs' in html
-    assert '暂无发送或调度记录' in html
+    # 运营端不再展示最近发送/调度摘要卡片，避免页面噪音。
+    assert 'id="ga_runtime_summary_card"' not in html
+    assert '最近发送/调度摘要' not in html
+    assert 'id="ga_recent_runtime_logs"' not in html
+    assert '暂无发送或调度记录' not in html
 
 
-def test_group_atmosphere_scheduler_status_is_visible_and_read_only():
+def test_group_atmosphere_scheduler_status_api_remains_but_page_card_is_hidden():
     client = make_client({'GROUP_ATMOSPHERE_SCHEDULER_ENABLED': False})
     page = client.get('/ops/group-atmosphere')
     assert page.status_code == 200
     html = page.text
 
-    assert 'id="ga_scheduler_overview_card"' in html
-    assert 'id="ga_scheduler_runtime_status"' in html
-    assert 'loadSchedulerStatus' in html
-    assert '/api/ops/group-atmosphere/scheduler/status' in html
-    assert '调度器未启用' in html
-    assert '桥接自动发言开关' in html
-    assert '最近调度' in html
-    assert '最近跳过原因' in html
+    assert 'id="ga_scheduler_overview_card"' not in html
+    assert 'id="ga_scheduler_runtime_status"' not in html
+    assert '自动调度状态' not in html
+    assert '桥接自动发言开关只代表配置允许' not in html
+    assert '最近跳过原因' not in html
 
     resp = client.get('/api/ops/group-atmosphere/scheduler/status')
     assert resp.status_code == 200
@@ -5697,7 +5701,7 @@ def test_group_atmosphere_phrase_generation_sections_stack_and_upload_actions_in
     assert html.index('id="ga_chat_file"') < html.index('id="ga_upload_chat_btn"') < html.index('id="ga_clear_chat_files_btn"')
     assert '#ga_candidate_card .ga-generation-grid{grid-template-columns:1fr!important' in html
     assert '.ga-generation-stack{display:grid!important;grid-template-columns:1fr!important' in html
-    assert '.ga-upload-action-row{display:grid!important;grid-template-columns:minmax(0,1fr) auto auto!important' in html
+    assert '.ga-upload-action-row{display:grid!important;grid-template-columns:minmax(280px,520px) auto auto!important' in html
     assert '#ga_learning_bot_card{display:grid!important' in html
 
 

@@ -133,6 +133,37 @@ PHONE_PREFIX_COUNTRY_MAP = {
     '998': 'Uzbekistan',
 }
 
+COUNTRY_LABEL_ALIASES = {
+    'id': 'Indonesia',
+    '62': 'Indonesia',
+    '+62': 'Indonesia',
+    'indonesia': 'Indonesia',
+    'br': 'Brazil',
+    '55': 'Brazil',
+    '+55': 'Brazil',
+    'brazil': 'Brazil',
+    'mx': 'Mexico',
+    '52': 'Mexico',
+    '+52': 'Mexico',
+    'mexico': 'Mexico',
+}
+
+
+def normalize_country_label(value: Any) -> str:
+    raw = str(value or '').strip()
+    if not raw:
+        return ''
+    return COUNTRY_LABEL_ALIASES.get(raw.lower(), raw)
+
+
+def countries_match(user_country: Any, guild_country: Any) -> bool:
+    normalized_user = normalize_country_label(user_country).lower()
+    normalized_guild = normalize_country_label(guild_country).lower()
+    if not normalized_user or not normalized_guild:
+        return True
+    return normalized_user == normalized_guild
+
+
 IGNORED_HISTORY_LEAD_STATUSES = frozenset({
     'archived_test_residue',
     'console_cleared_test_data',
@@ -933,6 +964,10 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
           <input id=\"new_executor_cms_guild_sid\" placeholder=\"例如 43536425\" />
         </div>
         <div class=\"field-stack\">
+          <label class=\"field-hint\">国家</label>
+          <select id=\"new_executor_country\"><option value=\"\">未限制</option><option value=\"Indonesia\">Indonesia</option><option value=\"Brazil\">Brazil</option><option value=\"Mexico\">Mexico</option></select>
+        </div>
+        <div class=\"field-stack\">
           <label class=\"field-hint\">代理地区</label>
           <select id=\"new_executor_proxy_region\"></select>
         </div>
@@ -1260,6 +1295,7 @@ function guildExecutorRowHtml(row) {
       <div class="k">CMS Token</div><div>${platformState}</div>
       <div class="k">CMS Refresh</div><div>${row.cms_refresh_token_configured ? '已配置' : '未配置'}</div>
       <div class="k">CMS Guild</div><div>${row.cms_guild_id || '-'}${row.cms_guild_sid ? ` / SID ${row.cms_guild_sid}` : ''}</div>
+      <div class="k">国家</div><div>${row.country || '-'}</div>
       <div class="k">代理地区</div><div>${row.proxy_region || '-'} · ${effectiveProxyState}</div>
       <div class="k">并发数</div><div>${row.bind_concurrency || '-'}</div>
       <div class="k">超时秒数</div><div>${row.request_timeout_seconds || '-'}</div>
@@ -1332,6 +1368,7 @@ function fillExecutorForm(rowOrGuildName) {
   document.getElementById('new_executor_cms_refresh_token').value = '';
   document.getElementById('new_executor_cms_guild_id').value = row?.cms_guild_id || '';
   document.getElementById('new_executor_cms_guild_sid').value = row?.cms_guild_sid || '';
+  document.getElementById('new_executor_country').value = row?.country || '';
   refreshExecutorProxyRegionSelect(row?.proxy_region || '');
   document.getElementById('new_executor_bind_concurrency').value = row?.bind_concurrency || 1;
   document.getElementById('new_executor_request_timeout_seconds').value = row?.request_timeout_seconds || 30;
@@ -1365,6 +1402,7 @@ async function createOrUpdateExecutor() {
       cms_refresh_token: document.getElementById('new_executor_cms_refresh_token').value.trim(),
       cms_guild_id: document.getElementById('new_executor_cms_guild_id').value.trim(),
       cms_guild_sid: document.getElementById('new_executor_cms_guild_sid').value.trim(),
+      country: document.getElementById('new_executor_country').value.trim(),
       proxy_region: document.getElementById('new_executor_proxy_region').value.trim(),
       bind_concurrency: Number(document.getElementById('new_executor_bind_concurrency').value || 1),
       request_timeout_seconds: Number(document.getElementById('new_executor_request_timeout_seconds').value || 30),
@@ -1678,9 +1716,10 @@ pre,code{font-family:var(--crm-mono)!important;font-size:12px!important;line-hei
 .ga-upload-panel h3,.ga-proto-subhead h3{font-size:26px!important;margin:0 0 16px!important;color:#050505!important;}
 #ga_manual_upload_card.ga-manual-upload-compact{width:100%!important;max-width:none!important;padding:16px!important;margin:0!important;display:grid!important;gap:10px!important;}
 #ga_manual_upload_card .ga-manual-upload-head{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin:0!important;}
+#ga_manual_upload_card .ga-manual-upload-actions{display:flex!important;align-items:center!important;gap:8px!important;flex-wrap:nowrap!important;}
 #ga_manual_upload_card .ga-manual-upload-head h3{font-size:18px!important;line-height:1.25!important;margin:0!important;}
 #ga_manual_upload_card .ga-manual-upload-head button{height:38px!important;min-height:38px!important;margin:0!important;white-space:nowrap!important;}
-#ga_manual_upload_card .ga-manual-upload-row{display:grid!important;grid-template-columns:minmax(220px,1fr)!important;gap:10px!important;align-items:center!important;margin:0!important;}
+#ga_manual_upload_card .ga-manual-upload-row{display:grid!important;grid-template-columns:minmax(280px,520px)!important;gap:10px!important;align-items:center!important;margin:0!important;}
 #ga_manual_upload_card .ga-manual-upload-row input[type="file"]{height:38px!important;min-height:38px!important;margin:0!important;}
 #ga_manual_upload_card textarea#ga_manual_phrase_text{min-height:72px!important;margin:0!important;resize:vertical!important;}
 #ga_manual_upload_card #ga_phrase_library_result{margin:0!important;min-height:0!important;}
@@ -1854,7 +1893,7 @@ input[type=file]::file-selector-button{height:28px!important;margin:0 10px 0 0!i
 
 #ga_candidate_card .ga-generation-grid{grid-template-columns:1fr!important;align-items:stretch!important;gap:14px!important;}
 .ga-generation-stack{display:grid!important;grid-template-columns:1fr!important;gap:14px!important;}
-.ga-upload-action-row{display:grid!important;grid-template-columns:minmax(0,1fr) auto auto!important;gap:10px!important;align-items:center!important;}
+.ga-upload-action-row{display:grid!important;grid-template-columns:minmax(280px,520px) auto auto!important;gap:10px!important;align-items:center!important;}
 .ga-upload-action-row input[type=file],.ga-upload-action-row button{height:42px!important;min-height:42px!important;margin:0!important;}
 #ga_learning_bot_card{display:grid!important;gap:8px!important;align-content:start!important;}
 #ga_learning_bot_card>div:first-child{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;margin:0!important;margin-bottom:0!important;padding-bottom:0!important;border-bottom:0!important;}
@@ -1876,19 +1915,14 @@ input[type=file]::file-selector-button{height:28px!important;margin:0 10px 0 0!i
 @media(max-width:760px){.ga-upload-action-row{grid-template-columns:1fr!important;}.ga-upload-action-row button{width:100%!important;}}
 #ga_candidate_pool .group-card{box-shadow:none!important;}
 #ga_candidate_type_bar{display:flex!important;align-items:flex-start!important;gap:8px!important;max-width:100%!important;margin:0 0 16px!important;}
-.ga-generation-help{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:10px!important;margin:0 0 12px!important;}
-.ga-generation-help .mini-note{margin:0!important;background:#f8fbff!important;border:1px solid #e5eaf3!important;}
-#ga_candidate_card .ga-file-upload-shell{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;height:40px!important;min-height:40px!important;padding:0 12px!important;border:1px dashed #bfdbfe!important;border-radius:12px!important;background:#f8fbff!important;color:#334155!important;font-size:13px!important;font-weight:760!important;cursor:pointer!important;}
+#ga_candidate_card .ga-file-upload-shell{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;width:min(520px,100%)!important;max-width:520px!important;height:40px!important;min-height:40px!important;padding:0 12px!important;border:1px dashed #bfdbfe!important;border-radius:12px!important;background:#f8fbff!important;color:#334155!important;font-size:13px!important;font-weight:760!important;cursor:pointer!important;}
 #ga_candidate_card .ga-file-upload-shell input[type=file]{max-width:210px!important;height:auto!important;min-height:0!important;margin:0!important;font-size:12px!important;}
-#ga_runtime_summary_card{border:1px solid #e5eaf3!important;background:#fff!important;border-radius:18px!important;padding:14px 16px!important;display:grid!important;gap:10px!important;}
-#ga_recent_runtime_logs{display:grid!important;gap:8px!important;margin:0!important;}
 #ga_recent_runtime_logs .ga-runtime-log-row{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:8px!important;align-items:center!important;padding:8px 10px!important;border:1px solid #eef2f7!important;border-radius:12px!important;background:#f8fafc!important;font-size:13px!important;}
 #ga_recent_runtime_logs .ga-runtime-log-main{min-width:0!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;}
 #ga_recent_runtime_logs .ga-runtime-log-meta{color:#64748b!important;white-space:nowrap!important;font-size:12px!important;}
 .ga-candidate-type-label{font-size:13px!important;font-weight:800!important;color:#334155!important;margin:0 0 8px!important;}
 .ga-candidate-role-mount-panel{display:flex!important;align-items:center!important;gap:8px!important;padding:8px 10px!important;background:#f8fbff!important;border:1px solid #e5eaf3!important;border-radius:14px!important;}
 .ga-candidate-role-mount-panel .label{font-size:13px!important;font-weight:800!important;color:#334155!important;white-space:nowrap!important;}
-@media(max-width:980px){.ga-generation-help{grid-template-columns:1fr!important;}.ga-candidate-role-mount-panel{width:100%!important;}}
 #ga_candidate_role_tabs{display:flex!important;gap:8px!important;flex-wrap:nowrap!important;overflow-x:scroll!important;overflow-y:hidden!important;min-width:0!important;flex:1 1 auto!important;margin:0!important;padding:0 0 12px!important;scrollbar-width:auto!important;scrollbar-color:#94a3b8 #e2e8f0!important;}
 #ga_candidate_role_tabs::-webkit-scrollbar{height:10px!important;}
 #ga_candidate_role_tabs::-webkit-scrollbar-track{background:#e2e8f0!important;border-radius:999px!important;}
@@ -2015,8 +2049,6 @@ button.ga-candidate-media-icon,button.ga-candidate-media-icon:hover,button.ga-ca
 .ga-bridge-footer{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:16px!important;padding-top:2px!important;border-top:1px solid var(--crm-border)!important;}
 .ga-bridge-footer-status{display:flex!important;align-items:center!important;gap:8px!important;min-width:0!important;color:#64748b!important;font-size:13px!important;}
 #ga_scheduler_status{margin:0!important;color:#64748b!important;font-size:13px!important;}
-#ga_scheduler_overview_card{border:1px solid #dbeafe!important;background:#f8fbff!important;border-radius:18px!important;padding:14px 16px!important;display:grid!important;gap:10px!important;}
-#ga_scheduler_overview_grid{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:10px!important;}
 #ga_scheduler_overview_grid .ga-scheduler-kv{background:#fff!important;border:1px solid #e5e7eb!important;border-radius:14px!important;padding:10px 12px!important;}
 #ga_scheduler_overview_grid .ga-scheduler-kv .label{font-size:12px!important;color:#64748b!important;margin-bottom:4px!important;}
 #ga_scheduler_overview_grid .ga-scheduler-kv .value{font-size:14px!important;font-weight:800!important;color:#0f172a!important;}
@@ -2119,14 +2151,12 @@ button.ga-candidate-media-icon,button.ga-candidate-media-icon:hover,button.ga-ca
 <div class="ga-proto-page" data-layout="ops-workbench-redesign"><div class="ga-page-head"><div><h1 class="ga-proto-title">群聊天助手</h1></div></div>
 <input type="hidden" id="ga_account_key_login"/><input type="hidden" id="ga_account_key"/>
 <div class="ga-stats ga-workbench-stats" id="ga_overview_stats"><div class="card ga-stat"><div class="stat-label">账号</div><div class="stat-value" id="ga_stat_accounts">0</div></div><div class="card ga-stat"><div class="stat-label">角色</div><div class="stat-value" id="ga_stat_roles">0</div></div><div class="card ga-stat"><div class="stat-label">桥接群</div><div class="stat-value" id="ga_stat_mounted">0</div></div><div class="card ga-stat"><div class="stat-label">自动发言</div><div class="stat-value" id="ga_stat_auto">0</div></div><div class="card ga-stat"><div class="stat-label">禁发群</div><div class="stat-value" id="ga_stat_blocked">0</div></div></div>
-<section class="card" id="ga_scheduler_overview_card"><div class="toolbar" style="margin:0!important;"><div><strong>自动调度状态</strong><div class="muted">桥接自动发言开关只代表配置允许；这里显示后台调度器是否实际运行。</div></div><button type="button" class="secondary" id="ga_refresh_scheduler_status_btn" title="刷新自动调度状态" aria-label="刷新自动调度状态">刷新状态</button></div><div id="ga_scheduler_overview_grid"><div class="ga-scheduler-kv"><div class="label">调度器</div><div class="value" id="ga_scheduler_runtime_status">加载中</div></div><div class="ga-scheduler-kv"><div class="label">桥接自动发言开关</div><div class="value" id="ga_scheduler_auto_bindings">0 个开启</div></div><div class="ga-scheduler-kv"><div class="label">最近调度</div><div class="value" id="ga_scheduler_last_run">暂无记录</div></div><div class="ga-scheduler-kv"><div class="label">最近跳过原因</div><div class="value" id="ga_scheduler_last_skip">暂无</div></div></div></section>
-<section class="card" id="ga_runtime_summary_card"><div class="toolbar" style="margin:0!important;"><div><strong>最近发送/调度摘要</strong><div class="muted">只读展示最近发送、触发和调度结果，便于判断是否真的执行。</div></div><button type="button" class="secondary" id="ga_refresh_runtime_summary_btn" title="刷新最近发送/调度摘要" aria-label="刷新最近发送/调度摘要">刷新摘要</button></div><div id="ga_recent_runtime_logs" class="muted">暂无发送或调度记录</div></section>
 <div class="ga-proto-stack">
 <section class="ga-proto-section ga-bridge-section" id="ga_role_bridge_card" data-layout-zone="role-group-bridge"><div class="ga-proto-head"><div><h2>发言桥接区</h2></div><button type="button" id="ga_new_bridge_btn">新增桥接</button></div><div id="ga_role_bindings" class="ga-proto-card-grid ga-bridge-card-grid muted">加载桥接关系...</div></section>
 <section class="ga-proto-section ga-wa-section" id="ga_accounts_card" data-layout-zone="whatsapp-resource-pool"><div class="ga-proto-head"><div><h2>发言机器人配置</h2></div><div class="ga-proto-head-actions"><button type="button" id="ga_new_account_btn">新增发言机器人</button></div></div><div id="ga_action_feedback" class="muted ga-inline-feedback"></div><div id="ga_accounts" class="account-table-wrap"></div></section>
 <section class="ga-proto-section ga-role-section" id="ga_role_library_card" data-layout-zone="speech-roles"><div class="ga-proto-head"><div><h2>话术角色</h2></div><button type="button" id="ga_new_role_btn">新增话术角色</button></div><div id="ga_role_library" class="muted">加载话术角色...</div></section>
 
-<section class="ga-proto-section ga-copy-section" id="ga_candidate_card" data-layout-zone="phrase-generation"><div class="ga-proto-head"><div><h2>话术生成区</h2></div></div><div class="ga-generation-help"><div class="mini-note"><strong>人工上传</strong><div class="muted">人工上传：先进入审核弹窗，确认后进入备选区。</div></div><div class="mini-note"><strong>文件学习</strong><div class="muted">文件学习：AI 从聊天记录里提取候选话术。</div></div><div class="mini-note"><strong>装载发送</strong><div class="muted">确认后才可加入话术角色；桥接关系只发送已装载话术。</div></div></div><div class="grid ga-generation-grid ga-generation-stack"><div class="ga-upload-panel ga-manual-upload-compact" id="ga_manual_upload_card"><div class="ga-manual-upload-head"><h3>人工上传话术</h3><button type="button" id="ga_manual_upload_btn">导入人工话术</button></div><div class="ga-manual-upload-row"><label class="ga-file-upload-shell" id="ga_manual_phrase_file_label" for="ga_manual_phrase_file"><span>选择 txt/csv/xlsx 文件</span><input type="file" id="ga_manual_phrase_file" accept=".txt,.csv,.xlsx,.xls"/></label></div><textarea id="ga_manual_phrase_text" placeholder="粘贴话术：每行一条；或选择 txt/csv/xlsx 文件导入。"></textarea><pre id="ga_phrase_library_result" class="muted"></pre></div><div class="ga-upload-panel" id="ga_learning_upload_card"><h3>话术文件学习</h3><div class="ga-upload-action-row"><label class="ga-file-upload-shell" id="ga_chat_file_label" for="ga_chat_file"><span>选择聊天记录文件</span><input type="file" id="ga_chat_file" multiple/></label><button type="button" id="ga_upload_chat_btn">上传并学习</button><button type="button" class="secondary" id="ga_clear_chat_files_btn">清空文件</button></div><pre id="ga_upload_result" class="muted"></pre></div><div class="ga-upload-panel" id="ga_learning_bot_card"><div class="toolbar"><h3>学习机器人区</h3><button type="button" id="ga_open_learning_bot_modal_btn">新增学习机器人</button></div><pre id="ga_learning_result" class="muted"></pre><div id="ga_learning_accounts" class="ga-learning-card-list is-empty"></div></div></div></section>
+<section class="ga-proto-section ga-copy-section" id="ga_candidate_card" data-layout-zone="phrase-generation"><div class="ga-proto-head"><div><h2>话术生成区</h2></div></div><div class="grid ga-generation-grid ga-generation-stack"><div class="ga-upload-panel ga-manual-upload-compact" id="ga_manual_upload_card"><div class="ga-manual-upload-head"><h3>人工上传话术</h3><div class="ga-manual-upload-actions"><button type="button" id="ga_manual_upload_btn">导入人工话术</button><button type="button" class="secondary" id="ga_clear_manual_phrase_file_btn">清空文件</button></div></div><div class="ga-manual-upload-row"><label class="ga-file-upload-shell" id="ga_manual_phrase_file_label" for="ga_manual_phrase_file"><span>选择 txt/csv/xlsx 文件</span><input type="file" id="ga_manual_phrase_file" accept=".txt,.csv,.xlsx,.xls"/></label></div><textarea id="ga_manual_phrase_text" placeholder="粘贴话术：每行一条；或选择 txt/csv/xlsx 文件导入。"></textarea><pre id="ga_phrase_library_result" class="muted"></pre></div><div class="ga-upload-panel" id="ga_learning_upload_card"><h3>话术文件学习</h3><div class="ga-upload-action-row"><label class="ga-file-upload-shell" id="ga_chat_file_label" for="ga_chat_file"><span>选择聊天记录文件</span><input type="file" id="ga_chat_file" multiple/></label><button type="button" id="ga_upload_chat_btn">上传并学习</button><button type="button" class="secondary" id="ga_clear_chat_files_btn">清空文件</button></div><pre id="ga_upload_result" class="muted"></pre></div><div class="ga-upload-panel" id="ga_learning_bot_card"><div class="toolbar"><h3>学习机器人区</h3><button type="button" id="ga_open_learning_bot_modal_btn">新增学习机器人</button></div><pre id="ga_learning_result" class="muted"></pre><div id="ga_learning_accounts" class="ga-learning-card-list is-empty"></div></div></div></section>
 <section class="ga-proto-section ga-copy-list-section" id="ga_candidate_list_card" data-layout-zone="candidate-phrases"><div class="ga-proto-head"><div><h2>话术备选区</h2></div><div class="ga-pool-filter-row"><select id="ga_candidate_language_filter"><option value="id" selected>印尼</option><option value="es">墨西哥</option><option value="pt">巴西</option></select><select id="ga_candidate_role_filter" style="display:none"><option value="community_seed">气氛活跃型</option><option value="faq_helper">解惑答疑型</option><option value="newcomer_guide">教程引导型</option><option value="motivation_admin">激励运营型</option></select><div class="ga-candidate-role-mount-panel"><span class="label">装载到话术角色</span><select id="ga_candidate_target_role_select"><option value="">选择要装载的话术角色</option></select><button type="button" id="ga_batch_add_candidates_to_role_btn">加入角色</button></div></div></div><div class="ga-candidate-type-label">话术类型</div><div id="ga_candidate_type_bar"><div id="ga_candidate_role_tabs" class="ga-candidate-tabs"></div><button type="button" class="ga-candidate-tab ga-add-phrase-type-tab" id="ga_add_phrase_type_btn" title="新增话术类型" aria-label="新增话术类型">+</button></div><div id="ga_phrase_type_inline_form" class="mini-note ga-inline-type-form" style="display:none"><input id="ga_phrase_type_inline_name" placeholder="输入新的话术类型名称"/><button type="button" id="ga_save_inline_phrase_type_btn">保存</button><button type="button" class="ghost" id="ga_cancel_inline_phrase_type_btn">取消</button></div><div id="ga_candidate_pool" class="muted">暂无备选话术</div><pre id="ga_candidate_result" class="muted"></pre></section>
 </div>
 <!-- 检查可发送</button><button type="button" id="ga_mount_role_btn">保存桥接 -->
@@ -2315,11 +2345,6 @@ async function enableCandidate(configName,candidateId){return runAction('确认�
 async function confirmSelectedPendingCandidates(configName){return runAction('一键确认',async()=>{const ids=pendingCandidateIdsForConfig(configName);if(!ids.length)throw new Error('请先勾选待确认话术');const data=await loadJson('/api/ops/group-atmosphere/candidate-pool/enable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config_name:configName,candidate_ids:ids})});showTip(`已确认 ${Number(data.enabled_count||ids.length)} 条话术`,'success');await loadCandidatePool();refreshGroupPlanSelects();return data})}
 async function deleteSelectedPendingCandidates(configName){return runAction('删除已选话术',async()=>{const ids=pendingCandidateIdsForConfig(configName);if(!ids.length)throw new Error('请先勾选要删除的话术');if(!confirm(`确认删除已选 ${ids.length} 条话术？`))return {cancelled:true,silent:true};let deleted=0;for(const id of ids){await loadJson(`/api/ops/group-atmosphere/candidate-pool/${encodeURIComponent(configName)}/${encodeURIComponent(id)}`,{method:'DELETE'});deleted+=1}showTip(`已删除 ${deleted} 条话术`,'success');await loadCandidatePool();await loadRoleBridge();return {ok:true,deleted_count:deleted}})}
 function executionLogStatusLabel(row){const status=String(row?.status||'').toLowerCase();if(['sent','success'].includes(status))return '成功';if(['failed','error'].includes(status))return '失败';return row?.result_code||row?.trigger_type||'记录'}
-function renderExecutionSummaryLogs(rows){const box=document.getElementById('ga_recent_runtime_logs');if(!box)return;const list=Array.isArray(rows)?rows:[];if(!list.length){box.classList.add('muted');box.innerHTML='暂无发送或调度记录';return}box.classList.remove('muted');box.innerHTML=list.slice(0,8).map(row=>{const main=[row.config_name,row.target_group,row.message_text].filter(Boolean).join(' · ')||row.trigger_type||'调度记录';const meta=[executionLogStatusLabel(row),row.created_at||''].filter(Boolean).join(' · ');return `<div class="ga-runtime-log-row"><div class="ga-runtime-log-main" title="${esc(main)}">${esc(main)}</div><div class="ga-runtime-log-meta">${esc(meta)}</div></div>`}).join('')}
-async function loadExecutionSummary(){try{const data=await loadJson('/api/ops/group-atmosphere/logs?limit=8');renderExecutionSummaryLogs(data.rows||[]);return data}catch(err){renderExecutionSummaryLogs([]);console.warn('runtime summary load failed',err);return null}}
-function schedulerStatusLabel(data){if(!data||data.scheduler_enabled===false)return '调度器未启用';if(data.scheduler_running)return '调度器运行中';return '调度器已启用·等待运行'}
-function renderSchedulerStatus(data){data=data||{};const runtime=document.getElementById('ga_scheduler_runtime_status');if(runtime)runtime.textContent=data.status_label||schedulerStatusLabel(data);const auto=document.getElementById('ga_scheduler_auto_bindings');if(auto)auto.textContent=`${Number(data.auto_enabled_binding_count||0)} 个开启 / ${Number(data.group_send_enabled_count||0)} 个群可发`;const last=document.getElementById('ga_scheduler_last_run');if(last)last.textContent=data.last_run_at||'暂无记录';const skip=document.getElementById('ga_scheduler_last_skip');if(skip)skip.textContent=data.last_skip_reason_text||data.last_skip_reason||'暂无';}
-async function loadSchedulerStatus(){try{const data=await loadJson('/api/ops/group-atmosphere/scheduler/status');renderSchedulerStatus(data);return data}catch(err){renderSchedulerStatus({status_label:'状态读取失败',last_skip_reason_text:String(err&&err.message||err||'读取失败')});return null}}
 function formatSchedulerResults(data){const results=data.results||[];if(!results.length)return '没有可运行的自动发言配置。';const details=results.map(r=>`${r.config_name||'-'}：${r.sent?'已发送':(r.dry_run?'未真正发送':'未发送')} · ${r.result_reason||r.result_code||''}`).join('\\n');return `检查 ${data.attempted_count||0} 个配置，实际发送 ${data.sent_count||0} 条\\n${details}`}
 async function runAtmosphereScheduler(){return runAction('自动发言检查',async()=>{const status=document.getElementById('ga_scheduler_status');if(status)status.textContent='';showTip('检查可发送话术中…');const data=await loadJson('/api/ops/group-atmosphere/scheduler/run-due',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const el=document.getElementById('ga_scheduler_result');if(el)el.textContent='';showTip(`已检查 ${data.attempted_count||0} 个配置，实际发送 ${data.sent_count||0} 条`,'success');if(status)status.textContent='';await reloadAll();return data})}
 function roleKeyFor(region,positioning){return `role-${regionLanguage(region)}-${positioning}`}
@@ -2426,6 +2451,7 @@ async function deleteLearningBot(key){return runAction('删除学习机器人',a
 async function learnOnceLearningBot(key){return runAction('实时学习',async()=>{if(!key)throw new Error('缺少学习机器人账号');showTip('正在实时学习群消息…');const data=await loadJson(`/api/ops/group-atmosphere/learning-accounts/${encodeURIComponent(key)}/learn-once`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});const readCount=Number(data.read_count??data.imported_count??0);const usefulCount=Number(data.useful_count??0);const candidateCount=Number(data.candidate_count??0);const summary=data.last_result_summary||{};const items=Array.isArray(summary.items)?summary.items:[];window.__gaLatestLearningResultByKey=window.__gaLatestLearningResultByKey||{};if(items.length)window.__gaLatestLearningResultByKey[String(key)]=summary;if(items[0]?.role_positioning)window.__gaCandidateActiveRole=String(items[0].role_positioning);showTip(`已读取${readCount}条群消息,有效消息${usefulCount}条,新增${candidateCount}条待确认文案`,'success');setLocalFeedback('ga_learning_result',candidateCount>0?'已新增待确认文案，已放入下方话术备选区的“待人工确认”，也可点详情查看。':(usefulCount>0?'本次有效消息已学习，但没有新增文案；可能与现有话术重复或被质检过滤。':'本次没有新的可学习素材'),'success');try{await loadCandidatePool();await loadRoleBridge();if(items.length)openLearningResultModal(key)}catch(refreshErr){console.warn('learning refresh skipped after success',refreshErr);setLocalFeedback('ga_learning_result','学习已完成；页面刷新失败，请手动刷新查看结果。','success')}return {...data,silent:true}})}
 async function readGaUploadFileText(file){if(file&&typeof file.text==='function')return await file.text();return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||''));reader.onerror=()=>reject(reader.error||new Error('file_read_failed'));reader.readAsText(file)})}
 async function uploadChatFiles(){const input=document.getElementById('ga_chat_file');const files=[...(input?.files||[])];const result=document.getElementById('ga_upload_result');const setUploadResult=(message,type='info')=>{if(!result)return;result.textContent=message||'';result.style.display=message?'block':'none';result.style.color=type==='error'?'#991b1b':(type==='success'?'#166534':'#475569')};setUploadResult('');if(!files.length){showTip('请选择文件','error');setUploadResult('请选择文件','error');return {silent:true}}const oversized=files.find(file=>Number(file.size||0)>GA_UPLOAD_MAX_FILE_BYTES);if(oversized){const errorText=`上传文件太大：${oversized.name||'未命名文件'} 超过 ${GA_UPLOAD_MAX_FILE_LABEL}`;showTip(errorText,'error');setUploadResult(errorText,'error');return {silent:true,error:'upload_file_too_large_30mb'}}try{const loadingText=`正在读取 ${files.length} 个文件并解析入库…`;showTip(loadingText,'info',{sticky:true});setUploadResult(loadingText);const payloadFiles=await Promise.all(files.map(async(file)=>({filename:file.name||'chat-export.txt',content:await readGaUploadFileText(file)})));const data=await loadJson('/api/ops/group-atmosphere/chat-records/auto-learn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({files:payloadFiles})});const assignmentCount=(data.role_assignments||[]).length;const candidateCount=(data.role_assignments||[]).reduce((n,row)=>n+((row.candidates||[]).length),0);const rejectedCount=Number(data.rejected_count||0);const rejectedReasons=(data.rejected_reasons||[]).map(candidateQualityReasonText).filter(Boolean).join('、');const successText=`已解析 ${data.file_count||files.length} 个文件，入库 ${data.imported_count||0} 条，生成 ${candidateCount} 条备选话术${rejectedCount?`，过滤 ${rejectedCount} 条${rejectedReasons?`：${rejectedReasons}`:''}`:''}`;showTip(successText,'success');setUploadResult(successText,'success');await loadCandidatePool();await loadRoleBridge();return data}catch(err){const errorText=`上传学习失败：${err.message||err}`;showTip(errorText,'error');setUploadResult(errorText,'error');console.error(err);return {silent:true,error:String(err.message||err)}}}
+function clearManualPhraseFile(){const input=document.getElementById('ga_manual_phrase_file');if(input)input.value='';const result=document.getElementById('ga_phrase_library_result');if(result)result.textContent='';showTip('已清空人工话术文件','success')}
 function clearChatFiles(){const input=document.getElementById('ga_chat_file');if(input)input.value='';const result=document.getElementById('ga_upload_result');if(result)result.textContent='';showTip('已清空上传文件','success')}
 
 async function loadRoleBridge(){const [roles,bindings,learning]=await Promise.all([loadJson('/api/ops/group-atmosphere/roles'),loadJson('/api/ops/group-atmosphere/role-bindings'),loadJson('/api/ops/group-atmosphere/learning-accounts')]);renderRoleBridge(roles,bindings,learning);return {roles,bindings,learning}}
@@ -2466,9 +2492,9 @@ function handlePhraseTypeRenameKey(ev,typeKey){if(ev.key==='Escape'){ev.preventD
 async function savePhraseTypeRename(typeKey){return runAction('保存话术类型名称',async()=>{const type=(window.__gaPhraseTypes||[]).find(t=>String(t.type_key||'')===String(typeKey||''));if(!type||type.is_system===true)throw new Error('系统默认话术类型不能改名');const input=document.querySelector(`[data-ga-phrase-type-rename="${CSS.escape(String(typeKey||''))}"]`);const name=String(input?.value||'').trim();if(!name)throw new Error('请输入话术类型名称');if(name===String(type.type_name||'')){window.__gaEditingPhraseTypeKey='';renderCandidatePool(window.__gaCandidateRows||[]);return {ok:true,unchanged:true}}const data=await loadJson(`/api/ops/group-atmosphere/phrase-types/${encodeURIComponent(typeKey)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type_name:name})});window.__gaEditingPhraseTypeKey='';setLocalFeedback('ga_candidate_result','话术类型名称已保存','success');await reloadAll();return data})}
 async function deleteInlinePhraseType(typeKey){return runAction('删除话术类型',async()=>{const type=(window.__gaPhraseTypes||[]).find(t=>String(t.type_key||'')===String(typeKey||''));if(type&&type.is_system===true)throw new Error('系统默认话术类型不能删除');const label=type?.type_name||roleLabel(typeKey)||typeKey;if(!confirm(`确认删除话术类型「${label}」？已有话术不会物理删除，只会从类型页隐藏。`))return {cancelled:true,silent:true};const data=await loadJson(`/api/ops/group-atmosphere/phrase-types/${encodeURIComponent(typeKey)}`,{method:'DELETE'});if(String(window.__gaCandidateActiveRole||'')===String(typeKey||'')){window.__gaCandidateActiveRole='community_seed';const select=document.getElementById('ga_candidate_role_filter');if(select)select.value='community_seed'}setLocalFeedback('ga_candidate_result','话术类型已删除','success');await reloadAll();return data})}
 async function savePhraseType(){return saveInlinePhraseType()}
-async function reloadAll(){ensureGroupRows();const [regions,a,c,pt,media]=await Promise.all([loadUnifiedRegionOptions(),loadJson('/api/ops/group-atmosphere/accounts'),loadJson('/api/ops/group-atmosphere/candidate-pool'),loadJson('/api/ops/group-atmosphere/phrase-types').catch(()=>({rows:[]})),loadJson('/api/ops/group-atmosphere/media-assets').catch(()=>({rows:[]}))]);window.__gaPhraseTypes=pt.rows||[];window.__gaMediaAssets=media.rows||[];if(!window.__mcnRegionOptions.length&&Array.isArray(a.region_options))window.__mcnRegionOptions=a.region_options;renderUnifiedRegionOptions('ga_region');renderUnifiedRegionOptions('ga_role_region');renderPhraseTypeSelects();renderPhraseLibraryOptions();renderCandidatePool(c.rows||[]);renderAccounts(a.rows||[]);await loadSchedulerStatus();await loadExecutionSummary();await loadRoleBridge()}
+async function reloadAll(){ensureGroupRows();const [regions,a,c,pt,media]=await Promise.all([loadUnifiedRegionOptions(),loadJson('/api/ops/group-atmosphere/accounts'),loadJson('/api/ops/group-atmosphere/candidate-pool'),loadJson('/api/ops/group-atmosphere/phrase-types').catch(()=>({rows:[]})),loadJson('/api/ops/group-atmosphere/media-assets').catch(()=>({rows:[]}))]);window.__gaPhraseTypes=pt.rows||[];window.__gaMediaAssets=media.rows||[];if(!window.__mcnRegionOptions.length&&Array.isArray(a.region_options))window.__mcnRegionOptions=a.region_options;renderUnifiedRegionOptions('ga_region');renderUnifiedRegionOptions('ga_role_region');renderPhraseTypeSelects();renderPhraseLibraryOptions();renderCandidatePool(c.rows||[]);renderAccounts(a.rows||[]);await loadRoleBridge()}
 function toggleBridgeCreatePanel(){const card=document.getElementById('ga_role_bridge_card');if(card){card.classList.toggle('is-creating');const sel=document.getElementById('ga_bridge_role_select');if(card.classList.contains('is-creating')&&sel)setTimeout(()=>sel.focus(),50)}}
-const gaButtonHandlers={ga_new_bridge_btn:()=>openBridgeModal(),ga_refresh_scheduler_status_btn:loadSchedulerStatus,ga_refresh_runtime_summary_btn:loadExecutionSummary,ga_new_account_btn:openNewAccountEditor,ga_new_role_btn:()=>openRoleEditor(),ga_new_role_btn_pool_1:()=>openRoleEditor(),ga_new_role_btn_pool_2:()=>openRoleEditor(),ga_new_role_btn_pool_3:()=>openRoleEditor(),ga_new_role_btn_pool_learn:()=>openRoleEditor(),ga_new_role_btn_bridge:()=>openRoleEditor(),ga_close_editor_btn:closeAccountEditor,ga_close_send_modal_btn:closeManualSendModal,ga_send_message_btn:sendManualGroupMessage,ga_clear_form_btn:clearAccountForm,ga_add_group_btn:addGroupRow,ga_save_account_btn:saveAtmosphereAccount,ga_batch_add_candidates_to_role_btn:saveSelectedCandidatesToRole,ga_mount_role_btn:mountSelectedRole,ga_close_role_editor_btn:closeRoleEditor,ga_save_role_btn:saveRoleEditor,ga_clear_role_btn:clearRoleEditor,ga_close_bridge_modal_btn:closeBridgeModal,ga_upload_chat_btn:uploadChatFiles,ga_clear_chat_files_btn:clearChatFiles,ga_open_learning_bot_modal_btn:()=>openLearningBotModal(),ga_close_learning_bot_modal_btn:closeLearningBotModal,ga_cancel_learning_bot_btn:closeLearningBotModal,ga_add_learning_group_link_btn:()=>addLearningGroupLinkRow(),ga_save_learning_bot_btn:saveLearningBot,ga_add_phrase_type_btn:showInlinePhraseTypeForm,ga_save_inline_phrase_type_btn:saveInlinePhraseType,ga_cancel_inline_phrase_type_btn:hideInlinePhraseTypeForm,ga_close_image_candidate_modal_btn:closeImageCandidateModal,ga_cancel_image_candidate_btn:closeImageCandidateModal,ga_save_image_candidate_btn:saveImageCandidate};
+const gaButtonHandlers={ga_new_bridge_btn:()=>openBridgeModal(),ga_new_account_btn:openNewAccountEditor,ga_new_role_btn:()=>openRoleEditor(),ga_new_role_btn_pool_1:()=>openRoleEditor(),ga_new_role_btn_pool_2:()=>openRoleEditor(),ga_new_role_btn_pool_3:()=>openRoleEditor(),ga_new_role_btn_pool_learn:()=>openRoleEditor(),ga_new_role_btn_bridge:()=>openRoleEditor(),ga_close_editor_btn:closeAccountEditor,ga_close_send_modal_btn:closeManualSendModal,ga_send_message_btn:sendManualGroupMessage,ga_clear_form_btn:clearAccountForm,ga_add_group_btn:addGroupRow,ga_save_account_btn:saveAtmosphereAccount,ga_batch_add_candidates_to_role_btn:saveSelectedCandidatesToRole,ga_mount_role_btn:mountSelectedRole,ga_close_role_editor_btn:closeRoleEditor,ga_save_role_btn:saveRoleEditor,ga_clear_role_btn:clearRoleEditor,ga_close_bridge_modal_btn:closeBridgeModal,ga_upload_chat_btn:uploadChatFiles,ga_clear_manual_phrase_file_btn:clearManualPhraseFile,ga_clear_chat_files_btn:clearChatFiles,ga_open_learning_bot_modal_btn:()=>openLearningBotModal(),ga_close_learning_bot_modal_btn:closeLearningBotModal,ga_cancel_learning_bot_btn:closeLearningBotModal,ga_add_learning_group_link_btn:()=>addLearningGroupLinkRow(),ga_save_learning_bot_btn:saveLearningBot,ga_add_phrase_type_btn:showInlinePhraseTypeForm,ga_save_inline_phrase_type_btn:saveInlinePhraseType,ga_cancel_inline_phrase_type_btn:hideInlinePhraseTypeForm,ga_close_image_candidate_modal_btn:closeImageCandidateModal,ga_cancel_image_candidate_btn:closeImageCandidateModal,ga_save_image_candidate_btn:saveImageCandidate};
 function syncToolAccountSelects(sourceId){const source=document.getElementById(sourceId);const key=source?.value||'';setSelectedAtmosphereAccountKey(key)}
 function runGaButtonHandler(id,ev){const handler=gaButtonHandlers[id];if(!handler)return false;if(ev){ev.preventDefault();ev.stopPropagation()}const now=Date.now();const last=Number(window.__gaLastButtonAt||0);if(window.__gaLastButtonId===id&&now-last<350)return true;window.__gaLastButtonId=id;window.__gaLastButtonAt=now;try{Promise.resolve(handler()).catch(err=>{setFeedback(`操作失败：${err.message||err}`,'error');console.error(err)})}catch(err){setFeedback(`操作失败：${err.message||err}`,'error');console.error(err)}return true}
 function bindGroupAtmosphereButtons(){for(const id of Object.keys(gaButtonHandlers)){const el=document.getElementById(id);if(el&&el.dataset.bound!=='1'){el.type='button';el.addEventListener('click',ev=>runGaButtonHandler(id,ev));el.addEventListener('pointerup',ev=>runGaButtonHandler(id,ev));el.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){runGaButtonHandler(id,ev)}});el.dataset.bound='1'}}if(!document.body.dataset.gaModalBound){document.addEventListener('keydown',ev=>{if(ev.key==='Escape'){closeAccountEditor();closeBridgeModal();closeLearningBotModal();closeManualSendModal();closeTriggerRulesModal();closeImageCandidateModal();closeManualUploadReviewModal();}});document.body.dataset.gaModalBound='1'}if(!document.body.dataset.gaDelegated){for(const eventName of ['click','pointerup','mousedown']){document.addEventListener(eventName,ev=>{const target=ev.target&&ev.target.closest?ev.target.closest('button'):null;if(target&&runGaButtonHandler(target.id||'',ev))return},true)}document.body.dataset.gaDelegated='1'}window.addGroupRow=addGroupRow;window.removeGroupRow=removeGroupRow;window.saveAtmosphereAccount=saveAtmosphereAccount;window.startAtmosphereQr=startAtmosphereQr;window.refreshAtmosphereSession=refreshAtmosphereSession;window.openAtmosphereQrModal=openAtmosphereQrModal;window.startAtmosphereQrForAccount=startAtmosphereQrForAccount;window.closeAtmosphereQrModal=closeAtmosphereQrModal;window.dismissAtmosphereQrModal=dismissAtmosphereQrModal;window.retryAtmosphereQrModal=retryAtmosphereQrModal;window.refreshAtmosphereQrModal=refreshAtmosphereQrModal;window.deleteAtmosphereAccount=deleteAtmosphereAccount;window.openLearningBotModal=openLearningBotModal;window.deleteLearningBot=deleteLearningBot;window.toggleLearningBotEnabled=toggleLearningBotEnabled;window.toggleLearningGroupEnabled=toggleLearningGroupEnabled;window.addLearningGroupLinkRow=addLearningGroupLinkRow;window.removeLearningGroupLinkRow=removeLearningGroupLinkRow;window.fillAccountForm=fillAccountForm;window.selectAtmosphereAccount=selectAtmosphereAccount;window.toggleAtmosphereAccountEnabled=toggleAtmosphereAccountEnabled;window.toggleAtmosphereGroupEnabled=toggleAtmosphereGroupEnabled;window.setSelectedAtmosphereAccountKey=setSelectedAtmosphereAccountKey;window.openAccountEditor=openAccountEditor;window.closeAccountEditor=closeAccountEditor;window.openNewAccountEditor=openNewAccountEditor;window.openManualSendModal=openManualSendModal;window.closeManualSendModal=closeManualSendModal;window.openTriggerRulesModal=openTriggerRulesModal;window.closeTriggerRulesModal=closeTriggerRulesModal;window.newTriggerRuleForm=newTriggerRuleForm;window.editTriggerRuleForm=editTriggerRuleForm;window.saveTriggerRuleFromModal=saveTriggerRuleFromModal;window.deleteTriggerRule=deleteTriggerRule;window.deleteTriggerRuleFromModal=deleteTriggerRuleFromModal;window.syncTriggerRuleConditionHelp=syncTriggerRuleConditionHelp;window.fillManualMessage=fillManualMessage;window.sendManualGroupMessage=sendManualGroupMessage;window.loadCandidatePool=loadCandidatePool;window.enableCandidate=enableCandidate;window.runAtmosphereScheduler=runAtmosphereScheduler;window.openRoleEditor=openRoleEditor;window.closeRoleEditor=closeRoleEditor;window.saveRoleEditor=saveRoleEditor;window.toggleBridgeGroupPermission=toggleBridgeGroupPermission;window.triggerRelationship=triggerRelationship;}
@@ -2521,7 +2547,7 @@ OPS_INTAKE_SUBMIT_PAGE_HTML = r"""
   <section class="section-card" id="executorSection" style="display:none"><div class="section-head"><div><h2>公会执行器</h2><div class="muted">仅管理员/超级管理员可见，可新增、编辑公会执行器。敏感 token 不回显，只显示是否已配置。</div></div><button onclick="openExecutorModal(null)">新增公会执行器</button></div><div id="executorGrid" class="executor-grid"><div class="empty">正在加载公会执行器...</div></div></section>
 </div>
 <div class="modal" id="assigneeModal"><div class="modal-card"><div class="modal-head"><div><h3>编辑收口区客服</h3><div class="muted" id="assigneeModalGuild">-</div></div><button class="ghost" onclick="closeAssigneeModal()">关闭</button></div><label>可操作客服人员</label><div class="assignee-picker"><button type="button" class="secondary assignee-dropdown-btn" id="assigneeDropdownButton" onclick="toggleAssigneeDropdown()">选择客服人员 ▾</button><div class="assignee-options" id="assigneeOptions"></div></div><div class="muted" id="assigneeSummary">未选择客服</div><div class="actions"><button class="ghost" onclick="closeAssigneeModal()">取消</button><button onclick="saveAssignees()">保存</button></div><div class="muted" id="assigneeMessage"></div></div></div>
-<div class="modal" id="executorModal"><div class="modal-card"><div class="modal-head"><div><h3 id="executorModalTitle">新增公会执行器</h3><div class="muted">token 留空表示保留原值。</div></div><button class="ghost" onclick="closeExecutorModal()">关闭</button></div><div class="field-grid"><div><label>公会名称</label><input id="executor_guild_name"></div><div><label>是否启用</label><select id="executor_enabled"><option value="true">启用</option><option value="false">停用</option></select></div><div><label>OAuth Token</label><input id="executor_oauth_token" type="password"></div><div><label>OAuth Token Secret</label><input id="executor_oauth_token_secret" type="password"></div><div><label>CMS Token</label><input id="executor_platform_authorization" type="password"></div><div><label>CMS Refresh Token</label><input id="executor_cms_refresh_token" type="password"></div><div><label>代理城市</label><input id="executor_proxy_region" placeholder="如：厦门"></div><div><label>并发</label><input id="executor_bind_concurrency" type="number" min="1" value="1"></div><div><label>超时秒数</label><input id="executor_request_timeout_seconds" type="number" min="5" value="30"></div><div><label>备注</label><input id="executor_notes"></div></div><div style="margin-top:12px"><label>可操作客服人员</label><div class="assignee-picker"><button type="button" class="secondary assignee-dropdown-btn" id="executorAssigneeDropdownButton" onclick="toggleExecutorAssigneeDropdown()">选择客服人员 ▾</button><div class="assignee-options" id="executorAssigneeOptions"></div></div><div class="muted" id="executorAssigneeSummary">未选择客服</div></div><div class="actions"><button class="ghost" onclick="closeExecutorModal()">取消</button><button onclick="saveExecutor()">保存</button></div><div class="muted" id="executorMessage"></div></div></div>
+<div class="modal" id="executorModal"><div class="modal-card"><div class="modal-head"><div><h3 id="executorModalTitle">新增公会执行器</h3><div class="muted">token 留空表示保留原值。</div></div><button class="ghost" onclick="closeExecutorModal()">关闭</button></div><div class="field-grid"><div><label>公会名称</label><input id="executor_guild_name"></div><div><label>是否启用</label><select id="executor_enabled"><option value="true">启用</option><option value="false">停用</option></select></div><div><label>OAuth Token</label><input id="executor_oauth_token" type="password"></div><div><label>OAuth Token Secret</label><input id="executor_oauth_token_secret" type="password"></div><div><label>CMS Token</label><input id="executor_platform_authorization" type="password"></div><div><label>CMS Refresh Token</label><input id="executor_cms_refresh_token" type="password"></div><div><label>国家</label><select id="executor_country"><option value="">未限制</option><option value="Indonesia">Indonesia</option><option value="Brazil">Brazil</option><option value="Mexico">Mexico</option></select></div><div><label>代理城市</label><input id="executor_proxy_region" placeholder="如：厦门"></div><div><label>并发</label><input id="executor_bind_concurrency" type="number" min="1" value="1"></div><div><label>超时秒数</label><input id="executor_request_timeout_seconds" type="number" min="5" value="30"></div><div><label>备注</label><input id="executor_notes"></div></div><div style="margin-top:12px"><label>可操作客服人员</label><div class="assignee-picker"><button type="button" class="secondary assignee-dropdown-btn" id="executorAssigneeDropdownButton" onclick="toggleExecutorAssigneeDropdown()">选择客服人员 ▾</button><div class="assignee-options" id="executorAssigneeOptions"></div></div><div class="muted" id="executorAssigneeSummary">未选择客服</div></div><div class="actions"><button class="ghost" onclick="closeExecutorModal()">取消</button><button onclick="saveExecutor()">保存</button></div><div class="muted" id="executorMessage"></div></div></div>
 <script>
 const role=document.body.dataset.opsRole||'';const isAdmin=['admin','super_admin'].includes(role);const INTAKE_VISIBLE_CARD_LIMIT=3;const state={guilds:[],executors:[],accounts:[],activeGuild:'',parseTimers:{},items:{},expandedItems:{},pollTimers:{},assigneeGuild:'',executorEditing:''};
 async function loadJson(url,options={}){const res=await fetch(url,options);const text=await res.text();let data={};try{data=text?JSON.parse(text):{}}catch(_){data={detail:text}}if(!res.ok)throw new Error(readableApiError(data,res.status));return data}
@@ -2541,7 +2567,10 @@ function currentFields(guild){return {phone:field('field',guild,'phone')?.value.
 async function parseGuild(guild,fromFields=false){const raw=document.getElementById(`raw_${guild}_text`)?.value.trim()||'';const guildRow=state.guilds.find(g=>g.guild_name===guild)||{};if(!submissionEnabled(guildRow)){setParseState(guild,'',false);return}if(!raw&&!fromFields){setParseState(guild,'',false);return}try{const data=await loadJson(`/api/ops/intake-workbench/guilds/${encodeURIComponent(guild)}/parse`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:raw,fields:fromFields?currentFields(guild):{}})});for(const [k,v] of Object.entries(data.fields||{})){const el=field('field',guild,k==='phone'?'phone':k);if(el&&(!fromFields||!el.value.trim()))el.value=v||''}setParseState(guild,data.can_submit?'识别完成，可提交':`待补充：${(data.errors||[]).join(', ')}`,data.can_submit)}catch(err){setParseState(guild,err.message,false)}}function setParseState(guild,text,can){const el=document.getElementById(`parse_${guild}`);if(el)el.textContent=text;const btn=document.getElementById(`submit_${guild}`);const guildRow=state.guilds.find(g=>g.guild_name===guild)||{};if(btn)btn.disabled=!can||!submissionEnabled(guildRow)}
 async function submitGuild(guild){const raw=document.getElementById(`raw_${guild}_text`)?.value.trim()||'';const btn=document.getElementById(`submit_${guild}`);btn.disabled=true;setParseState(guild,'提交处理中...',false);try{const submitted=await loadJson(`/api/ops/intake-workbench/guilds/${encodeURIComponent(guild)}/submit`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:raw,fields:currentFields(guild)})});document.getElementById(`raw_${guild}_text`).value='';['phone','account_id','group','code'].forEach(k=>{const el=field('field',guild,k);if(el)el.value=''});setParseState(guild,'已提交，系统处理中',false);await refreshItems();if(submitted.item?.item_id)scheduleItemRefresh(guild,submitted.item.item_id)}catch(err){setParseState(guild,err.message,false);btn.disabled=false}}
 function itemStatus(row){const s=String(row.system_status||'');const rc=String(row.result_code||'').toLowerCase();const rr=String(row.result_reason||'').toLowerCase();const duplicate=rc.includes('duplicate')||rr.includes('data duplication')||rr.includes('duplicate_sid')||rr.includes('sid already exists');if(row.feedback_status==='feedback_done')return pill('已反馈','green');if(row.feedback_status==='cleared')return duplicate?pill('❌ 重复提交','red'):pill('已清除');if(duplicate)return pill('❌ 重复提交','red');if(s==='fully_success'&&row.feedback_status==='pending_feedback')return pill('✅ 全链路成功，待反馈','green');if(s==='partial_success_crm_failed')return pill('⚠️ 绑定成功，CRM未完成','yellow');if(s==='already_registered')return pill('❌ 曾注册');if(s==='bind_queued')return pill('资料已接收，等待处理');if(s==='binding')return pill('绑定中');if(s==='crm_verifying')return pill('CRM核验中');if(s==='manual_required'||s==='route_mismatch')return pill('需要人工处理','yellow');if(s==='failed'||s==='bind_failed'||s==='validation_failed'||s==='crm_failed')return pill('❌ 失败','red');return pill('处理中')}
-function formatBeijingTime(value){if(!value)return '-';const d=new Date(value);if(Number.isNaN(d.getTime()))return String(value).replace('T',' ').slice(0,19);return new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(d).replace(/\//g,'-')}function itemCard(row){const created=new Date(row.created_at||Date.now());const ageMin=Math.floor((Date.now()-created.getTime())/60000);const overdue=row.feedback_status==='pending_feedback'&&ageMin>=5;const status=row.feedback_status==='pending_feedback'&&row.system_status==='fully_success'?pill(`待反馈 ${ageMin} 分钟`,overdue?'yellow':'green'):itemStatus(row);const canMark=row.system_status==='fully_success'&&row.feedback_status==='pending_feedback';const canClear=row.feedback_status!=='cleared'&&!(row.system_status==='fully_success'&&row.feedback_status==='pending_feedback');return `<div class="item-card ${overdue?'overdue':''}"><div class="item-head"><div><strong>#${esc(row.item_id||'')}</strong><div class="muted">发起人：${esc(row.submitted_by_username||'-')} · 发起时间：${esc(formatBeijingTime(row.created_at))}</div><div class="muted">${esc(row.parsed_phone||'-')} / ${esc(row.parsed_account_id||'-')} / ${esc(row.parsed_group||'-')}</div></div>${status}</div>${row.group_auto_filled?`<div class="muted" style="color:#b45309">系统根据历史审批记录自动补全 Group：${esc(row.parsed_group||'-')}（${row.group_auto_fill_source==='no_registration_group_history'?'无注册群记录，按其他渠道处理':'来自唯一注册群记录'}）</div>`:''}<div class="reply">${esc(String(row.reply_text||'' ).replace(/^\*\*(.*?)\*\*/m,'$1'))}</div><div class="actions"><button class="secondary" onclick="openItemCorrection('${esc(row.item_id)}')">更正资料</button>${row.system_status==='partial_success_crm_failed'?`<button class="secondary" onclick="copyProcessingNotice('${esc(row.item_id)}')">复制处理中说明</button>`:''}${row.feedback_status==='pending_feedback'?`<button ${canMark?'':'disabled'} onclick="markFeedbackDone('${esc(row.item_id)}')">我已反馈</button>`:''}${canClear?`<button class="secondary" onclick="clearItemCard('${esc(row.item_id)}')">清除卡片</button>`:''}</div></div>`}function renderItemList(guild,rows){const expanded=state.expandedItems[guild]===true;const visible=expanded?rows:rows.slice(0,INTAKE_VISIBLE_CARD_LIMIT);let html=visible.length?visible.map(itemCard).join(''):'';if(rows.length>INTAKE_VISIBLE_CARD_LIMIT){html+=`<button class="secondary" style="width:100%;margin-top:8px" onclick="toggleItemList('${esc(guild)}')">${expanded?'收起记录':`更多记录 ${rows.length-INTAKE_VISIBLE_CARD_LIMIT} 条`}</button>`}return html}function toggleItemList(guild){state.expandedItems[guild]=!state.expandedItems[guild];const el=document.getElementById(`items_${guild}`);const rows=state.items[guild]||[];if(el)el.innerHTML=renderItemList(guild,rows)}function scheduleItemRefresh(guild,itemId){clearInterval(state.pollTimers[itemId]);let ticks=0;state.pollTimers[itemId]=setInterval(async()=>{ticks+=1;await refreshItems();const row=(state.items[guild]||[]).find(x=>x.item_id===itemId);const done=row&&!['queued','processing','bind_queued','binding','crm_verifying'].includes(String(row.system_status||''));if(done||ticks>=30){clearInterval(state.pollTimers[itemId]);delete state.pollTimers[itemId]}},2000)}async function openItemCorrection(itemId){const row=Object.values(state.items).flat().find(x=>x.item_id===itemId)||{};const phone=prompt('更正 Phone',row.parsed_phone||'');if(phone===null)return;const account_id=prompt('更正 ID / SID',row.parsed_account_id||'');if(account_id===null)return;const group=prompt('更正 Group',row.parsed_group||'');if(group===null)return;const code=prompt('更正 Code',row.parsed_code||'');if(code===null)return;await loadJson(`/api/ops/intake-workbench/items/${encodeURIComponent(itemId)}/fields`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'',fields:{phone,account_id,group,code}})});await refreshItems();scheduleItemRefresh(row.guild_name||state.activeGuild,itemId)}
+function translateResultTemplateText(text){const raw=String(text||'').replace(/\*\*/g,'').trim();if(!raw)return '暂无可翻译模板';const headlineMap=[['✅ Success','✅ 成功'],['⏳ Processing','⏳ 处理中'],['❌ Previously registered in this agency','❌ 绑定失败：该用户此前已在本公会注册。'],['❌ Bind failed: Previously registered in this agency','❌ 绑定失败：该用户此前已在本公会注册。'],['❌ Bind failed: Failed to join the agency. Your country does not match the agency country.','❌ 绑定失败：加入公会失败，用户国家/地区与公会国家/地区不一致。'],['🚫 Country does not match this agency.','🚫 国家/地区与当前公会不匹配，未发起绑定。'],['❌ Bind failed: CMS rejected bind request. Check manually.','❌ 绑定失败：CMS 拒绝绑定请求，请人工检查。'],['❌ Bind failed: CMS rejected bind request, manual check required','❌ 绑定失败：CMS 拒绝绑定请求，需要人工检查。'],['❌ Bind failed: Invalid or unavailable Linky ID','❌ 绑定失败：Linky ID 无效或暂不可用。'],['❌ Bind failed: CMS verification requires manual check','❌ 绑定失败：CMS 核验需要人工检查。'],['❌ Bind failed: Invalid personal code','❌ 绑定失败：个人 Code 无效。'],['❌ Bind failed: Backend session requires manual recovery','❌ 绑定失败：后台登录态需要人工恢复。'],['❌ Bind failed: backend login or authorization expired. Check manually.','❌ 绑定失败：绑定后台登录态或授权异常，请人工检查。'],['❌ Bind failed: The streamer was in another agency','❌ 绑定失败：该用户已在其他公会。'],['❌ Bind failed: Bind failed. Check manually.','❌ 绑定失败：请人工检查。'],['❌ Duplicate submission: user already joined this agency','❌ 绑定失败：该用户此前已在本公会注册。'],['❌ Duplicate submission','❌ 绑定失败：该用户此前已在本公会注册。'],['❌ Already registered in another agency','❌ 该用户已在其他公会注册。'],['❌ Bind failed: CMS authorization rejected with HTTP 403','❌ 绑定失败：CMS 授权已失效或无权限，请人工检查。'],['❌ Bind failed: CMS authorization does not allow adding this SID to the target guild','❌ 绑定失败：CMS 授权不允许添加该 SID 到目标公会，请人工检查。'],['❌ Bind failed: Falha ao entrar na Agência: seu país e o da Agência não correspondem.','❌ 绑定失败：用户国家/地区与公会国家/地区不一致。'],['❌ Bind failed: Gagal bergabung ke agency. Negara Anda tidak sama dengan negara agency tersebut','❌ 绑定失败：用户国家/地区与公会国家/地区不一致。'],['🚫 Invalid Code. Use 6 English letters or letters+digits only.','🚫 Code 无效。请使用 6 位个人 Code：字母或字母+数字，不能全数字。'],['🚫 Missing: Code','🚫 缺少 Code。请补充 6 位个人 Code。'],['❌ Failed：Error Code Unable to Bind','❌ 绑定失败：绑定后台登录态或授权异常，请人工检查。'],['❌ Bind Success, CRM Failed','❌ 绑定已成功，但 CRM 写入/核验失败'],['🚫 I do not handle this app/agency.','🚫 当前客服不处理这个 App/公会。'],['🚫 Invalid group format. Please copy the exact registration group name.','🚫 群组格式无效，请复制准确的注册群名称。'],['❌ Multiple registration groups found. Please provide Group.','❌ 找到多个注册群，请补充 Group。'],['❌ Failed','❌ 失败']];let translated=raw;for(const [en,zh] of headlineMap){if(translated.startsWith(en)){translated=translated.replace(en,zh);break}}translated=translated.split('\n').map(line=>line.replace(/^Phone:\s*/,'手机号：').replace(/^ID:\s*/,'ID：').replace(/^Group:\s*/,'群组：').replace(/^Code:\s*/,'Code：')).join('\n');return translated}
+function translateResultTemplateToChinese(itemId){const rows=Object.values(state.items||{}).flat();const row=rows.find(r=>String(r.item_id||'')===String(itemId||''))||{};const target=document.querySelector(`[data-result-template-zh="${CSS.escape(String(itemId||''))}"]`);if(!target)return;const btn=document.querySelector(`[data-translate-result-template="${CSS.escape(String(itemId||''))}"]`);if(target.style.display==='none'||!target.style.display){target.textContent=translateResultTemplateText(row.reply_text||'');target.style.display='block';if(btn)btn.textContent='收起中文'}else{target.style.display='none';if(btn)btn.textContent='翻译中文'}}
+function displayInitiator(row){return String(row?.display_initiator||row?.external_customer_service_id||row?.external_customer_service_name||row?.submitted_by_username||row?.submitted_by_user_id||'-').trim()||'-'}
+function formatBeijingTime(value){if(!value)return '-';const d=new Date(value);if(Number.isNaN(d.getTime()))return String(value).replace('T',' ').slice(0,19);return new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(d).replace(/\//g,'-')}function itemCard(row){const created=new Date(row.created_at||Date.now());const ageMin=Math.floor((Date.now()-created.getTime())/60000);const overdue=row.feedback_status==='pending_feedback'&&ageMin>=5;const status=row.feedback_status==='pending_feedback'&&row.system_status==='fully_success'?pill(`待反馈 ${ageMin} 分钟`,overdue?'yellow':'green'):itemStatus(row);const canMark=row.system_status==='fully_success'&&row.feedback_status==='pending_feedback';const canClear=row.feedback_status!=='cleared'&&!(row.system_status==='fully_success'&&row.feedback_status==='pending_feedback');return `<div class="item-card ${overdue?'overdue':''}"><div class="item-head"><div><strong>#${esc(row.item_id||'')}</strong><div class="muted">发起人：${esc(displayInitiator(row))} · 发起时间：${esc(formatBeijingTime(row.created_at))}</div><div class="muted">${esc(row.parsed_phone||'-')} / ${esc(row.parsed_account_id||'-')} / ${esc(row.parsed_group||'-')}</div></div>${status}</div>${row.group_auto_filled?`<div class="muted" style="color:#b45309">系统根据历史审批记录自动补全 Group：${esc(row.parsed_group||'-')}（${row.group_auto_fill_source==='no_registration_group_history'?'无注册群记录，按其他渠道处理':'来自唯一注册群记录'}）</div>`:''}<div class="reply">${esc(String(row.reply_text||'' ).replace(/^\*\*(.*?)\*\*/m,'$1'))}</div><pre class="reply reply-zh" data-result-template-zh="${esc(row.item_id||'')}" style="display:none"></pre><div class="actions"><button class="secondary" data-translate-result-template="${esc(row.item_id||'')}" onclick="translateResultTemplateToChinese('${esc(row.item_id)}')">翻译中文</button><button class="secondary" onclick="openItemCorrection('${esc(row.item_id)}')">更正资料</button>${row.system_status==='partial_success_crm_failed'?`<button class="secondary" onclick="copyProcessingNotice('${esc(row.item_id)}')">复制处理中说明</button>`:''}${row.feedback_status==='pending_feedback'?`<button ${canMark?'':'disabled'} onclick="markFeedbackDone('${esc(row.item_id)}')">我已反馈</button>`:''}${canClear?`<button class="secondary" onclick="clearItemCard('${esc(row.item_id)}')">清除卡片</button>`:''}</div></div>`}function renderItemList(guild,rows){const expanded=state.expandedItems[guild]===true;const visible=expanded?rows:rows.slice(0,INTAKE_VISIBLE_CARD_LIMIT);let html=visible.length?visible.map(itemCard).join(''):'';if(rows.length>INTAKE_VISIBLE_CARD_LIMIT){html+=`<button class="secondary" style="width:100%;margin-top:8px" onclick="toggleItemList('${esc(guild)}')">${expanded?'收起记录':`更多记录 ${rows.length-INTAKE_VISIBLE_CARD_LIMIT} 条`}</button>`}return html}function toggleItemList(guild){state.expandedItems[guild]=!state.expandedItems[guild];const el=document.getElementById(`items_${guild}`);const rows=state.items[guild]||[];if(el)el.innerHTML=renderItemList(guild,rows)}function scheduleItemRefresh(guild,itemId){clearInterval(state.pollTimers[itemId]);let ticks=0;state.pollTimers[itemId]=setInterval(async()=>{ticks+=1;await refreshItems();const row=(state.items[guild]||[]).find(x=>x.item_id===itemId);const done=row&&!['queued','processing','bind_queued','binding','crm_verifying'].includes(String(row.system_status||''));if(done||ticks>=30){clearInterval(state.pollTimers[itemId]);delete state.pollTimers[itemId]}},2000)}async function openItemCorrection(itemId){const row=Object.values(state.items).flat().find(x=>x.item_id===itemId)||{};const phone=prompt('更正 Phone',row.parsed_phone||'');if(phone===null)return;const account_id=prompt('更正 ID / SID',row.parsed_account_id||'');if(account_id===null)return;const group=prompt('更正 Group',row.parsed_group||'');if(group===null)return;const code=prompt('更正 Code',row.parsed_code||'');if(code===null)return;await loadJson(`/api/ops/intake-workbench/items/${encodeURIComponent(itemId)}/fields`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'',fields:{phone,account_id,group,code}})});await refreshItems();scheduleItemRefresh(row.guild_name||state.activeGuild,itemId)}
 async function refreshItems(){let pending=0,processing=0,done=0;for(const guild of activeGuilds()){const data=await loadJson(`/api/ops/intake-workbench/items?guild_name=${encodeURIComponent(guild)}&limit=50`);state.items[guild]=data.rows||[];pending+=data.summary?.pending_feedback||0;processing+=data.summary?.processing||0;done+=data.summary?.feedback_done_today||0;const el=document.getElementById(`items_${guild}`);if(el)el.innerHTML=renderItemList(guild,data.rows||[])}setText('sumPending',pending);setText('sumProcessing',processing);setText('sumDone',done);document.title=pending?`(${pending}) 绑定中心`:'绑定中心'}
 async function copyTextWithFallback(text){try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(text);return true}}catch(_){}try{const ta=document.createElement('textarea');ta.value=text;ta.setAttribute('readonly','');ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();const ok=document.execCommand('copy');document.body.removeChild(ta);return !!ok}catch(_){return false}}
 async function copyProcessingNotice(itemId){const copied=await copyTextWithFallback('后台已完成绑定，资料同步中，请勿重复提交，我们会继续处理。');if(!copied)alert('浏览器未允许自动复制，请手动复制处理中说明。')}
@@ -2558,9 +2587,9 @@ function selectedExecutorAssigneeIds(){return [...document.querySelectorAll('#ex
 function updateExecutorAssigneeSummary(){const labels=[...document.querySelectorAll('#executorAssigneeOptions input[type="checkbox"]:checked')].map(el=>el.dataset.label||el.value);setText('executorAssigneeSummary',labels.length?`已选择 ${labels.length} 人：${labels.join('、')}`:'未选择客服');setText('executorAssigneeDropdownButton',labels.length?`已选择 ${labels.length} 人 ▾`:'选择客服人员 ▾')}
 function toggleExecutorAssigneeDropdown(){const box=document.getElementById('executorAssigneeOptions');if(box)box.classList.toggle('is-open')}
 function renderExecutorAssigneeOptions(guild){const box=document.getElementById('executorAssigneeOptions');if(!box)return;const g=state.guilds.find(x=>x.guild_name===guild)||{};const assigned=new Set((g.assignees||[]).map(a=>a.user_id));box.innerHTML=state.accounts.length?state.accounts.map(u=>{const label=`${u.display_name||u.username}（${u.username}）`;return `<label class="assignee-option"><input type="checkbox" value="${esc(u.user_id)}" data-label="${esc(label)}" ${assigned.has(u.user_id)?'checked':''} onchange="updateExecutorAssigneeSummary()"><span>${esc(label)}</span></label>`}).join(''):'<div class="muted" style="padding:10px">暂无可选客服账号</div>';box.classList.add('is-open');updateExecutorAssigneeSummary()}
-function renderExecutors(){const sec=document.getElementById('executorSection');if(!isAdmin){sec.style.display='none';return}sec.style.display='block';const grid=document.getElementById('executorGrid');if(!state.executors.length){grid.innerHTML='<div class="empty">暂无公会执行器</div>';return}grid.innerHTML=state.executors.map(e=>`<div class="executor-card"><div class="executor-head"><div><h3 class="executor-title">${esc(e.guild_name)}</h3><div class="muted">${e.enabled?'启用':'停用'} · ${esc(formatSecondTime(e.updated_at))}</div></div></div>${executorChannelStatusHtml(e)}<div class="executor-meta"><div>OAuth：${e.oauth_configured?'已配置':'未配置'}</div><div>CMS Token：${e.platform_authorization_configured?'已配置':'未配置'}</div><div>Refresh Token：${e.cms_refresh_token_configured?'已配置':'未配置'}</div><div>并发：${esc(e.bind_concurrency||1)}</div></div><div class="actions"><button class="secondary" onclick="openExecutorModal('${esc(e.guild_name)}')">编辑</button></div></div>`).join('')}
-async function loadExecutors(){if(!isAdmin)return;const data=await loadJson('/api/ops/guild-executors');let rows=data.rows||[];try{const health=await loadJson('/api/ops/guild-executors/health');const healthMap=new Map((health.rows||[]).map(row=>[String(row.guild_name||''),row]));rows=rows.map(row=>({...row,...(healthMap.get(String(row.guild_name||''))||{})}))}catch(_){}state.executors=rows;renderExecutors()}function openExecutorModal(guild){state.executorEditing=guild||'';const e=state.executors.find(x=>x.guild_name===guild)||{};executorModalTitle.textContent=guild?'编辑公会执行器':'新增公会执行器';executor_guild_name.value=guild||'';executor_guild_name.disabled=!!guild;executor_enabled.value=e.enabled===false?'false':'true';executor_oauth_token.value='';executor_oauth_token_secret.value='';executor_platform_authorization.value='';executor_cms_refresh_token.value='';executor_proxy_region.value=e.proxy_region||'';executor_bind_concurrency.value=e.bind_concurrency||1;executor_request_timeout_seconds.value=e.request_timeout_seconds||30;executor_notes.value=e.notes||'';renderExecutorAssigneeOptions(guild||'');executorModal.classList.add('is-open')}function closeExecutorModal(){executorModal.classList.remove('is-open');const box=document.getElementById('executorAssigneeOptions');if(box)box.classList.remove('is-open');setText('executorMessage','')}
-async function saveExecutor(){const guild=(state.executorEditing||executor_guild_name.value).trim();if(!guild){setText('executorMessage','请填写公会名称');return}const payload={enabled:executor_enabled.value==='true',oauth_token:executor_oauth_token.value.trim(),oauth_token_secret:executor_oauth_token_secret.value.trim(),platform_authorization:executor_platform_authorization.value.trim(),cms_refresh_token:executor_cms_refresh_token.value.trim(),proxy_region:executor_proxy_region.value.trim(),bind_concurrency:Number(executor_bind_concurrency.value||1),request_timeout_seconds:Number(executor_request_timeout_seconds.value||30),notes:executor_notes.value.trim()};const assigneeIds=selectedExecutorAssigneeIds();setText('executorMessage','保存中...');await loadJson(`/api/ops/guild-executors/${encodeURIComponent(guild)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await loadJson(`/api/ops/intake-workbench/guilds/${encodeURIComponent(guild)}/assignees`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_ids:assigneeIds})});closeExecutorModal();await Promise.all([loadExecutors(),loadGuilds()])}
+function renderExecutors(){const sec=document.getElementById('executorSection');if(!isAdmin){sec.style.display='none';return}sec.style.display='block';const grid=document.getElementById('executorGrid');if(!state.executors.length){grid.innerHTML='<div class="empty">暂无公会执行器</div>';return}grid.innerHTML=state.executors.map(e=>`<div class="executor-card"><div class="executor-head"><div><h3 class="executor-title">${esc(e.guild_name)}</h3><div class="muted">${e.enabled?'启用':'停用'} · ${esc(formatSecondTime(e.updated_at))}</div></div></div>${executorChannelStatusHtml(e)}<div class="executor-meta"><div>国家：${esc(e.country||'未限制')}</div><div>OAuth：${e.oauth_configured?'已配置':'未配置'}</div><div>CMS Token：${e.platform_authorization_configured?'已配置':'未配置'}</div><div>Refresh Token：${e.cms_refresh_token_configured?'已配置':'未配置'}</div><div>并发：${esc(e.bind_concurrency||1)}</div></div><div class="actions"><button class="secondary" onclick="openExecutorModal('${esc(e.guild_name)}')">编辑</button></div></div>`).join('')}
+async function loadExecutors(){if(!isAdmin)return;const data=await loadJson('/api/ops/guild-executors');let rows=data.rows||[];try{const health=await loadJson('/api/ops/guild-executors/health');const healthMap=new Map((health.rows||[]).map(row=>[String(row.guild_name||''),row]));rows=rows.map(row=>({...row,...(healthMap.get(String(row.guild_name||''))||{})}))}catch(_){}state.executors=rows;renderExecutors()}function openExecutorModal(guild){state.executorEditing=guild||'';const e=state.executors.find(x=>x.guild_name===guild)||{};executorModalTitle.textContent=guild?'编辑公会执行器':'新增公会执行器';executor_guild_name.value=guild||'';executor_guild_name.disabled=!!guild;executor_enabled.value=e.enabled===false?'false':'true';executor_oauth_token.value='';executor_oauth_token_secret.value='';executor_platform_authorization.value='';executor_cms_refresh_token.value='';executor_country.value=e.country||'';executor_proxy_region.value=e.proxy_region||'';executor_bind_concurrency.value=e.bind_concurrency||1;executor_request_timeout_seconds.value=e.request_timeout_seconds||30;executor_notes.value=e.notes||'';renderExecutorAssigneeOptions(guild||'');executorModal.classList.add('is-open')}function closeExecutorModal(){executorModal.classList.remove('is-open');const box=document.getElementById('executorAssigneeOptions');if(box)box.classList.remove('is-open');setText('executorMessage','')}
+async function saveExecutor(){const guild=(state.executorEditing||executor_guild_name.value).trim();if(!guild){setText('executorMessage','请填写公会名称');return}const payload={enabled:executor_enabled.value==='true',oauth_token:executor_oauth_token.value.trim(),oauth_token_secret:executor_oauth_token_secret.value.trim(),platform_authorization:executor_platform_authorization.value.trim(),cms_refresh_token:executor_cms_refresh_token.value.trim(),country:executor_country.value.trim(),proxy_region:executor_proxy_region.value.trim(),bind_concurrency:Number(executor_bind_concurrency.value||1),request_timeout_seconds:Number(executor_request_timeout_seconds.value||30),notes:executor_notes.value.trim()};const assigneeIds=selectedExecutorAssigneeIds();setText('executorMessage','保存中...');await loadJson(`/api/ops/guild-executors/${encodeURIComponent(guild)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await loadJson(`/api/ops/intake-workbench/guilds/${encodeURIComponent(guild)}/assignees`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_ids:assigneeIds})});closeExecutorModal();await Promise.all([loadExecutors(),loadGuilds()])}
 async function loadGuilds(){const data=await loadJson('/api/ops/intake-workbench/guilds');state.guilds=data.rows||[];if(!state.guilds.find(g=>g.guild_name===state.activeGuild))state.activeGuild=state.guilds[0]?.guild_name||'';renderTabs();renderGuilds();applyIntakePrefill();await refreshItems()}
 function applyIntakePrefill(){let payload=null;try{payload=JSON.parse(localStorage.getItem('ops_intake_prefill')||'null')}catch(_){payload=null}if(!payload)return;localStorage.removeItem('ops_intake_prefill');const guild=String(payload.guild_name||payload.fields?.agency||state.activeGuild||'').trim();if(guild&&state.guilds.find(g=>g.guild_name===guild)){state.activeGuild=guild;renderTabs();renderGuilds()}const target=state.activeGuild||guild;const fields=payload.fields||{};const raw=document.getElementById(`raw_${target}_text`);if(raw)raw.value=payload.text||['Phone: '+(fields.phone||''),'ID: '+(fields.account_id||''),'Group: '+(fields.group||''),'Code: '+(fields.code||'-')].join('\\n');for(const [k,v] of Object.entries(fields)){const el=field('field',target,k);if(el)el.value=v||''}if(target)parseGuild(target,true)}
 async function init(){bindIntakeAutoParseInputs();await loadAccounts();await Promise.all([loadGuilds(),loadExecutors()]);setInterval(refreshItems,15000)}init().catch(err=>{document.getElementById('guildGrid').innerHTML=`<div class="empty">${esc(err.message||'加载失败')}</div>`})
@@ -2646,18 +2675,20 @@ PRODUCTION_OPS_PAGE_HTML = """
     .binding-list { display:grid; gap:12px; }
     .binding-card { border:1px solid var(--line); border-radius:16px; background:var(--panel-soft); padding:14px; }
     .binding-card.is-empty { background: #fafcff; border-style:dashed; }
-    .binding-card-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
-    .binding-title { font-size:14px; font-weight:700; }
-    .binding-badge { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px; background:var(--brand-soft); color:var(--brand); font-size:12px; font-weight:600; }
+    .binding-card-head { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:start; gap:10px; margin-bottom:12px; }
+    .binding-card-main { min-width:0; }
+    .binding-card-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; max-width:260px; }
+    .binding-title { font-size:14px; font-weight:700; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .binding-config-grid { display:grid; grid-template-columns: minmax(0, 1.35fr) minmax(180px, .7fr) minmax(180px, .7fr); gap:10px; }
-    .binding-action-strip { display:flex; flex-direction:column; gap:4px; margin-top:8px; }
-    .binding-action-label-row,.binding-action-control-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; align-items:center; }
-    .binding-action-label-row > div { min-height:20px; display:flex; align-items:flex-end; justify-content:center; text-align:center; color:var(--muted); font-size:12px; font-weight:700; line-height:1.2; }
-    .binding-action-cell { min-height:38px; display:flex; align-items:flex-start; justify-content:center; text-align:center; gap:8px; }
-    .binding-action-cell.verifier-cell { flex-wrap:wrap; }
-    .binding-meta-actions { display:flex; flex-direction:column; gap:4px; align-items:center; justify-content:flex-start; margin-top:0; }
-    .binding-meta-actions button { height:38px; margin:0!important; display:inline-flex; align-items:center; justify-content:center; }
+    .binding-action-strip { display:flex; flex-direction:column; gap:0; margin-top:6px; overflow:hidden; }
+    .binding-action-control-row { display:grid; gap:8px; align-items:center; width:100%; min-width:0; }
+    .binding-action-strip.has-rebuild .binding-action-control-row { grid-template-columns:repeat(4,minmax(80px,1fr)); }
+    .binding-action-strip.no-rebuild .binding-action-control-row { grid-template-columns:repeat(3,minmax(84px,1fr)); }
+    .binding-action-cell { min-height:36px; display:flex; align-items:center; justify-content:center; text-align:center; gap:8px; min-width:0; }
+    .binding-meta-actions { display:flex; flex-direction:row; gap:0; align-items:center; justify-content:center; margin-top:0; width:100%; min-width:0; }
+    .binding-meta-actions button { width:100%; min-width:0; height:36px; min-height:36px!important; margin:0!important; display:inline-flex; align-items:center; justify-content:center; white-space:nowrap; padding:0 8px!important; }
     .delete-binding-button { height:38px; min-width:88px; display:inline-flex!important; align-items:center!important; justify-content:center!important; text-align:center!important; line-height:1!important; padding:0 14px!important; }
+    .binding-card-actions .card-monitor-toggle { min-width:88px!important; height:38px!important; margin:0!important; }
     .advanced-fields { margin-top:10px; border:1px solid var(--line); border-radius:12px; background:#fbfdff; }
     .advanced-fields summary { cursor:pointer; list-style:none; padding:10px 12px; font-size:12px; color:var(--muted); font-weight:600; }
     .advanced-fields summary::-webkit-details-marker { display:none; }
@@ -2704,7 +2735,6 @@ PRODUCTION_OPS_PAGE_HTML = """
     .approval-account-editor-body .binding-meta-grid { grid-template-columns:minmax(180px, 1fr)!important; gap:10px!important; }
     .approval-account-card,.approval-account-card *,.binding-card,.binding-card *{min-width:0!important;overflow-wrap:anywhere;}
     .binding-card .card-monitor-toggle{min-width:96px!important;flex:0 0 auto!important;white-space:nowrap!important;word-break:keep-all!important;overflow-wrap:normal!important;text-align:center!important;}
-    .binding-card .binding-badge{min-width:64px!important;flex:0 0 auto!important;white-space:nowrap!important;word-break:keep-all!important;overflow-wrap:normal!important;text-align:center!important;justify-content:center!important;}
     .approval-account-editor-body .binding-config-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))!important;}
     .approval-account-editor-body .binding-meta-grid{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))!important;}
     .approval-account-toolbar { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
@@ -3818,8 +3848,11 @@ function bindingSummaryHtml(binding, row, bindingIndex) {
   const manualApproveButtonHtml = row?.responsible_type === 'registration_group'
     ? `<button type="button" class="secondary ${manualApprovePending ? 'button-loading' : ''}" onclick="manualApproveBinding('${accountKeyEscaped}', ${bindingIndex})" ${manualApprovePending ? 'disabled' : ''}>${manualApprovePending ? '审批中…' : '一键审批'}</button>`
     : '';
-  const probeRefreshButtonHtml = `<button type="button" class="secondary ${probeRefreshPending ? 'button-loading' : ''}" onclick="refreshApprovalBindingProbe('${accountKeyEscaped}', ${bindingIndex})" ${probeRefreshPending ? 'disabled' : ''}>${probeRefreshPending ? '刷新中…' : '实时刷新'}</button>`;
-  const rebuildIdentityButtonHtml = row?.responsible_type === 'registration_group' && approvalRoleCanManage(String(window.__opsUserRole || '').trim())
+  const fullSyncPending = Boolean((window.__approvalBindingFullSyncPendingByKey || {})[bindingPendingKey]);
+  const fullSyncButtonHtml = `<button type="button" class="secondary ${fullSyncPending ? 'button-loading' : ''}" onclick="fullSyncApprovalBinding('${accountKeyEscaped}', ${bindingIndex})" ${fullSyncPending ? 'disabled' : ''}>${fullSyncPending ? '同步中…' : '完整同步'}</button>`;
+  const probeRefreshButtonHtml = `<button type="button" class="secondary ${probeRefreshPending ? 'button-loading' : ''}" onclick="refreshApprovalBindingProbe('${accountKeyEscaped}', ${bindingIndex})" ${probeRefreshPending ? 'disabled' : ''}>${probeRefreshPending ? '刷新中…' : '刷新探针'}</button>`;
+  const canRebuildIdentity = row?.responsible_type === 'registration_group' && approvalRoleCanManage(String(window.__opsUserRole || '').trim());
+  const rebuildIdentityButtonHtml = canRebuildIdentity
     ? `<button type="button" class="secondary ${rebuildIdentityPending ? 'button-loading' : ''}" onclick="rebuildApprovalBindingIdentity('${accountKeyEscaped}', ${bindingIndex})" ${rebuildIdentityPending ? 'disabled' : ''}>${rebuildIdentityPending ? '重建中…' : '重建群绑定'}</button>`
     : '';
   const deleteBindingButtonHtml = approvalRoleCanManage(String(window.__opsUserRole || '').trim())
@@ -3827,19 +3860,21 @@ function bindingSummaryHtml(binding, row, bindingIndex) {
     : '';
   return `<div class="binding-card ${binding.link ? '' : 'is-empty'}" data-realtime-account-key="${escapeHtmlAttr(accountKey)}" data-realtime-group-id="${escapeHtmlAttr(binding.group_id || binding.link || binding.group_name || String(bindingIndex))}">
     <div class="binding-card-head">
-      <div>
+      <div class="binding-card-main">
         <div class="binding-title">${bindingTitle}</div>
         <div class="muted" style="margin-top:4px;">${binding.link || '-'} · ${binding.area || '-'} · ${binding.notify_robot_name || binding.notify_profile_name || '-'}</div>
       </div>
-      <span class="binding-badge">${bindingBadgeText}</span>
-      ${deleteBindingButtonHtml}
+      <div class="binding-card-actions">
+        <button type="button" class="card-monitor-toggle ${monitorButtonClass}" onclick="setApprovalBindingEnabled('${accountKeyEscaped}', ${bindingIndex}, ${monitoringEnabled ? 'false' : 'true'})" ${pendingAction ? 'disabled' : ''}>${monitorButtonText}</button>
+        ${deleteBindingButtonHtml}
+      </div>
     </div>
-    <div class="binding-action-strip">
-      <div class="binding-action-label-row"><div>本群监控</div><div>人工审批</div><div>真实校验·${bindingVerifierReadinessText(verifier)}</div></div>
+    <div class="binding-action-strip ${canRebuildIdentity ? 'has-rebuild' : 'no-rebuild'}">
       <div class="binding-action-control-row">
-        <div class="binding-action-cell monitor-cell"><button type="button" class="card-monitor-toggle ${monitorButtonClass}" onclick="setApprovalBindingEnabled('${accountKeyEscaped}', ${bindingIndex}, ${monitoringEnabled ? 'false' : 'true'})" ${pendingAction ? 'disabled' : ''}>${monitorButtonText}</button></div>
         <div class="binding-action-cell manual-cell"><div class="binding-meta-actions">${manualApproveButtonHtml || '<span class="muted">—</span>'}</div></div>
-        <div class="binding-action-cell verifier-cell"><div class="binding-meta-actions">${probeRefreshButtonHtml}${rebuildIdentityButtonHtml}</div></div>
+        <div class="binding-action-cell full-sync-cell"><div class="binding-meta-actions">${fullSyncButtonHtml}</div></div>
+        <div class="binding-action-cell probe-cell"><div class="binding-meta-actions">${probeRefreshButtonHtml}</div></div>
+        ${canRebuildIdentity ? `<div class="binding-action-cell rebuild-cell"><div class="binding-meta-actions">${rebuildIdentityButtonHtml}</div></div>` : ''}
       </div>
     </div>
     ${showVerifierDetail ? `<div class="mini-note" style="margin-top:8px;">${verifierDetail}</div>` : ''}
@@ -3978,7 +4013,7 @@ async function refreshApprovalBindingProbe(accountKey, bindingIndex) {
       }
     }
     renderApprovalAccountRows();
-    showToast('群探针状态已实时刷新', 'success');
+    showToast('群探针状态已刷新', 'success');
   } finally {
     delete window.__approvalBindingProbeRefreshPendingByKey[pendingKey];
     renderApprovalAccountRows();
@@ -3998,6 +4033,23 @@ async function rebuildApprovalBindingIdentity(accountKey, bindingIndex) {
     return data;
   } finally {
     delete window.__approvalBindingRebuildPendingByKey[pendingKey];
+    renderApprovalAccountRows();
+  }
+}
+async function fullSyncApprovalBinding(accountKey, bindingIndex) {
+  const normalized = String(accountKey || '').trim();
+  if (!normalized) throw new Error('account_key is required');
+  const pendingKey = `${normalized}::${bindingIndex}`;
+  window.__approvalBindingFullSyncPendingByKey = window.__approvalBindingFullSyncPendingByKey || {};
+  window.__approvalBindingFullSyncPendingByKey[pendingKey] = true;
+  renderApprovalAccountRows();
+  try {
+    const data = await loadJson(`/api/ops/whatsapp-approval-accounts/${encodeURIComponent(normalized)}/bindings/${bindingIndex}/full-sync`, {method: 'POST'});
+    await reloadApprovalAccounts();
+    showToast(data?.can_manual_approve ? '完整同步完成，可执行一键审批' : '完整同步完成，当前不可审批', data?.can_manual_approve ? 'success' : 'info');
+    return data;
+  } finally {
+    delete window.__approvalBindingFullSyncPendingByKey[pendingKey];
     renderApprovalAccountRows();
   }
 }
@@ -4549,7 +4601,7 @@ async function saveApprovalAccount() {
         await refreshApprovalBindingProbe(accountKey, Number(bindingIndex));
       } catch (probeErr) {
         console.warn('auto approval binding probe refresh failed', probeErr);
-        showToast(`第${Number(bindingIndex) + 1}组自动探测失败，请点实时刷新`, 'error');
+        showToast(`第${Number(bindingIndex) + 1}组自动探测失败，请点刷新探针`, 'error');
       }
     }
   } catch (err) {
@@ -5077,16 +5129,17 @@ async function loadJson(url,options={}){const res=await fetch(url,options);const
 function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 const query=new URLSearchParams(location.search);const initialGuild=query.get('guild_name')||'';const initialDate=query.get('date')||'';const initialOperator=query.get('submitted_by')||'';const initialKeyword=query.get('q')||'';const initialStatus=query.get('status')||'all';const scope=query.get('scope')||'';const currentView='all';let pendingResolve={itemId:'',action:'resolved'};let pendingCorrectionItemId='';
 function initFilters(){bindFailedDateFilter.value=initialDate;bindFailedOperatorFilter.value=initialOperator;bindHistoryKeywordFilter.value=initialKeyword;bindHistoryStatusFilter.value=initialStatus;scopeText.textContent=initialGuild?`${initialGuild} 公会`:'全部可见公会';loadJson('/api/ops/intake-workbench/guilds').then(data=>{const names=[...new Set((data.rows||[]).map(r=>r.guild_name).filter(Boolean))];bindFailedGuildFilter.innerHTML='<option value="">全部公会</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');bindFailedGuildFilter.value=initialGuild;});}
-function buildApiUrl(){const params=new URLSearchParams();params.set('limit','50');params.set('view','all');const guild=bindFailedGuildFilter.value||initialGuild;const keyword=bindHistoryKeywordFilter.value.trim();const status=bindHistoryStatusFilter.value;if(guild)params.set('guild_name',guild);if(bindFailedDateFilter.value)params.set('date',bindFailedDateFilter.value);if(bindFailedOperatorFilter.value.trim())params.set('submitted_by',bindFailedOperatorFilter.value.trim());if(keyword)params.set('q',keyword);if(status&&status!=='all')params.set('status',status);if(scope)params.set('scope',scope);return `/api/ops/intake-workbench/binding-history-items?${params.toString()}`}
+function buildApiUrl(){const params=new URLSearchParams();params.set('limit','50');params.set('view','all');const guild=bindFailedGuildFilter.value.trim();const keyword=bindHistoryKeywordFilter.value.trim();const status=bindHistoryStatusFilter.value;if(guild)params.set('guild_name',guild);if(bindFailedDateFilter.value)params.set('date',bindFailedDateFilter.value);if(bindFailedOperatorFilter.value.trim())params.set('submitted_by',bindFailedOperatorFilter.value.trim());if(keyword)params.set('q',keyword);if(status&&status!=='all')params.set('status',status);if(scope)params.set('scope',scope);return `/api/ops/intake-workbench/binding-history-items?${params.toString()}`}
 function updateUrl(){const params=new URLSearchParams();if(bindFailedGuildFilter.value)params.set('guild_name',bindFailedGuildFilter.value);if(bindFailedDateFilter.value)params.set('date',bindFailedDateFilter.value);if(bindFailedOperatorFilter.value.trim())params.set('submitted_by',bindFailedOperatorFilter.value.trim());if(bindHistoryKeywordFilter.value.trim())params.set('q',bindHistoryKeywordFilter.value.trim());if(bindHistoryStatusFilter.value&&bindHistoryStatusFilter.value!=='all')params.set('status',bindHistoryStatusFilter.value);if(scope)params.set('scope',scope);history.replaceState(null,'',`/ops/bind-failed-users?${params.toString()}`)}
 function formatDisplayTime(value){if(!value)return '-';const d=new Date(value);if(Number.isNaN(d.getTime()))return String(value).replace('T',' ').slice(0,19);const pad=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`}
+function displayInitiator(row){return String(row?.display_initiator||row?.external_customer_service_id||row?.external_customer_service_name||row?.submitted_by_username||row?.submitted_by_user_id||'-').trim()||'-'}
 function normalizeDisplayField(field,value){const text=String(value??'').trim();if(field==='code'&&['','-','—','code','n/a','none','null','无'].includes(text.toLowerCase()))return '';return text}function fieldBlock(label,field,value){const display=normalizeDisplayField(field,value);return `<div class="field-block"><label>${esc(label)}</label><input class="field-input" aria-label="${label}" readonly data-field="${field}" data-original-value="${esc(display)}" placeholder="${esc(label)}" value="${esc(display)}"></div>`}
 function currentTruthStatusMeta(row){const truth=row.current_truth||{};const status=String(truth.truth_status||'').trim();const confidence=String(truth.confidence||'').trim();const map={verified_success:{label:'已核验成功',cls:'green',hint:'CMS/CRM已确认'},previously_registered:{label:'曾注册',cls:'green',hint:'已在目标公会'},success_unverified:{label:'证据不足',cls:'amber',hint:'缺少本次CRM核验证据'},cms_bound_crm_failed:{label:'CRM异常',cls:'amber',hint:'CMS已处理，CRM待确认'},processing:{label:'核验中',cls:'amber',hint:'等待系统返回'},needs_review:{label:'需复核',cls:'amber',hint:'需要人工确认'},failed:{label:'失败需处理',cls:'red',hint:'可更正资料或重提'}};if(map[status])return map[status];if(confidence==='verified')return {label:'已核验成功',cls:'green',hint:'已核验'};return null}
 function formatHistoryStatusLabel(row){const truthMeta=currentTruthStatusMeta(row);if(truthMeta)return truthMeta.label;const code=String(row.latest_result_code||row.result_code||row.system_status||'').toLowerCase();const reason=String(row.latest_result_reason||row.result_reason||'').toLowerCase();if(row.current_exception&&(code.includes('duplicate')||reason.includes('data duplication')||reason.includes('duplicate_sid')||reason.includes('sid already exists')))return '重复提交';if(row.current_exception)return '待处理';if(String(row.closure_status||'').trim())return '已处理';if(code==='bind_success'||row.system_status==='fully_success')return '成功';return code||'记录'}function formatHistoryReason(value){const text=String(value||'').trim();const low=text.toLowerCase();if(low==='data duplication.'||low==='data duplication'||low.includes('duplicate_sid')||low.includes('sid already exists'))return 'CRM重复';return text||'-'}function statusPill(row){const truthMeta=currentTruthStatusMeta(row);if(truthMeta)return `<span class="pill ${truthMeta.cls}">${esc(truthMeta.label)}</span>`;const closed=row.closure_status||row.feedback_status;const cls=row.current_exception?'red':(closed&&closed!=='pending_feedback'?'green':'');return `<span class="pill ${cls}">${esc(formatHistoryStatusLabel(row))}</span>`}
-function rowHtml(r){const f=r.editable_fields||{};const itemId=esc(r.item_id);const reason=esc(formatHistoryReason(r.latest_result_reason||r.result_reason||r.closure_reason||'-'));const attempts=r.attempts||[];const truthMeta=currentTruthStatusMeta(r);const closeText=truthMeta?`当前事实：${truthMeta.label}${truthMeta.hint?' · '+truthMeta.hint:''}`:(r.closure_status?`闭环：${r.closure_status} · ${r.closure_reason||'-'}`:`提交${Number(r.attempt_count||attempts.length||1)}次 / 失败${Number(r.failure_attempt_count||0)}次`);return `<article class="binding-row-card ${r.current_exception?'current-exception':''}" data-item="${itemId}"><div class="compact-main-line"><div class="member-compact"><div class="member-title">${esc(r.guild_name||'-')}</div><div class="meta-inline">${esc(formatDisplayTime(r.created_at||''))} · ${esc(r.submitted_by_username||r.submitted_by_user_id||'-')}</div></div><div class="field-strip">${fieldBlock('Phone','phone',f.phone)}${fieldBlock('ID','account_id',f.account_id)}${fieldBlock('Group','group',f.group)}${fieldBlock('Code','code',f.code)}</div><div class="status-compact">${statusPill(r)}</div><div class="row-actions"><button type="button" class="primary" title="打开更正弹窗，不会立即提交" onclick="openHistoryCorrectionDialog('${itemId}')">更正资料</button><button type="button" title="回填到收口区" onclick="prefillIntake('${itemId}')">回填</button><button type="button" class="secondary" title="重新核验当前事实" onclick="verifyCurrentTruth('${itemId}')">核验</button><button type="button" class="secondary" title="重新提交" onclick="resubmit('${itemId}')">重提</button>${r.current_exception?`<button type="button" class="warn" onclick="openResolveDialog('${itemId}','resolved')">已处理</button><button type="button" class="ghost" onclick="openResolveDialog('${itemId}','manual_review')">复核</button>`:''}</div></div><div class="compact-sub-line"><div class="reason-compact" title="${reason}">原因：${reason}</div><div class="detail-compact" title="${esc(closeText)}">${esc(closeText)}</div></div></article>`}
+function rowHtml(r){const f=r.editable_fields||{};const itemId=esc(r.item_id);const reason=esc(formatHistoryReason(r.latest_result_reason||r.result_reason||r.closure_reason||'-'));const attempts=r.attempts||[];const truthMeta=currentTruthStatusMeta(r);const closeText=truthMeta?`当前事实：${truthMeta.label}${truthMeta.hint?' · '+truthMeta.hint:''}`:(r.closure_status?`闭环：${r.closure_status} · ${r.closure_reason||'-'}`:`提交${Number(r.attempt_count||attempts.length||1)}次 / 失败${Number(r.failure_attempt_count||0)}次`);return `<article class="binding-row-card ${r.current_exception?'current-exception':''}" data-item="${itemId}"><div class="compact-main-line"><div class="member-compact"><div class="member-title">${esc(r.guild_name||'-')}</div><div class="meta-inline">${esc(formatDisplayTime(r.created_at||''))} · 发起人：${esc(displayInitiator(r))}</div></div><div class="field-strip">${fieldBlock('Phone','phone',f.phone)}${fieldBlock('ID','account_id',f.account_id)}${fieldBlock('Group','group',f.group)}${fieldBlock('Code','code',f.code)}</div><div class="status-compact">${statusPill(r)}</div><div class="row-actions"><button type="button" class="primary" title="打开更正弹窗，不会立即提交" onclick="openHistoryCorrectionDialog('${itemId}')">更正资料</button><button type="button" title="回填到收口区" onclick="prefillIntake('${itemId}')">回填</button><button type="button" class="secondary" title="重新核验当前事实" onclick="verifyCurrentTruth('${itemId}')">核验</button><button type="button" class="secondary" title="重新提交" onclick="resubmit('${itemId}')">重提</button>${r.current_exception?`<button type="button" class="warn" onclick="openResolveDialog('${itemId}','resolved')">已处理</button><button type="button" class="ghost" onclick="openResolveDialog('${itemId}','manual_review')">复核</button>`:''}</div></div><div class="compact-sub-line"><div class="reason-compact" title="${reason}">原因：${reason}</div><div class="detail-compact" title="${esc(closeText)}">${esc(closeText)}</div></div></article>`}
 async function reload(){const data=await loadJson(buildApiUrl());window.__bindFailedRows=data.rows||[];const s=data.summary||{};summary.textContent=`绑定历史：${s.history_count||0} 人 / ${s.submission_count||0} 次提交`;rows.innerHTML=(data.rows||[]).length?`<div class="failed-list"><div class="list-select-row"><span>成员</span><span>资料</span><span>状态</span><span>操作</span></div>${(data.rows||[]).map(rowHtml).join('')}</div>`:'<div class="empty"><strong>暂无绑定历史</strong><div>当前筛选条件下没有提交记录</div></div>';updateSelectionSummary()}
 function applyFilters(){updateUrl();reload()}
-function clearFilters(){bindFailedDateFilter.value='';bindFailedOperatorFilter.value='';bindHistoryKeywordFilter.value='';bindHistoryStatusFilter.value='all';bindFailedGuildFilter.value=initialGuild||'';applyFilters()}
+function clearFilters(){bindFailedDateFilter.value='';bindFailedOperatorFilter.value='';bindHistoryKeywordFilter.value='';bindHistoryStatusFilter.value='all';bindFailedGuildFilter.value='';applyFilters()}
 function currentRowFields(itemId){const tr=document.querySelector(`[data-item="${CSS.escape(itemId)}"]`);const fields={};if(tr)tr.querySelectorAll('input[data-field]').forEach(input=>{fields[input.dataset.field]=input.value.trim()});return fields}
 function prefillIntake(itemId){const row=(window.__bindFailedRows||[]).find(r=>r.item_id===itemId)||{};const fields={...(row.editable_fields||{}),...currentRowFields(itemId)};localStorage.setItem('ops_intake_prefill',JSON.stringify({guild_name:row.guild_name||fields.agency||'',fields,text:['Phone: '+(fields.phone||''),'ID: '+(fields.account_id||''),'Group: '+(fields.group||''),'Code: '+(fields.code||'-')].join('\\n'),source_item_id:itemId}));location.href='/ops/intake-submit'}
 function openHistoryCorrectionDialog(itemId){const row=(window.__bindFailedRows||[]).find(r=>r.item_id===itemId)||{};const fields={...(row.editable_fields||{}),...currentRowFields(itemId)};pendingCorrectionItemId=itemId;correction_phone.value=fields.phone||'';correction_account_id.value=fields.account_id||'';correction_account_id.disabled=true;correction_group.value=fields.group||'';correction_code.value=fields.code||'';correction_code.disabled=true;correctionItemMeta.textContent=`${row.guild_name||'-'} · ${row.submitted_by_username||row.submitted_by_user_id||'-'} · ${formatDisplayTime(row.created_at||'')}`;correctionDialog.classList.add('is-open');correctionDialog.setAttribute('aria-hidden','false');setTimeout(()=>correction_phone.focus(),0)}
@@ -5513,6 +5566,7 @@ class GuildExecutorUpdateRequest(BaseModel):
     refresh_token: Optional[str] = None
     cms_guild_id: Optional[str] = None
     cms_guild_sid: Optional[str] = None
+    country: Optional[str] = None
     proxy_url: Optional[str] = None
     proxy_region: Optional[str] = None
     proxy_type: Optional[str] = None
@@ -5861,6 +5915,15 @@ def _looks_like_whatsapp_group_jid(value: Any) -> bool:
     return bool(re.fullmatch(r'\d+@g\.us', str(value or '').strip()))
 
 
+def _sanitize_whatsapp_group_jid(value: Any) -> str:
+    candidate = str(value or '').strip()
+    return candidate if _looks_like_whatsapp_group_jid(candidate) else ''
+
+
+def _looks_like_whatsapp_invite_link(value: Any) -> bool:
+    return str(value or '').strip().startswith('https://chat.whatsapp.com/')
+
+
 def _fetch_whatsapp_invite_page_group_name(link: Any, *, timeout_seconds: float = 6.0) -> str:
     normalized_link = _normalize_whatsapp_group_invite_link(link)
     if not normalized_link.startswith('https://chat.whatsapp.com/'):
@@ -5923,14 +5986,20 @@ def _normalize_group_link_bindings(bindings: list[dict[str, Any]]) -> list[dict[
         if key in seen:
             continue
         seen.add(key)
+        raw_group_name = str(item.get('group_name') or '').strip()
+        raw_registration_group = str(item.get('registration_group') or '').strip()
+        raw_group_id = str(item.get('group_id') or '').strip()
+        sanitized_group_id = _sanitize_whatsapp_group_jid(raw_group_id)
+        sanitized_registration_group = _sanitize_whatsapp_group_jid(raw_registration_group)
+        sanitized_group_name = '' if _looks_like_whatsapp_invite_link(raw_group_name) else raw_group_name
         row = {
             'link': link,
-            'group_name': str(item.get('group_name') or '').strip(),
+            'group_name': sanitized_group_name,
             'area': area,
             'notify_profile_name': str(item.get('notify_profile_name') or '').strip(),
             'enabled': False if item.get('enabled') is False else True,
-            'registration_group': str(item.get('registration_group') or '').strip(),
-            'group_id': str(item.get('group_id') or '').strip(),
+            'registration_group': sanitized_registration_group,
+            'group_id': sanitized_group_id,
             'approval_count_threshold': item.get('approval_count_threshold'),
             'approval_timeout_minutes': item.get('approval_timeout_minutes'),
             'auto_recover_worker': item.get('auto_recover_worker'),
@@ -5941,7 +6010,8 @@ def _normalize_group_link_bindings(bindings: list[dict[str, Any]]) -> list[dict[
             'last_probe_status', 'last_probe_reason', 'last_probe_at', 'last_probe_had_group_id',
             'last_probe_had_group_name', 'last_probe_self_participant_found', 'last_probe_self_is_admin',
             'last_probe_can_manage_membership_requests', 'last_probe_member_count', 'runtime_probe_group_id',
-            'runtime_probe_group_name', 'queue_status', 'queue_confidence',
+            'runtime_probe_group_name', 'queue_status', 'queue_confidence', 'previous_verified_group_id',
+            'previous_verified_group_name', 'previous_verified_registration_group',
         ):
             if key in item:
                 row[key] = item.get(key)
@@ -6402,6 +6472,7 @@ class Database:
                     platform_authorization TEXT,
                     cms_guild_id TEXT,
                     cms_guild_sid TEXT,
+                    country TEXT,
                     proxy_url TEXT,
                     proxy_region TEXT,
                     proxy_type TEXT,
@@ -6959,6 +7030,7 @@ class Database:
             "ALTER TABLE guild_executors ADD COLUMN platform_authorization TEXT",
             "ALTER TABLE guild_executors ADD COLUMN cms_guild_id TEXT",
             "ALTER TABLE guild_executors ADD COLUMN cms_guild_sid TEXT",
+            "ALTER TABLE guild_executors ADD COLUMN country TEXT",
             "ALTER TABLE whatsapp_approval_accounts ADD COLUMN area TEXT",
             "ALTER TABLE whatsapp_approval_accounts ADD COLUMN notify_profile_name TEXT",
             "ALTER TABLE whatsapp_approval_accounts ADD COLUMN approval_rule TEXT NOT NULL DEFAULT 'count_30'",
@@ -13655,6 +13727,8 @@ class Service:
             'submission_id': str(task_payload.get('submission_id') or ''),
             'account_id': account_id,
             'mobile': str(lead.get('mobile') or ''),
+            'country': str(lead.get('country') or ''),
+            'area_code': int(lead.get('area_code') or 0),
             'app_name': str(lead.get('app_name') or ''),
             'dept_name': expected_guild,
             'registration_group': str(lead.get('pendaftaran_group') or ''),
@@ -13662,6 +13736,23 @@ class Service:
             'source_bot_app_id': str(task_payload.get('source_bot_app_id') or ''),
         }
         executor = self.resolve_guild_executor(expected_guild)
+        country_guard = self._guild_executor_country_guard(expected_guild, lead.get('country'))
+        if not country_guard.get('allowed', True):
+            return BindCheckResultRequest(
+                status='failed',
+                result_code='country_guild_mismatch',
+                result_reason=(
+                    f"User country {country_guard.get('user_country') or '-'} does not match "
+                    f"guild country {country_guard.get('guild_country') or '-'}"
+                ),
+                finished_at=utc_now(),
+                raw_result={
+                    'guild_code': expected_guild,
+                    'user_country': country_guard.get('user_country') or '',
+                    'guild_country': country_guard.get('guild_country') or '',
+                    'blocked_before_bind': True,
+                },
+            )
         if executor:
             has_platform_cms = bool(str(executor.get('platform_backend_url') or '').strip() and str(executor.get('platform_authorization') or '').strip())
             context.update({
@@ -15496,13 +15587,13 @@ class Service:
 
     @staticmethod
     def _whatsapp_binding_probe_target(binding: Dict[str, Any]) -> str:
-        # A resolved @g.us id is the safest steady-state probe target. Use the invite
-        # link only when no stable group_id exists or when config-save code has
-        # explicitly cleared stale identity fields for a rebuild.
+        # The configured invite link is the operator-facing binding identity.
+        # Prefer it over a cached @g.us id so stale group_id values cannot keep
+        # probes pinned to an old WhatsApp group after the binding is changed.
         return (
-            str(binding.get('group_id') or '').strip()
+            str(binding.get('link') or '').strip()
+            or str(binding.get('group_id') or '').strip()
             or str(binding.get('registration_group') or '').strip()
-            or str(binding.get('link') or '').strip()
             or str(binding.get('group_name') or '').strip()
         )
 
@@ -16551,6 +16642,20 @@ class Service:
             }
 
         can_bind_by_cms_id = self.guild_executor_has_platform_cms_route(final_dept_name)
+        country_guard = self._guild_executor_country_guard(final_dept_name, final_country)
+        if not country_guard.get('allowed', True):
+            return {
+                'accepted': False,
+                'reason': 'country_guild_mismatch',
+                'reply_phone': final_mobile or '-',
+                'reply_area_code': final_area_code,
+                'reply_id': final_account_id or '-',
+                'reply_group': final_registration_group or '-',
+                'reply_code': final_invite_code or '-',
+                'user_country': country_guard.get('user_country') or final_country or '',
+                'guild_country': country_guard.get('guild_country') or '',
+                'dept_name': final_dept_name,
+            }
         invite_code_required = bool(self.require_invite_code and not can_bind_by_cms_id)
         classification = self._classify_manual_cs_submission(
             payload=payload,
@@ -17184,6 +17289,36 @@ class Service:
             return {'status': 'unique', 'match': unique_rows[0], 'matches': unique_rows}
         return {'status': 'multiple', 'matches': unique_rows}
 
+    def _translate_customer_visible_failure_reason_to_english(self, reason_text: str) -> str:
+        text = re.sub(r'\s+', ' ', str(reason_text or '').strip())
+        lowered = text.lower()
+        if not text:
+            return ''
+        country_mismatch_markers = [
+            'negara anda tidak sama dengan negara agency',
+            'negara anda tidak sama dengan negara agensi',
+            'país e o da agência não correspondem',
+            'pais e o da agencia nao correspondem',
+            'país e o da agencia nao correspondem',
+            'gagal bergabung ke agency',
+            'falha ao entrar na agência',
+            'falha ao entrar na agencia',
+        ]
+        if any(marker in lowered for marker in country_mismatch_markers):
+            return 'Failed to join the agency. Your country does not match the agency country.'
+        if (
+            'the streamer was in other guild' in lowered
+            or 'the streamer was in another agency' in lowered
+            or '已加入其他公会' in text
+            or '其他公会' in text
+        ):
+            return 'The streamer was in another agency'
+        if 'invalid arguments' in lowered:
+            return 'Invalid arguments'
+        if any(ord(ch) > 127 for ch in text):
+            return 'Bind failed. Check manually.'
+        return text
+
     def _sanitize_customer_visible_failure_reason(self, *, result_code: str, reason_text: str) -> str:
         text = str(reason_text or '').strip()
         lowered = text.lower()
@@ -17205,7 +17340,11 @@ class Service:
             return plain[:300] or 'Binding upstream returned an HTML response instead of JSON.'
         if str(result_code or '').strip() == 'bind_backend_http_error' and ('404' in lowered and 'not found' in lowered):
             return 'Binding upstream returned HTTP 404 Not Found; check executor URL or nginx route.'
-        return text or 'bind failed'
+        result_code_text = str(result_code or '').strip().lower()
+        translated = self._translate_customer_visible_failure_reason_to_english(text)
+        if result_code_text.startswith('cms_') and translated == text:
+            return 'CMS rejected bind request. Check manually.'
+        return translated or 'bind failed'
 
     def _format_lark_reply_text(self, result: Dict[str, Any]) -> str:
         parsed_payload = result.get('parsed_payload') or {}
@@ -17224,7 +17363,7 @@ class Service:
         ).strip() or '-'
         if str(result.get('bind_precheck') or '').strip() == 'already_in_target_guild':
             return (
-                '**❌ Previously registered in this agency**\n'
+                '**❌ Bind failed: Previously registered in this agency**\n'
                 f'Phone: {phone}\n'
                 f'ID: {account_id}\n'
                 f'Group: {group}\n'
@@ -17249,6 +17388,14 @@ class Service:
         if result.get('reason') in {'app_guild_mismatch', 'app_agency_mismatch', 'bind_backend_guild_mismatch'}:
             return (
                 '**🚫 I do not handle this app/agency.**\n'
+                f'Phone: {phone}\n'
+                f'ID: {account_id}\n'
+                f'Group: {group}\n'
+                f'Code: {code}'
+            )
+        if result.get('reason') == 'country_guild_mismatch':
+            return (
+                '**🚫 Country does not match this agency.**\n'
                 f'Phone: {phone}\n'
                 f'ID: {account_id}\n'
                 f'Group: {group}\n'
@@ -17326,7 +17473,7 @@ class Service:
             )
             if duplicate_crm_failure and str(result.get('bind_precheck') or '').strip() != 'already_in_target_guild':
                 return (
-                    '**❌ Duplicate submission**\n'
+                    '**❌ Bind failed: Previously registered in this agency**\n'
                     f'Phone: {phone}\n'
                     f'ID: {account_id}\n'
                     f'Group: {group}\n'
@@ -17334,7 +17481,7 @@ class Service:
                 )
             if str(result.get('bind_precheck') or '').strip() == 'already_in_target_guild':
                 return (
-                    '**❌ Previously registered in this agency**\n'
+                    '**❌ Bind failed: Previously registered in this agency**\n'
                     f'Phone: {phone}\n'
                     f'ID: {account_id}\n'
                     f'Group: {group}\n'
@@ -17356,16 +17503,18 @@ class Service:
                 f'Code: {code}'
             )
         if result.get('reason') in {'simulated_bind_failed', 'bind_check_failed'}:
+            original_reason_text = str(result.get('result_reason') or 'bind failed').strip() or 'bind failed'
             result_code = str(result.get('result_code') or '').strip()
             reason_text = self._sanitize_customer_visible_failure_reason(
                 result_code=result_code,
-                reason_text=str(result.get('result_reason') or 'bind failed').strip() or 'bind failed',
+                reason_text=original_reason_text,
             )
             lowered_reason = reason_text.lower()
+            original_lowered_reason = original_reason_text.lower()
             failure_category = str(result.get('bind_failure_category') or '').strip()
-            if '401' in reason_text:
+            if '401' in original_reason_text or '401' in reason_text or result_code in {'bind_unauthorized', 'cms_authorization_invalid'}:
                 return (
-                    '**❌ Failed：Error Code Unable to Bind**\n'
+                    '**❌ Bind failed: backend login or authorization expired. Check manually.**\n'
                     f'Phone: {phone}\n'
                     f'ID: {account_id}\n'
                     f'Group: {group}\n'
@@ -18444,14 +18593,22 @@ class Service:
     def _external_app_item_response(self, item: Dict[str, Any], *, has_submission: Optional[bool] = None, duplicate: bool = False) -> Dict[str, Any]:
         system_status = str(item.get('system_status') or '').strip()
         feedback_status = str(item.get('feedback_status') or '').strip()
+        raw_reply_template = str(item.get('reply_text') or '').strip()
+        reply_template_statuses = {
+            'fully_success', 'partial_success_crm_failed', 'bind_failed', 'failed',
+            'crm_failed', 'validation_failed', 'manual_required', 'route_mismatch', 'already_registered',
+        }
+        reply_template = self._external_app_reply_template_zh(raw_reply_template) if raw_reply_template and system_status in reply_template_statuses else None
         response = {
             'ok': True,
             'submission_id': str(item.get('item_id') or '').strip(),
             'external_user_id': str(item.get('external_user_id') or '').strip(),
+            'initiator': self._ops_intake_display_initiator(item),
             'system_status': system_status,
             'feedback_status': feedback_status,
             'message': self._external_app_status_message(system_status=system_status, feedback_status=feedback_status),
-            'reply_template': item.get('reply_text') if system_status == 'fully_success' or system_status == 'partial_success_crm_failed' else None,
+            'reply_template': reply_template,
+            'reply_template_language': 'zh-CN' if reply_template else None,
             'updated_at': item.get('processed_at') or item.get('created_at') or utc_now(),
         }
         if has_submission is not None:
@@ -18474,6 +18631,56 @@ class Service:
         if system_status == 'manual_required':
             return '需要人工处理'
         return '已提交，系统处理中，请勿重复提交'
+
+    def _external_app_reply_template_zh(self, reply_text: Any) -> str:
+        raw = str(reply_text or '').replace('**', '').strip()
+        if not raw:
+            return ''
+        headline_map = [
+            ('✅ Success', '✅ 成功'),
+            ('⏳ Processing', '⏳ 处理中'),
+            ('❌ Previously registered in this agency', '❌ 绑定失败：该用户此前已在本公会注册。'),
+            ('❌ Bind failed: Previously registered in this agency', '❌ 绑定失败：该用户此前已在本公会注册。'),
+            ('❌ Bind failed: Failed to join the agency. Your country does not match the agency country.', '❌ 绑定失败：用户国家/地区与公会国家/地区不一致。'),
+            ('🚫 Country does not match this agency.', '🚫 国家/地区与当前公会不匹配，未发起绑定。'),
+            ('❌ Bind failed: CMS rejected bind request. Check manually.', '❌ 绑定失败：CMS 拒绝绑定请求，请人工检查。'),
+            ('❌ Bind failed: CMS rejected bind request, manual check required', '❌ 绑定失败：CMS 拒绝绑定请求，需要人工检查。'),
+            ('❌ Bind failed: Invalid or unavailable Linky ID', '❌ 绑定失败：Linky ID 无效或暂不可用。'),
+            ('❌ Bind failed: CMS verification requires manual check', '❌ 绑定失败：CMS 核验需要人工检查。'),
+            ('❌ Bind failed: Invalid personal code', '❌ 绑定失败：个人 Code 无效。'),
+            ('❌ Bind failed: Backend session requires manual recovery', '❌ 绑定失败：后台登录态需要人工恢复。'),
+            ('❌ Bind failed: backend login or authorization expired. Check manually.', '❌ 绑定失败：绑定后台登录态或授权异常，请人工检查。'),
+            ('❌ Bind failed: The streamer was in another agency', '❌ 绑定失败：该用户已在其他公会。'),
+            ('❌ Bind failed: Bind failed. Check manually.', '❌ 绑定失败：请人工检查。'),
+            ('❌ Already registered in another agency', '❌ 该用户已在其他公会注册。'),
+            ('❌ Bind failed: CMS authorization rejected with HTTP 403', '❌ 绑定失败：CMS 授权已失效或无权限，请人工检查。'),
+            ('❌ Bind failed: CMS authorization does not allow adding this SID to the target guild', '❌ 绑定失败：CMS 授权不允许添加该 SID 到目标公会，请人工检查。'),
+            ('❌ Bind failed: Falha ao entrar na Agência: seu país e o da Agência não correspondem.', '❌ 绑定失败：用户国家/地区与公会国家/地区不一致。'),
+            ('❌ Bind failed: Gagal bergabung ke agency. Negara Anda tidak sama dengan negara agency tersebut', '❌ 绑定失败：用户国家/地区与公会国家/地区不一致。'),
+            ('🚫 Invalid Code. Use 6 English letters or letters+digits only.', '🚫 Code 无效。请使用 6 位个人 Code：字母或字母+数字，不能全数字。'),
+            ('🚫 Missing: Code', '🚫 缺少 Code。请补充 6 位个人 Code。'),
+            ('❌ Failed：Error Code Unable to Bind', '❌ 绑定失败：绑定后台登录态或授权异常，请人工检查。'),
+            ('❌ Duplicate submission: user already joined this agency', '❌ 绑定失败：该用户此前已在本公会注册。'),
+            ('❌ Duplicate submission', '❌ 绑定失败：该用户此前已在本公会注册。'),
+            ('❌ Bind Success, CRM Failed', '❌ 绑定已成功，但 CRM 写入/核验失败'),
+            ('🚫 I do not handle this app/agency.', '🚫 当前客服不处理这个 App/公会。'),
+            ('🚫 Invalid group format. Please copy the exact registration group name.', '🚫 群组格式无效，请复制准确的注册群名称。'),
+            ('❌ Multiple registration groups found. Please provide Group.', '❌ 找到多个注册群，请补充 Group。'),
+            ('❌ Failed', '❌ 失败'),
+        ]
+        translated = raw
+        for en, zh in headline_map:
+            if translated.startswith(en):
+                translated = zh + translated[len(en):]
+                break
+        lines = []
+        for line in translated.split('\n'):
+            line = re.sub(r'^Phone:\s*', '手机号：', line)
+            line = re.sub(r'^ID:\s*', 'ID：', line)
+            line = re.sub(r'^Group:\s*', '群组：', line)
+            line = re.sub(r'^Code:\s*', 'Code：', line)
+            lines.append(line)
+        return '\n'.join(lines)
 
     def submit_external_app_intake(self, *, payload: ExternalAppIntakeSubmissionRequest, source_config: Dict[str, Any]) -> Dict[str, Any]:
         source = str(payload.source or '').strip()
@@ -19100,11 +19307,49 @@ class Service:
             'updated_at': row['updated_at'],
         }
 
+    def _ops_intake_display_initiator(self, item: Dict[str, Any]) -> str:
+        return str(
+            item.get('external_customer_service_id')
+            or item.get('external_customer_service_name')
+            or item.get('submitted_by_username')
+            or item.get('submitted_by_user_id')
+            or '-'
+        ).strip() or '-'
+
     def _enhance_ops_intake_item_display(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        item['display_initiator'] = self._ops_intake_display_initiator(item)
         current_truth = self._load_binding_current_truth_snapshot(str(item.get('item_id') or ''))
         if current_truth:
             item['current_truth'] = current_truth
         reply = str(item.get('reply_text') or '').strip()
+        if reply.startswith('**❌ Bind failed:'):
+            result_code = str(item.get('result_code') or '').strip()
+            result_reason = str(item.get('result_reason') or '').strip()
+            translated_reason = self._translate_customer_visible_failure_reason_to_english(result_reason)
+            if translated_reason and translated_reason not in reply:
+                item['reply_text'] = self._format_lark_reply_text({
+                    'accepted': False,
+                    'reason': 'bind_check_failed',
+                    'result_code': result_code,
+                    'result_reason': result_reason,
+                    'reply_phone': item.get('parsed_phone') or '-',
+                    'reply_id': item.get('parsed_account_id') or '-',
+                    'reply_group': item.get('parsed_group') or '-',
+                    'reply_code_display': item.get('parsed_code') or '-',
+                })
+                reply = str(item.get('reply_text') or '').strip()
+        if 'Failed：Error Code Unable to Bind' in reply:
+            item['reply_text'] = self._format_lark_reply_text({
+                'accepted': False,
+                'reason': 'bind_check_failed',
+                'result_code': str(item.get('result_code') or '').strip(),
+                'result_reason': str(item.get('result_reason') or '').strip(),
+                'reply_phone': item.get('parsed_phone') or '-',
+                'reply_id': item.get('parsed_account_id') or '-',
+                'reply_group': item.get('parsed_group') or '-',
+                'reply_code_display': item.get('parsed_code') or '-',
+            })
+            reply = str(item.get('reply_text') or '').strip()
         if not reply.startswith('**❌ Failed**'):
             return item
         if str(item.get('system_status') or '').strip() in {'queued', 'processing', 'bind_queued', 'binding', 'crm_verifying'}:
@@ -19277,8 +19522,8 @@ class Service:
             conditions.append('created_at >= ? AND created_at < ?')
             params.extend([start_dt.isoformat(), end_dt.isoformat()])
         if requested_operator:
-            conditions.append('(submitted_by_user_id = ? OR submitted_by_username = ?)')
-            params.extend([requested_operator, requested_operator])
+            conditions.append('(submitted_by_user_id = ? OR submitted_by_username = ? OR external_customer_service_id = ? OR external_customer_service_name = ?)')
+            params.extend([requested_operator, requested_operator, requested_operator, requested_operator])
         if requested_query:
             like_query = f'%{requested_query}%'
             digits_query = ''.join(ch for ch in requested_query if ch.isdigit())
@@ -19287,6 +19532,8 @@ class Service:
                 'parsed_account_id LIKE ?',
                 'parsed_group LIKE ?',
                 'submitted_by_username LIKE ?',
+                'external_customer_service_id LIKE ?',
+                'external_customer_service_name LIKE ?',
                 'result_code LIKE ?',
                 'result_reason LIKE ?',
             ]
@@ -19424,6 +19671,9 @@ class Service:
                 'guild_name': str(item.get('guild_name') or ''),
                 'submitted_by_user_id': str(item.get('submitted_by_user_id') or ''),
                 'submitted_by_username': str(item.get('submitted_by_username') or ''),
+                'external_customer_service_id': str(item.get('external_customer_service_id') or ''),
+                'external_customer_service_name': str(item.get('external_customer_service_name') or ''),
+                'display_initiator': self._ops_intake_display_initiator(item),
                 'system_status': system_status,
                 'feedback_status': feedback_status,
                 'result_code': result_code,
@@ -19521,8 +19771,8 @@ class Service:
             conditions.append('created_at >= ? AND created_at < ?')
             params.extend([start_dt.isoformat(), end_dt.isoformat()])
         if requested_operator:
-            conditions.append('(submitted_by_user_id = ? OR submitted_by_username = ?)')
-            params.extend([requested_operator, requested_operator])
+            conditions.append('(submitted_by_user_id = ? OR submitted_by_username = ? OR external_customer_service_id = ? OR external_customer_service_name = ?)')
+            params.extend([requested_operator, requested_operator, requested_operator, requested_operator])
         if requested_guild:
             if not is_admin_role and requested_guild not in visible_guilds:
                 return {'rows': [], 'summary': {'bind_failed_count': 0}}
@@ -19615,6 +19865,8 @@ class Service:
             candidates = {
                 str(row.get('submitted_by_user_id') or '').strip(),
                 str(row.get('submitted_by_username') or '').strip(),
+                str(row.get('external_customer_service_id') or '').strip(),
+                str(row.get('external_customer_service_name') or '').strip(),
                 str(row.get('submitted_by') or '').strip(),
                 str(row.get('created_by') or '').strip(),
             }
@@ -27040,19 +27292,23 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             raise HTTPException(status_code=400, detail='binding registration_group target is required')
         runtime_state = dict(account.get('runtime_state') or {})
         session_state = dict(account.get('session_state') or {})
-        try:
-            probe = self.registration_group_approval_executor_group_state(registration_group)
-        except Exception:
-            probe = self._probe_whatsapp_binding_group_state(
-                responsible_type='registration_group',
-                binding=binding,
-                runtime_state=runtime_state,
-                session_state=session_state,
-                allow_shared_fallback=True,
-                attempts=1,
-                timeout_seconds=2.0,
+        preflight = self.full_sync_whatsapp_approval_binding(
+            str(account.get('account_key') or account_key or '').strip(),
+            binding_index,
+            source='manual_approve_preflight',
+            timeout_seconds=30.0,
+        )
+        if not bool(preflight.get('can_manual_approve')):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    'reason': 'manual_approval_full_sync_not_trusted',
+                    'trust_status': preflight.get('trust_status'),
+                    'reason_code': preflight.get('reason_code'),
+                },
             )
-        pending_count = max(int(probe.get('pending_count') or 0), 0)
+        probe = dict(preflight or {})
+        pending_count = max(int(probe.get('trusted_pending_count') or probe.get('ui_pending_count') or probe.get('pending_count') or 0), 0)
         if pending_count <= 0:
             raise HTTPException(status_code=400, detail='current binding has no pending requests to approve')
         decided_at = utc_now()
@@ -27184,8 +27440,10 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         normalized_key = str(account_key or '').strip()
         if not normalized_key or binding_index < 0 or not isinstance(live_probe, dict):
             return binding
-        probed_group_id = str(live_probe.get('group_id') or '').strip()
+        probed_group_id = _sanitize_whatsapp_group_jid(live_probe.get('group_id'))
         probed_group_name = str(live_probe.get('group_name') or '').strip()
+        if _looks_like_whatsapp_invite_link(probed_group_name):
+            probed_group_name = ''
         invite_page_group_name = ''
         if _looks_like_whatsapp_group_jid(probed_group_name) or not probed_group_name:
             invite_page_group_name = _fetch_whatsapp_invite_page_group_name(binding.get('link'))
@@ -27307,7 +27565,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             if persisted_group_name and _looks_like_whatsapp_group_jid(str(live_probe.get('group_name') or '').strip()):
                 live_probe = {**live_probe, 'group_name': persisted_group_name}
             if not str(live_probe.get('group_id') or '').strip():
-                fallback_group_id = str(binding.get('group_id') or binding.get('registration_group') or '').strip()
+                fallback_group_id = _sanitize_whatsapp_group_jid(binding.get('group_id')) or _sanitize_whatsapp_group_jid(binding.get('registration_group'))
                 if fallback_group_id:
                     live_probe = {**live_probe, 'group_id': fallback_group_id}
             if not str(live_probe.get('group_name') or '').strip() and str(binding.get('group_name') or '').strip():
@@ -27331,7 +27589,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         }
         if isinstance(live_probe, dict):
             if not str(live_probe.get('group_id') or '').strip():
-                fallback_group_id = str(binding.get('group_id') or binding.get('registration_group') or '').strip()
+                fallback_group_id = _sanitize_whatsapp_group_jid(binding.get('group_id')) or _sanitize_whatsapp_group_jid(binding.get('registration_group'))
                 if fallback_group_id:
                     live_probe = {**live_probe, 'group_id': fallback_group_id}
             if not str(live_probe.get('group_name') or '').strip() and str(binding.get('group_name') or '').strip():
@@ -27379,7 +27637,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         with self.db.connect() as conn:
             rows = [dict(r) for r in conn.execute(
                 """
-                SELECT ge.guild_name, ge.backend_url, ge.login_username, ge.platform_backend_url, ge.cms_guild_id, ge.cms_guild_sid, ge.proxy_url, ge.proxy_region, ge.proxy_type, ge.enabled, ge.browser_profile_key, ge.bind_concurrency, ge.request_timeout_seconds, ge.notes, ge.updated_at,
+                SELECT ge.guild_name, ge.backend_url, ge.login_username, ge.platform_backend_url, ge.cms_guild_id, ge.cms_guild_sid, ge.country, ge.proxy_url, ge.proxy_region, ge.proxy_type, ge.enabled, ge.browser_profile_key, ge.bind_concurrency, ge.request_timeout_seconds, ge.notes, ge.updated_at,
                        CASE WHEN COALESCE(ge.password_secret_ref, '') != '' THEN 1 ELSE 0 END AS password_configured,
                        CASE WHEN COALESCE(ge.oauth_token, '') != '' AND COALESCE(ge.oauth_token_secret, '') != '' THEN 1 ELSE 0 END AS oauth_configured,
                        CASE WHEN COALESCE(ge.guild_backend_token, '') != '' THEN 1 ELSE 0 END AS guild_backend_token_configured,
@@ -28630,6 +28888,447 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'binding_count': len(monitored),
         }
 
+    @staticmethod
+    def _approval_binding_truth_object_key(account_key: str, binding: Dict[str, Any]) -> str:
+        normalized_key = str(account_key or '').strip()
+        candidates = [
+            str((binding or {}).get('link') or '').strip(),
+            str((binding or {}).get('group_id') or '').strip(),
+            str((binding or {}).get('registration_group') or '').strip(),
+            str((binding or {}).get('group_name') or '').strip(),
+        ]
+        object_suffix = next((item for item in candidates if item), '')
+        return f'{normalized_key}:{object_suffix}' if normalized_key and object_suffix else normalized_key
+
+    @staticmethod
+    def _parse_truth_snapshot_row(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        try:
+            facts = json.loads(row['facts_json'] or '{}')
+        except Exception:
+            facts = {}
+        try:
+            source = json.loads(row['source_json'] or '{}')
+        except Exception:
+            source = {}
+        if not isinstance(facts, dict):
+            facts = {}
+        if not isinstance(source, dict):
+            source = {}
+        trust_status = str(facts.get('trust_status') or row['truth_status'] or '').strip()
+        pending_count = facts.get('trusted_pending_count')
+        if pending_count is None:
+            pending_count = facts.get('pending_count')
+        try:
+            pending_count = int(pending_count) if pending_count is not None else None
+        except Exception:
+            pending_count = None
+        api_pending_count = facts.get('api_pending_count')
+        try:
+            api_pending_count = int(api_pending_count) if api_pending_count is not None else None
+        except Exception:
+            api_pending_count = None
+        source_priority = source.get('source_priority', facts.get('source_priority'))
+        try:
+            source_priority = int(source_priority)
+        except Exception:
+            source_priority = 0
+        return {
+            'snapshot_type': str(row['snapshot_type'] or '').strip(),
+            'trust_status': trust_status,
+            'pending_count': pending_count,
+            'trusted_pending_count': pending_count if trust_status.startswith('TRUSTED') else None,
+            'api_pending_count': api_pending_count,
+            'display_trusted': bool(facts.get('display_trusted')),
+            'can_manual_approve': bool(facts.get('can_manual_approve') or facts.get('manual_approve_allowed')),
+            'syncing': bool(facts.get('syncing')),
+            'fingerprint': str(facts.get('fingerprint') or '').strip(),
+            'fingerprint_quality': str(facts.get('fingerprint_quality') or '').strip(),
+            'reason_code': str(facts.get('reason_code') or '').strip(),
+            'checked_at': str(row['checked_at'] or '').strip(),
+            'expires_at': str(row['expires_at'] or '').strip() or None,
+            'source_priority': source_priority,
+            'facts': facts,
+            'source': source,
+        }
+
+    def _load_approval_binding_queue_snapshots(self, account_key: str, binding: Dict[str, Any]) -> Dict[str, Optional[Dict[str, Any]]]:
+        object_key = self._approval_binding_truth_object_key(account_key, binding)
+        if not object_key:
+            return {'current_truth': None, 'latest_probe': None}
+        try:
+            with self.db.connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT snapshot_type, truth_status, facts_json, source_json, checked_at, expires_at
+                    FROM mcn_truth_snapshots
+                    WHERE object_type = 'registration_group_binding'
+                      AND object_key = ?
+                      AND snapshot_type IN ('approval_queue_current_truth', 'approval_queue_latest_probe')
+                    """,
+                    (object_key,),
+                ).fetchall()
+        except Exception:
+            return {'current_truth': None, 'latest_probe': None}
+        result: Dict[str, Optional[Dict[str, Any]]] = {'current_truth': None, 'latest_probe': None}
+        for row in rows:
+            parsed = self._parse_truth_snapshot_row(row)
+            if not parsed:
+                continue
+            if parsed.get('snapshot_type') == 'approval_queue_current_truth':
+                result['current_truth'] = parsed
+            elif parsed.get('snapshot_type') == 'approval_queue_latest_probe':
+                result['latest_probe'] = parsed
+        return result
+
+    @staticmethod
+    def _approval_queue_truth_view(current_truth: Optional[Dict[str, Any]], latest_probe: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        syncing = bool((latest_probe or {}).get('syncing'))
+        freshness_level = 'EXPIRED'
+        display_count = None
+        display_text = '数据过期'
+        can_manual_approve = False
+        trust_status = str((current_truth or {}).get('trust_status') or '').strip()
+        age_seconds = None
+        if current_truth and trust_status.startswith('TRUSTED'):
+            try:
+                checked_at = parse_iso_datetime(str(current_truth.get('checked_at') or ''))
+                age_seconds = max((now - checked_at).total_seconds(), 0.0)
+            except Exception:
+                age_seconds = None
+            pending_count = current_truth.get('trusted_pending_count')
+            if pending_count is None:
+                pending_count = current_truth.get('pending_count')
+            try:
+                display_count = int(pending_count) if pending_count is not None else None
+            except Exception:
+                display_count = None
+            if age_seconds is not None and age_seconds <= 30:
+                freshness_level = 'FRESH'
+                display_text = f'{display_count if display_count is not None else "-"} 人' + (' · 正在复核' if syncing else '')
+                can_manual_approve = trust_status == 'TRUSTED_CONFIRMED_PENDING'
+            elif age_seconds is not None and age_seconds <= 300:
+                freshness_level = 'STALE'
+                display_text = f'最近可信 {display_count if display_count is not None else "-"} 人 · {int(age_seconds)} 秒前' + (' · 同步中' if syncing else '')
+                can_manual_approve = False
+            else:
+                freshness_level = 'EXPIRED'
+                display_count = None
+                display_text = '同步中' if syncing else '数据过期'
+        elif latest_probe and str(latest_probe.get('trust_status') or '').startswith('UNTRUSTED'):
+            freshness_level = 'UNTRUSTED'
+            trust_status = str(latest_probe.get('trust_status') or '')
+            display_text = '待验证 · 同步中' if syncing else '待验证 / 数据异常'
+        elif syncing:
+            freshness_level = 'EXPIRED'
+            display_text = '同步中'
+        return {
+            'current_truth': current_truth,
+            'latest_probe': latest_probe,
+            'freshness_level': freshness_level,
+            'syncing': syncing,
+            'trust_status': trust_status or None,
+            'display_count': display_count,
+            'display_text': display_text,
+            'can_manual_approve': bool(can_manual_approve),
+            'manual_approve_allowed': bool(can_manual_approve),
+            'action_allowed': bool(can_manual_approve),
+            'auto_approval_enabled': False,
+            'age_seconds': age_seconds,
+        }
+
+    def _apply_approval_queue_truth_to_binding(self, account_key: str, runtime_row: Dict[str, Any]) -> None:
+        snapshots = self._load_approval_binding_queue_snapshots(account_key, runtime_row)
+        truth_view = self._approval_queue_truth_view(snapshots.get('current_truth'), snapshots.get('latest_probe'))
+        runtime_row['approval_queue_truth'] = truth_view
+        runtime_row['display_count'] = truth_view.get('display_count')
+        runtime_row['freshness_level'] = truth_view.get('freshness_level')
+        runtime_row['syncing'] = truth_view.get('syncing')
+        runtime_row['can_manual_approve'] = truth_view.get('can_manual_approve')
+        runtime_row['manual_approve_allowed'] = truth_view.get('manual_approve_allowed')
+
+    @staticmethod
+    def _approval_queue_truth_facts(sync_result: Dict[str, Any], *, source_priority: int, observed_at: str, syncing: bool = False) -> Dict[str, Any]:
+        trust_status = str(sync_result.get('trust_status') or sync_result.get('status') or '').strip()
+        trusted_pending_count = sync_result.get('trusted_pending_count')
+        if trusted_pending_count is None and trust_status == 'TRUSTED_CONFIRMED_PENDING':
+            trusted_pending_count = sync_result.get('ui_pending_count', sync_result.get('pending_count'))
+        if trusted_pending_count is None and trust_status == 'TRUSTED_CONFIRMED_EMPTY':
+            trusted_pending_count = 0
+        try:
+            trusted_pending_count = int(trusted_pending_count) if trusted_pending_count is not None else None
+        except Exception:
+            trusted_pending_count = None
+        api_pending_count = sync_result.get('api_pending_count')
+        try:
+            api_pending_count = int(api_pending_count) if api_pending_count is not None else None
+        except Exception:
+            api_pending_count = None
+        return {
+            'trust_status': trust_status,
+            'trusted_pending_count': trusted_pending_count,
+            'pending_count': trusted_pending_count if trusted_pending_count is not None else sync_result.get('pending_count'),
+            'ui_pending_count': sync_result.get('ui_pending_count'),
+            'api_pending_count': api_pending_count,
+            'requester_ids': list(sync_result.get('requester_ids') or []) if isinstance(sync_result.get('requester_ids'), list) else [],
+            'fingerprint': str(sync_result.get('fingerprint') or '').strip(),
+            'fingerprint_quality': str(sync_result.get('fingerprint_quality') or ('strong' if sync_result.get('requester_ids') else 'weak')).strip(),
+            'reason_code': str(sync_result.get('reason_code') or '').strip(),
+            'display_trusted': trust_status.startswith('TRUSTED'),
+            'can_manual_approve': trust_status == 'TRUSTED_CONFIRMED_PENDING',
+            'manual_approve_allowed': trust_status == 'TRUSTED_CONFIRMED_PENDING',
+            'syncing': bool(syncing),
+            'source_priority': int(source_priority),
+            'observed_at': observed_at,
+        }
+
+    def _write_approval_queue_snapshot(
+        self,
+        *,
+        account_key: str,
+        binding: Dict[str, Any],
+        snapshot_type: str,
+        sync_result: Dict[str, Any],
+        source_priority: int = 0,
+        observed_at: Optional[str] = None,
+        force: bool = False,
+        syncing: bool = False,
+    ) -> Dict[str, Any]:
+        observed_at = str(observed_at or utc_now())
+        object_key = self._approval_binding_truth_object_key(account_key, binding)
+        if not object_key:
+            raise HTTPException(status_code=400, detail='approval_queue_object_key_required')
+        facts = self._approval_queue_truth_facts(sync_result, source_priority=source_priority, observed_at=observed_at, syncing=syncing)
+        trust_status = str(facts.get('trust_status') or 'UNKNOWN').strip() or 'UNKNOWN'
+        current = self._load_approval_binding_queue_snapshots(account_key, binding).get('current_truth') if snapshot_type == 'approval_queue_current_truth' else None
+        allow_write = True
+        if snapshot_type == 'approval_queue_current_truth' and current and not force:
+            current_priority = int(current.get('source_priority') or 0)
+            current_age = None
+            try:
+                current_age = (datetime.now(timezone.utc) - parse_iso_datetime(str(current.get('checked_at') or ''))).total_seconds()
+            except Exception:
+                current_age = None
+            new_priority = int(source_priority or 0)
+            trusted_success = trust_status.startswith('TRUSTED')
+            current_expired = current_age is None or current_age > 300
+            allow_write = (new_priority >= current_priority) or (current_expired and trusted_success)
+        if not allow_write:
+            return {'written': False, 'object_key': object_key, 'snapshot_type': snapshot_type, 'reason': 'lower_priority_current_truth_preserved'}
+        source = dict(sync_result.get('source') if isinstance(sync_result.get('source'), dict) else {})
+        if not source:
+            source = {'source': str(sync_result.get('source') or 'approval_queue_sync')}
+        source['source_priority'] = int(source_priority or 0)
+        snapshot_id = f'{snapshot_type}:{object_key}'
+        expires_at = sync_result.get('expires_at')
+        if not expires_at and snapshot_type == 'approval_queue_current_truth' and trust_status.startswith('TRUSTED'):
+            expires_at = (parse_iso_datetime(observed_at) + timedelta(minutes=5)).isoformat()
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO mcn_truth_snapshots (
+                    snapshot_id, object_type, object_key, snapshot_type, truth_status,
+                    confidence, confidence_reason, facts_json, source_json, checked_at,
+                    expires_at, recommended_action, updated_at
+                ) VALUES (?, 'registration_group_binding', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(object_type, object_key, snapshot_type) DO UPDATE SET
+                    snapshot_id=excluded.snapshot_id,
+                    truth_status=excluded.truth_status,
+                    confidence=excluded.confidence,
+                    confidence_reason=excluded.confidence_reason,
+                    facts_json=excluded.facts_json,
+                    source_json=excluded.source_json,
+                    checked_at=excluded.checked_at,
+                    expires_at=excluded.expires_at,
+                    recommended_action=excluded.recommended_action,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    snapshot_id,
+                    object_key,
+                    snapshot_type,
+                    trust_status,
+                    'verified' if trust_status.startswith('TRUSTED') else 'untrusted',
+                    str(facts.get('reason_code') or ''),
+                    json.dumps(facts, ensure_ascii=False, sort_keys=True, default=str),
+                    json.dumps(source, ensure_ascii=False, sort_keys=True, default=str),
+                    observed_at,
+                    expires_at,
+                    'none' if trust_status.startswith('TRUSTED') else 'manual_full_sync_or_recovery',
+                    utc_now(),
+                ),
+            )
+            if snapshot_type == 'approval_queue_latest_probe':
+                self.write_event_ledger(
+                    conn=conn,
+                    event_type='approval_queue_probe_observed',
+                    object_type='registration_group_binding',
+                    object_key=object_key,
+                    status=trust_status,
+                    evidence_level=str(facts.get('fingerprint_quality') or ''),
+                    payload={**facts, 'snapshot_type': snapshot_type},
+                )
+            conn.commit()
+        return {'written': True, 'object_key': object_key, 'snapshot_type': snapshot_type, 'trust_status': trust_status, 'facts': facts}
+
+    def upsert_approval_queue_current_truth(self, *, account_key: str, binding: Dict[str, Any], sync_result: Dict[str, Any], source_priority: int, observed_at: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
+        return self._write_approval_queue_snapshot(
+            account_key=account_key,
+            binding=binding,
+            snapshot_type='approval_queue_current_truth',
+            sync_result=sync_result,
+            source_priority=source_priority,
+            observed_at=observed_at,
+            force=force,
+        )
+
+    def upsert_approval_queue_latest_probe(self, *, account_key: str, binding: Dict[str, Any], probe_result: Dict[str, Any], observed_at: Optional[str] = None, syncing: bool = False) -> Dict[str, Any]:
+        return self._write_approval_queue_snapshot(
+            account_key=account_key,
+            binding=binding,
+            snapshot_type='approval_queue_latest_probe',
+            sync_result=probe_result,
+            source_priority=0,
+            observed_at=observed_at,
+            force=True,
+            syncing=syncing,
+        )
+
+    def _call_whatsapp_worker_full_queue_sync(self, *, account: Dict[str, Any], binding: Dict[str, Any], timeout_seconds: float = 30.0) -> Dict[str, Any]:
+        runtime_state = dict(account.get('runtime_state') or {})
+        base_url = str(runtime_state.get('base_url') or '').strip().rstrip('/')
+        if not base_url:
+            raise RuntimeError('worker_base_url_missing')
+        target = self._whatsapp_binding_probe_target(binding)
+        payload = {
+            'registration_group': target,
+            'group_id': binding.get('group_id'),
+            'group_name': binding.get('group_name'),
+            'link': binding.get('link'),
+        }
+        response = requests.post(f'{base_url}/full-queue-sync', json=payload, timeout=timeout_seconds)
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, dict) else {'ok': False, 'trust_status': 'UNTRUSTED_SYNC_INVALID', 'raw': data}
+
+    def full_sync_whatsapp_approval_binding(self, account_key: str, binding_index: int, *, source: str = 'manual_full_sync', timeout_seconds: Optional[float] = None) -> Dict[str, Any]:
+        account = self._get_whatsapp_approval_account_runtime_row(account_key)
+        bindings = list(account.get('group_binding_runtimes') or account.get('group_link_bindings') or [])
+        if binding_index < 0 or binding_index >= len(bindings):
+            raise HTTPException(status_code=404, detail='whatsapp approval binding not found')
+        binding = dict(bindings[binding_index] or {})
+        binding['account_key'] = str(account.get('account_key') or '').strip()
+        priority_by_source = {
+            'manual_full_sync': 100,
+            'manual_approve_preflight': 100,
+            'approval_after_sync': 90,
+            'scheduled_full_sync': 60,
+            'lightweight_probe_escalation': 60,
+        }
+        source_priority = priority_by_source.get(str(source or ''), 60)
+        hard_timeout = float(timeout_seconds if timeout_seconds is not None else (45.0 if source == 'manual_full_sync' else 30.0))
+        observed_at = utc_now()
+        try:
+            result = self._call_whatsapp_worker_full_queue_sync(account=account, binding=binding, timeout_seconds=hard_timeout)
+        except Exception as exc:
+            result = {
+                'ok': False,
+                'trust_status': 'SYNC_TIMEOUT',
+                'reason_code': 'full_sync_hard_timeout',
+                'error': str(exc),
+                'source': source,
+            }
+            self.upsert_approval_queue_latest_probe(account_key=account_key, binding=binding, probe_result=result, observed_at=observed_at, syncing=False)
+            return {**result, 'can_manual_approve': False}
+        if not isinstance(result, dict):
+            result = {'ok': False, 'trust_status': 'UNTRUSTED_SYNC_INVALID', 'reason_code': 'invalid_worker_response', 'source': source}
+        result.setdefault('source', source)
+        trust_status = str(result.get('trust_status') or '').strip()
+        self.upsert_approval_queue_latest_probe(account_key=account_key, binding=binding, probe_result=result, observed_at=observed_at, syncing=False)
+        if trust_status.startswith('TRUSTED'):
+            self.upsert_approval_queue_current_truth(
+                account_key=account_key,
+                binding=binding,
+                sync_result=result,
+                source_priority=source_priority,
+                observed_at=observed_at,
+                force=source in {'manual_full_sync', 'manual_approve_preflight', 'approval_after_sync'},
+            )
+        view = self._approval_queue_truth_view(
+            self._load_approval_binding_queue_snapshots(account_key, binding).get('current_truth'),
+            self._load_approval_binding_queue_snapshots(account_key, binding).get('latest_probe'),
+        )
+        return {**result, 'can_manual_approve': bool(view.get('can_manual_approve')), 'approval_queue_truth': view}
+
+    def evaluate_approval_queue_staleness(self, *, account_key: str, binding: Dict[str, Any], external_signal: str = '') -> Dict[str, Any]:
+        object_key = self._approval_binding_truth_object_key(account_key, binding)
+        if not object_key:
+            return {'stale_detected': False, 'reason': 'object_key_missing'}
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT payload_json, created_at FROM mcn_event_ledger
+                WHERE event_type='approval_queue_probe_observed'
+                  AND object_type='registration_group_binding'
+                  AND object_key=?
+                ORDER BY created_at DESC LIMIT 3
+                """,
+                (object_key,),
+            ).fetchall()
+            fingerprints = []
+            statuses = []
+            for row in rows:
+                try:
+                    payload = json.loads(row['payload_json'] or '{}')
+                except Exception:
+                    payload = {}
+                fingerprints.append(str(payload.get('fingerprint') or '').strip())
+                statuses.append(str(payload.get('trust_status') or '').strip())
+            stale = bool(external_signal) and len(fingerprints) >= 3 and len(set(fingerprints)) == 1 and fingerprints[0] and any(status.startswith('UNTRUSTED') for status in statuses)
+            if not stale:
+                conn.commit()
+                return {'stale_detected': False, 'fingerprints': fingerprints}
+            recovery_action = 'soft_reload'
+            cooldown_row = conn.execute(
+                """
+                SELECT created_at FROM mcn_event_ledger
+                WHERE event_type='approval_queue_recovery_event'
+                  AND object_type='registration_group_binding'
+                  AND object_key=?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (object_key,),
+            ).fetchone()
+            if cooldown_row is not None:
+                try:
+                    if (datetime.now(timezone.utc) - parse_iso_datetime(str(cooldown_row['created_at'] or ''))).total_seconds() < 120:
+                        conn.commit()
+                        return {'stale_detected': True, 'recovery_action': recovery_action, 'cooldown_active': True, 'object_key': object_key}
+                except Exception:
+                    pass
+            recovery_result = {'attempted': False, 'status': 'queued_for_worker_recovery', 'action': recovery_action}
+            payload = {
+                'account_key': account_key,
+                'object_key': object_key,
+                'external_signal': external_signal,
+                'fingerprint': fingerprints[0],
+                'recovery_action': recovery_action,
+                'recovery_result': recovery_result,
+            }
+            self.write_event_ledger(
+                conn=conn,
+                event_type='approval_queue_recovery_event',
+                object_type='registration_group_binding',
+                object_key=object_key,
+                status='pending',
+                evidence_level='stale_probe_fingerprint',
+                payload=payload,
+            )
+            conn.commit()
+        return {'stale_detected': True, 'recovery_action': recovery_action, 'object_key': object_key}
+
     def _build_whatsapp_approval_account_runtime(self, row: Dict[str, Any], *, production_ops: Optional[Dict[str, Any]] = None, official_bridge: Optional[Dict[str, Any]] = None, worker_health: Optional[Dict[str, Any]] = None, runtime_state: Optional[Dict[str, Any]] = None, session_state: Optional[Dict[str, Any]] = None, skip_live_probe: bool = False) -> Dict[str, Any]:
         serialized = dict(row)
         raw_group_links = []
@@ -28892,6 +29591,8 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 binding=runtime_row,
                 probe=probe if isinstance(probe, dict) else {},
             ))
+            if responsible_type == 'registration_group':
+                self._apply_approval_queue_truth_to_binding(account_key, runtime_row)
             binding_enabled = bool(runtime_row.get('enabled'))
             runtime_row['monitoring_effective'] = bool(serialized.get('enabled')) and daemon_enabled and binding_enabled
             if not serialized.get('enabled'):
@@ -29651,8 +30352,11 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             link = _normalize_whatsapp_group_invite_link(item.get('link'))
             area = str(item.get('area') or '').strip()
             notify_profile_name = str(item.get('notify_profile_name') or '').strip()
-            registration_group = str(item.get('registration_group') or '').strip()
-            group_id = str(item.get('group_id') or '').strip()
+            registration_group = _sanitize_whatsapp_group_jid(item.get('registration_group'))
+            group_id = _sanitize_whatsapp_group_jid(item.get('group_id'))
+            raw_group_name = str(item.get('group_name') or '').strip()
+            if _looks_like_whatsapp_invite_link(raw_group_name):
+                item['group_name'] = ''
             if not link and not area and not notify_profile_name and not registration_group and not group_id:
                 continue
             if link and not area:
@@ -29669,10 +30373,13 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             existing_last_probe_reason = str(existing_binding.get('last_probe_reason') or '').strip()
             existing_runtime_probe_group_id = str(existing_binding.get('runtime_probe_group_id') or '').strip() if existing_binding.get('runtime_probe_group_id') is not None else ''
             existing_had_failed_join_probe = existing_binding.get('last_probe_self_participant_found') is False
+            existing_group_id_jid = _sanitize_whatsapp_group_jid(existing_binding.get('group_id')) or _sanitize_whatsapp_group_jid(existing_binding.get('registration_group')) or _sanitize_whatsapp_group_jid(existing_binding.get('runtime_probe_group_id'))
+            manual_rebuild_with_verified_fallback = bool(existing_group_id_jid and existing_last_probe_reason == 'manual_identity_rebuild')
             stale_identity = bool(
                 existing_binding
                 and not link_changed
                 and link
+                and not manual_rebuild_with_verified_fallback
                 and (
                     existing_identity_status in {'unresolved', 'stale', 'needs_rebuild', 'permission_pending'}
                     or existing_last_probe_reason in {'group_not_found', 'identity_unresolved', 'permission_pending'}
@@ -29852,15 +30559,31 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             if binding_index < 0 or binding_index >= len(bindings):
                 raise HTTPException(status_code=404, detail='whatsapp approval binding not found')
             binding = dict(bindings[binding_index] or {})
-            binding.update({
-                'registration_group': '',
-                'group_id': '',
-                'group_name': '',
+            previous_group_id = _sanitize_whatsapp_group_jid(binding.get('group_id')) or _sanitize_whatsapp_group_jid(binding.get('registration_group')) or _sanitize_whatsapp_group_jid(binding.get('runtime_probe_group_id'))
+            previous_registration_group = _sanitize_whatsapp_group_jid(binding.get('registration_group')) or previous_group_id
+            previous_group_name = str(binding.get('group_name') or binding.get('runtime_probe_group_name') or '').strip()
+            if _looks_like_whatsapp_invite_link(previous_group_name):
+                previous_group_name = ''
+            rebuild_fingerprint_payload = {
+                **binding,
+                'registration_group': previous_registration_group,
+                'group_id': previous_group_id,
+                'group_name': previous_group_name,
                 'identity_status': 'needs_rebuild',
                 'identity_rebuild_reason': 'manual_rebuild',
-                'last_probe_status': 'needs_rebuild',
+            }
+            binding.update({
+                'registration_group': previous_registration_group,
+                'group_id': previous_group_id,
+                'group_name': previous_group_name,
+                'previous_verified_group_id': previous_group_id,
+                'previous_verified_group_name': previous_group_name,
+                'previous_verified_registration_group': previous_registration_group,
+                'identity_status': 'needs_rebuild',
+                'identity_rebuild_reason': 'manual_rebuild',
+                'last_probe_status': 'queued_for_rebuild',
                 'last_probe_reason': 'manual_identity_rebuild',
-                'config_fingerprint': _whatsapp_approval_binding_config_fingerprint({**binding, 'registration_group': '', 'group_id': '', 'group_name': ''}),
+                'config_fingerprint': _whatsapp_approval_binding_config_fingerprint(rebuild_fingerprint_payload),
             })
             bindings[binding_index] = binding
             conn.execute(
@@ -29971,6 +30694,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         except Exception:
             return []
         cycles: List[Dict[str, Any]] = []
+        seen_binding_keys: set[str] = set()
         for row in rows:
             try:
                 expires_at_text = str(row['expires_at'] or '').strip()
@@ -29985,6 +30709,15 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 continue
             truth_status = str(row['truth_status'] or '').strip()
             confidence = str(row['confidence'] or '').strip()
+            object_key = str(row['object_key'] or '').strip()
+            account_key = object_key.split(':', 1)[0] if ':' in object_key else ''
+            configured_link = str(facts.get('configured_link') or '').strip()
+            configured_group_id = str(facts.get('configured_group_id') or facts.get('actual_group_id') or facts.get('configured_registration_group') or '').strip()
+            binding_dedupe_key = f'{account_key}:{configured_link or configured_group_id or object_key}' if account_key else (configured_link or configured_group_id or object_key)
+            if binding_dedupe_key and binding_dedupe_key in seen_binding_keys:
+                continue
+            if binding_dedupe_key:
+                seen_binding_keys.add(binding_dedupe_key)
             payload = {
                 'group_id': str(facts.get('actual_group_id') or facts.get('configured_group_id') or facts.get('configured_registration_group') or '').strip(),
                 'group_name': str(facts.get('actual_group_name') or facts.get('configured_group_name') or '').strip(),
@@ -30110,18 +30843,34 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         if truth_snapshot_cycles:
             runtime_status = dict(runtime_status or {})
             existing_cycles = list(runtime_status.get('registration_group_cycles') or []) if isinstance(runtime_status.get('registration_group_cycles'), list) else []
-            snapshot_keys = {
-                str((cycle.get('truth_snapshot') or {}).get('object_key') or '').strip()
-                for cycle in truth_snapshot_cycles
-                if isinstance(cycle, dict)
-            }
+            def cycle_binding_keys(cycle: Dict[str, Any]) -> set[str]:
+                monitor = cycle.get('monitor_target') if isinstance(cycle.get('monitor_target'), dict) else {}
+                truth_snapshot = cycle.get('truth_snapshot') if isinstance(cycle.get('truth_snapshot'), dict) else {}
+                keys = {str(truth_snapshot.get('object_key') or '').strip()}
+                account = str(monitor.get('account_key') or monitor.get('binding_key') or '').strip()
+                for value in (
+                    monitor.get('binding_link'),
+                    monitor.get('link'),
+                    cycle.get('binding_link'),
+                    cycle.get('registration_group'),
+                    monitor.get('registration_group'),
+                    monitor.get('group_id'),
+                ):
+                    text = str(value or '').strip()
+                    if text:
+                        keys.add(f'{account}:{text}' if account else text)
+                keys.discard('')
+                return keys
+            snapshot_keys = set()
+            for cycle in truth_snapshot_cycles:
+                if isinstance(cycle, dict):
+                    snapshot_keys.update(cycle_binding_keys(cycle))
             filtered_existing_cycles = []
             for cycle in existing_cycles:
                 if not isinstance(cycle, dict):
                     filtered_existing_cycles.append(cycle)
                     continue
-                cycle_key = str((cycle.get('truth_snapshot') or {}).get('object_key') or '').strip()
-                if cycle_key and cycle_key in snapshot_keys:
+                if cycle_binding_keys(cycle) & snapshot_keys:
                     continue
                 filtered_existing_cycles.append(cycle)
             runtime_status['registration_group_cycles'] = [*truth_snapshot_cycles, *filtered_existing_cycles]
@@ -30413,7 +31162,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             return None
         with self.db.connect() as conn:
             row = conn.execute(
-                "SELECT guild_name, backend_url, login_username, password_secret_ref, guild_backend_token, oauth_token, oauth_token_secret, platform_backend_url, platform_authorization, cms_guild_id, cms_guild_sid, proxy_url, proxy_region, proxy_type, enabled, browser_profile_key, bind_concurrency, request_timeout_seconds, notes, updated_at FROM guild_executors WHERE guild_name = ?",
+                "SELECT guild_name, backend_url, login_username, password_secret_ref, guild_backend_token, oauth_token, oauth_token_secret, platform_backend_url, platform_authorization, cms_guild_id, cms_guild_sid, country, proxy_url, proxy_region, proxy_type, enabled, browser_profile_key, bind_concurrency, request_timeout_seconds, notes, updated_at FROM guild_executors WHERE guild_name = ?",
                 (normalized_guild_name,),
             ).fetchone()
         if not row:
@@ -30428,6 +31177,18 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             token_row = conn.execute("SELECT refresh_token FROM cms_executor_tokens WHERE guild_name = ?", (normalized_guild_name,)).fetchone()
         resolved['cms_refresh_token_configured'] = bool(token_row and str(token_row['refresh_token'] or '').strip())
         return resolved
+
+    def _guild_executor_country_guard(self, guild_name: Optional[str], user_country: Any) -> Dict[str, Any]:
+        executor = self.resolve_guild_executor(guild_name)
+        guild_country = normalize_country_label((executor or {}).get('country'))
+        normalized_user_country = normalize_country_label(user_country)
+        allowed = countries_match(normalized_user_country, guild_country)
+        return {
+            'allowed': allowed,
+            'guild_name': str(guild_name or '').strip(),
+            'user_country': normalized_user_country,
+            'guild_country': guild_country,
+        }
 
     def guild_executor_has_platform_cms_route(self, guild_name: Optional[str]) -> bool:
         executor = self.resolve_guild_executor(guild_name)
@@ -30449,6 +31210,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'platform_backend_url': resolved.get('platform_backend_url') or '',
             'cms_guild_id': resolved.get('cms_guild_id') or '',
             'cms_guild_sid': resolved.get('cms_guild_sid') or '',
+            'country': resolved.get('country') or '',
             'proxy_url': resolved.get('proxy_url') or '',
             'proxy_region': resolved.get('proxy_region') or '',
             'proxy_type': resolved.get('proxy_type') or '',
@@ -30966,6 +31728,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'platform_authorization': str(payload.platform_authorization or payload.platform_backend_token or '').strip(),
             'cms_guild_id': str(payload.cms_guild_id or '').strip(),
             'cms_guild_sid': str(payload.cms_guild_sid or '').strip(),
+            'country': normalize_country_label(payload.country),
             'proxy_url': str(payload.proxy_url or '').strip(),
             'proxy_region': str(payload.proxy_region or '').strip(),
             'proxy_type': str(payload.proxy_type or '').strip() or 'http',
@@ -30999,10 +31762,10 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             conn.execute(
                 """
                 INSERT INTO guild_executors (
-                    guild_name, backend_url, login_username, password_secret_ref, guild_backend_token, oauth_token, oauth_token_secret, platform_backend_url, platform_authorization, cms_guild_id, cms_guild_sid, proxy_url, proxy_region,
+                    guild_name, backend_url, login_username, password_secret_ref, guild_backend_token, oauth_token, oauth_token_secret, platform_backend_url, platform_authorization, cms_guild_id, cms_guild_sid, country, proxy_url, proxy_region,
                     proxy_type, enabled, browser_profile_key, bind_concurrency, request_timeout_seconds,
                     notes, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_name)
                 DO UPDATE SET backend_url = excluded.backend_url,
                               login_username = excluded.login_username,
@@ -31014,6 +31777,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                               platform_authorization = CASE WHEN excluded.platform_authorization != '' THEN excluded.platform_authorization ELSE guild_executors.platform_authorization END,
                               cms_guild_id = excluded.cms_guild_id,
                               cms_guild_sid = excluded.cms_guild_sid,
+                              country = excluded.country,
                               proxy_url = excluded.proxy_url,
                               proxy_region = excluded.proxy_region,
                               proxy_type = excluded.proxy_type,
@@ -31025,7 +31789,7 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                               updated_at = excluded.updated_at
                 """,
                 (
-                    row['guild_name'], row['backend_url'], row['login_username'], row['password_secret_ref'], row['guild_backend_token'], row['oauth_token'], row['oauth_token_secret'], row['platform_backend_url'], row['platform_authorization'], row['cms_guild_id'], row['cms_guild_sid'], row['proxy_url'], row['proxy_region'],
+                    row['guild_name'], row['backend_url'], row['login_username'], row['password_secret_ref'], row['guild_backend_token'], row['oauth_token'], row['oauth_token_secret'], row['platform_backend_url'], row['platform_authorization'], row['cms_guild_id'], row['cms_guild_sid'], row['country'], row['proxy_url'], row['proxy_region'],
                     row['proxy_type'], row['enabled'], row['browser_profile_key'], row['bind_concurrency'], row['request_timeout_seconds'],
                     row['notes'], row['updated_at'],
                 ),
@@ -35159,6 +35923,17 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/session/internal/reset')
     def ops_whatsapp_approval_account_session_internal_reset(account_key: str):
         return service.reset_whatsapp_approval_account_session(account_key)
+
+    @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/bindings/{binding_index}/full-sync')
+    def ops_whatsapp_approval_binding_full_sync(account_key: str, binding_index: int, request: Request):
+        service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
+        result = service.full_sync_whatsapp_approval_binding(account_key, binding_index, source='manual_full_sync', timeout_seconds=45.0)
+        try:
+            payload = service.list_whatsapp_approval_accounts(lightweight=True) or {}
+            _approval_realtime_store().ingest_snapshot(payload, source='manual_full_sync')
+        except Exception:
+            pass
+        return result
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/bindings/{binding_index}/manual-approve')
     def ops_whatsapp_approval_binding_manual_approve(account_key: str, binding_index: int, request: Request):

@@ -727,3 +727,298 @@ def test_binding_probe_target_prefers_current_invite_link_over_stale_group_id():
         'group_id': '120363old@g.us',
         'group_name': '旧群',
     }) == 'https://chat.whatsapp.com/newInvite'
+
+
+def _insert_registration_account_with_binding(db, account_key='registration-truth', link='https://chat.whatsapp.com/TRUTH12345', registration_group='truth-group@g.us'):
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO whatsapp_approval_accounts (
+                account_key, account_name, responsible_type, group_links, area, notify_profile_name,
+                approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker,
+                schedule_windows, enabled, verification_status, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                account_key,
+                '+639****truth',
+                'registration_group',
+                json.dumps([{
+                    'link': link,
+                    'area': 'Indonesia',
+                    'notify_profile_name': 'wa-approval-broadcast',
+                    'enabled': True,
+                    'registration_group': registration_group,
+                    'group_id': registration_group,
+                    'group_name': 'Truth Group',
+                }]),
+                'Indonesia',
+                'wa-approval-broadcast',
+                'threshold_or_timeout',
+                100,
+                200,
+                1,
+                json.dumps([]),
+                1,
+                'pending_verification',
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+
+
+def _patch_lightweight_account_dependencies(monkeypatch, service, account_key='registration-truth'):
+    monkeypatch.setattr(service, '_production_ops_daemon_snapshot', lambda: {'config': {'enabled': True}, 'runtime': {'status': {}, 'launch_agent_installed': True}})
+    monkeypatch.setattr(service, '_list_notify_robot_options', lambda: [])
+    monkeypatch.setattr(service, '_list_customer_service_options', lambda: [])
+    monkeypatch.setattr(service, 'list_whatsapp_approval_area_options', lambda: {'options': [], 'source_options': []})
+    monkeypatch.setattr(service, '_request_whatsapp_approval_worker_health', lambda *a, **k: (_ for _ in ()).throw(AssertionError('lightweight list must not call worker health')))
+    monkeypatch.setattr(service, '_current_whatsapp_approval_worker_health', lambda *a, **k: (_ for _ in ()).throw(AssertionError('lightweight list must not call shared worker health')))
+    monkeypatch.setattr(service, '_apply_live_group_identity_to_binding', lambda *a, **k: (_ for _ in ()).throw(AssertionError('lightweight list must not call live probe')))
+    monkeypatch.setattr(
+        service,
+        '_build_whatsapp_approval_runtime_state',
+        lambda *args, **kwargs: {
+            'account_key': account_key,
+            'configured': True,
+            'active': True,
+            'ready': True,
+            'authenticated': True,
+            'login_verified': True,
+            'status': 'running',
+            'source': 'dedicated',
+            'base_url': 'http://127.0.0.1:59996',
+        },
+    )
+    monkeypatch.setattr(service, '_cached_whatsapp_approval_session_snapshot', lambda *a, **k: {
+        'account_key': account_key,
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'login_verified': True,
+        'login_check_status': 'passed',
+        'login_state': 'logged_in',
+        'can_probe': True,
+        'can_show_qr': False,
+        'should_auto_rebuild': False,
+        'from_cached_session': True,
+    })
+
+
+def _insert_queue_snapshot(db, *, account_key='registration-truth', link='https://chat.whatsapp.com/TRUTH12345', snapshot_type='approval_queue_current_truth', trust_status='TRUSTED_CONFIRMED_PENDING', pending_count=15, checked_at=None, expires_at=None, source_priority=100, syncing=False, api_pending_count=None):
+    checked_at = checked_at or datetime.now(timezone.utc).isoformat()
+    facts = {
+        'trust_status': trust_status,
+        'trusted_pending_count': pending_count if trust_status.startswith('TRUSTED') else None,
+        'pending_count': pending_count,
+        'display_trusted': trust_status.startswith('TRUSTED'),
+        'can_manual_approve': trust_status == 'TRUSTED_CONFIRMED_PENDING',
+        'manual_approve_allowed': trust_status == 'TRUSTED_CONFIRMED_PENDING',
+        'syncing': syncing,
+    }
+    if api_pending_count is not None:
+        facts['api_pending_count'] = api_pending_count
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO mcn_truth_snapshots (
+                snapshot_id, object_type, object_key, snapshot_type, truth_status,
+                confidence, confidence_reason, facts_json, source_json, checked_at,
+                expires_at, recommended_action, updated_at
+            ) VALUES (?, 'registration_group_binding', ?, ?, ?, 'verified', '', ?, ?, ?, ?, '', ?)
+            """,
+            (
+                f'{snapshot_type}:{account_key}:{link}',
+                f'{account_key}:{link}',
+                snapshot_type,
+                trust_status,
+                json.dumps(facts, ensure_ascii=False),
+                json.dumps({'source_priority': source_priority}, ensure_ascii=False),
+                checked_at,
+                expires_at,
+                checked_at,
+            ),
+        )
+        conn.commit()
+
+
+def test_lightweight_registration_binding_uses_current_truth_for_display_and_manual_gate(monkeypatch):
+    db = Database(':memory:')
+    service = Service(db)
+    _insert_registration_account_with_binding(db)
+    _insert_queue_snapshot(db, trust_status='TRUSTED_CONFIRMED_PENDING', pending_count=15)
+    _patch_lightweight_account_dependencies(monkeypatch, service)
+
+    payload = service.list_whatsapp_approval_accounts(lightweight=True)
+    binding = payload['rows'][0]['group_binding_runtimes'][0]
+
+    assert binding['approval_queue_truth']['current_truth']['trust_status'] == 'TRUSTED_CONFIRMED_PENDING'
+    assert binding['approval_queue_truth']['freshness_level'] == 'FRESH'
+    assert binding['approval_queue_truth']['display_count'] == 15
+    assert binding['approval_queue_truth']['can_manual_approve'] is True
+    assert binding['approval_queue_truth']['auto_approval_enabled'] is False
+
+
+def test_lightweight_registration_binding_keeps_stale_truth_visible_but_blocks_manual_approve(monkeypatch):
+    db = Database(':memory:')
+    service = Service(db)
+    _insert_registration_account_with_binding(db)
+    old = (datetime.now(timezone.utc) - timedelta(seconds=90)).isoformat()
+    _insert_queue_snapshot(db, trust_status='TRUSTED_CONFIRMED_PENDING', pending_count=7, checked_at=old)
+    _patch_lightweight_account_dependencies(monkeypatch, service)
+
+    payload = service.list_whatsapp_approval_accounts(lightweight=True)
+    truth = payload['rows'][0]['group_binding_runtimes'][0]['approval_queue_truth']
+
+    assert truth['freshness_level'] == 'STALE'
+    assert truth['display_count'] == 7
+    assert truth['can_manual_approve'] is False
+    assert '最近可信' in truth['display_text']
+
+
+def test_lightweight_probe_never_becomes_current_truth_or_manual_approve_source(monkeypatch):
+    db = Database(':memory:')
+    service = Service(db)
+    _insert_registration_account_with_binding(db)
+    _insert_queue_snapshot(db, snapshot_type='approval_queue_latest_probe', trust_status='UNTRUSTED_API_STALE', pending_count=7, api_pending_count=7)
+    _patch_lightweight_account_dependencies(monkeypatch, service)
+
+    payload = service.list_whatsapp_approval_accounts(lightweight=True)
+    truth = payload['rows'][0]['group_binding_runtimes'][0]['approval_queue_truth']
+
+    assert truth['current_truth'] is None
+    assert truth['latest_probe']['trust_status'] == 'UNTRUSTED_API_STALE'
+    assert truth['freshness_level'] == 'UNTRUSTED'
+    assert truth['display_count'] is None
+    assert truth['can_manual_approve'] is False
+    assert truth['latest_probe']['api_pending_count'] == 7
+
+
+def test_current_truth_low_priority_can_replace_expired_high_priority_snapshot():
+    db = Database(':memory:')
+    service = Service(db)
+    _insert_registration_account_with_binding(db)
+    old = (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat()
+    _insert_queue_snapshot(db, trust_status='TRUSTED_CONFIRMED_PENDING', pending_count=3, checked_at=old, source_priority=100)
+
+    result = service.upsert_approval_queue_current_truth(
+        account_key='registration-truth',
+        binding={'link': 'https://chat.whatsapp.com/TRUTH12345'},
+        sync_result={
+            'ok': True,
+            'trust_status': 'TRUSTED_CONFIRMED_PENDING',
+            'trusted_pending_count': 9,
+            'ui_pending_count': 9,
+            'api_pending_count': 9,
+            'fingerprint': 'fresh-9',
+            'source': 'scheduled_full_sync',
+        },
+        source_priority=60,
+        observed_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    assert result['written'] is True
+    current = service._load_approval_binding_queue_snapshots('registration-truth', {'link': 'https://chat.whatsapp.com/TRUTH12345'})['current_truth']
+    assert current['trusted_pending_count'] == 9
+    assert current['source_priority'] == 60
+
+
+def test_current_truth_lower_priority_does_not_overwrite_fresh_manual_snapshot():
+    db = Database(':memory:')
+    service = Service(db)
+    _insert_registration_account_with_binding(db)
+    _insert_queue_snapshot(db, trust_status='TRUSTED_CONFIRMED_PENDING', pending_count=15, source_priority=100)
+
+    result = service.upsert_approval_queue_current_truth(
+        account_key='registration-truth',
+        binding={'link': 'https://chat.whatsapp.com/TRUTH12345'},
+        sync_result={
+            'ok': True,
+            'trust_status': 'TRUSTED_CONFIRMED_PENDING',
+            'trusted_pending_count': 4,
+            'ui_pending_count': 4,
+            'api_pending_count': 4,
+        },
+        source_priority=60,
+        observed_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    assert result['written'] is False
+    current = service._load_approval_binding_queue_snapshots('registration-truth', {'link': 'https://chat.whatsapp.com/TRUTH12345'})['current_truth']
+    assert current['trusted_pending_count'] == 15
+    assert current['source_priority'] == 100
+
+
+def test_full_queue_sync_writes_current_truth_and_latest_probe(monkeypatch):
+    db = Database(':memory:')
+    service = Service(db)
+    _insert_registration_account_with_binding(db)
+    monkeypatch.setattr(service, '_call_whatsapp_worker_full_queue_sync', lambda *a, **k: {
+        'ok': True,
+        'trust_status': 'TRUSTED_CONFIRMED_PENDING',
+        'trusted_pending_count': 11,
+        'ui_pending_count': 11,
+        'api_pending_count': 11,
+        'requester_ids': ['u1', 'u2'],
+        'fingerprint': 'fp-11',
+        'converged': True,
+    })
+
+    result = service.full_sync_whatsapp_approval_binding('registration-truth', 0, source='manual_full_sync')
+
+    assert result['ok'] is True
+    assert result['trust_status'] == 'TRUSTED_CONFIRMED_PENDING'
+    snapshots = service._load_approval_binding_queue_snapshots('registration-truth', {'link': 'https://chat.whatsapp.com/TRUTH12345'})
+    assert snapshots['current_truth']['trusted_pending_count'] == 11
+    assert snapshots['latest_probe']['trusted_pending_count'] == 11
+
+
+def test_manual_approve_requires_successful_preflight_full_sync(monkeypatch):
+    db = Database(':memory:')
+    service = Service(db)
+    _insert_registration_account_with_binding(db)
+    monkeypatch.setattr(service, 'full_sync_whatsapp_approval_binding', lambda *a, **k: {
+        'ok': False,
+        'trust_status': 'SYNC_TIMEOUT',
+        'can_manual_approve': False,
+        'reason_code': 'full_sync_hard_timeout',
+    })
+    monkeypatch.setattr(service, '_registration_group_approval_decision_sync', lambda *a, **k: (_ for _ in ()).throw(AssertionError('approval must not run without trusted full_sync')))
+
+    with pytest.raises(Exception) as exc:
+        service.manual_approve_whatsapp_approval_binding('registration-truth', 0)
+
+    assert 'full_sync' in str(exc.value) or 'SYNC_TIMEOUT' in str(exc.value)
+
+
+def test_detect_stale_probe_records_recovery_event_and_timeout_latest_probe():
+    db = Database(':memory:')
+    service = Service(db)
+    _insert_registration_account_with_binding(db)
+    checked = datetime.now(timezone.utc).isoformat()
+    for idx in range(3):
+        service.upsert_approval_queue_latest_probe(
+            account_key='registration-truth',
+            binding={'link': 'https://chat.whatsapp.com/TRUTH12345'},
+            probe_result={
+                'ok': False,
+                'trust_status': 'UNTRUSTED_API_STALE',
+                'api_pending_count': 7,
+                'fingerprint': 'stuck-7',
+                'reason_code': 'ui_empty_api_has_historical_requests',
+            },
+            observed_at=checked,
+        )
+    result = service.evaluate_approval_queue_staleness(
+        account_key='registration-truth',
+        binding={'link': 'https://chat.whatsapp.com/TRUTH12345'},
+        external_signal='manual_abnormal_mark',
+    )
+
+    assert result['stale_detected'] is True
+    assert result['recovery_action'] == 'soft_reload'
+    with db.connect() as conn:
+        events = conn.execute("SELECT event_type, payload_json FROM mcn_event_ledger WHERE event_type='approval_queue_recovery_event'").fetchall()
+    assert len(events) == 1
+    payload = json.loads(events[0]['payload_json'])
+    assert payload['recovery_action'] == 'soft_reload'

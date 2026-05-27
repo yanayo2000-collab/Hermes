@@ -43,11 +43,11 @@ class Args:
 def test_registration_group_truth_snapshot_uses_account_key_and_verified_pending():
     cycle = {
         'checked_at': '2026-05-25T04:00:00Z',
-        'registration_group': 'https://chat.whatsapp.com/new-link',
+        'registration_group': '120@g.us',
         'monitor_target': {
             'source': 'account_binding',
             'account_key': 'registration-639974974871',
-            'link': 'https://chat.whatsapp.com/new-link',
+            'binding_link': 'https://chat.whatsapp.com/new-link',
             'group_id': '120@g.us',
             'group_name': 'ES 46',
         },
