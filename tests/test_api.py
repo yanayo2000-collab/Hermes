@@ -3825,7 +3825,7 @@ def test_internal_token_can_access_internal_ops_api_without_session():
     assert health.status_code == 200
 
     state = client.get('/api/ops/registration-group-approval-executor-group-state', params={'registration_group': '8️⃣5️⃣'}, headers={'x-ops-internal-token': 'internal-secret'})
-    assert state.status_code == 200
+    assert state.status_code == 400
 
     warmup = client.post('/api/ops/registration-group-approval-executor-warmup', headers={'x-ops-internal-token': 'internal-secret'})
     assert warmup.status_code == 200
@@ -14943,7 +14943,6 @@ def test_ops_retry_bind_requeues_bind_without_creating_new_submission():
     assert bind_tasks[-1]['status'] == 'pending'
 
 
-
 def test_ops_retry_crm_replays_crm_sync_and_queues_group_join_after_success():
     class FlakyCrmAdapter:
         def __init__(self):
@@ -24340,6 +24339,154 @@ def test_manual_whatsapp_approval_blocks_duplicate_inflight_submit(tmp_path):
     assert len(executor.calls) == 1
 
 
+def test_manual_approve_blocks_overlapping_full_sync_for_same_binding(tmp_path):
+    from app.main import create_app
+
+    class BlockingRegistrationGroupApprovalExecutor(StubRegistrationGroupApprovalExecutor):
+        def __init__(self):
+            super().__init__(
+                result={
+                    'status': 'success',
+                    'verified': True,
+                    'crm_recorded': True,
+                    'result_code': 'approved',
+                    'result_reason': 'verified',
+                    'approval_run_id': 'manual-fullsync-run-1',
+                    'approved_count': 1,
+                    'raw_result': {'pending_before': 1, 'pending_after': 0, 'member_count_after': 6},
+                },
+                group_state_result={
+                    'group_name': '并发互斥测试群',
+                    'group_id': '120363402000111111@g.us',
+                    'pending_count': 1,
+                    'member_count': 5,
+                    'requester_ids': ['manual-fullsync-req-1@lid'],
+                    'requesters': [{'requesterId': 'manual-fullsync-req-1@lid', 'requestedAtUnix': 1746594300}],
+                },
+            )
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def approve(self, context):
+            self.calls.append(context)
+            self.entered.set()
+            self.release.wait(timeout=5)
+            return dict(self.result)
+
+    executor = BlockingRegistrationGroupApprovalExecutor()
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'REGISTRATION_GROUP_APPROVAL_EXECUTOR': executor,
+    })
+    client = TestClient(app)
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-manual-fullsync', json={
+        'account_name': 'WA Manual Full Sync',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/manual-fullsync',
+            'group_name': '并发互斥测试群',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'registration_group': '120363402000111111@g.us',
+            'group_id': '120363402000111111@g.us',
+            'approval_count_threshold': 30,
+            'approval_timeout_minutes': 30,
+            'enabled': True,
+        }],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+
+    responses = []
+
+    def post_manual_approve():
+        with patch('app.main.PRODUCTION_OPS_DAEMON_STATE_PATH', tmp_path / 'production_ops_daemon_state.json'):
+            responses.append(client.post('/api/ops/whatsapp-approval-accounts/wa-manual-fullsync/bindings/0/manual-approve'))
+
+    first = threading.Thread(target=post_manual_approve)
+    first.start()
+    assert executor.entered.wait(timeout=5)
+    full_sync = client.post('/api/ops/whatsapp-approval-accounts/wa-manual-fullsync/bindings/0/full-sync')
+    executor.release.set()
+    first.join(timeout=5)
+
+    assert full_sync.status_code == 409
+    assert full_sync.json()['detail']['reason'] == 'binding_operation_in_progress'
+    assert full_sync.json()['detail']['active_operation'] == 'manual_approve'
+    assert full_sync.json()['detail']['active_stage_code'] == 'approval_dispatch'
+    assert full_sync.json()['detail']['request_id']
+    assert len(executor.calls) == 1
+    assert responses
+
+
+def test_rebuild_identity_blocks_overlapping_full_sync_for_same_binding():
+    from app.main import create_app
+
+    app = create_app({'DB_PATH': ':memory:'})
+    client = TestClient(app)
+
+    saved = client.post('/api/ops/whatsapp-approval-accounts/wa-rebuild-conflict', json={
+        'account_name': 'WA Rebuild Conflict',
+        'responsible_type': 'registration_group',
+        'group_link_bindings': [{
+            'link': 'https://chat.whatsapp.com/rebuild-conflict',
+            'group_name': '重建互斥测试群',
+            'area': 'Indonesia',
+            'notify_profile_name': 'wa-approval-broadcast',
+            'registration_group': 'RG-REBUILD-CONFLICT',
+            'group_id': 'rg-rebuild-conflict-id',
+            'approval_count_threshold': 30,
+            'approval_timeout_minutes': 30,
+            'enabled': True,
+        }],
+        'enabled': True,
+    })
+    assert saved.status_code == 200
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_full_sync(*args, **kwargs):
+        entered.set()
+        release.wait(timeout=5)
+        return {
+            'ok': True,
+            'trust_status': 'TRUSTED_CONFIRMED_PENDING',
+            'reason_code': 'test_blocking_full_sync',
+            'trusted_pending_count': 2,
+            'ui_pending_count': 2,
+            'api_pending_count': 2,
+            'pending_count': 2,
+            'member_count': 10,
+            'requester_ids': ['u1', 'u2'],
+            'requesters': [{'id': 'u1'}, {'id': 'u2'}],
+            'fingerprint': 'blocking-full-sync',
+            'converged': True,
+            'source': kwargs.get('source') or 'manual_full_sync',
+        }
+
+    responses = []
+
+    def run_full_sync():
+        responses.append(client.post('/api/ops/whatsapp-approval-accounts/wa-rebuild-conflict/bindings/0/full-sync'))
+
+    with patch.object(app.state.service, '_call_whatsapp_worker_full_queue_sync', side_effect=blocking_full_sync):
+        worker = threading.Thread(target=run_full_sync)
+        worker.start()
+        assert entered.wait(timeout=5)
+        rebuild = client.post('/api/ops/whatsapp-approval-accounts/wa-rebuild-conflict/bindings/0/rebuild-identity')
+        release.set()
+        worker.join(timeout=5)
+
+    assert rebuild.status_code == 409
+    assert rebuild.json()['detail']['reason'] == 'binding_operation_in_progress'
+    assert rebuild.json()['detail']['active_operation'] == 'full_sync'
+    assert rebuild.json()['detail']['active_stage_code'] == 'worker_sync'
+    assert rebuild.json()['detail']['request_id']
+    assert responses and responses[0].status_code == 200
+
+
 def test_create_app_warms_registration_group_executor_when_supported():
     from app.main import create_app
 
@@ -24804,12 +24951,12 @@ def test_registration_group_approval_executor_group_state_endpoint_calls_executo
     })
     client = TestClient(app)
 
-    response = client.get('/api/ops/registration-group-approval-executor-group-state', params={'registration_group': '8️⃣5️⃣'})
+    response = client.get('/api/ops/registration-group-approval-executor-group-state', params={'registration_group': '12036385@g.us'})
     assert response.status_code == 200
     body = response.json()
-    assert body['group_name'] == '8️⃣5️⃣'
+    assert body['group_name'] == '12036385@g.us'
     assert body['pending_count'] == 2
-    assert executor.group_state_calls == ['8️⃣5️⃣']
+    assert executor.group_state_calls == ['12036385@g.us']
 
 
 
@@ -24870,15 +25017,33 @@ def test_group_approval_executor_target_state_dispatches_registration_scope():
 
     response = client.get(
         '/api/ops/group-approvals/executor/target-state',
-        params={'approval_scope': 'registration_group', 'target_group': '8️⃣5️⃣'},
+        params={'approval_scope': 'registration_group', 'target_group': '12036385@g.us'},
     )
     assert response.status_code == 200
     body = response.json()
     assert body['approval_scope'] == 'registration_group'
-    assert body['target_group_label'] == '8️⃣5️⃣'
-    assert body['group_name'] == '8️⃣5️⃣'
+    assert body['target_group_label'] == '12036385@g.us'
+    assert body['group_name'] == '12036385@g.us'
     assert body['pending_count'] == 2
-    assert executor.group_state_calls == ['8️⃣5️⃣']
+    assert executor.group_state_calls == ['12036385@g.us']
+
+
+
+def test_group_approval_executor_target_state_rejects_non_jid_target_without_runtime_id():
+    from app.main import create_app
+
+    app = create_app({
+        'DB_PATH': ':memory:',
+        'AUTO_LARK_REPLY': False,
+    })
+    client = TestClient(app)
+
+    response = client.get(
+        '/api/ops/group-approvals/executor/target-state',
+        params={'approval_scope': 'registration_group', 'target_group': '8️⃣5️⃣'},
+    )
+    assert response.status_code == 400
+    assert '(@g.us)' in response.json()['detail']
 
 
 
@@ -28096,7 +28261,6 @@ def test_hidden_executor_slot_is_passed_to_bind_executor_context():
     assert captured['executor_slot_index'] == 1
     assert captured['executor_slot_count'] == 3
     assert captured['executor_slot_hidden'] is True
-
 
 
 def test_group_atmosphere_account_list_is_snapshot_only_without_worker_calls(monkeypatch):

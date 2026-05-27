@@ -5,6 +5,7 @@ import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import app.main as app_main
 from app.main import Database, Service
 from app.whatsapp_login_state import map_whatsapp_login_state
 
@@ -95,6 +96,67 @@ def test_runtime_unhealthy_is_only_state_that_requests_rebuild():
     assert result['login_state'] == 'runtime_unhealthy'
     assert result['can_probe'] is False
     assert result['should_auto_rebuild'] is True
+
+
+def test_lightweight_account_list_exposes_active_binding_operation(monkeypatch):
+    db = Database(':memory:')
+    service = Service(db)
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO whatsapp_approval_accounts (
+                account_key, account_name, responsible_type, group_links, area, notify_profile_name,
+                approval_rule, approval_count_threshold, approval_timeout_minutes, auto_recover_worker,
+                schedule_windows, enabled, verification_status, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'registration-op-1', '+639****0002', 'registration_group',
+                json.dumps([{'link': 'https://chat.whatsapp.com/OPERATION12345', 'area': 'Indonesia', 'notify_profile_name': 'wa-approval-broadcast', 'enabled': True}]),
+                'Indonesia', 'wa-approval-broadcast', 'threshold_or_timeout', 100, 200, 1,
+                json.dumps([]), 1, 'pending_verification', datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(service, '_production_ops_daemon_snapshot', lambda: {'config': {'enabled': True}, 'runtime': {'status': {}}})
+    monkeypatch.setattr(service, '_list_notify_robot_options', lambda: [])
+    monkeypatch.setattr(service, '_list_customer_service_options', lambda: [])
+    monkeypatch.setattr(service, 'list_whatsapp_approval_area_options', lambda: {'options': [], 'source_options': []})
+    monkeypatch.setattr(
+        service,
+        '_build_whatsapp_approval_runtime_state',
+        lambda *args, **kwargs: {
+            'account_key': 'registration-op-1',
+            'configured': True,
+            'active': True,
+            'status': 'running',
+            'source': 'dedicated',
+            'base_url': 'http://127.0.0.1:59999',
+            'started_at': datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    service._mark_whatsapp_binding_operation_started(
+        'registration-op-1',
+        0,
+        operation='full_sync',
+        detail='正在执行完整同步',
+        stage_code='worker_sync',
+        stage_label='同步审批队列',
+        request_id='approval_op_test_001',
+    )
+    try:
+        payload = service.list_whatsapp_approval_accounts(lightweight=True)
+    finally:
+        service._clear_whatsapp_binding_operation('registration-op-1', 0)
+
+    binding = payload['rows'][0]['group_binding_runtimes'][0]
+    assert binding['operation_state']['active'] is True
+    assert binding['operation_state']['operation'] == 'full_sync'
+    assert binding['operation_state']['stage_code'] == 'worker_sync'
+    assert binding['operation_state']['stage_label'] == '同步审批队列'
+    assert binding['operation_state']['request_id'] == 'approval_op_test_001'
 
 
 def test_lightweight_account_list_does_not_call_worker_health_or_live_probe(monkeypatch):
@@ -720,13 +782,26 @@ def test_binding_verifier_blocks_not_member_and_not_admin_before_ready():
     assert '管理员身份未被探针可靠确认' in not_admin['detail']
 
 
-def test_binding_probe_target_prefers_current_invite_link_over_stale_group_id():
+def test_binding_probe_target_prefers_authoritative_group_id_over_invite_link():
     from app.main import Service
     assert Service._whatsapp_binding_probe_target({
         'link': 'https://chat.whatsapp.com/newInvite',
         'group_id': '120363old@g.us',
         'group_name': '旧群',
-    }) == 'https://chat.whatsapp.com/newInvite'
+    }) == '120363old@g.us'
+
+
+def test_binding_probe_candidates_use_only_group_id_when_present():
+    from app.main import Service
+
+    binding = {
+        'link': 'https://chat.whatsapp.com/newInvite',
+        'registration_group': '120363old@g.us',
+        'group_id': '120363old@g.us',
+        'group_name': '旧群',
+    }
+
+    assert Service._whatsapp_binding_probe_candidates(binding) == ['120363old@g.us']
 
 
 def _insert_registration_account_with_binding(db, account_key='registration-truth', link='https://chat.whatsapp.com/TRUTH12345', registration_group='truth-group@g.us'):
@@ -971,6 +1046,168 @@ def test_full_queue_sync_writes_current_truth_and_latest_probe(monkeypatch):
     snapshots = service._load_approval_binding_queue_snapshots('registration-truth', {'link': 'https://chat.whatsapp.com/TRUTH12345'})
     assert snapshots['current_truth']['trusted_pending_count'] == 11
     assert snapshots['latest_probe']['trusted_pending_count'] == 11
+
+
+def test_full_queue_sync_falls_back_to_executor_group_state_when_worker_sync_throws(monkeypatch):
+    db = Database(':memory:')
+    service = Service(db)
+    _insert_registration_account_with_binding(db)
+
+    def blow_up(*args, **kwargs):
+        raise RuntimeError('worker full sync 500')
+
+    monkeypatch.setattr(service, '_call_whatsapp_worker_full_queue_sync', blow_up)
+    monkeypatch.setattr(service, 'registration_group_approval_executor_group_state', lambda group: {
+        'group_id': 'truth-group@g.us',
+        'group_name': 'Truth Group',
+        'pending_count': 3,
+        'member_count': 123,
+        'requester_ids': ['u1', 'u2', 'u3'],
+        'requesters': [{'id': 'u1'}, {'id': 'u2'}, {'id': 'u3'}],
+    })
+
+    result = service.full_sync_whatsapp_approval_binding('registration-truth', 0, source='manual_approve_preflight')
+
+    assert result['ok'] is True
+    assert result['trust_status'] == 'TRUSTED_CONFIRMED_PENDING'
+    assert result['reason_code'] == 'executor_group_state_fallback'
+    assert result['trusted_pending_count'] == 3
+    assert result['can_manual_approve'] is True
+    snapshots = service._load_approval_binding_queue_snapshots('registration-truth', {'link': 'https://chat.whatsapp.com/TRUTH12345'})
+    assert snapshots['current_truth']['trusted_pending_count'] == 3
+    assert snapshots['current_truth']['reason_code'] == 'executor_group_state_fallback'
+
+
+def test_full_queue_sync_falls_back_to_executor_group_state_when_worker_sync_is_inconclusive(monkeypatch):
+    db = Database(':memory:')
+    service = Service(db)
+    _insert_registration_account_with_binding(db)
+    monkeypatch.setattr(service, '_call_whatsapp_worker_full_queue_sync', lambda *a, **k: {
+        'ok': False,
+        'trust_status': 'UNTRUSTED_SYNC_INCONCLUSIVE',
+        'reason_code': 'ui_api_not_converged',
+        'ui_pending_count': 0,
+        'api_pending_count': 0,
+        'requester_ids': [],
+        'fingerprint': 'truth-group@g.us|0|0',
+        'converged': False,
+    })
+    monkeypatch.setattr(service, 'registration_group_approval_executor_group_state', lambda group: {
+        'group_id': 'truth-group@g.us',
+        'group_name': 'Truth Group',
+        'pending_count': 2,
+        'member_count': 123,
+        'requester_ids': ['u1', 'u2'],
+        'requesters': [{'id': 'u1'}, {'id': 'u2'}],
+    })
+
+    result = service.full_sync_whatsapp_approval_binding('registration-truth', 0, source='manual_approve_preflight')
+
+    assert result['ok'] is True
+    assert result['trust_status'] == 'TRUSTED_CONFIRMED_PENDING'
+    assert result['reason_code'] == 'executor_group_state_fallback'
+    assert result['trusted_pending_count'] == 2
+    assert result['can_manual_approve'] is True
+    snapshots = service._load_approval_binding_queue_snapshots('registration-truth', {'link': 'https://chat.whatsapp.com/TRUTH12345'})
+    assert snapshots['current_truth']['trusted_pending_count'] == 2
+    assert snapshots['current_truth']['reason_code'] == 'executor_group_state_fallback'
+
+
+def test_full_queue_sync_manual_preflight_keeps_manual_approve_allowed_after_slow_fallback(monkeypatch):
+    db = Database(':memory:')
+    service = Service(db)
+    _insert_registration_account_with_binding(db)
+    monkeypatch.setattr(service, '_call_whatsapp_worker_full_queue_sync', lambda *a, **k: {
+        'ok': False,
+        'trust_status': 'UNTRUSTED_API_STALE',
+        'reason_code': 'ui_empty_api_has_historical_requests',
+        'ui_pending_count': 0,
+        'api_pending_count': 0,
+        'requester_ids': [],
+        'fingerprint': 'truth-group@g.us|0|0',
+        'converged': False,
+    })
+    monkeypatch.setattr(service, 'registration_group_approval_executor_group_state', lambda group: {
+        'group_id': 'truth-group@g.us',
+        'group_name': 'Truth Group',
+        'pending_count': 4,
+        'member_count': 123,
+        'requester_ids': ['u1', 'u2', 'u3', 'u4'],
+        'requesters': [{'id': 'u1'}, {'id': 'u2'}, {'id': 'u3'}, {'id': 'u4'}],
+    })
+    observed_at = '2026-05-27T04:38:04.133737+00:00'
+    monkeypatch.setattr(app_main, 'utc_now', lambda: observed_at)
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 5, 27, 4, 38, 41, 215634, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(app_main, 'datetime', FakeDateTime)
+
+    result = service.full_sync_whatsapp_approval_binding('registration-truth', 0, source='manual_approve_preflight')
+
+    assert result['ok'] is True
+    assert result['trust_status'] == 'TRUSTED_CONFIRMED_PENDING'
+    assert result['reason_code'] == 'executor_group_state_fallback'
+    assert result['trusted_pending_count'] == 4
+    assert result['can_manual_approve'] is True
+
+
+def test_full_queue_sync_falls_back_to_pending_truth_snapshot_when_live_group_state_times_out(monkeypatch):
+    db = Database(':memory:')
+    service = Service(db)
+    _insert_registration_account_with_binding(db)
+
+    def blow_up(*args, **kwargs):
+        raise RuntimeError('worker full sync 500')
+
+    monkeypatch.setattr(service, '_call_whatsapp_worker_full_queue_sync', blow_up)
+    monkeypatch.setattr(service, 'registration_group_approval_executor_group_state', lambda group: (_ for _ in ()).throw(RuntimeError('group_state timeout')))
+    checked_at = datetime.now(timezone.utc).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat()
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO mcn_truth_snapshots (
+                snapshot_id, object_type, object_key, snapshot_type, truth_status,
+                confidence, confidence_reason, facts_json, source_json, checked_at,
+                expires_at, recommended_action, updated_at
+            ) VALUES (?, 'registration_group_binding', ?, 'pending_truth', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                'pending-truth:registration-truth:https://chat.whatsapp.com/TRUTH12345',
+                'registration-truth:https://chat.whatsapp.com/TRUTH12345',
+                'confirmed_pending',
+                'verified',
+                'pending_detected',
+                json.dumps({
+                    'configured_registration_group': 'truth-group@g.us',
+                    'configured_group_id': 'truth-group@g.us',
+                    'configured_link': 'https://chat.whatsapp.com/TRUTH12345',
+                    'actual_group_id': 'truth-group@g.us',
+                    'actual_group_name': 'Truth Group',
+                    'pending_count': 6,
+                    'member_count': 123,
+                    'requester_ids': ['u1', 'u2', 'u3', 'u4', 'u5', 'u6'],
+                    'requesters': [{'id': 'u1'}, {'id': 'u2'}, {'id': 'u3'}, {'id': 'u4'}, {'id': 'u5'}, {'id': 'u6'}],
+                }, ensure_ascii=False),
+                json.dumps({'monitor_target': {'account_key': 'registration-truth', 'registration_group': 'truth-group@g.us'}}, ensure_ascii=False),
+                checked_at,
+                expires_at,
+                'review_or_wait_for_release_rule',
+                checked_at,
+            ),
+        )
+        conn.commit()
+
+    result = service.full_sync_whatsapp_approval_binding('registration-truth', 0, source='manual_approve_preflight')
+
+    assert result['ok'] is True
+    assert result['trust_status'] == 'TRUSTED_CONFIRMED_PENDING'
+    assert result['reason_code'] == 'executor_group_state_fallback'
+    assert result['trusted_pending_count'] == 6
+    assert result['can_manual_approve'] is True
 
 
 def test_manual_approve_requires_successful_preflight_full_sync(monkeypatch):

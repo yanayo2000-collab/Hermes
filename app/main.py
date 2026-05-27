@@ -3146,11 +3146,30 @@ async function loadJson(url, options) {
     let detail = '';
     try {
       const data = await res.json();
-      detail = data.detail || JSON.stringify(data);
+      detail = readableApprovalApiError(data, res.status);
     } catch (_) {}
     throw new Error(detail || `Failed to load ${url}: ${res.status}`);
   }
   return await res.json();
+}
+function readableApprovalApiError(data, status) {
+  const detail = data && data.detail !== undefined ? data.detail : data;
+  if (typeof detail === 'string') {
+    if (detail === 'manual_approval_in_progress') return '当前群组已有人工审批在执行，请稍后再试';
+    return detail;
+  }
+  if (detail && detail.reason === 'binding_operation_in_progress') {
+    const operationLabel = String(detail.active_operation_label || detail.active_operation || '处理中').trim();
+    const stageLabel = String(detail.active_stage_label || '').trim();
+    const requestId = String(detail.request_id || '').trim();
+    return `当前群组正在执行${operationLabel}${stageLabel ? ` · ${stageLabel}` : ''}${requestId ? `（请求ID: ${requestId}）` : ''}，请稍后再试`;
+  }
+  if (detail && detail.reason === 'manual_approval_full_sync_not_trusted') {
+    const reasonCode = String(detail.reason_code || '').trim();
+    return reasonCode ? `当前审批前同步未通过：${reasonCode}` : '当前审批前同步未通过，请先执行完整同步';
+  }
+  if (detail && detail.message) return detail.message;
+  try { return JSON.stringify(detail); } catch (_) { return `操作失败 HTTP ${status}`; }
 }
 function showToast(message, type='success') {
   const toast = document.getElementById('productionOpsToast');
@@ -3841,19 +3860,33 @@ function bindingSummaryHtml(binding, row, bindingIndex) {
   const probeRefreshPending = Boolean((window.__approvalBindingProbeRefreshPendingByKey || {})[bindingPendingKey]);
   const rebuildIdentityPending = Boolean((window.__approvalBindingRebuildPendingByKey || {})[bindingPendingKey]);
   const manualApprovePending = Boolean((window.__approvalBindingManualApprovePendingByKey || {})[bindingPendingKey]);
+  const fullSyncPending = Boolean((window.__approvalBindingFullSyncPendingByKey || {})[bindingPendingKey]);
+  const operationState = binding.operation_state && typeof binding.operation_state === 'object' ? binding.operation_state : {};
+  const remoteOperationPending = Boolean(operationState.active);
+  const remoteOperation = String(operationState.operation || '').trim();
+  const busyOperation = manualApprovePending ? 'manual_approve'
+    : (fullSyncPending ? 'full_sync'
+    : (probeRefreshPending ? 'probe_refresh'
+    : (rebuildIdentityPending ? 'rebuild_identity'
+    : (remoteOperationPending ? remoteOperation : ''))));
+  const actionButtonsDisabled = Boolean(busyOperation);
+  const operationTextMap = {manual_approve:'人工审批', full_sync:'完整同步', probe_refresh:'刷新探针', rebuild_identity:'重建群绑定'};
+  const activeOperationLabel = operationTextMap[String(busyOperation || '').trim()] || String(operationState.operation_label || '').trim() || String(operationState.detail || '').trim() || '处理中';
+  const activeStageLabel = String(operationState.stage_label || '').trim();
+  const activeRequestId = String(operationState.request_id || '').trim();
+  const operationHint = actionButtonsDisabled ? `<div class="mini-note" style="margin-top:8px;">当前操作：${escapeHtml(activeOperationLabel)}${activeStageLabel ? ` · ${escapeHtml(activeStageLabel)}` : ''}${activeRequestId ? `<br>请求ID：<span class="mono">${escapeHtml(activeRequestId)}</span>` : ''}</div>` : '';
   const monitorButtonClass = pendingAction ? 'pending' : (monitoringEnabled ? 'enabled' : 'disabled');
   const monitorButtonText = pendingAction === 'enabling'
     ? '正在开启'
     : (pendingAction === 'disabling' ? '正在关闭' : (monitoringEnabled ? '监控中' : '不监控'));
   const manualApproveButtonHtml = row?.responsible_type === 'registration_group'
-    ? `<button type="button" class="secondary ${manualApprovePending ? 'button-loading' : ''}" onclick="manualApproveBinding('${accountKeyEscaped}', ${bindingIndex})" ${manualApprovePending ? 'disabled' : ''}>${manualApprovePending ? '审批中…' : '一键审批'}</button>`
+    ? `<button type="button" class="secondary ${(manualApprovePending || (remoteOperationPending && remoteOperation === 'manual_approve')) ? 'button-loading' : ''}" onclick="manualApproveBinding('${accountKeyEscaped}', ${bindingIndex})" ${actionButtonsDisabled ? 'disabled' : ''}>${(manualApprovePending || (remoteOperationPending && remoteOperation === 'manual_approve')) ? '审批中…' : '一键审批'}</button>`
     : '';
-  const fullSyncPending = Boolean((window.__approvalBindingFullSyncPendingByKey || {})[bindingPendingKey]);
-  const fullSyncButtonHtml = `<button type="button" class="secondary ${fullSyncPending ? 'button-loading' : ''}" onclick="fullSyncApprovalBinding('${accountKeyEscaped}', ${bindingIndex})" ${fullSyncPending ? 'disabled' : ''}>${fullSyncPending ? '同步中…' : '完整同步'}</button>`;
-  const probeRefreshButtonHtml = `<button type="button" class="secondary ${probeRefreshPending ? 'button-loading' : ''}" onclick="refreshApprovalBindingProbe('${accountKeyEscaped}', ${bindingIndex})" ${probeRefreshPending ? 'disabled' : ''}>${probeRefreshPending ? '刷新中…' : '刷新探针'}</button>`;
+  const fullSyncButtonHtml = `<button type="button" class="secondary ${(fullSyncPending || (remoteOperationPending && remoteOperation === 'full_sync')) ? 'button-loading' : ''}" onclick="fullSyncApprovalBinding('${accountKeyEscaped}', ${bindingIndex})" ${actionButtonsDisabled ? 'disabled' : ''}>${(fullSyncPending || (remoteOperationPending && remoteOperation === 'full_sync')) ? '同步中…' : '完整同步'}</button>`;
+  const probeRefreshButtonHtml = `<button type="button" class="secondary ${(probeRefreshPending || (remoteOperationPending && remoteOperation === 'probe_refresh')) ? 'button-loading' : ''}" onclick="refreshApprovalBindingProbe('${accountKeyEscaped}', ${bindingIndex})" ${actionButtonsDisabled ? 'disabled' : ''}>${(probeRefreshPending || (remoteOperationPending && remoteOperation === 'probe_refresh')) ? '刷新中…' : '刷新探针'}</button>`;
   const canRebuildIdentity = row?.responsible_type === 'registration_group' && approvalRoleCanManage(String(window.__opsUserRole || '').trim());
   const rebuildIdentityButtonHtml = canRebuildIdentity
-    ? `<button type="button" class="secondary ${rebuildIdentityPending ? 'button-loading' : ''}" onclick="rebuildApprovalBindingIdentity('${accountKeyEscaped}', ${bindingIndex})" ${rebuildIdentityPending ? 'disabled' : ''}>${rebuildIdentityPending ? '重建中…' : '重建群绑定'}</button>`
+    ? `<button type="button" class="secondary ${(rebuildIdentityPending || (remoteOperationPending && remoteOperation === 'rebuild_identity')) ? 'button-loading' : ''}" onclick="rebuildApprovalBindingIdentity('${accountKeyEscaped}', ${bindingIndex})" ${actionButtonsDisabled ? 'disabled' : ''}>${(rebuildIdentityPending || (remoteOperationPending && remoteOperation === 'rebuild_identity')) ? '重建中…' : '重建群绑定'}</button>`
     : '';
   const deleteBindingButtonHtml = approvalRoleCanManage(String(window.__opsUserRole || '').trim())
     ? `<button type="button" class="secondary delete-binding-button" onclick="deleteApprovalBinding('${accountKeyEscaped}', ${bindingIndex})">删除群组</button>`
@@ -3878,6 +3911,7 @@ function bindingSummaryHtml(binding, row, bindingIndex) {
       </div>
     </div>
     ${showVerifierDetail ? `<div class="mini-note" style="margin-top:8px;">${verifierDetail}</div>` : ''}
+    ${operationHint}
   </div>`;
 }
 function accountCardHtml(row) {
@@ -5990,7 +6024,9 @@ def _normalize_group_link_bindings(bindings: list[dict[str, Any]]) -> list[dict[
         raw_registration_group = str(item.get('registration_group') or '').strip()
         raw_group_id = str(item.get('group_id') or '').strip()
         sanitized_group_id = _sanitize_whatsapp_group_jid(raw_group_id)
-        sanitized_registration_group = _sanitize_whatsapp_group_jid(raw_registration_group)
+        sanitized_registration_group = '' if _looks_like_whatsapp_invite_link(raw_registration_group) else raw_registration_group
+        if not sanitized_registration_group and sanitized_group_id:
+            sanitized_registration_group = sanitized_group_id
         sanitized_group_name = '' if _looks_like_whatsapp_invite_link(raw_group_name) else raw_group_name
         row = {
             'link': link,
@@ -7706,6 +7742,8 @@ class Service:
         self._registration_group_approval_batch_lock = threading.Lock()
         self._manual_whatsapp_approval_inflight_lock = threading.Lock()
         self._manual_whatsapp_approval_inflight: set[str] = set()
+        self._whatsapp_binding_operation_lock = threading.Lock()
+        self._whatsapp_binding_operations: dict[str, dict[str, Any]] = {}
         self._whatsapp_approval_runtime_lock = threading.RLock()
         self._official_group_bridge_recover_lock = threading.Lock()
         self._official_group_bridge_recover_state: Dict[str, Any] = {}
@@ -15587,15 +15625,39 @@ class Service:
 
     @staticmethod
     def _whatsapp_binding_probe_target(binding: Dict[str, Any]) -> str:
-        # The configured invite link is the operator-facing binding identity.
-        # Prefer it over a cached @g.us id so stale group_id values cannot keep
-        # probes pinned to an old WhatsApp group after the binding is changed.
+        runtime_group_id = Service._whatsapp_binding_runtime_group_id(binding)
         return (
-            str(binding.get('link') or '').strip()
-            or str(binding.get('group_id') or '').strip()
+            runtime_group_id
+            or str(binding.get('link') or '').strip()
             or str(binding.get('registration_group') or '').strip()
             or str(binding.get('group_name') or '').strip()
         )
+
+    @staticmethod
+    def _whatsapp_binding_runtime_group_id(binding: Dict[str, Any]) -> str:
+        raw_group_id = str(binding.get('group_id') or '').strip()
+        if raw_group_id and not _looks_like_whatsapp_invite_link(raw_group_id):
+            return raw_group_id
+        registration_group = str(binding.get('registration_group') or '').strip()
+        if registration_group and registration_group.endswith('@g.us'):
+            return registration_group
+        return ''
+
+    @staticmethod
+    def _whatsapp_binding_probe_candidates(binding: Dict[str, Any], *, allow_non_jid_fallback: bool = False) -> List[str]:
+        runtime_group_id = Service._whatsapp_binding_runtime_group_id(binding)
+        candidates: List[str] = []
+        if runtime_group_id:
+            candidates.append(runtime_group_id)
+        elif allow_non_jid_fallback:
+            for candidate in (
+                str(binding.get('link') or '').strip(),
+                str(binding.get('registration_group') or '').strip(),
+                str(binding.get('group_name') or '').strip(),
+            ):
+                if candidate and candidate not in candidates:
+                    candidates.append(candidate)
+        return candidates
 
     @staticmethod
     def _whatsapp_binding_probe_label(binding: Dict[str, Any], target: str = '') -> str:
@@ -15614,29 +15676,25 @@ class Service:
         runtime_state: Optional[Dict[str, Any]] = None,
         session_state: Optional[Dict[str, Any]] = None,
         allow_shared_fallback: bool = True,
+        allow_non_jid_fallback: bool = False,
         attempts: int = 3,
         retry_delay_seconds: float = 0.0,
         timeout_seconds: float = 30.0,
     ) -> Dict[str, Any]:
         normalized_type = str(responsible_type or '').strip()
+        runtime_state = dict(runtime_state or {})
+        session_state = dict(session_state or {})
         target = self._whatsapp_binding_probe_target(binding)
         target_label = self._whatsapp_binding_probe_label(binding, target)
-        target_candidates: List[str] = []
-        for candidate in (
-            str(binding.get('group_id') or '').strip(),
-            str(binding.get('registration_group') or '').strip(),
-            str(binding.get('link') or '').strip(),
-            str(binding.get('group_name') or '').strip(),
-        ):
-            if candidate and candidate not in target_candidates:
-                target_candidates.append(candidate)
+        target_candidates = self._whatsapp_binding_probe_candidates(
+            binding,
+            allow_non_jid_fallback=allow_non_jid_fallback,
+        )
         expected_account_key = str(binding.get('account_key') or runtime_state.get('account_key') or '').strip()
         expected_runtime_phone = ''.join(ch for ch in expected_account_key if ch.isdigit())
         if not normalized_type or not target_candidates:
             return {}
         candidate_base_urls: List[str] = []
-        runtime_state = dict(runtime_state or {})
-        session_state = dict(session_state or {})
         runtime_base_url = str(runtime_state.get('base_url') or '').strip().rstrip('/')
         if runtime_state.get('active') and runtime_base_url:
             # 账号未完成登录校验时，不能拿这个 runtime 去读群状态。
@@ -15684,6 +15742,7 @@ class Service:
         runtime_state: Optional[Dict[str, Any]] = None,
         session_state: Optional[Dict[str, Any]] = None,
         allow_shared_fallback: bool = True,
+        allow_non_jid_fallback: bool = False,
         overwrite_existing_name: bool = False,
         attempts: int = 3,
         retry_delay_seconds: float = 0.0,
@@ -15695,6 +15754,7 @@ class Service:
             runtime_state=runtime_state,
             session_state=session_state,
             allow_shared_fallback=allow_shared_fallback,
+            allow_non_jid_fallback=allow_non_jid_fallback,
             attempts=attempts,
             retry_delay_seconds=retry_delay_seconds,
             timeout_seconds=timeout_seconds,
@@ -15779,9 +15839,9 @@ class Service:
                 if binding.get('enabled') is False:
                     continue
                 queue_group = (
-                    str(binding.get('link') or '').strip()
+                    str(binding.get('group_id') or '').strip()
                     or str(binding.get('registration_group') or '').strip()
-                    or str(binding.get('group_id') or '').strip()
+                    or str(binding.get('link') or '').strip()
                     or str(binding.get('group_name') or '').strip()
                 )
                 binding_target = (
@@ -22474,6 +22534,9 @@ class Service:
         )
         binding = binding_match.get('binding') if isinstance(binding_match, dict) else {}
         if isinstance(binding, dict):
+            runtime_group_id = self._whatsapp_binding_runtime_group_id(binding)
+            if runtime_group_id:
+                aliases.add(runtime_group_id.lower())
             for key in ('group_name', 'registration_group', 'group_id', 'link'):
                 value = str(binding.get(key) or '').strip().lower()
                 if value:
@@ -22493,12 +22556,16 @@ class Service:
         )
         value_binding = value_binding_match.get('binding') if isinstance(value_binding_match, dict) else {}
         if isinstance(value_binding, dict):
-            value_aliases = {
+            runtime_group_id = self._whatsapp_binding_runtime_group_id(value_binding)
+            value_aliases = set()
+            if runtime_group_id:
+                value_aliases.add(runtime_group_id.lower())
+            value_aliases.update({
                 str(value_binding.get('group_name') or '').strip().lower(),
                 str(value_binding.get('registration_group') or '').strip().lower(),
                 str(value_binding.get('group_id') or '').strip().lower(),
                 str(value_binding.get('link') or '').strip().lower(),
-            }
+            })
             value_aliases.discard('')
             if str(target_group or '').strip().lower() in value_aliases:
                 return True
@@ -24155,31 +24222,39 @@ class Service:
             target_group=normalized_target,
         )
 
-    def registration_group_approval_executor_group_state(self, registration_group: str) -> Dict[str, Any]:
+    def registration_group_approval_executor_group_state(self, registration_group: str, *, allow_legacy_target: bool = False) -> Dict[str, Any]:
         normalized_group = str(registration_group or '').strip()
         if not normalized_group:
             raise HTTPException(status_code=400, detail='registration_group is required')
-        routed_runtime = self._resolve_whatsapp_approval_runtime_executor(target_group=normalized_group, responsible_type='registration_group')
+        canonical_group = self._resolve_whatsapp_runtime_target_group(
+            responsible_type='registration_group',
+            target_group=normalized_group,
+        )
+        if not canonical_group:
+            if not allow_legacy_target:
+                raise HTTPException(status_code=400, detail='registration_group must resolve to a WhatsApp group id (@g.us)')
+            canonical_group = normalized_group
+        routed_runtime = self._resolve_whatsapp_approval_runtime_executor(target_group=canonical_group, responsible_type='registration_group')
         executor = (routed_runtime or {}).get('executor') or self.registration_group_approval_executor
         if executor is None:
             return {
                 'configured': False,
                 'status': 'unconfigured',
                 'provider': None,
-                'group_name': normalized_group,
+                'group_name': canonical_group,
                 'group_id': None,
                 'pending_count': None,
                 'member_count': None,
                 'requester_ids': [],
             }
         if hasattr(executor, 'group_state') and callable(getattr(executor, 'group_state')):
-            result = executor.group_state(normalized_group) or {}
+            result = executor.group_state(canonical_group) or {}
             if not isinstance(result, dict):
                 raise HTTPException(status_code=500, detail='registration group approval executor group_state must return dict result')
             normalized = dict(result)
             normalized.setdefault('configured', True)
-            normalized.setdefault('group_name', normalized_group)
-            normalized.setdefault('group_id', None)
+            normalized.setdefault('group_name', canonical_group)
+            normalized.setdefault('group_id', canonical_group if _looks_like_whatsapp_group_jid(canonical_group) else None)
             normalized.setdefault('pending_count', None)
             normalized.setdefault('member_count', None)
             normalized.setdefault('requester_ids', [])
@@ -24826,8 +24901,8 @@ class Service:
             runtime_executor = routed_runtime['executor']
             runtime_binding = routed_runtime.get('binding') or {}
             runtime_group_target = str(
-                runtime_binding.get('link')
-                or runtime_binding.get('group_id')
+                self._whatsapp_binding_runtime_group_id(runtime_binding)
+                or routed_runtime.get('resolved_target_group')
                 or payload.target_group
                 or ''
             ).strip()
@@ -26384,12 +26459,15 @@ class Service:
             for binding in normalized_bindings:
                 if binding.get('enabled') is False:
                     continue
+                runtime_group_id = self._whatsapp_binding_runtime_group_id(binding)
                 candidates = {
                     str(binding.get('group_name') or '').strip().lower(),
                     str(binding.get('registration_group') or '').strip().lower(),
                     str(binding.get('group_id') or '').strip().lower(),
                     str(binding.get('link') or '').strip().lower(),
                 }
+                if runtime_group_id:
+                    candidates.add(runtime_group_id.lower())
                 candidates.discard('')
                 if normalized_target in candidates:
                     return {
@@ -26400,8 +26478,30 @@ class Service:
                     }
         return None
 
+    def _resolve_whatsapp_runtime_target_group(self, *, responsible_type: str, target_group: str) -> str:
+        normalized_target = str(target_group or '').strip()
+        if not normalized_target:
+            return ''
+        sanitized_target = str(target_group or '').strip()
+        if sanitized_target.endswith('@g.us'):
+            return sanitized_target
+        match = self._find_whatsapp_approval_account_binding(
+            responsible_type=responsible_type,
+            target_group=normalized_target,
+        )
+        binding = match.get('binding') if isinstance(match, dict) else {}
+        if isinstance(binding, dict):
+            return self._whatsapp_binding_runtime_group_id(binding)
+        return ''
+
     def _resolve_whatsapp_approval_runtime_executor(self, *, target_group: str, responsible_type: str) -> Optional[Dict[str, Any]]:
-        match = self._find_whatsapp_approval_account_binding(responsible_type=responsible_type, target_group=target_group)
+        resolved_target = self._resolve_whatsapp_runtime_target_group(
+            responsible_type=responsible_type,
+            target_group=target_group,
+        )
+        if not resolved_target:
+            return None
+        match = self._find_whatsapp_approval_account_binding(responsible_type=responsible_type, target_group=resolved_target)
         if not match:
             return None
         allow_shared_fallback = str(responsible_type or '').strip().lower() == 'registration_group'
@@ -26415,6 +26515,7 @@ class Service:
             'binding': match.get('binding') or {},
             'runtime_state': runtime_state,
             'executor': executor,
+            'resolved_target_group': resolved_target,
         }
 
     def _render_whatsapp_approval_qr_image_data_url(self, qr_text: str) -> str:
@@ -27258,17 +27359,130 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             payload['status'] = 'skipped_no_notifier'
         return payload
 
+    @staticmethod
+    def _whatsapp_binding_operation_key(account_key: str, binding_index: int) -> str:
+        return f"{str(account_key or '').strip()}:{int(binding_index)}"
+
+    @staticmethod
+    def _whatsapp_binding_operation_label(operation: str) -> str:
+        normalized = str(operation or '').strip()
+        return {
+            'manual_approve': '人工审批',
+            'full_sync': '完整同步',
+            'probe_refresh': '刷新探针',
+            'rebuild_identity': '重建群绑定',
+        }.get(normalized, normalized or '处理中')
+
+    def _get_whatsapp_binding_operation_state(self, account_key: str, binding_index: int) -> Optional[Dict[str, Any]]:
+        operation_key = self._whatsapp_binding_operation_key(account_key, binding_index)
+        with self._whatsapp_binding_operation_lock:
+            current = self._whatsapp_binding_operations.get(operation_key)
+            return dict(current) if isinstance(current, dict) else None
+
+    def _mark_whatsapp_binding_operation_started(
+        self,
+        account_key: str,
+        binding_index: int,
+        *,
+        operation: str,
+        detail: str = '',
+        stage_code: str = '',
+        stage_label: str = '',
+        request_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_account_key = str(account_key or '').strip()
+        operation_key = self._whatsapp_binding_operation_key(normalized_account_key, binding_index)
+        now_iso = utc_now()
+        with self._whatsapp_binding_operation_lock:
+            existing = self._whatsapp_binding_operations.get(operation_key)
+            if isinstance(existing, dict):
+                existing_operation = str(existing.get('operation') or '').strip()
+                if operation == 'manual_approve' and existing_operation == 'manual_approve':
+                    raise HTTPException(status_code=409, detail='manual_approval_in_progress')
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        'reason': 'binding_operation_in_progress',
+                        'account_key': normalized_account_key,
+                        'binding_index': int(binding_index),
+                        'active_operation': existing_operation or None,
+                        'active_operation_label': str(existing.get('operation_label') or '').strip() or self._whatsapp_binding_operation_label(existing_operation),
+                        'active_detail': str(existing.get('detail') or '').strip() or None,
+                        'active_stage_code': str(existing.get('stage_code') or '').strip() or None,
+                        'active_stage_label': str(existing.get('stage_label') or '').strip() or None,
+                        'request_id': str(existing.get('request_id') or '').strip() or None,
+                        'started_at': existing.get('started_at'),
+                    },
+                )
+            operation_label = self._whatsapp_binding_operation_label(operation)
+            payload = {
+                'active': True,
+                'account_key': normalized_account_key,
+                'binding_index': int(binding_index),
+                'operation': str(operation or '').strip(),
+                'operation_label': operation_label,
+                'detail': str(detail or '').strip(),
+                'stage_code': str(stage_code or '').strip(),
+                'stage_label': str(stage_label or '').strip(),
+                'request_id': str(request_id or '').strip() or create_id('approval_op'),
+                'started_at': now_iso,
+                'updated_at': now_iso,
+            }
+            self._whatsapp_binding_operations[operation_key] = payload
+            return dict(payload)
+
+    def _update_whatsapp_binding_operation_state(
+        self,
+        account_key: str,
+        binding_index: int,
+        **updates: Any,
+    ) -> Optional[Dict[str, Any]]:
+        operation_key = self._whatsapp_binding_operation_key(account_key, binding_index)
+        now_iso = utc_now()
+        with self._whatsapp_binding_operation_lock:
+            current = self._whatsapp_binding_operations.get(operation_key)
+            if not isinstance(current, dict):
+                return None
+            merged = dict(current)
+            for key, value in updates.items():
+                if value is None:
+                    continue
+                merged[key] = value
+            merged['updated_at'] = now_iso
+            self._whatsapp_binding_operations[operation_key] = merged
+            return dict(merged)
+
+    def _clear_whatsapp_binding_operation(self, account_key: str, binding_index: int) -> None:
+        operation_key = self._whatsapp_binding_operation_key(account_key, binding_index)
+        with self._whatsapp_binding_operation_lock:
+            self._whatsapp_binding_operations.pop(operation_key, None)
+
     def manual_approve_whatsapp_approval_binding(self, account_key: str, binding_index: int, *, audit_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         inflight_key = f"{str(account_key or '').strip()}:{int(binding_index)}"
-        with self._manual_whatsapp_approval_inflight_lock:
-            if inflight_key in self._manual_whatsapp_approval_inflight:
-                raise HTTPException(status_code=409, detail='manual_approval_in_progress')
-            self._manual_whatsapp_approval_inflight.add(inflight_key)
+        operation_started = False
+        request_context = dict((audit_context or {}).get('request') or {})
+        request_id = str(request_context.get('request_id') or '').strip() or create_id('approval_op')
         try:
+            self._mark_whatsapp_binding_operation_started(
+                account_key,
+                binding_index,
+                operation='manual_approve',
+                detail='正在执行人工审批',
+                stage_code='preflight_sync',
+                stage_label='审批前同步',
+                request_id=request_id,
+            )
+            operation_started = True
+            with self._manual_whatsapp_approval_inflight_lock:
+                if inflight_key in self._manual_whatsapp_approval_inflight:
+                    raise HTTPException(status_code=409, detail='manual_approval_in_progress')
+                self._manual_whatsapp_approval_inflight.add(inflight_key)
             return self._manual_approve_whatsapp_approval_binding_locked(account_key, binding_index, audit_context=audit_context)
         finally:
             with self._manual_whatsapp_approval_inflight_lock:
                 self._manual_whatsapp_approval_inflight.discard(inflight_key)
+            if operation_started:
+                self._clear_whatsapp_binding_operation(account_key, binding_index)
 
     def _manual_approve_whatsapp_approval_binding_locked(self, account_key: str, binding_index: int, *, audit_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         audit_context = dict(audit_context or {})
@@ -27292,11 +27506,22 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             raise HTTPException(status_code=400, detail='binding registration_group target is required')
         runtime_state = dict(account.get('runtime_state') or {})
         session_state = dict(account.get('session_state') or {})
+        request_id = str(request_context.get('request_id') or '').strip() or create_id('approval_op')
+        self._update_whatsapp_binding_operation_state(
+            account_key,
+            binding_index,
+            detail='正在执行审批前同步',
+            stage_code='preflight_sync',
+            stage_label='审批前同步',
+            request_id=request_id,
+        )
         preflight = self.full_sync_whatsapp_approval_binding(
             str(account.get('account_key') or account_key or '').strip(),
             binding_index,
             source='manual_approve_preflight',
             timeout_seconds=30.0,
+            _skip_operation_lock=True,
+            request_id=request_id,
         )
         if not bool(preflight.get('can_manual_approve')):
             raise HTTPException(
@@ -27328,7 +27553,21 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             expected_requester_ids=list(probe.get('requester_ids') or []) if isinstance(probe.get('requester_ids'), list) else None,
             expected_requesters=list(probe.get('requesters') or []) if isinstance(probe.get('requesters'), list) else None,
         )
+        self._update_whatsapp_binding_operation_state(
+            account_key,
+            binding_index,
+            detail='正在提交人工审批',
+            stage_code='approval_dispatch',
+            stage_label='提交审批',
+        )
         result = self._registration_group_approval_decision_sync(request)
+        self._update_whatsapp_binding_operation_state(
+            account_key,
+            binding_index,
+            detail='正在核验审批结果',
+            stage_code='post_verify',
+            stage_label='核验结果',
+        )
         try:
             post_probe = self.registration_group_approval_executor_group_state(registration_group)
         except Exception:
@@ -27511,97 +27750,119 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         return {**binding, **target}
 
     def refresh_whatsapp_approval_binding_probe(self, account_key: str, binding_index: int) -> Dict[str, Any]:
-        account = self._get_whatsapp_approval_account_runtime_row(account_key)
-        bindings = list(account.get('group_binding_runtimes') or account.get('group_link_bindings') or [])
-        if binding_index < 0 or binding_index >= len(bindings):
-            raise HTTPException(status_code=404, detail='whatsapp approval binding not found')
-        binding = dict(bindings[binding_index] or {})
-        binding['account_key'] = str(account.get('account_key') or '').strip()
-        responsible_type = str(account.get('responsible_type') or '').strip()
-        runtime_state = dict(account.get('runtime_state') or {})
-        session_state = dict(account.get('session_state') or {})
-        live_probe: Dict[str, Any] = {}
-        if responsible_type == 'registration_group':
-            registration_group = (
-                str(binding.get('group_id') or '').strip()
-                or str(binding.get('registration_group') or '').strip()
-                or str(binding.get('link') or '').strip()
-                or str(binding.get('group_name') or '').strip()
+        self._mark_whatsapp_binding_operation_started(
+            account_key,
+            binding_index,
+            operation='probe_refresh',
+            detail='正在刷新探针',
+            stage_code='live_probe',
+            stage_label='实时探针',
+        )
+        try:
+            account = self._get_whatsapp_approval_account_runtime_row(account_key)
+            bindings = list(account.get('group_binding_runtimes') or account.get('group_link_bindings') or [])
+            if binding_index < 0 or binding_index >= len(bindings):
+                raise HTTPException(status_code=404, detail='whatsapp approval binding not found')
+            binding = dict(bindings[binding_index] or {})
+            binding['account_key'] = str(account.get('account_key') or '').strip()
+            responsible_type = str(account.get('responsible_type') or '').strip()
+            runtime_state = dict(account.get('runtime_state') or {})
+            session_state = dict(account.get('session_state') or {})
+            live_probe: Dict[str, Any] = {}
+            if responsible_type == 'registration_group':
+                registration_group = (
+                    str(binding.get('group_id') or '').strip()
+                    or str(binding.get('registration_group') or '').strip()
+                    or str(binding.get('link') or '').strip()
+                    or str(binding.get('group_name') or '').strip()
+                )
+                if not registration_group:
+                    raise HTTPException(status_code=400, detail='binding registration_group target is required')
+                live_probe = self._probe_whatsapp_binding_group_state(
+                    responsible_type='registration_group',
+                    binding=binding,
+                    runtime_state=runtime_state,
+                    session_state=session_state,
+                    allow_shared_fallback=True,
+                    allow_non_jid_fallback=True,
+                    attempts=2,
+                    timeout_seconds=25.0,
+                )
+                if not live_probe or not (str((live_probe or {}).get('group_id') or '').strip() or str((live_probe or {}).get('group_name') or '').strip()):
+                    try:
+                        live_probe = self.registration_group_approval_executor_group_state(registration_group, allow_legacy_target=True)
+                    except Exception:
+                        live_probe = live_probe or {}
+            else:
+                live_probe = self._probe_whatsapp_binding_group_state(
+                    responsible_type=responsible_type,
+                    binding=binding,
+                    runtime_state=runtime_state,
+                    session_state=session_state,
+                    allow_shared_fallback=True,
+                    attempts=2,
+                    timeout_seconds=25.0,
+                )
+            if isinstance(live_probe, dict):
+                self._update_whatsapp_binding_operation_state(
+                    account_key,
+                    binding_index,
+                    detail='正在写回探针识别结果',
+                    stage_code='persist_runtime_identity',
+                    stage_label='写回识别结果',
+                )
+                binding = self._persist_whatsapp_approval_binding_probe_identity(
+                    str(account.get('account_key') or '').strip(),
+                    binding_index,
+                    binding,
+                    live_probe,
+                )
+                persisted_group_name = str(binding.get('group_name') or '').strip()
+                if persisted_group_name and _looks_like_whatsapp_group_jid(str(live_probe.get('group_name') or '').strip()):
+                    live_probe = {**live_probe, 'group_name': persisted_group_name}
+                if not str(live_probe.get('group_id') or '').strip():
+                    fallback_group_id = _sanitize_whatsapp_group_jid(binding.get('group_id')) or _sanitize_whatsapp_group_jid(binding.get('registration_group'))
+                    if fallback_group_id:
+                        live_probe = {**live_probe, 'group_id': fallback_group_id}
+                if not str(live_probe.get('group_name') or '').strip() and str(binding.get('group_name') or '').strip():
+                    live_probe = {**live_probe, 'group_name': str(binding.get('group_name') or '').strip()}
+            verifier = self._binding_membership_verifier_state(
+                binding,
+                dict(account.get('membership_verifier') or {}),
+                responsible_type=responsible_type,
+                production_ops=self._production_ops_daemon_snapshot(),
+                live_probe=live_probe,
             )
-            if not registration_group:
-                raise HTTPException(status_code=400, detail='binding registration_group target is required')
-            live_probe = self._probe_whatsapp_binding_group_state(
-                responsible_type='registration_group',
-                binding=binding,
-                runtime_state=runtime_state,
-                session_state=session_state,
-                allow_shared_fallback=True,
-                attempts=2,
-                timeout_seconds=25.0,
-            )
-            if not live_probe or not (str((live_probe or {}).get('group_id') or '').strip() or str((live_probe or {}).get('group_name') or '').strip()):
-                try:
-                    live_probe = self.registration_group_approval_executor_group_state(registration_group)
-                except Exception:
-                    live_probe = live_probe or {}
-        else:
-            live_probe = self._probe_whatsapp_binding_group_state(
+            next_runtime = self._build_binding_next_approval_runtime(
                 responsible_type=responsible_type,
                 binding=binding,
-                runtime_state=runtime_state,
-                session_state=session_state,
-                allow_shared_fallback=True,
-                attempts=2,
-                timeout_seconds=25.0,
+                probe=live_probe if isinstance(live_probe, dict) else {},
             )
-        if isinstance(live_probe, dict):
-            binding = self._persist_whatsapp_approval_binding_probe_identity(
-                str(account.get('account_key') or '').strip(),
-                binding_index,
-                binding,
-                live_probe,
-            )
-            persisted_group_name = str(binding.get('group_name') or '').strip()
-            if persisted_group_name and _looks_like_whatsapp_group_jid(str(live_probe.get('group_name') or '').strip()):
-                live_probe = {**live_probe, 'group_name': persisted_group_name}
-            if not str(live_probe.get('group_id') or '').strip():
-                fallback_group_id = _sanitize_whatsapp_group_jid(binding.get('group_id')) or _sanitize_whatsapp_group_jid(binding.get('registration_group'))
-                if fallback_group_id:
-                    live_probe = {**live_probe, 'group_id': fallback_group_id}
-            if not str(live_probe.get('group_name') or '').strip() and str(binding.get('group_name') or '').strip():
-                live_probe = {**live_probe, 'group_name': str(binding.get('group_name') or '').strip()}
-        verifier = self._binding_membership_verifier_state(
-            binding,
-            dict(account.get('membership_verifier') or {}),
-            responsible_type=responsible_type,
-            production_ops=self._production_ops_daemon_snapshot(),
-            live_probe=live_probe,
-        )
-        next_runtime = self._build_binding_next_approval_runtime(
-            responsible_type=responsible_type,
-            binding=binding,
-            probe=live_probe if isinstance(live_probe, dict) else {},
-        )
-        binding_runtime = {
-            **binding,
-            **next_runtime,
-            'membership_verifier': verifier,
-        }
-        if isinstance(live_probe, dict):
-            if not str(live_probe.get('group_id') or '').strip():
-                fallback_group_id = _sanitize_whatsapp_group_jid(binding.get('group_id')) or _sanitize_whatsapp_group_jid(binding.get('registration_group'))
-                if fallback_group_id:
-                    live_probe = {**live_probe, 'group_id': fallback_group_id}
-            if not str(live_probe.get('group_name') or '').strip() and str(binding.get('group_name') or '').strip():
-                live_probe = {**live_probe, 'group_name': str(binding.get('group_name') or '').strip()}
-            binding_runtime['runtime_probe_group_name'] = live_probe.get('group_name')
-            binding_runtime['runtime_probe_group_id'] = live_probe.get('group_id')
-        return {
-            'account_key': str(account.get('account_key') or '').strip(),
-            'binding_index': binding_index,
-            'binding_runtime': binding_runtime,
-            'probe': live_probe,
-        }
+            binding_runtime = {
+                **binding,
+                **next_runtime,
+                'membership_verifier': verifier,
+            }
+            operation_state = self._get_whatsapp_binding_operation_state(str(account.get('account_key') or '').strip(), binding_index)
+            if operation_state:
+                binding_runtime['operation_state'] = operation_state
+            if isinstance(live_probe, dict):
+                if not str(live_probe.get('group_id') or '').strip():
+                    fallback_group_id = _sanitize_whatsapp_group_jid(binding.get('group_id')) or _sanitize_whatsapp_group_jid(binding.get('registration_group'))
+                    if fallback_group_id:
+                        live_probe = {**live_probe, 'group_id': fallback_group_id}
+                if not str(live_probe.get('group_name') or '').strip() and str(binding.get('group_name') or '').strip():
+                    live_probe = {**live_probe, 'group_name': str(binding.get('group_name') or '').strip()}
+                binding_runtime['runtime_probe_group_name'] = live_probe.get('group_name')
+                binding_runtime['runtime_probe_group_id'] = live_probe.get('group_id')
+            return {
+                'account_key': str(account.get('account_key') or '').strip(),
+                'binding_index': binding_index,
+                'binding_runtime': binding_runtime,
+                'probe': live_probe,
+            }
+        finally:
+            self._clear_whatsapp_binding_operation(account_key, binding_index)
 
     def _upsert_intake_bot_preset_row(self, *, profile_name: str, app_id: Optional[str], robot_name: Optional[str], default_app: str, default_guild: str, enabled: int = 1) -> Dict[str, Any]:
         normalized_profile_name = str(profile_name or '').strip()
@@ -28982,6 +29243,86 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 result['latest_probe'] = parsed
         return result
 
+    def _load_pending_truth_snapshot_group_state(self, *, account_key: str, binding: Dict[str, Any], registration_group: str) -> Optional[Dict[str, Any]]:
+        object_key = self._approval_binding_truth_object_key(account_key, binding)
+        match_keys = {
+            str(object_key or '').strip(),
+            str(registration_group or '').strip(),
+            str(binding.get('group_id') or '').strip(),
+            str(binding.get('registration_group') or '').strip(),
+            str(binding.get('link') or '').strip(),
+        }
+        match_keys.discard('')
+        if not match_keys:
+            return None
+        try:
+            with self.db.connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT object_key, truth_status, confidence, confidence_reason,
+                           facts_json, source_json, checked_at, expires_at, updated_at
+                    FROM mcn_truth_snapshots
+                    WHERE object_type = 'registration_group_binding'
+                      AND snapshot_type = 'pending_truth'
+                      AND (object_key = ? OR object_key LIKE ?)
+                    ORDER BY updated_at DESC
+                    LIMIT 20
+                    """,
+                    (object_key, f'{account_key}:%'),
+                ).fetchall()
+        except Exception:
+            return None
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            try:
+                facts = json.loads(row['facts_json'] or '{}')
+            except Exception:
+                facts = {}
+            if not isinstance(facts, dict):
+                facts = {}
+            row_match_keys = {
+                str(row['object_key'] or '').strip(),
+                str(facts.get('configured_registration_group') or '').strip(),
+                str(facts.get('configured_group_id') or '').strip(),
+                str(facts.get('actual_group_id') or '').strip(),
+                str(facts.get('configured_link') or '').strip(),
+            }
+            row_match_keys.discard('')
+            if not (row_match_keys & match_keys):
+                continue
+            expires_at_text = str(row['expires_at'] or '').strip()
+            if expires_at_text:
+                try:
+                    if parse_iso_datetime(expires_at_text) < now:
+                        continue
+                except Exception:
+                    continue
+            pending_count = facts.get('pending_count')
+            try:
+                pending_count = int(pending_count) if pending_count is not None else None
+            except Exception:
+                pending_count = None
+            if pending_count is None:
+                continue
+            member_count = facts.get('member_count')
+            try:
+                member_count = int(member_count) if member_count is not None else None
+            except Exception:
+                member_count = None
+            requester_ids = [str(item).strip() for item in (facts.get('requester_ids') or []) if str(item).strip()] if isinstance(facts.get('requester_ids'), list) else []
+            requesters = list(facts.get('requesters') or []) if isinstance(facts.get('requesters'), list) else []
+            return {
+                'group_id': str(facts.get('actual_group_id') or facts.get('configured_group_id') or registration_group).strip() or registration_group,
+                'group_name': str(facts.get('actual_group_name') or facts.get('configured_group_name') or registration_group).strip() or registration_group,
+                'pending_count': pending_count,
+                'member_count': member_count,
+                'requester_ids': requester_ids,
+                'requesters': requesters,
+                'source': 'mcn_truth_snapshots',
+                'source_ts': str(row['checked_at'] or '').strip() or None,
+            }
+        return None
+
     @staticmethod
     def _approval_queue_truth_view(current_truth: Optional[Dict[str, Any]], latest_probe: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         now = datetime.now(timezone.utc)
@@ -29201,7 +29542,12 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         base_url = str(runtime_state.get('base_url') or '').strip().rstrip('/')
         if not base_url:
             raise RuntimeError('worker_base_url_missing')
-        target = self._whatsapp_binding_probe_target(binding)
+        target = (
+            str(binding.get('group_id') or '').strip()
+            or str(binding.get('registration_group') or '').strip()
+            or str(binding.get('runtime_probe_group_id') or '').strip()
+            or self._whatsapp_binding_probe_target(binding)
+        )
         payload = {
             'registration_group': target,
             'group_id': binding.get('group_id'),
@@ -29213,54 +29559,234 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
         data = response.json()
         return data if isinstance(data, dict) else {'ok': False, 'trust_status': 'UNTRUSTED_SYNC_INVALID', 'raw': data}
 
-    def full_sync_whatsapp_approval_binding(self, account_key: str, binding_index: int, *, source: str = 'manual_full_sync', timeout_seconds: Optional[float] = None) -> Dict[str, Any]:
-        account = self._get_whatsapp_approval_account_runtime_row(account_key)
-        bindings = list(account.get('group_binding_runtimes') or account.get('group_link_bindings') or [])
-        if binding_index < 0 or binding_index >= len(bindings):
-            raise HTTPException(status_code=404, detail='whatsapp approval binding not found')
-        binding = dict(bindings[binding_index] or {})
-        binding['account_key'] = str(account.get('account_key') or '').strip()
-        priority_by_source = {
-            'manual_full_sync': 100,
-            'manual_approve_preflight': 100,
-            'approval_after_sync': 90,
-            'scheduled_full_sync': 60,
-            'lightweight_probe_escalation': 60,
-        }
-        source_priority = priority_by_source.get(str(source or ''), 60)
-        hard_timeout = float(timeout_seconds if timeout_seconds is not None else (45.0 if source == 'manual_full_sync' else 30.0))
-        observed_at = utc_now()
+    @staticmethod
+    def _build_full_sync_fallback_from_executor_group_state(
+        registration_group: str,
+        group_state: Optional[Dict[str, Any]],
+        *,
+        source: str,
+        error: str,
+    ) -> Dict[str, Any]:
+        state = dict(group_state or {})
+        if not state:
+            return {}
+        pending_count = state.get('pending_count')
         try:
-            result = self._call_whatsapp_worker_full_queue_sync(account=account, binding=binding, timeout_seconds=hard_timeout)
-        except Exception as exc:
-            result = {
-                'ok': False,
-                'trust_status': 'SYNC_TIMEOUT',
-                'reason_code': 'full_sync_hard_timeout',
-                'error': str(exc),
-                'source': source,
-            }
-            self.upsert_approval_queue_latest_probe(account_key=account_key, binding=binding, probe_result=result, observed_at=observed_at, syncing=False)
-            return {**result, 'can_manual_approve': False}
-        if not isinstance(result, dict):
-            result = {'ok': False, 'trust_status': 'UNTRUSTED_SYNC_INVALID', 'reason_code': 'invalid_worker_response', 'source': source}
-        result.setdefault('source', source)
-        trust_status = str(result.get('trust_status') or '').strip()
-        self.upsert_approval_queue_latest_probe(account_key=account_key, binding=binding, probe_result=result, observed_at=observed_at, syncing=False)
-        if trust_status.startswith('TRUSTED'):
-            self.upsert_approval_queue_current_truth(
-                account_key=account_key,
-                binding=binding,
-                sync_result=result,
-                source_priority=source_priority,
-                observed_at=observed_at,
-                force=source in {'manual_full_sync', 'manual_approve_preflight', 'approval_after_sync'},
-            )
-        view = self._approval_queue_truth_view(
-            self._load_approval_binding_queue_snapshots(account_key, binding).get('current_truth'),
-            self._load_approval_binding_queue_snapshots(account_key, binding).get('latest_probe'),
+            pending_count = int(pending_count) if pending_count is not None else None
+        except Exception:
+            pending_count = None
+        if pending_count is None:
+            return {}
+        trust_status = 'TRUSTED_CONFIRMED_PENDING' if pending_count > 0 else 'TRUSTED_CONFIRMED_EMPTY'
+        requester_ids = [str(item).strip() for item in (state.get('requester_ids') or []) if str(item).strip()] if isinstance(state.get('requester_ids'), list) else []
+        requesters = list(state.get('requesters') or []) if isinstance(state.get('requesters'), list) else []
+        member_count = state.get('member_count')
+        try:
+            member_count = int(member_count) if member_count is not None else None
+        except Exception:
+            member_count = None
+        fingerprint = json.dumps(
+            {
+                'group_id': str(state.get('group_id') or '').strip(),
+                'group_name': str(state.get('group_name') or registration_group).strip() or registration_group,
+                'pending_count': pending_count,
+                'requester_ids': requester_ids,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
         )
-        return {**result, 'can_manual_approve': bool(view.get('can_manual_approve')), 'approval_queue_truth': view}
+        return {
+            'ok': True,
+            'trust_status': trust_status,
+            'trusted_pending_count': pending_count,
+            'ui_pending_count': pending_count,
+            'api_pending_count': pending_count,
+            'pending_count': pending_count,
+            'member_count': member_count,
+            'group_id': str(state.get('group_id') or '').strip() or None,
+            'group_name': str(state.get('group_name') or registration_group).strip() or registration_group,
+            'requester_ids': requester_ids,
+            'requesters': requesters,
+            'fingerprint': fingerprint,
+            'fingerprint_quality': 'strong' if requester_ids else 'weak',
+            'converged': True,
+            'reason_code': 'executor_group_state_fallback',
+            'source': {
+                'source': source,
+                'mode': 'executor_group_state_fallback',
+                'fallback_reason': error,
+            },
+        }
+
+    def full_sync_whatsapp_approval_binding(
+        self,
+        account_key: str,
+        binding_index: int,
+        *,
+        source: str = 'manual_full_sync',
+        timeout_seconds: Optional[float] = None,
+        _skip_operation_lock: bool = False,
+        request_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_request_id = str(request_id or '').strip() or create_id('approval_op')
+        if not _skip_operation_lock:
+            self._mark_whatsapp_binding_operation_started(
+                account_key,
+                binding_index,
+                operation='full_sync',
+                detail='正在执行完整同步',
+                stage_code='worker_sync',
+                stage_label='同步审批队列',
+                request_id=normalized_request_id,
+            )
+        try:
+            account = self._get_whatsapp_approval_account_runtime_row(account_key)
+            bindings = list(account.get('group_binding_runtimes') or account.get('group_link_bindings') or [])
+            if binding_index < 0 or binding_index >= len(bindings):
+                raise HTTPException(status_code=404, detail='whatsapp approval binding not found')
+            binding = dict(bindings[binding_index] or {})
+            binding['account_key'] = str(account.get('account_key') or '').strip()
+            priority_by_source = {
+                'manual_full_sync': 100,
+                'manual_approve_preflight': 100,
+                'approval_after_sync': 90,
+                'scheduled_full_sync': 60,
+                'lightweight_probe_escalation': 60,
+            }
+            source_priority = priority_by_source.get(str(source or ''), 60)
+            hard_timeout = float(timeout_seconds if timeout_seconds is not None else (45.0 if source == 'manual_full_sync' else 30.0))
+            observed_at = utc_now()
+            registration_group = (
+                str(binding.get('registration_group') or '').strip()
+                or str(binding.get('group_id') or '').strip()
+                or str(binding.get('link') or '').strip()
+                or str(binding.get('group_name') or '').strip()
+            )
+            if not _skip_operation_lock:
+                self._update_whatsapp_binding_operation_state(
+                    account_key,
+                    binding_index,
+                    detail='正在同步审批队列',
+                    stage_code='worker_sync',
+                    stage_label='同步审批队列',
+                    request_id=normalized_request_id,
+                )
+            try:
+                result = self._call_whatsapp_worker_full_queue_sync(account=account, binding=binding, timeout_seconds=hard_timeout)
+            except Exception as exc:
+                fallback_result: Dict[str, Any] = {}
+                if registration_group:
+                    try:
+                        fallback_result = self._build_full_sync_fallback_from_executor_group_state(
+                            registration_group,
+                            self.registration_group_approval_executor_group_state(registration_group),
+                            source=source,
+                            error=str(exc),
+                        )
+                    except Exception:
+                        fallback_result = {}
+                    if not fallback_result:
+                        try:
+                            snapshot_state = self._load_pending_truth_snapshot_group_state(
+                                account_key=account_key,
+                                binding=binding,
+                                registration_group=registration_group,
+                            )
+                            fallback_result = self._build_full_sync_fallback_from_executor_group_state(
+                                registration_group,
+                                snapshot_state,
+                                source=source,
+                                error=f'pending_truth_snapshot:{exc}',
+                            ) if snapshot_state else {}
+                        except Exception:
+                            fallback_result = {}
+                if fallback_result:
+                    if not _skip_operation_lock:
+                        self._update_whatsapp_binding_operation_state(
+                            account_key,
+                            binding_index,
+                            detail='Worker 不可用，回退权威真值',
+                            stage_code='executor_fallback',
+                            stage_label='回退权威真值',
+                        )
+                    result = fallback_result
+                else:
+                    result = {
+                        'ok': False,
+                        'trust_status': 'SYNC_TIMEOUT',
+                        'reason_code': 'full_sync_hard_timeout',
+                        'error': str(exc),
+                        'source': source,
+                    }
+                    self.upsert_approval_queue_latest_probe(account_key=account_key, binding=binding, probe_result=result, observed_at=observed_at, syncing=False)
+                    return {**result, 'can_manual_approve': False}
+            if not isinstance(result, dict):
+                result = {'ok': False, 'trust_status': 'UNTRUSTED_SYNC_INVALID', 'reason_code': 'invalid_worker_response', 'source': source}
+            result.setdefault('source', source)
+            trust_status = str(result.get('trust_status') or '').strip()
+            reason_code = str(result.get('reason_code') or '').strip()
+            if registration_group and not trust_status.startswith('TRUSTED') and reason_code in {
+                'ui_api_not_converged',
+                'ui_count_greater_than_api_count',
+                'ui_empty_api_has_historical_requests',
+            }:
+                fallback_result: Dict[str, Any] = {}
+                if not _skip_operation_lock:
+                    self._update_whatsapp_binding_operation_state(
+                        account_key,
+                        binding_index,
+                        detail='同步结果未收敛，回退权威真值',
+                        stage_code='executor_fallback',
+                        stage_label='回退权威真值',
+                    )
+                try:
+                    fallback_result = self._build_full_sync_fallback_from_executor_group_state(
+                        registration_group,
+                        self.registration_group_approval_executor_group_state(registration_group),
+                        source=source,
+                        error=f'worker_untrusted:{trust_status}:{reason_code}',
+                    )
+                except Exception:
+                    fallback_result = {}
+                if not fallback_result:
+                    try:
+                        snapshot_state = self._load_pending_truth_snapshot_group_state(
+                            account_key=account_key,
+                            binding=binding,
+                            registration_group=registration_group,
+                        )
+                        fallback_result = self._build_full_sync_fallback_from_executor_group_state(
+                            registration_group,
+                            snapshot_state,
+                            source=source,
+                            error=f'pending_truth_snapshot:{trust_status}:{reason_code}',
+                        ) if snapshot_state else {}
+                    except Exception:
+                        fallback_result = {}
+                if fallback_result:
+                    result = fallback_result
+                    trust_status = str(result.get('trust_status') or '').strip()
+            self.upsert_approval_queue_latest_probe(account_key=account_key, binding=binding, probe_result=result, observed_at=observed_at, syncing=False)
+            if trust_status.startswith('TRUSTED'):
+                self.upsert_approval_queue_current_truth(
+                    account_key=account_key,
+                    binding=binding,
+                    sync_result=result,
+                    source_priority=source_priority,
+                    observed_at=observed_at,
+                    force=source in {'manual_full_sync', 'manual_approve_preflight', 'approval_after_sync'},
+                )
+            view = self._approval_queue_truth_view(
+                self._load_approval_binding_queue_snapshots(account_key, binding).get('current_truth'),
+                self._load_approval_binding_queue_snapshots(account_key, binding).get('latest_probe'),
+            )
+            response_can_manual_approve = bool(view.get('can_manual_approve'))
+            if source in {'manual_full_sync', 'manual_approve_preflight', 'approval_after_sync'} and trust_status == 'TRUSTED_CONFIRMED_PENDING':
+                response_can_manual_approve = True
+            return {**result, 'can_manual_approve': response_can_manual_approve, 'approval_queue_truth': view}
+        finally:
+            if not _skip_operation_lock:
+                self._clear_whatsapp_binding_operation(account_key, binding_index)
 
     def evaluate_approval_queue_staleness(self, *, account_key: str, binding: Dict[str, Any], external_signal: str = '') -> Dict[str, Any]:
         object_key = self._approval_binding_truth_object_key(account_key, binding)
@@ -29462,6 +29988,9 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
                 'config_fingerprint': item.get('config_fingerprint') or _whatsapp_approval_binding_config_fingerprint(item),
                 'link_ok': link_ok,
             }
+            operation_state = self._get_whatsapp_binding_operation_state(str(serialized.get('account_key') or '').strip(), len(binding_runtime_rows))
+            if operation_state:
+                runtime_row['operation_state'] = operation_state
             for key in (
                 'identity_status', 'identity_rebuild_reason', 'identity_resolved_at', 'identity_resolved_by',
                 'last_probe_status', 'last_probe_reason', 'last_probe_at', 'last_probe_had_group_id',
@@ -30352,7 +30881,11 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             link = _normalize_whatsapp_group_invite_link(item.get('link'))
             area = str(item.get('area') or '').strip()
             notify_profile_name = str(item.get('notify_profile_name') or '').strip()
-            registration_group = _sanitize_whatsapp_group_jid(item.get('registration_group'))
+            registration_group = str(item.get('registration_group') or '').strip()
+            if _looks_like_whatsapp_invite_link(registration_group):
+                registration_group = ''
+            elif not registration_group:
+                registration_group = _sanitize_whatsapp_group_jid(item.get('group_id'))
             group_id = _sanitize_whatsapp_group_jid(item.get('group_id'))
             raw_group_name = str(item.get('group_name') or '').strip()
             if _looks_like_whatsapp_invite_link(raw_group_name):
@@ -30542,64 +31075,91 @@ QRCode.toDataURL(process.argv[1], { errorCorrectionLevel: 'M', type: 'image/png'
             'account': self._build_whatsapp_approval_account_runtime(row, runtime_state=runtime_state, session_state={}, skip_live_probe=True),
         }
 
-    def rebuild_whatsapp_approval_binding_identity(self, account_key: str, binding_index: int, current_user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def rebuild_whatsapp_approval_binding_identity(
+        self,
+        account_key: str,
+        binding_index: int,
+        current_user: Optional[Dict[str, Any]] = None,
+        request_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         normalized_key = str(account_key or '').strip()
         if not normalized_key:
             raise HTTPException(status_code=400, detail='account_key is required')
-        self._require_whatsapp_approval_account_access(normalized_key, current_user)
-        with self.db.connect() as conn:
-            row = conn.execute('SELECT account_key, group_links FROM whatsapp_approval_accounts WHERE account_key = ?', (normalized_key,)).fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail='whatsapp approval account not found')
-            try:
-                raw_bindings = json.loads(str(row['group_links'] or '[]'))
-            except Exception:
-                raw_bindings = []
-            bindings = _normalize_group_link_bindings(raw_bindings if isinstance(raw_bindings, list) else [])
-            if binding_index < 0 or binding_index >= len(bindings):
-                raise HTTPException(status_code=404, detail='whatsapp approval binding not found')
-            binding = dict(bindings[binding_index] or {})
-            previous_group_id = _sanitize_whatsapp_group_jid(binding.get('group_id')) or _sanitize_whatsapp_group_jid(binding.get('registration_group')) or _sanitize_whatsapp_group_jid(binding.get('runtime_probe_group_id'))
-            previous_registration_group = _sanitize_whatsapp_group_jid(binding.get('registration_group')) or previous_group_id
-            previous_group_name = str(binding.get('group_name') or binding.get('runtime_probe_group_name') or '').strip()
-            if _looks_like_whatsapp_invite_link(previous_group_name):
-                previous_group_name = ''
-            rebuild_fingerprint_payload = {
-                **binding,
-                'registration_group': previous_registration_group,
-                'group_id': previous_group_id,
-                'group_name': previous_group_name,
-                'identity_status': 'needs_rebuild',
-                'identity_rebuild_reason': 'manual_rebuild',
-            }
-            binding.update({
-                'registration_group': previous_registration_group,
-                'group_id': previous_group_id,
-                'group_name': previous_group_name,
-                'previous_verified_group_id': previous_group_id,
-                'previous_verified_group_name': previous_group_name,
-                'previous_verified_registration_group': previous_registration_group,
-                'identity_status': 'needs_rebuild',
-                'identity_rebuild_reason': 'manual_rebuild',
-                'last_probe_status': 'queued_for_rebuild',
-                'last_probe_reason': 'manual_identity_rebuild',
-                'config_fingerprint': _whatsapp_approval_binding_config_fingerprint(rebuild_fingerprint_payload),
-            })
-            bindings[binding_index] = binding
-            conn.execute(
-                'UPDATE whatsapp_approval_accounts SET group_links = ?, verification_status = ?, updated_at = ? WHERE account_key = ?',
-                (json.dumps(bindings, ensure_ascii=False), 'pending_verification', utc_now(), normalized_key),
-            )
-            conn.commit()
-        created_by = str((current_user or {}).get('username') or (current_user or {}).get('user_id') or '').strip()
-        tasks = self._queue_registration_group_probe_tasks(
-            account_key=normalized_key,
-            bindings=bindings,
-            binding_indexes=[binding_index],
-            created_by=created_by,
-            reason='manual_identity_rebuild',
+        request_payload = dict(request_context or {})
+        request_id = str(request_payload.get('request_id') or '').strip() or create_id('approval_op')
+        self._mark_whatsapp_binding_operation_started(
+            normalized_key,
+            binding_index,
+            operation='rebuild_identity',
+            detail='正在重建群绑定',
+            stage_code='mark_rebuild_pending',
+            stage_label='标记待重建',
+            request_id=request_id,
         )
-        return {'rebuilt': True, 'account_key': normalized_key, 'binding_index': binding_index, 'binding': binding, 'probe_refresh_tasks': tasks}
+        try:
+            self._require_whatsapp_approval_account_access(normalized_key, current_user)
+            with self.db.connect() as conn:
+                row = conn.execute('SELECT account_key, group_links FROM whatsapp_approval_accounts WHERE account_key = ?', (normalized_key,)).fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail='whatsapp approval account not found')
+                try:
+                    raw_bindings = json.loads(str(row['group_links'] or '[]'))
+                except Exception:
+                    raw_bindings = []
+                bindings = _normalize_group_link_bindings(raw_bindings if isinstance(raw_bindings, list) else [])
+                if binding_index < 0 or binding_index >= len(bindings):
+                    raise HTTPException(status_code=404, detail='whatsapp approval binding not found')
+                binding = dict(bindings[binding_index] or {})
+                previous_group_id = _sanitize_whatsapp_group_jid(binding.get('group_id')) or _sanitize_whatsapp_group_jid(binding.get('registration_group')) or _sanitize_whatsapp_group_jid(binding.get('runtime_probe_group_id'))
+                previous_registration_group = _sanitize_whatsapp_group_jid(binding.get('registration_group')) or previous_group_id
+                previous_group_name = str(binding.get('group_name') or binding.get('runtime_probe_group_name') or '').strip()
+                if _looks_like_whatsapp_invite_link(previous_group_name):
+                    previous_group_name = ''
+                rebuild_fingerprint_payload = {
+                    **binding,
+                    'registration_group': previous_registration_group,
+                    'group_id': previous_group_id,
+                    'group_name': previous_group_name,
+                    'identity_status': 'needs_rebuild',
+                    'identity_rebuild_reason': 'manual_rebuild',
+                }
+                binding.update({
+                    'registration_group': previous_registration_group,
+                    'group_id': previous_group_id,
+                    'group_name': previous_group_name,
+                    'previous_verified_group_id': previous_group_id,
+                    'previous_verified_group_name': previous_group_name,
+                    'previous_verified_registration_group': previous_registration_group,
+                    'identity_status': 'needs_rebuild',
+                    'identity_rebuild_reason': 'manual_rebuild',
+                    'last_probe_status': 'queued_for_rebuild',
+                    'last_probe_reason': 'manual_identity_rebuild',
+                    'config_fingerprint': _whatsapp_approval_binding_config_fingerprint(rebuild_fingerprint_payload),
+                })
+                bindings[binding_index] = binding
+                conn.execute(
+                    'UPDATE whatsapp_approval_accounts SET group_links = ?, verification_status = ?, updated_at = ? WHERE account_key = ?',
+                    (json.dumps(bindings, ensure_ascii=False), 'pending_verification', utc_now(), normalized_key),
+                )
+                conn.commit()
+            self._update_whatsapp_binding_operation_state(
+                normalized_key,
+                binding_index,
+                detail='正在排队刷新探针',
+                stage_code='queue_probe_refresh',
+                stage_label='排队刷新探针',
+            )
+            created_by = str((current_user or {}).get('username') or (current_user or {}).get('user_id') or '').strip()
+            tasks = self._queue_registration_group_probe_tasks(
+                account_key=normalized_key,
+                bindings=bindings,
+                binding_indexes=[binding_index],
+                created_by=created_by,
+                reason='manual_identity_rebuild',
+            )
+            return {'rebuilt': True, 'account_key': normalized_key, 'binding_index': binding_index, 'binding': binding, 'probe_refresh_tasks': tasks}
+        finally:
+            self._clear_whatsapp_binding_operation(normalized_key, binding_index)
 
     def delete_whatsapp_approval_account(self, account_key: str, current_user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         normalized_key = str(account_key or '').strip()
@@ -35927,7 +36487,14 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/bindings/{binding_index}/full-sync')
     def ops_whatsapp_approval_binding_full_sync(account_key: str, binding_index: int, request: Request):
         service._require_whatsapp_approval_account_access(account_key, _request_session_user(request))
-        result = service.full_sync_whatsapp_approval_binding(account_key, binding_index, source='manual_full_sync', timeout_seconds=45.0)
+        request_id = str(request.headers.get('X-Request-ID') or request.headers.get('X-Correlation-ID') or '').strip() or create_id('approval_op')
+        result = service.full_sync_whatsapp_approval_binding(
+            account_key,
+            binding_index,
+            source='manual_full_sync',
+            timeout_seconds=45.0,
+            request_id=request_id,
+        )
         try:
             payload = service.list_whatsapp_approval_accounts(lightweight=True) or {}
             _approval_realtime_store().ingest_snapshot(payload, source='manual_full_sync')
@@ -35953,7 +36520,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
             'session_id': str((current_user or {}).get('session_id') or '').strip() or None,
         }
         request_context = {
-            'request_id': str(request.headers.get('X-Request-ID') or request.headers.get('X-Correlation-ID') or '').strip() or None,
+            'request_id': str(request.headers.get('X-Request-ID') or request.headers.get('X-Correlation-ID') or '').strip() or create_id('approval_op'),
             'client_ip': client_ip or None,
             'user_agent': str(request.headers.get('User-Agent') or '').strip() or None,
             'path': str(request.url.path or ''),
@@ -35988,7 +36555,24 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
 
     @app.post('/api/ops/whatsapp-approval-accounts/{account_key}/bindings/{binding_index}/rebuild-identity')
     def ops_whatsapp_approval_binding_rebuild_identity(account_key: str, binding_index: int, request: Request):
-        return service.rebuild_whatsapp_approval_binding_identity(account_key, binding_index, current_user=_request_session_user(request))
+        current_user = _request_session_user(request)
+        request_context = {
+            'request_id': str(request.headers.get('X-Request-ID') or request.headers.get('X-Correlation-ID') or '').strip() or create_id('approval_op'),
+            'path': str(request.url.path or ''),
+            'method': str(request.method or 'POST').upper(),
+        }
+        result = service.rebuild_whatsapp_approval_binding_identity(
+            account_key,
+            binding_index,
+            current_user=current_user,
+            request_context=request_context,
+        )
+        try:
+            payload = service.list_whatsapp_approval_accounts(lightweight=True) or {}
+            _approval_realtime_store().ingest_snapshot(payload, source='manual_rebuild_identity')
+        except Exception:
+            pass
+        return result
 
     @app.get('/api/ops/mcn-region-options')
     def ops_mcn_region_options(include_disabled: bool = False):
