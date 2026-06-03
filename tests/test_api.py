@@ -6151,12 +6151,19 @@ def test_whatsapp_approval_binding_truth_refresh_endpoint_returns_authoritative_
     client = make_client({'AUTH_ENABLED': True, 'LARK_APP_ID': 'cli_test_app', 'LARK_DEFAULT_APP_NAME': 'Linky', 'LARK_DEFAULT_DEPT_NAME': 'Piso'})
     service = client.app.state.service
 
-    admin_user = bootstrap_admin_and_login(client)
+    bootstrap_admin_and_login(client)
+    kefu = client.post('/api/ops/accounts', json={
+        'username': 'truthkefu01',
+        'password': 'operator123',
+        'display_name': 'Truth Kefu',
+        'role': 'customer_service',
+        'enabled': True,
+    }).json()['user']
 
     saved = client.post('/api/ops/whatsapp-approval-accounts/wa-truth-refresh-1', json={
         'account_name': 'WA Truth Refresh 1',
         'responsible_type': 'registration_group',
-        'assigned_customer_service_user_id': admin_user['user_id'],
+        'assigned_customer_service_user_id': kefu['user_id'],
         'group_link_bindings': [{
             'link': 'https://chat.whatsapp.com/TruthRefresh1',
             'group_name': '权威刷新群',
@@ -6191,7 +6198,8 @@ def test_whatsapp_approval_binding_truth_refresh_endpoint_returns_authoritative_
     assert body['binding_index'] == 0
     runtime = body['binding_runtime']
     assert runtime['group_id'] == '120363TRUTHREFRESH@g.us'
-    assert runtime['approval_queue_truth'] == {}
+    assert runtime['approval_queue_truth']['pending_count'] is None
+    assert runtime['approval_queue_truth']['display']['state'] == 'UNKNOWN'
     assert 'operation_state' not in runtime
 
 def test_whatsapp_approval_binding_probe_refresh_fast_mode_uses_single_probe_attempt(monkeypatch):
@@ -7027,7 +7035,7 @@ def test_operation_task_worker_requeues_registration_probe_task_on_first_failure
     assert task['error_code'] == 'probe_registration_group_truth_failed'
 
 
-def test_whatsapp_approval_probe_refresh_persists_detected_group_identity(monkeypatch):
+def test_whatsapp_approval_probe_refresh_requires_runtime_probe_ready(monkeypatch):
     app = create_app({
         'DB_PATH': ':memory:',
         'AUTO_LARK_REPLY': False,
@@ -7071,18 +7079,11 @@ def test_whatsapp_approval_probe_refresh_persists_detected_group_identity(monkey
         }
 
     monkeypatch.setattr(service, 'registration_group_approval_executor_group_state', fake_group_state)
-    refreshed = client.post('/api/ops/whatsapp-approval-accounts/wa-auto-probe/bindings/0/truth-refresh')
-    assert refreshed.status_code == 200
-    runtime_binding = refreshed.json()['binding_runtime']
-    assert runtime_binding['group_id'] == '120363AUTO@g.us'
-    assert runtime_binding['registration_group'] == '120363AUTO@g.us'
-    assert runtime_binding['group_name'] == '自动探测注册群'
-
-    listed = client.get('/api/ops/whatsapp-approval-accounts').json()['rows'][0]['group_link_bindings'][0]
-    assert listed['group_id'] == '120363AUTO@g.us'
-    assert listed['registration_group'] == '120363AUTO@g.us'
-    assert listed['group_name'] == '自动探测注册群'
-    assert listed['config_fingerprint'] == main_module._whatsapp_approval_binding_config_fingerprint(listed)
+    refreshed = client.post('/api/ops/whatsapp-approval-accounts/wa-auto-probe/bindings/0/probe-refresh')
+    assert refreshed.status_code == 409
+    detail = refreshed.json()['detail']
+    assert detail['reason'] == 'whatsapp_runtime_not_probe_ready'
+    assert detail['login_action'] in {'wait_or_refresh', 'start_session', 'show_qr'}
 
 
 
