@@ -1,6 +1,9 @@
+import io
+import socket
+import urllib.error
 import urllib.request
 
-from app.live_bind_executor import LiveChromeBindExecutor
+from app.live_bind_executor import CmsRequestTimeoutError, LiveChromeBindExecutor
 from app.main import Database, Service
 
 
@@ -18,6 +21,30 @@ class FakeCmsExecutor(LiveChromeBindExecutor):
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
+        return response
+
+
+class FakeCmsRefreshExecutor(LiveChromeBindExecutor):
+    def __init__(self, responses):
+        super().__init__(profile_map={})
+        self.responses = list(responses)
+        self.calls = []
+
+    def _cms_request_json(self, *, method, url, authorization, body=None, proxy_url='', timeout_seconds=8.0):
+        self.calls.append({"method": method, "url": url, "authorization": authorization, "body": body, "proxy_url": proxy_url, "timeout_seconds": timeout_seconds})
+        if not self.responses:
+            raise AssertionError("unexpected CMS call")
+        response = self.responses.pop(0)
+        expected_authorization = response.get("expected_authorization") if isinstance(response, dict) else None
+        if expected_authorization is not None:
+            assert authorization == expected_authorization
+        if isinstance(response, Exception):
+            raise response
+        if isinstance(response, dict) and "response" in response:
+            inner = response["response"]
+            if isinstance(inner, Exception):
+                raise inner
+            return inner
         return response
 
 
@@ -72,6 +99,60 @@ def test_cms_id_bind_calls_add_anchor_only_when_sid_exists_without_guild_and_req
         "body": {"sids": ["12123121"], "guild_id": 3432},
         "proxy_url": "",
         "timeout_seconds": 8.0,
+    }]
+
+
+def test_cms_id_bind_refreshes_authorization_once_and_retries_after_401():
+    executor = FakeCmsRefreshExecutor([
+        {"expected_authorization": "Bearer stale-token", "response": urllib.error.HTTPError(
+            url="https://cms.linke.ai/api/admin/linky/industrial/industrial/getGuildIdAndName",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=None,
+        )},
+        {
+            "expected_authorization": "Bearer stale-token",
+            "response": {
+                "token": "fresh-token",
+                "refreshToken": "refresh-token-2",
+                "expire": 1770000123,
+                "refreshExpire": 1770000999,
+            },
+        },
+        {"expected_authorization": "Bearer fresh-token", "response": [{"id": "3432", "guild_name": "Carote", "sid": "43536425"}]},
+        {"expected_authorization": "Bearer fresh-token", "response": {"code": 1000, "success": True}},
+    ])
+    persisted = []
+
+    result = executor({
+        "bind_route": "cms_id",
+        "account_id": "12123121",
+        "dept_name": "Carote",
+        "executor_platform_backend_url": "https://cms.linke.ai/",
+        "executor_platform_authorization": "Bearer stale-token",
+        "executor_cms_refresh_token": "refresh-token-1",
+        "executor_cms_refresh_token_deadtime": 1770000000000,
+        "executor_refresh_persist_callback": lambda payload: persisted.append(payload),
+    })
+
+    assert result["status"] == "success"
+    assert result["result_code"] == "bind_success"
+    assert result["result_reason"] == "CMS KA-AddAnchor accepted"
+    assert result["raw_result"]["cms_refresh_retry"]["ok"] is True
+    assert result["raw_result"]["cms_refresh_retry"]["authorization"] == "Bearer fresh-token"
+    refresh_calls = [call for call in executor.calls if "/admin/base/open/refreshToken" in call["url"]]
+    assert len(refresh_calls) == 1
+    add_calls = [call for call in executor.calls if "addAnchor" in call["url"]]
+    assert len(add_calls) == 1
+    assert add_calls[0]["authorization"] == "Bearer fresh-token"
+    assert persisted == [{
+        "attempted": True,
+        "ok": True,
+        "authorization": "Bearer fresh-token",
+        "refresh_token": "refresh-token-2",
+        "refresh_token_deadtime": 1770000999,
+        "access_token_exp": 1770000123,
     }]
 
 
@@ -293,7 +374,6 @@ def test_cms_id_bind_classifies_add_anchor_403_as_scope_denied_after_sid_prechec
             hdrs=None,
             fp=None,
         ),
-        {"code": 1000, "data": {"records": [{"sid": "53367380", "guild_id": "0", "guild_name": ""}]}},
         urllib.error.HTTPError(
             url="https://cms.linke.ai/api/admin/linky/industrial/streamer_detail/addAnchor",
             code=403,
@@ -315,7 +395,6 @@ def test_cms_id_bind_classifies_add_anchor_403_as_scope_denied_after_sid_prechec
 
     assert result["status"] == "failed"
     assert result["result_code"] == "cms_authorization_scope_denied"
-    assert result["raw_result"]["precheck"] == "sid_found_without_guild"
     assert result["raw_result"]["cms_submit_http_status"] == 403
 
 
@@ -535,27 +614,42 @@ def test_cms_request_matches_browser_add_anchor_header_and_payload_parity(monkey
     captured = {}
 
     class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
+        status = 200
+        reason = 'OK'
+        headers = {}
 
         def read(self):
             return b'{"code":1000,"success":true}'
 
-    class FakeOpener:
-        def open(self, req, timeout=0):
-            captured['url'] = req.full_url
-            captured['method'] = req.get_method()
-            captured['data'] = req.data
-            captured['headers'] = dict(req.header_items())
-            captured['timeout'] = timeout
+    class FakeConnection:
+        def __init__(self, trace):
+            self._trace = trace
+
+        def request(self, method, url, body=None, headers=None):
+            captured['method'] = method
+            captured['url'] = url
+            captured['data'] = body
+            captured['headers'] = dict(headers or {})
+            self._trace['dns_results'] = ['1.1.1.1']
+            self._trace['dns_duration_ms'] = 1.2
+            self._trace['tcp_connect_duration_ms'] = 2.3
+            self._trace['tls_handshake_duration_ms'] = 3.4
+            self._trace['remote_ip'] = '1.1.1.1'
+
+        def getresponse(self):
             return FakeResponse()
 
-    monkeypatch.setattr(urllib.request, 'build_opener', lambda *args, **kwargs: FakeOpener())
+        def close(self):
+            return None
+
+    def fake_make_connection(*, parsed_url, timeout, trace, proxy_url=''):
+        captured['host'] = parsed_url.hostname
+        captured['timeout'] = timeout
+        captured['proxy_url'] = proxy_url
+        return FakeConnection(trace)
 
     executor = LiveChromeBindExecutor(profile_map={})
+    monkeypatch.setattr(executor, '_make_cms_connection', fake_make_connection)
     response = executor._cms_request_json(
         method='POST',
         url='https://cms.linke.ai/api/admin/linky/industrial/streamer_detail/addAnchor',
@@ -566,16 +660,100 @@ def test_cms_request_matches_browser_add_anchor_header_and_payload_parity(monkey
 
     assert response == {'code': 1000, 'success': True}
     assert captured['method'] == 'POST'
+    assert captured['url'] == '/api/admin/linky/industrial/streamer_detail/addAnchor'
+    assert captured['host'] == 'cms.linke.ai'
+    assert captured['proxy_url'] == ''
+    assert captured['timeout'] == 10.0
     assert captured['data'] == b'{"sids":["53279170"],"guild_id":3432}'
     headers = {k.lower(): v for k, v in captured['headers'].items()}
     assert headers['authorization'] == 'cms-jwt-token'
     assert headers['content-type'] == 'application/json'
     assert headers['accept'] == 'application/json, text/plain, */*'
     assert headers['origin'] == 'https://cms.linke.ai'
-    assert headers['referer'] == 'https://cms.linke.ai/anchorDetails'
+    assert headers['referer'] == 'https://cms.linke.ai/KA-AddAnchor'
     assert headers['cookie'] == 'locale=zh-cn'
     assert headers['accept-language'] == 'zh-CN,zh;q=0.9'
     assert 'Mozilla/5.0' in headers['user-agent']
+    assert executor._cms_request_traces[-1]['remote_ip'] == '1.1.1.1'
+    assert executor._cms_request_traces[-1]['dns_results'] == ['1.1.1.1']
+
+
+def test_cms_request_timeout_trace_captures_stage_and_dns(monkeypatch):
+    class FakeConnection:
+        def __init__(self, trace):
+            self._trace = trace
+
+        def request(self, method, url, body=None, headers=None):
+            self._trace['dns_results'] = ['203.0.113.10']
+            self._trace['dns_duration_ms'] = 4.5
+            self._trace['tcp_connect_duration_ms'] = 6.7
+            self._trace['tls_handshake_duration_ms'] = 8.9
+            self._trace['remote_ip'] = '203.0.113.10'
+
+        def getresponse(self):
+            self._trace['timeout_stage'] = 'response_headers'
+            raise socket.timeout('timed out')
+
+        def close(self):
+            return None
+
+    executor = LiveChromeBindExecutor(profile_map={})
+    monkeypatch.setattr(executor, '_make_cms_connection', lambda **kwargs: FakeConnection(kwargs['trace']))
+
+    try:
+        executor._cms_request_json(
+            method='POST',
+            url='https://cms.linke.ai/api/admin/linky/industrial/streamer_detail/addAnchor',
+            authorization='cms-jwt-token',
+            body={'sids': ['53279170'], 'guild_id': 3432},
+            timeout_seconds=10,
+        )
+        raise AssertionError('expected timeout')
+    except CmsRequestTimeoutError as exc:
+        assert exc.timeout_stage == 'response_headers'
+        assert exc.request_trace['remote_ip'] == '203.0.113.10'
+        assert exc.request_trace['dns_results'] == ['203.0.113.10']
+        assert executor._cms_request_traces[-1]['timeout_stage'] == 'response_headers'
+        assert len(executor._cms_request_traces) == 3
+
+
+class TimeoutTraceCmsExecutor(LiveChromeBindExecutor):
+    def __init__(self):
+        super().__init__(profile_map={})
+        self.calls = 0
+
+    def _cms_request_json(self, *, method, url, authorization, body=None, proxy_url='', timeout_seconds=8.0):
+        self.calls += 1
+        trace = {
+            'attempt': 3,
+            'method': method,
+            'url': url,
+            'remote_ip': '203.0.113.10',
+            'dns_results': ['203.0.113.10'],
+            'timeout_stage': 'response_headers',
+        }
+        self._record_cms_request_trace(trace)
+        raise CmsRequestTimeoutError('CMS KA-AddAnchor request timed out after 3 attempts', timeout_stage='response_headers', request_trace=trace)
+
+
+def test_cms_id_bind_timeout_result_includes_request_traces_and_stage():
+    executor = TimeoutTraceCmsExecutor()
+
+    result = executor({
+        'bind_route': 'cms_id',
+        'account_id': '53341442',
+        'dept_name': 'Nova',
+        'executor_platform_backend_url': 'https://cms.linke.ai/',
+        'executor_platform_authorization': 'Bearer secret-token',
+        'executor_cms_guild_id': '1423',
+        'executor_cms_guild_sid': '31350499',
+    })
+
+    assert result['status'] == 'failed'
+    assert result['result_code'] == 'cms_bind_runtime_error'
+    assert result['raw_result']['cms_timeout_stage'] == 'response_headers'
+    assert result['raw_result']['cms_request_traces'][-1]['remote_ip'] == '203.0.113.10'
+    assert result['raw_result']['cms_request_traces'][-1]['dns_results'] == ['203.0.113.10']
 
 
 def test_cms_id_bind_uses_ka_addanchor_only_and_classifies_already_in_target():

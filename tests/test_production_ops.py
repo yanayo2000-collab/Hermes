@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import io
+import json
+import urllib.error
 from datetime import datetime, timedelta, timezone
 
 from app.production_ops import (
+    FeishuNotifier,
     NOTIFICATION_POLICY_BY_CODE,
     build_incidents,
     build_observation_warnings,
@@ -41,6 +45,96 @@ def test_expand_notify_profile_targets_keeps_other_profiles_single_target():
             'robot_name': '自定义机器人',
         }
     ]
+
+
+def test_feishu_notifier_retries_429_before_succeeding(monkeypatch):
+    calls = {'auth': 0, 'message': 0}
+    sleep_calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode('utf-8')
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(request, timeout=15):
+        url = request.full_url
+        if 'tenant_access_token/internal' in url:
+            calls['auth'] += 1
+            return FakeResponse({'code': 0, 'tenant_access_token': 'token-1'})
+        calls['message'] += 1
+        if calls['message'] == 1:
+            raise urllib.error.HTTPError(
+                url,
+                429,
+                'Too Many Requests',
+                {'Retry-After': '0.2'},
+                io.BytesIO(b''),
+            )
+        return FakeResponse({'code': 0, 'data': {'message_id': 'msg-1'}})
+
+    monkeypatch.setattr('app.production_ops.urllib.request.urlopen', fake_urlopen)
+    monkeypatch.setattr('app.production_ops.time.sleep', lambda seconds: sleep_calls.append(seconds))
+
+    notifier = FeishuNotifier(app_id='app-id', app_secret='app-secret', chat_id='chat-id')
+    response = notifier.send_text('hello')
+
+    assert response['code'] == 0
+    assert calls == {'auth': 1, 'message': 2}
+    assert sleep_calls == [1.0]
+
+
+def test_feishu_notifier_raises_after_final_429(monkeypatch):
+    calls = {'auth': 0, 'message': 0}
+    sleep_calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode('utf-8')
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(request, timeout=15):
+        url = request.full_url
+        if 'tenant_access_token/internal' in url:
+            calls['auth'] += 1
+            return FakeResponse({'code': 0, 'tenant_access_token': 'token-1'})
+        calls['message'] += 1
+        raise urllib.error.HTTPError(
+            url,
+            429,
+            'Too Many Requests',
+            {'Retry-After': '0.2'},
+            io.BytesIO(b''),
+        )
+
+    monkeypatch.setattr('app.production_ops.urllib.request.urlopen', fake_urlopen)
+    monkeypatch.setattr('app.production_ops.time.sleep', lambda seconds: sleep_calls.append(seconds))
+
+    notifier = FeishuNotifier(app_id='app-id', app_secret='app-secret', chat_id='chat-id')
+
+    try:
+        notifier.send_text('hello')
+        assert False, 'expected HTTPError'
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 429
+
+    assert calls == {'auth': 1, 'message': 3}
+    assert sleep_calls == [1.0, 1.0]
 
 
 def test_notification_policy_matrix_exact_match_guardrail():

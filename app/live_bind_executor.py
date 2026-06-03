@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
+import io
 import json
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import tempfile
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,6 +23,125 @@ class CmsBindFlowError(RuntimeError):
         super().__init__(result_reason)
         self.result_code = result_code
         self.result_reason = result_reason
+
+
+class CmsRequestTimeoutError(TimeoutError):
+    def __init__(self, message: str, *, timeout_stage: str, request_trace: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.timeout_stage = str(timeout_stage or '').strip()
+        self.request_trace = dict(request_trace or {})
+
+
+class _TimedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *, endpoint_host: str, endpoint_port: int, timeout: float, trace: dict[str, Any]) -> None:
+        super().__init__(endpoint_host, endpoint_port, timeout=timeout)
+        self._trace = trace
+
+    def connect(self) -> None:
+        _connect_socket_with_trace(self, endpoint_host=self.host, endpoint_port=int(self.port or 0), trace=self._trace, timeout=float(self.timeout or 0.0))
+
+
+class _TimedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(
+        self,
+        *,
+        target_host: str,
+        target_port: int,
+        timeout: float,
+        trace: dict[str, Any],
+        proxy_url: str = '',
+    ) -> None:
+        normalized_proxy = str(proxy_url or '').strip()
+        self._trace = trace
+        self._timed_target_host = target_host
+        self._timed_target_port = int(target_port or 443)
+        self._timed_proxy_url = normalized_proxy
+        self._context = ssl.create_default_context()
+        if normalized_proxy:
+            parsed_proxy = urllib.parse.urlsplit(normalized_proxy)
+            proxy_host = parsed_proxy.hostname or ''
+            proxy_port = int(parsed_proxy.port or (443 if parsed_proxy.scheme == 'https' else 80))
+            super().__init__(proxy_host, proxy_port, timeout=timeout, context=self._context)
+            self.set_tunnel(target_host, self._timed_target_port)
+            self._trace['proxy_url'] = normalized_proxy
+            self._trace['proxy_host'] = proxy_host
+            self._trace['proxy_port'] = proxy_port
+        else:
+            super().__init__(target_host, self._timed_target_port, timeout=timeout, context=self._context)
+
+    def connect(self) -> None:
+        _connect_socket_with_trace(self, endpoint_host=self.host, endpoint_port=int(self.port or 0), trace=self._trace, timeout=float(self.timeout or 0.0))
+        tunnel_host = getattr(self, '_tunnel_host', None)
+        tunnel_port = getattr(self, '_tunnel_port', None)
+        if tunnel_host:
+            tunnel_started = time.monotonic()
+            try:
+                self._tunnel()  # type: ignore[attr-defined]
+            except socket.timeout:
+                self._trace['timeout_stage'] = 'proxy_tunnel'
+                raise
+            finally:
+                self._trace['proxy_tunnel_duration_ms'] = round((time.monotonic() - tunnel_started) * 1000.0, 3)
+            self._trace['tunnel_target_host'] = str(tunnel_host)
+            self._trace['tunnel_target_port'] = int(tunnel_port or 0)
+        handshake_started = time.monotonic()
+        try:
+            self.sock = self._context.wrap_socket(self.sock, server_hostname=self._timed_target_host)
+        except socket.timeout:
+            self._trace['timeout_stage'] = 'tls_handshake'
+            raise
+        finally:
+            self._trace['tls_handshake_duration_ms'] = round((time.monotonic() - handshake_started) * 1000.0, 3)
+        peer = None
+        try:
+            peer = self.sock.getpeername()
+        except Exception:
+            peer = None
+        if isinstance(peer, tuple) and peer:
+            self._trace['remote_ip'] = str(peer[0])
+            if len(peer) > 1:
+                self._trace['remote_port'] = int(peer[1])
+
+
+def _connect_socket_with_trace(conn: http.client.HTTPConnection, *, endpoint_host: str, endpoint_port: int, trace: dict[str, Any], timeout: float) -> None:
+    dns_started = time.monotonic()
+    try:
+        addrinfos = socket.getaddrinfo(endpoint_host, endpoint_port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        trace['dns_duration_ms'] = round((time.monotonic() - dns_started) * 1000.0, 3)
+        trace['dns_error'] = str(exc)
+        trace['timeout_stage'] = 'dns' if 'timed out' in str(exc).lower() else ''
+        raise
+    trace['dns_duration_ms'] = round((time.monotonic() - dns_started) * 1000.0, 3)
+    trace['dns_results'] = [str(item[4][0]) for item in addrinfos if isinstance(item, tuple) and len(item) >= 5 and isinstance(item[4], tuple) and item[4]]
+    last_exc: Exception | None = None
+    for family, socktype, proto, _, sockaddr in addrinfos:
+        sock = socket.socket(family, socktype, proto)
+        connect_started = time.monotonic()
+        try:
+            sock.settimeout(timeout)
+            sock.connect(sockaddr)
+            trace['tcp_connect_duration_ms'] = round((time.monotonic() - connect_started) * 1000.0, 3)
+            trace['remote_ip'] = str(sockaddr[0])
+            if len(sockaddr) > 1:
+                trace['remote_port'] = int(sockaddr[1])
+            conn.sock = sock
+            return
+        except socket.timeout as exc:
+            trace['tcp_connect_duration_ms'] = round((time.monotonic() - connect_started) * 1000.0, 3)
+            trace['timeout_stage'] = 'connect'
+            sock.close()
+            last_exc = exc
+            break
+        except OSError as exc:
+            trace['tcp_connect_duration_ms'] = round((time.monotonic() - connect_started) * 1000.0, 3)
+            trace.setdefault('connect_errors', []).append(str(exc))
+            sock.close()
+            last_exc = exc
+            continue
+    if last_exc:
+        raise last_exc
+    raise OSError(f'Unable to connect to {endpoint_host}:{endpoint_port}')
 
 
 def _strip_html_tags(text: str) -> str:
@@ -71,6 +194,7 @@ class LiveChromeBindExecutor:
         self.post_submit_wait_seconds = max(3.0, float(post_submit_wait_seconds or 8.0))
         self.cms_postcheck_max_attempts = max(1, int(cms_postcheck_max_attempts or 3))
         self.cms_postcheck_retry_delay_seconds = max(0.0, float(cms_postcheck_retry_delay_seconds or 0.0))
+        self._cms_request_traces: list[dict[str, Any]] = []
 
     def __call__(self, context: dict[str, Any]) -> dict[str, Any]:
         return asyncio.run(self._run(context))
@@ -194,50 +318,58 @@ class LiveChromeBindExecutor:
         account_id = str(context.get('account_id') or '').strip()
         target_guild = str(context.get('dept_name') or '').strip()
         base_url = str(context.get('executor_platform_backend_url') or '').strip().rstrip('/') or 'https://cms.linke.ai'
-        authorization = str(context.get('executor_platform_authorization') or '').strip()
+        authorization = str(context.get('_cms_retry_authorization') or context.get('executor_platform_authorization') or '').strip()
         proxy_url = str(context.get('executor_proxy_url') or '').strip()
+        refresh_attempted = bool(context.get('_cms_retry_refresh_attempted'))
+        refresh_meta = context.get('_cms_refresh_result') if isinstance(context.get('_cms_refresh_result'), dict) else {}
+        self._cms_request_traces = []
         raw_result: dict[str, Any] = {
             'executor_mode': 'cms_id',
             'guild_code': target_guild,
             'deptName': target_guild,
             'sid': account_id,
+            'cms_base_url': base_url,
+            'cms_proxy_configured': bool(proxy_url),
         }
-        if not account_id.isdigit():
-            return {
-                'status': 'failed',
-                'result_code': 'cms_bind_invalid_sid',
-                'result_reason': 'Invalid Linky ID / SID for CMS bind',
-                'raw_result': raw_result,
-            }
-        if not authorization:
-            return {
-                'status': 'failed',
-                'result_code': 'cms_authorization_missing',
-                'result_reason': 'CMS Authorization is not configured for this guild executor',
-                'raw_result': raw_result,
-            }
-        configured_guild_id = str(context.get('executor_cms_guild_id') or '').strip()
-        configured_guild_sid = str(context.get('executor_cms_guild_sid') or '').strip()
-        if not configured_guild_id or not configured_guild_sid:
-            default_locks = {
-                'carote': ('3432', '43536425'),
-                'permata': ('413', '25400979'),
-                'nova': ('1423', '31350499'),
-            }
-            default_lock = default_locks.get(target_guild.strip().lower())
-            if default_lock:
-                configured_guild_id = configured_guild_id or default_lock[0]
-                configured_guild_sid = configured_guild_sid or default_lock[1]
-                raw_result['cms_guild_lock_source'] = 'builtin_default'
-            else:
+        if refresh_attempted:
+            raw_result['cms_refresh_retry'] = dict(refresh_meta)
+        try:
+            if not account_id.isdigit():
                 return {
                     'status': 'failed',
-                    'result_code': 'cms_target_guild_lock_missing',
-                    'result_reason': 'CMS guild ID/SID lock is required for automatic CMS bind',
+                    'result_code': 'cms_bind_invalid_sid',
+                    'result_reason': 'Invalid Linky ID / SID for CMS bind',
                     'raw_result': raw_result,
                 }
-        try:
+            if not authorization:
+                return {
+                    'status': 'failed',
+                    'result_code': 'cms_authorization_missing',
+                    'result_reason': 'CMS Authorization is not configured for this guild executor',
+                    'raw_result': raw_result,
+                }
+            configured_guild_id = str(context.get('executor_cms_guild_id') or '').strip()
+            configured_guild_sid = str(context.get('executor_cms_guild_sid') or '').strip()
+            if not configured_guild_id or not configured_guild_sid:
+                default_locks = {
+                    'carote': ('3432', '43536425'),
+                    'permata': ('413', '25400979'),
+                    'nova': ('1423', '31350499'),
+                }
+                default_lock = default_locks.get(target_guild.strip().lower())
+                if default_lock:
+                    configured_guild_id = configured_guild_id or default_lock[0]
+                    configured_guild_sid = configured_guild_sid or default_lock[1]
+                    raw_result['cms_guild_lock_source'] = 'builtin_default'
+                else:
+                    return {
+                        'status': 'failed',
+                        'result_code': 'cms_target_guild_lock_missing',
+                        'result_reason': 'CMS guild ID/SID lock is required for automatic CMS bind',
+                        'raw_result': raw_result,
+                    }
             request_timeout_seconds = min(30.0, max(10.0, float(context.get('executor_request_timeout_seconds') or 20.0)))
+            raw_result['cms_request_timeout_seconds'] = request_timeout_seconds
             guild = self._cms_find_target_guild(
                 base_url=base_url,
                 authorization=authorization,
@@ -255,13 +387,6 @@ class LiveChromeBindExecutor:
                 submit = self._cms_add_anchor(base_url=base_url, authorization=authorization, proxy_url=proxy_url, sid=account_id, guild_id=str(guild.get('id') or ''), timeout_seconds=request_timeout_seconds)
             except urllib.error.HTTPError as exc:
                 raw_result['cms_submit_http_status'] = exc.code
-                if exc.code in (401, 403):
-                    return {
-                        'status': 'failed',
-                        'result_code': 'cms_authorization_invalid',
-                        'result_reason': f'CMS KA-AddAnchor authorization rejected with HTTP {exc.code}',
-                        'raw_result': raw_result,
-                    }
                 raise
             raw_result['cms_submit_code'] = submit.get('code')
             raw_result['cms_submit_success'] = submit.get('success')
@@ -288,20 +413,62 @@ class LiveChromeBindExecutor:
         except CmsBindFlowError as exc:
             return {'status': 'failed', 'result_code': exc.result_code, 'result_reason': exc.result_reason, 'raw_result': raw_result}
         except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403) and not refresh_attempted:
+                refresh_token = str(context.get('executor_cms_refresh_token') or '').strip()
+                if refresh_token:
+                    try:
+                        refresh_result = self._cms_refresh_authorization(
+                            base_url=base_url,
+                            current_authorization=authorization,
+                            refresh_token=refresh_token,
+                            refresh_token_deadtime=context.get('executor_cms_refresh_token_deadtime'),
+                            proxy_url=proxy_url,
+                            timeout_seconds=min(30.0, max(10.0, float(raw_result.get('cms_request_timeout_seconds') or context.get('executor_request_timeout_seconds') or 20.0))),
+                        )
+                        persist_callback = context.get('executor_refresh_persist_callback')
+                        if callable(persist_callback):
+                            persist_callback(dict(refresh_result))
+                        retry_context = dict(context)
+                        retry_context['_cms_retry_authorization'] = str(refresh_result.get('authorization') or '').strip()
+                        retry_context['_cms_retry_refresh_attempted'] = True
+                        retry_context['_cms_refresh_result'] = dict(refresh_result)
+                        return self._run_cms_id_bind(retry_context)
+                    except Exception as refresh_exc:
+                        refresh_failure = {
+                            'attempted': True,
+                            'ok': False,
+                            'error': str(refresh_exc),
+                        }
+                        raw_result['cms_refresh_retry'] = dict(refresh_failure)
+                        persist_callback = context.get('executor_refresh_persist_callback')
+                        if callable(persist_callback):
+                            try:
+                                persist_callback(dict(refresh_failure))
+                            except Exception:
+                                pass
             if exc.code in (401, 403):
-                code = 'cms_authorization_invalid'
-                reason = f'CMS authorization rejected with HTTP {exc.code}'
+                if raw_result.get('cms_submit_http_status') == 403:
+                    code = 'cms_authorization_scope_denied'
+                    reason = 'CMS KA-AddAnchor authorization lacks required scope (HTTP 403)'
+                else:
+                    code = 'cms_authorization_invalid'
+                    reason = f'CMS authorization rejected with HTTP {exc.code}'
             else:
                 code = 'cms_http_error'
                 reason = f'CMS request failed with HTTP {exc.code}'
             return {'status': 'failed', 'result_code': code, 'result_reason': reason, 'raw_result': raw_result}
         except Exception as exc:
+            if isinstance(exc, CmsRequestTimeoutError):
+                raw_result['cms_timeout_stage'] = exc.timeout_stage
             return {
                 'status': 'failed',
                 'result_code': 'cms_bind_runtime_error',
                 'result_reason': str(exc),
                 'raw_result': raw_result,
             }
+        finally:
+            if self._cms_request_traces:
+                raw_result['cms_request_traces'] = [dict(item) for item in self._cms_request_traces]
 
     def _cms_headers(self, authorization: str) -> dict[str, str]:
         return {
@@ -315,36 +482,185 @@ class LiveChromeBindExecutor:
             'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
         }
 
+    @staticmethod
+    def _coerce_epoch_seconds(value: Any) -> int | None:
+        try:
+            if value in (None, ''):
+                return None
+            number = int(value)
+            if number > 10**12:
+                return int(number / 1000)
+            return number
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_authorization_value(*, current_authorization: str, refreshed_token: str) -> str:
+        refreshed = str(refreshed_token or '').strip()
+        current = str(current_authorization or '').strip()
+        if not refreshed:
+            return ''
+        if refreshed.lower().startswith('bearer '):
+            return refreshed
+        if current.lower().startswith('bearer '):
+            return f'Bearer {refreshed}'
+        return refreshed
+
+    def _record_cms_request_trace(self, trace: dict[str, Any]) -> None:
+        self._cms_request_traces.append(dict(trace or {}))
+
+    def _cms_refresh_authorization(
+        self,
+        *,
+        base_url: str,
+        current_authorization: str,
+        refresh_token: str,
+        refresh_token_deadtime: Any,
+        proxy_url: str = '',
+        timeout_seconds: float = 20.0,
+    ) -> dict[str, Any]:
+        normalized_refresh_token = str(refresh_token or '').strip()
+        if not normalized_refresh_token:
+            raise RuntimeError('CMS refresh token is not configured')
+        refresh_deadtime = self._coerce_epoch_seconds(refresh_token_deadtime)
+        query = urllib.parse.urlencode({
+            'refreshToken': normalized_refresh_token,
+            'refreshToken_deadtime': refresh_deadtime if refresh_deadtime is not None else '',
+        })
+        url = f'{base_url}/admin/base/open/refreshToken?{query}'
+        payload = self._cms_request_json(
+            method='GET',
+            url=url,
+            authorization=current_authorization,
+            proxy_url=proxy_url,
+            timeout_seconds=timeout_seconds,
+        )
+        if not isinstance(payload, dict):
+            raise RuntimeError('CMS refreshToken returned an unsupported response shape')
+        token = str(payload.get('token') or payload.get('accessToken') or payload.get('authorization') or '').strip()
+        authorization = self._normalize_authorization_value(current_authorization=current_authorization, refreshed_token=token)
+        if not authorization:
+            raise RuntimeError('CMS refreshToken returned an empty access token')
+        refresh_value = str(payload.get('refreshToken') or normalized_refresh_token).strip()
+        refresh_expire = self._coerce_epoch_seconds(payload.get('refreshExpire') or payload.get('refreshToken_deadtime'))
+        access_expire = self._coerce_epoch_seconds(payload.get('expire') or payload.get('access_token_exp') or payload.get('tokenExpire'))
+        return {
+            'attempted': True,
+            'ok': True,
+            'authorization': authorization,
+            'refresh_token': refresh_value,
+            'refresh_token_deadtime': refresh_expire,
+            'access_token_exp': access_expire,
+        }
+
+    def _make_cms_connection(self, *, parsed_url: urllib.parse.SplitResult, timeout: float, trace: dict[str, Any], proxy_url: str = '') -> http.client.HTTPConnection:
+        scheme = (parsed_url.scheme or 'https').lower()
+        host = parsed_url.hostname or ''
+        if not host:
+            raise RuntimeError(f'CMS request host is missing for url={parsed_url.geturl()}')
+        port = int(parsed_url.port or (443 if scheme == 'https' else 80))
+        if scheme == 'https':
+            return _TimedHTTPSConnection(target_host=host, target_port=port, timeout=timeout, trace=trace, proxy_url=proxy_url)
+        return _TimedHTTPConnection(endpoint_host=host, endpoint_port=port, timeout=timeout, trace=trace)
+
     def _cms_request_json(self, *, method: str, url: str, authorization: str, body: Optional[dict[str, Any]] = None, proxy_url: str = '', timeout_seconds: float = 20.0) -> Any:
         data = None if body is None else json.dumps(body, separators=(',', ':')).encode('utf-8')
         timeout = max(10.0, min(float(timeout_seconds or 20.0), 30.0))
+        parsed_url = urllib.parse.urlsplit(url)
+        path = parsed_url.path or '/'
+        if parsed_url.query:
+            path = f'{path}?{parsed_url.query}'
         last_exc: Exception | None = None
+        last_trace: dict[str, Any] | None = None
         for attempt in range(1, 4):
-            req = urllib.request.Request(url, data=data, headers=self._cms_headers(authorization), method=method)
-            opener = urllib.request.build_opener()
-            normalized_proxy = str(proxy_url or '').strip()
-            if normalized_proxy:
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({'http': normalized_proxy, 'https': normalized_proxy}))
+            trace: dict[str, Any] = {
+                'attempt': attempt,
+                'method': method,
+                'url': url,
+                'host': parsed_url.hostname or '',
+                'path': path,
+                'proxy_url': str(proxy_url or '').strip(),
+                'timeout_seconds': timeout,
+            }
+            conn: http.client.HTTPConnection | None = None
+            total_started = time.monotonic()
             try:
-                with opener.open(req, timeout=timeout) as resp:
-                    text = resp.read().decode('utf-8', errors='replace')
+                conn = self._make_cms_connection(parsed_url=parsed_url, timeout=timeout, trace=trace, proxy_url=proxy_url)
+                request_started = time.monotonic()
+                conn.request(method=method, url=path, body=data, headers=self._cms_headers(authorization))
+                trace['request_write_duration_ms'] = round((time.monotonic() - request_started) * 1000.0, 3)
+                first_byte_started = time.monotonic()
+                response = conn.getresponse()
+                trace['first_byte_duration_ms'] = round((time.monotonic() - first_byte_started) * 1000.0, 3)
+                trace['http_status'] = int(response.status or 0)
+                trace['response_reason'] = str(response.reason or '')
+                body_started = time.monotonic()
+                body_bytes = response.read()
+                trace['body_read_duration_ms'] = round((time.monotonic() - body_started) * 1000.0, 3)
+                trace['response_bytes'] = len(body_bytes or b'')
+                trace['completed'] = True
+                text = body_bytes.decode('utf-8', errors='replace')
+                if int(response.status or 0) >= 400:
+                    raise urllib.error.HTTPError(url, int(response.status or 0), str(response.reason or ''), response.headers, io.BytesIO(body_bytes))
+                trace['total_duration_ms'] = round((time.monotonic() - total_started) * 1000.0, 3)
+                last_trace = dict(trace)
+                self._record_cms_request_trace(trace)
                 return json.loads(text) if text else {}
-            except urllib.error.HTTPError:
+            except urllib.error.HTTPError as exc:
+                trace['http_status'] = int(exc.code or 0)
+                trace['response_reason'] = str(exc.reason or '')
+                trace['error_type'] = type(exc).__name__
+                trace['error'] = str(exc)
+                trace['total_duration_ms'] = round((time.monotonic() - total_started) * 1000.0, 3)
+                last_trace = dict(trace)
+                self._record_cms_request_trace(trace)
                 raise
-            except (TimeoutError, socket.timeout) as exc:
+            except TimeoutError as exc:
                 last_exc = exc
+                trace['error_type'] = type(exc).__name__
+                trace['error'] = str(exc)
+                trace['timeout_stage'] = str(trace.get('timeout_stage') or 'connect').strip()
+                trace['total_duration_ms'] = round((time.monotonic() - total_started) * 1000.0, 3)
+                last_trace = dict(trace)
+                self._record_cms_request_trace(trace)
                 if attempt < 3:
                     time.sleep(0.8 * attempt)
                     continue
-                raise TimeoutError(f'CMS KA-AddAnchor request timed out after {attempt} attempts') from exc
-            except urllib.error.URLError as exc:
-                last_exc = exc
-                if 'timed out' in str(exc).lower() and attempt < 3:
+                raise CmsRequestTimeoutError(f'CMS KA-AddAnchor request timed out after {attempt} attempts', timeout_stage=str(trace.get('timeout_stage') or 'connect'), request_trace=trace) from exc
+            except Exception as exc:
+                timeout_stage = str(trace.get('timeout_stage') or '').strip()
+                message_lower = str(exc).lower()
+                if not timeout_stage:
+                    if isinstance(exc, ssl.SSLError) and 'timed out' in message_lower:
+                        timeout_stage = 'tls_handshake'
+                    elif isinstance(exc, urllib.error.URLError) and 'timed out' in message_lower:
+                        timeout_stage = 'response_headers'
+                    elif isinstance(exc, http.client.RemoteDisconnected):
+                        timeout_stage = 'response_headers'
+                if timeout_stage:
+                    trace['timeout_stage'] = timeout_stage
+                trace['error_type'] = type(exc).__name__
+                trace['error'] = str(exc)
+                trace['total_duration_ms'] = round((time.monotonic() - total_started) * 1000.0, 3)
+                last_trace = dict(trace)
+                self._record_cms_request_trace(trace)
+                if timeout_stage and attempt < 3:
+                    last_exc = exc
                     time.sleep(0.8 * attempt)
                     continue
+                if timeout_stage:
+                    raise CmsRequestTimeoutError(f'CMS KA-AddAnchor request timed out after {attempt} attempts', timeout_stage=timeout_stage, request_trace=trace) from exc
                 raise
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
         if last_exc:
             raise last_exc
+        if last_trace and str(last_trace.get('timeout_stage') or '').strip():
+            raise CmsRequestTimeoutError('CMS KA-AddAnchor request timed out', timeout_stage=str(last_trace.get('timeout_stage') or ''), request_trace=last_trace)
         raise TimeoutError('CMS KA-AddAnchor request timed out')
 
     def _cms_find_target_guild(
@@ -364,7 +680,7 @@ class LiveChromeBindExecutor:
         try:
             data = self._cms_request_json(method='GET', url=url, authorization=authorization, proxy_url=proxy_url, timeout_seconds=timeout_seconds)
         except urllib.error.HTTPError as exc:
-            if exc.code in (401, 403) and configured_id and configured_sid:
+            if exc.code == 403 and configured_id and configured_sid:
                 return {'id': configured_id, 'guild_id': configured_id, 'guild_name': target_guild.strip(), 'sid': configured_sid, 'guild_sid': configured_sid, 'guild_list_unavailable': True}
             raise
         rows = data.get('data') if isinstance(data, dict) else data

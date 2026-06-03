@@ -216,6 +216,86 @@ def test_realtime_store_preserves_manual_probe_identity_against_blank_weak_snaps
     assert group['next_approval_pending_count'] == 3
 
 
+def test_realtime_store_preserves_manual_probe_identity_by_binding_id_across_link_change():
+    store = RealtimeApprovalStateStore()
+    manual = {
+        'rows': [
+            {
+                'account_key': 'registration-a',
+                'session_state': {'login_state': 'logged_in', 'login_verified': True, 'can_probe': True},
+                'group_binding_runtimes': [
+                    {
+                        'binding_id': 'wabind-1',
+                        'binding_index': 0,
+                        'link': 'https://chat.whatsapp.com/old-link',
+                        'group_id': 'resolved-group@g.us',
+                        'group_name': '已解析注册群',
+                        'registration_group': 'resolved-group@g.us',
+                        'runtime_probe_group_id': 'resolved-group@g.us',
+                        'runtime_probe_group_name': '已解析注册群',
+                        'target_group_label': '已解析注册群',
+                        'next_approval_pending_count': 4,
+                        'membership_verifier': {
+                            'ready': True,
+                            'status': 'mapped_live_probe_ready',
+                            'detail': '已接探针：待审批 4 人。已有管理员权限。',
+                            'probe': {
+                                'group_id': 'resolved-group@g.us',
+                                'group_name': '已解析注册群',
+                                'pending_count': 4,
+                                'member_count': 99,
+                                'data_quality': 'fresh',
+                            },
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    weak_after_link_change = {
+        'rows': [
+            {
+                'account_key': 'registration-a',
+                'session_state': {'login_state': 'logged_in', 'login_verified': True, 'can_probe': True},
+                'group_binding_runtimes': [
+                    {
+                        'binding_id': 'wabind-1',
+                        'binding_index': 0,
+                        'link': 'https://chat.whatsapp.com/new-link',
+                        'group_id': '',
+                        'group_name': '',
+                        'registration_group': '',
+                        'runtime_probe_group_id': '',
+                        'runtime_probe_group_name': '',
+                        'target_group_label': '',
+                        'next_approval_pending_count': None,
+                        'membership_verifier': {
+                            'ready': False,
+                            'status': 'probe_unavailable',
+                            'detail': '当前未拿到可用的实时群状态探针结果。',
+                            'probe': {'member_count': None, 'data_quality': 'unavailable'},
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+    store.ingest_snapshot(manual, source='manual_probe')
+    result = store.ingest_snapshot(weak_after_link_change, source='lightweight_snapshot_refresh')
+    group = result['snapshot']['rows'][0]['group_binding_runtimes'][0]
+
+    assert group['binding_id'] == 'wabind-1'
+    assert group['link'] == 'https://chat.whatsapp.com/new-link'
+    assert group['group_id'] == 'resolved-group@g.us'
+    assert group['group_name'] == '已解析注册群'
+    assert group['registration_group'] == 'resolved-group@g.us'
+    assert group['runtime_probe_group_id'] == 'resolved-group@g.us'
+    assert group['runtime_probe_group_name'] == '已解析注册群'
+    assert group['membership_verifier']['status'] == 'mapped_live_probe_ready'
+    assert group['next_approval_pending_count'] == 4
+
+
 def test_realtime_internal_ingest_and_snapshot_endpoint_publish_authoritative_state():
     client = TestClient(create_app({'TESTING': True, 'DB_PATH': ':memory:'}))
     payload = {
@@ -328,6 +408,10 @@ def test_production_ops_page_connects_realtime_websocket_and_patches_groups():
     assert '/api/ops/whatsapp-approval-accounts/realtime-ws' in source
     assert 'applyApprovalRealtimeEvent' in source
     assert 'applyApprovalGroupRealtimePatch' in source
+    assert 'isStaleApprovalGroupRealtimePatch' in source
+    assert 'realtime_event_id' in source
+    assert 'incomingEventId < currentEventId' in source
+    assert 'incomingUpdatedAt < currentUpdatedAt' in source
     assert 'delivery_target_ms' in source
     assert 'data-realtime-group-id' in source
 
@@ -338,7 +422,9 @@ def test_realtime_snapshot_endpoint_refreshes_lightweight_server_snapshot():
 
     assert 'lightweight_snapshot_refresh' in source
     assert 'returning the first in-memory' in source
+    assert 'service.downgrade_polluted_approval_queue_current_truth()' in source
     assert 'service.list_whatsapp_approval_accounts(lightweight=True)' in source
+    assert 'auto_refresh_truth_reconciliation' in source
     assert "source: str = 'backend'" in store_source
     assert "lightweight_snapshot_refresh" in store_source
     assert "stronger per-binding verifier" in store_source
@@ -350,3 +436,129 @@ def test_daemon_can_publish_realtime_snapshot_without_browser_probe():
     assert 'publish_realtime_state_snapshot' in source
     assert '/api/internal/whatsapp-approval/realtime-state' in source
     assert 'realtime_state_publish' in source
+
+
+def test_realtime_store_ignores_expired_zero_when_newer_nonzero_signal_arrives():
+    store = RealtimeApprovalStateStore()
+    expired_zero = {
+        'rows': [
+            {
+                'account_key': 'registration-a',
+                'group_binding_runtimes': [
+                    {
+                        'binding_id': 'wabind-1',
+                        'group_id': 'g1@g.us',
+                        'group_name': 'Group 1',
+                        'approval_queue_truth': {
+                            'truth_status': 'confirmed_empty',
+                            'pending_count': 0,
+                            'freshness_level': 'EXPIRED',
+                            'display_trusted': False,
+                            'display': {'state': 'EXPIRED', 'primary_text': '数据过期，待刷新', 'show_count': False},
+                        },
+                        'membership_verifier': {
+                            'ready': True,
+                            'status': 'mapped_live_probe_ready',
+                            'detail': '已接探针：待审批 0 人。已有管理员权限。当前群：Group 1',
+                            'probe': {'pending_count': 0, 'member_count': 50, 'data_quality': 'verified_zero'},
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    newer_nonzero = {
+        'rows': [
+            {
+                'account_key': 'registration-a',
+                'group_binding_runtimes': [
+                    {
+                        'binding_id': 'wabind-1',
+                        'group_id': 'g1@g.us',
+                        'group_name': 'Group 1',
+                        'approval_queue_truth': {
+                            'truth_status': 'TRUTH_UNKNOWN',
+                            'confidence_reason': 'api_pending_ui_not_converged',
+                            'api_pending_count': 11,
+                            'ui_pending_count': 0,
+                            'freshness_level': 'FRESH',
+                            'display_trusted': False,
+                            'display': {'state': 'VERIFYING', 'primary_text': '检测到待审批请求', 'show_count': False},
+                        },
+                        'membership_verifier': {
+                            'ready': False,
+                            'status': 'probe_unavailable',
+                            'detail': '当前未拿到可用的实时群状态探针结果。',
+                            'probe': {'pending_count': 11, 'member_count': None, 'data_quality': 'unverified_zero'},
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+    store.ingest_snapshot(expired_zero, source='manual_probe')
+    result = store.ingest_snapshot(newer_nonzero, source='lightweight_snapshot_refresh')
+    group = result['snapshot']['rows'][0]['group_binding_runtimes'][0]
+
+    assert group['approval_queue_truth']['display']['state'] == 'EXPIRED'
+    assert group['membership_verifier']['safe_detail'] == '已接探针。已有管理员权限。当前群：Group 1'
+
+
+
+def test_realtime_store_assigns_binding_store_revision_and_patch_revision():
+    store = RealtimeApprovalStateStore()
+    first = {
+        'rows': [
+            {
+                'account_key': 'registration-a',
+                'group_binding_runtimes': [
+                    {
+                        'binding_id': 'wabind-1',
+                        'group_id': 'g1@g.us',
+                        'group_name': 'Group 1',
+                        'approval_queue_truth': {
+                            'truth_status': 'confirmed_empty',
+                            'pending_count': 0,
+                            'freshness_level': 'FRESH',
+                            'display_trusted': True,
+                            'display': {'state': 'COUNT', 'primary_text': '待审批 0 人', 'count': 0, 'show_count': True},
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    second = {
+        'rows': [
+            {
+                'account_key': 'registration-a',
+                'group_binding_runtimes': [
+                    {
+                        'binding_id': 'wabind-1',
+                        'group_id': 'g1@g.us',
+                        'group_name': 'Group 1',
+                        'approval_queue_truth': {
+                            'truth_status': 'TRUTH_UNKNOWN',
+                            'confidence_reason': 'api_pending_ui_not_converged',
+                            'api_pending_count': 2,
+                            'ui_pending_count': 0,
+                            'freshness_level': 'FRESH',
+                            'display_trusted': False,
+                            'display': {'state': 'VERIFYING', 'primary_text': '检测到待审批请求', 'show_count': False},
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+    initial = store.ingest_snapshot(first, source='manual_probe')
+    updated = store.ingest_snapshot(second, source='manual_probe')
+    first_group = initial['snapshot']['rows'][0]['group_binding_runtimes'][0]
+    second_group = updated['snapshot']['rows'][0]['group_binding_runtimes'][0]
+    event = updated['events'][0]
+
+    assert first_group['approval_queue_truth']['store_revision'] == 1
+    assert second_group['approval_queue_truth']['store_revision'] == 1
+    assert 'approval_queue_truth' not in event['patch']

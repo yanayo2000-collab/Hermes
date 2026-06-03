@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import re
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
+
+
+APPROVAL_TRUTH_ZERO_TTL_SECONDS = 120
+APPROVAL_TRUTH_PENDING_TTL_SECONDS = 300
+APPROVAL_TRUTH_UNKNOWN_TTL_SECONDS = 60
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -52,6 +59,134 @@ def _payload_requester_ids(payload: Dict[str, Any]) -> list:
             if candidate:
                 derived.append(candidate)
     return derived
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def parse_ts(value: Any) -> Optional[datetime]:
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        normalized = text.replace('Z', '+00:00')
+        parsed = datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def normalize_int_or_none(value: Any) -> Optional[int]:
+    return _as_int(value)
+
+
+def compute_freshness_level(source_ts: Any, truth_status: Any, now: Optional[datetime] = None) -> str:
+    parsed = parse_ts(source_ts)
+    if parsed is None:
+        return 'UNKNOWN'
+    current = now or now_utc()
+    age_seconds = max((current - parsed).total_seconds(), 0.0)
+    normalized_status = str(truth_status or '').strip().lower()
+    if normalized_status in {'confirmed_empty', 'trusted_confirmed_empty'}:
+        ttl = APPROVAL_TRUTH_ZERO_TTL_SECONDS
+    elif normalized_status in {'confirmed_pending', 'pending_detected', 'trusted_confirmed_pending'}:
+        ttl = APPROVAL_TRUTH_PENDING_TTL_SECONDS
+    else:
+        ttl = APPROVAL_TRUTH_UNKNOWN_TTL_SECONDS
+    if age_seconds <= ttl:
+        return 'FRESH'
+    if age_seconds <= ttl * 2:
+        return 'STALE'
+    return 'EXPIRED'
+
+
+def build_approval_queue_display(truth: Optional[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
+    if not truth:
+        return {
+            'state': 'UNKNOWN',
+            'primary_text': '审批队列待刷新',
+            'secondary_text': '暂无法确认当前待审批人数',
+            'count': None,
+            'debug_count': None,
+            'show_count': False,
+            'severity': 'muted',
+        }
+
+    pending_count = normalize_int_or_none(truth.get('pending_count'))
+    stale = bool(truth.get('stale'))
+
+    if pending_count is None:
+        return {
+            'state': 'UNKNOWN',
+            'primary_text': '审批队列待刷新',
+            'secondary_text': '暂无法确认当前待审批人数',
+            'count': None,
+            'debug_count': None,
+            'show_count': False,
+            'severity': 'muted',
+        }
+
+    if stale:
+        return {
+            'state': 'STALE',
+            'primary_text': f'当前审批列表 {pending_count} 人',
+            'secondary_text': '',
+            'count': None,
+            'debug_count': pending_count,
+            'show_count': False,
+            'severity': 'warning',
+        }
+
+    return {
+        'state': 'COUNT',
+        'primary_text': f'待审批 {pending_count} 人',
+        'secondary_text': '',
+        'count': pending_count,
+        'debug_count': None,
+        'show_count': True,
+        'severity': 'normal',
+    }
+
+
+def build_membership_verifier_safe_detail(verifier: Dict[str, Any]) -> str:
+    parts = []
+    if verifier.get('probe_connected') or verifier.get('ready') is True or str(verifier.get('status') or '').strip() in {'mapped_live_probe_ready', 'live_probe_ready', 'not_group_member', 'not_group_admin'}:
+        parts.append('已接探针')
+    if verifier.get('has_admin_permission') or verifier.get('is_admin') or str(verifier.get('status') or '').strip() == 'mapped_live_probe_ready':
+        parts.append('已有管理员权限')
+    group_name = str(verifier.get('group_name') or verifier.get('current_group_name') or verifier.get('matched_group_name') or '').strip()
+    if group_name:
+        parts.append(f'当前群：{group_name}')
+    return '。'.join(parts)
+
+
+def strip_pending_from_detail(detail: Any) -> str:
+    text = str(detail or '').strip()
+    if not text:
+        return ''
+    text = re.sub(r'待审批\s*\d+\s*人[。；;，,：:]*', '', text)
+    text = re.sub(r'pending\s*[:：]?\s*\d+', '', text, flags=re.I)
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[。；;，,:：\s]+$', '', text)
+    return text.strip()
+
+
+def serialize_membership_verifier(verifier: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    result = dict(verifier or {})
+    result.pop('pending_count', None)
+    result.pop('probe_pending_count', None)
+    result.pop('api_pending_count', None)
+    result.pop('ui_pending_count', None)
+    probe = dict(result.get('probe') or {}) if isinstance(result.get('probe'), dict) else {}
+    probe.pop('pending_count', None)
+    result['probe'] = probe if probe else result.get('probe', {})
+    result['safe_detail'] = build_membership_verifier_safe_detail(result)
+    result['detail'] = strip_pending_from_detail(result.get('detail', ''))
+    result['detail_deprecated'] = True
+    return result
 
 
 def build_truth_state(

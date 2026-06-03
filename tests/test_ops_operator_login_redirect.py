@@ -27,24 +27,31 @@ def _bootstrap_admin_and_create_user(client, *, username, role, display_name):
     client.post('/api/ops/auth/logout')
 
 
-def _assert_limited_self_password_page(html):
-    assert '账号设置' in html
-    assert '修改我的密码' in html
-    assert '退出登录' in html
-    assert 'onclick="logoutCurrentAccount()"' in html
-    assert "async function logoutCurrentAccount()" in html
-    assert "fetch('/api/ops/auth/logout'" in html
-    assert "window.location.replace('/login')" in html
-    assert '账号列表' not in html
-    assert '创建账号' not in html
-    assert '角色' not in html
-    assert '/api/ops/auth/password' in html
+
+def _create_user_as_bootstrapped_admin(client, *, username, role, display_name):
+    created = client.post('/api/ops/accounts', json={
+        'username': username,
+        'password': 'secret123',
+        'role': role,
+        'display_name': display_name,
+    })
+    assert created.status_code == 200
+
 
 def _assert_admin_account_settings_logout_action(html):
     assert '<div class="accounts-hero-actions"><button class="secondary" type="button" onclick="openChangeOwnPassword()">修改我的密码</button><button class="ghost" type="button" onclick="logoutCurrentAccount()">退出登录</button></div>' in html
     assert "async function logoutCurrentAccount()" in html
-    assert "fetchJson('/api/ops/auth/logout', {method:'POST'})" in html
+    assert "/api/ops/auth/logout" in html
     assert "window.location.replace('/login')" in html
+
+
+def _assert_non_admin_account_settings_page(html):
+    assert '账号设置' in html
+    assert '修改我的密码' in html
+    assert '退出登录' in html
+    assert '新增账号' not in html
+    assert '账号列表' not in html
+    assert '超级管理员' not in html
 
 
 def test_admin_account_settings_shows_logout_next_to_change_password():
@@ -85,7 +92,7 @@ def test_login_page_allows_operator_next_to_accounts_or_group_atmosphere():
     assert 'bootstrapTab' not in html
 
 
-def test_operator_role_can_use_group_atmosphere_and_limited_account_settings():
+def test_operator_role_can_use_group_atmosphere_only_and_is_redirected_away_from_admin_pages():
     client = make_client()
     _bootstrap_admin_and_create_user(
         client,
@@ -129,10 +136,10 @@ def test_operator_role_can_use_group_atmosphere_and_limited_account_settings():
 
     accounts_page = client.get('/ops/accounts', follow_redirects=False)
     assert accounts_page.status_code == 200
-    _assert_limited_self_password_page(accounts_page.text)
+    _assert_non_admin_account_settings_page(accounts_page.text)
 
 
-def test_customer_service_role_can_open_limited_account_settings():
+def test_customer_service_role_redirects_to_intake_submit_and_can_open_limited_accounts_page():
     client = make_client()
     _bootstrap_admin_and_create_user(
         client,
@@ -155,10 +162,16 @@ def test_customer_service_role_can_open_limited_account_settings():
 
     accounts_page = client.get('/ops/accounts', follow_redirects=False)
     assert accounts_page.status_code == 200
-    _assert_limited_self_password_page(accounts_page.text)
+    _assert_non_admin_account_settings_page(accounts_page.text)
+
+    intake_page = client.get('/ops/intake-submit')
+    assert intake_page.status_code == 200
+    assert '绑定中心' in intake_page.text
+    assert '<a href="/ops/group-atmosphere">' not in intake_page.text
+    assert '<a href="/ops/accounts">' in intake_page.text
 
 
-def test_customer_service_can_manage_intake_presets_but_only_read_guild_executors():
+def test_customer_service_intake_presets_entry_redirects_to_binding_center_while_api_stays_available():
     client = make_client()
     _bootstrap_admin_and_create_user(
         client,
@@ -174,13 +187,14 @@ def test_customer_service_can_manage_intake_presets_but_only_read_guild_executor
     assert login.status_code == 200
 
     page = client.get('/ops/intake-bot-presets', follow_redirects=False)
-    assert page.status_code == 200
-    html = page.text
-    assert '收口配置中心' in html
-    assert '＋ 新增机器人配置' in html
-    assert '保存配置' in html
-    assert '<button type="button" class="admin-only" onclick="openExecutorModal(null)">＋ 新增公会执行器</button>' in html
-    assert 'body[data-ops-role="operator"] .admin-only, body[data-ops-role="customer_service"] .admin-only { display: none !important; }' in html
+    assert page.status_code == 303
+    assert page.headers['location'] == '/ops/intake-submit'
+
+    intake_page = client.get('/ops/intake-submit')
+    assert intake_page.status_code == 200
+    assert '绑定中心' in intake_page.text
+    assert '<a href="/ops/group-atmosphere">' not in intake_page.text
+    assert '<a href="/ops/accounts">' in intake_page.text
 
     assert client.get('/api/ops/intake-bot-presets').status_code == 200
     save_preset = client.post('/api/ops/intake-bot-presets/intake-cs-test', json={
@@ -190,8 +204,8 @@ def test_customer_service_can_manage_intake_presets_but_only_read_guild_executor
         'default_app': 'Tugao',
         'default_guild': 'Carote',
     })
-    assert save_preset.status_code != 403
-    assert save_preset.json()['detail'] != 'ops_admin_required'
+    assert save_preset.status_code == 403
+    assert save_preset.json()['detail'] == 'ops_admin_required'
 
     assert client.get('/api/ops/guild-executors').status_code == 200
     assert client.get('/api/ops/guild-executors/health').status_code == 200
@@ -201,3 +215,40 @@ def test_customer_service_can_manage_intake_presets_but_only_read_guild_executor
     delete_executor = client.delete('/api/ops/guild-executors/Carote')
     assert delete_executor.status_code == 403
     assert delete_executor.json()['detail'] == 'ops_admin_required'
+
+
+def test_role_nav_matrix_matches_route_gate_expectations():
+    client = make_client()
+    _bootstrap_admin_and_create_user(
+        client,
+        username='operator_nav',
+        role='operator',
+        display_name='Operator Nav',
+    )
+    assert client.post('/api/ops/auth/login', json={'username': 'admin01', 'password': 'secret123'}).status_code == 200
+    _create_user_as_bootstrapped_admin(
+        client,
+        username='kefu_nav',
+        role='customer_service',
+        display_name='客服 Nav',
+    )
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'operator_nav', 'password': 'secret123'}).status_code == 200
+    operator_group = client.get('/ops/group-atmosphere')
+    assert operator_group.status_code == 200
+    assert '<a href="/ops/group-atmosphere">' in operator_group.text
+    assert '<a href="/ops/intake-submit">' not in operator_group.text
+    assert '<a href="/ops/production-ops">' not in operator_group.text
+    assert '<a href="/ops/registration-group-approval-batch-members">' not in operator_group.text
+    assert '<a href="/ops/accounts">' in operator_group.text
+
+    client.post('/api/ops/auth/logout')
+    assert client.post('/api/ops/auth/login', json={'username': 'kefu_nav', 'password': 'secret123'}).status_code == 200
+    intake_page = client.get('/ops/intake-submit')
+    assert intake_page.status_code == 200
+    assert '<a href="/ops/intake-submit">' in intake_page.text
+    assert '<a href="/ops/production-ops">' in intake_page.text
+    assert '<a href="/ops/registration-group-approval-batch-members">' in intake_page.text
+    assert '<a href="/ops/group-atmosphere">' not in intake_page.text
+    assert '<a href="/ops/accounts">' in intake_page.text

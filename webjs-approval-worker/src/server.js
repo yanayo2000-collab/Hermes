@@ -93,6 +93,7 @@ let initPromise = null;
 let approvalClient = null;
 let approvalInitPromise = null;
 let probeRefreshPromise = null;
+let approvalRefreshPromise = null;
 let actionLock = Promise.resolve();
 const approvalRunStore = createApprovalRunStore({ ttlMs: 10 * 60 * 1000 });
 let readyWaiters = [];
@@ -175,7 +176,14 @@ function handleClientInitializeFailure(error) {
 
 function handleApprovalClientInitializeFailure(error) {
   const failure = error instanceof Error ? error : new Error(String(error || 'approval_client_initialize_failed'));
-  updateApprovalState({ status: 'failed', ready: false, authenticated: false, last_error: String(failure && failure.stack ? failure.stack : failure) });
+  updateApprovalState({
+    status: 'failed',
+    ready: false,
+    authenticated: false,
+    last_error: String(failure && failure.stack ? failure.stack : failure),
+    last_qr: null,
+    last_qr_at: null,
+  });
   rejectWaiters(approvalReadyWaiters, failure);
   rejectWaiters(approvalQrWaiters, failure);
   approvalClient = null;
@@ -581,6 +589,8 @@ async function resetApprovalClientSession(reason) {
     authenticated: false,
     status: 'resetting',
     last_error: reason ? String(reason) : approvalState.last_error,
+    last_qr: null,
+    last_qr_at: null,
   });
   if (existing) {
     try {
@@ -621,6 +631,74 @@ function scheduleProbeClientRefresh(reason) {
     }
   })();
   return probeRefreshPromise;
+}
+
+function scheduleApprovalClientRefresh(reason) {
+  if (approvalRefreshPromise) {
+    return approvalRefreshPromise;
+  }
+  approvalRefreshPromise = (async () => {
+    try {
+      logEvent('approval_client_refresh_started', {
+        reason: reason ? String(reason) : null,
+      });
+      await resetApprovalClientSession(reason || 'approval_runtime_recoverable_error');
+      await ensureApprovalClientStarted();
+      await waitForApprovalQrOrReady(QR_TIMEOUT_MS).catch(() => {
+        if (!approvalState.ready && !approvalState.last_qr) {
+          throw new Error('approval client failed to recover a ready session or fresh qr');
+        }
+      });
+      logEvent('approval_client_refresh_finished', {
+        status: approvalState.status,
+        ready: approvalState.ready,
+        authenticated: approvalState.authenticated,
+        last_qr_at: approvalState.last_qr_at,
+      });
+    } catch (error) {
+      updateApprovalState({
+        last_error: String(error && error.message ? error.message : error),
+        last_qr: null,
+        last_qr_at: null,
+      });
+      logEvent('approval_client_refresh_failed', {
+        error: String(error && error.stack ? error.stack : error || 'unknown_error'),
+      });
+    } finally {
+      approvalRefreshPromise = null;
+    }
+  })();
+  return approvalRefreshPromise;
+}
+
+function installRecoverableApprovalErrorHandlers() {
+  const recoverableHandler = (kind) => (error) => {
+    if (!isRecoverableApprovalClientError(error)) {
+      logEvent('approval_client_unhandled_fatal_error', {
+        kind,
+        error: String(error && error.stack ? error.stack : error || 'unknown_error'),
+      });
+      process.exitCode = 1;
+      setImmediate(() => process.exit(1));
+      return;
+    }
+    const reason = `recoverable_${kind}:${String(error && error.message ? error.message : error || 'unknown_error')}`;
+    updateApprovalState({
+      status: 'recovering_execution_context',
+      ready: false,
+      authenticated: false,
+      last_error: reason,
+      last_qr: null,
+      last_qr_at: null,
+    });
+    logEvent('approval_client_recoverable_error_captured', {
+      kind,
+      reason,
+    });
+    void scheduleApprovalClientRefresh(reason);
+  };
+  process.on('unhandledRejection', recoverableHandler('unhandled_rejection'));
+  process.on('uncaughtException', recoverableHandler('uncaught_exception'));
 }
 
 function prepareCopiedChromeProfile(target = 'probe') {
@@ -964,6 +1042,8 @@ async function ensureApprovalClientStarted(options = {}) {
       ready: false,
       authenticated: false,
       last_error: message || 'auth_failure',
+      last_qr: null,
+      last_qr_at: null,
     });
     const error = new Error(message || 'auth_failure');
     rejectWaiters(approvalReadyWaiters, error);
@@ -977,6 +1057,8 @@ async function ensureApprovalClientStarted(options = {}) {
       authenticated: false,
       last_disconnected_reason: String(reason || ''),
       last_error: String(reason || 'disconnected'),
+      last_qr: null,
+      last_qr_at: null,
     });
   });
 
@@ -1473,11 +1555,14 @@ async function fetchGroupMessagesWithClient(activeClient, payload) {
     .map((message) => ({
       message_id: safeString(message && message.id),
       sender: safeString((message && (message.author || message.from)) || ''),
+      chat_id: safeString(group && group.id) || targetGroup,
+      from_me: Boolean(message && message.fromMe),
+      message_type: safeString(message && message.type),
       text: String((message && (message.body || message.text || message.caption)) || '').trim(),
       created_at: message && message.timestamp ? new Date(Number(message.timestamp) * 1000).toISOString() : new Date().toISOString(),
     }))
     .filter((record) => {
-      if (!record.text) return false;
+      if (!record.text && !record.message_id) return false;
       if (afterMessageId) {
         if (!seenAfterMessage) {
           if (record.message_id === afterMessageId) seenAfterMessage = true;
@@ -2613,6 +2698,55 @@ async function approveMembershipRequests(context) {
     requestsBefore = await getApprovalRequestEnriched(group);
     pendingBefore = requestsBefore.length;
     selected = selectRequests(requestsBefore, context);
+    let emptyQueueRecheckError = null;
+    if (pendingBefore <= 0 || selected.length <= 0) {
+      try {
+        await forceRefreshApprovalGroupBeforeRead(context, group, {
+          client: approvalClient,
+          refreshWaitMs: 1500,
+          settleWaitMs: 800,
+        });
+        requestsBefore = await getApprovalRequestEnriched(group);
+        pendingBefore = requestsBefore.length;
+        selected = selectRequests(requestsBefore, context);
+      } catch (error) {
+        emptyQueueRecheckError = error;
+        logEvent('approve_stage', {
+          approval_run_id: context.approval_run_id || null,
+          registration_group: context.registration_group || null,
+          stage: 'empty_queue_live_refresh_failed',
+          error: String(error && error.stack ? error.stack : error || 'unknown_error'),
+        });
+      }
+    }
+    if (pendingBefore <= 0 || selected.length <= 0) {
+      try {
+        const refreshedState = await groupStateWithRecovery({
+          ...context,
+          mode: 'full_verify',
+        });
+        if (Array.isArray(refreshedState && refreshedState.requester_ids) && refreshedState.requester_ids.length > 0) {
+          const requesterIdSet = new Set(refreshedState.requester_ids.map((item) => safeString(item)).filter(Boolean));
+          requestsBefore = await getApprovalRequestEnriched(group);
+          const refreshedRequests = requestsBefore.filter((row) => requesterIdSet.has(safeString(row && row.requesterId)));
+          if (refreshedRequests.length > 0) {
+            requestsBefore = refreshedRequests;
+          }
+        }
+        pendingBefore = Array.isArray(refreshedState && refreshedState.requester_ids) && refreshedState.requester_ids.length > 0
+          ? refreshedState.requester_ids.length
+          : requestsBefore.length;
+        selected = selectRequests(requestsBefore, context);
+      } catch (error) {
+        emptyQueueRecheckError = emptyQueueRecheckError || error;
+        logEvent('approve_stage', {
+          approval_run_id: context.approval_run_id || null,
+          registration_group: context.registration_group || null,
+          stage: 'empty_queue_authoritative_recheck_failed',
+          error: String(error && error.stack ? error.stack : error || 'unknown_error'),
+        });
+      }
+    }
     logEvent('approve_stage', {
       approval_run_id: context.approval_run_id || null,
       registration_group: context.registration_group || null,
@@ -2620,6 +2754,7 @@ async function approveMembershipRequests(context) {
       pending_before: pendingBefore,
       member_count_before: memberCountBefore,
       requester_ids: requestsBefore.map((row) => row.requesterId).filter(Boolean),
+      error: emptyQueueRecheckError ? String(emptyQueueRecheckError && emptyQueueRecheckError.message ? emptyQueueRecheckError.message : emptyQueueRecheckError) : null,
     });
   }
 
@@ -2870,6 +3005,8 @@ function buildHealthPayload() {
     hostname: os.hostname(),
   };
 }
+
+installRecoverableApprovalErrorHandlers();
 
 const server = http.createServer(async (req, res) => {
   try {

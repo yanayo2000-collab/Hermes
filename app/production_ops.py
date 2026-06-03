@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -65,6 +66,12 @@ NOTIFICATION_POLICY_BY_CODE: Dict[str, Dict[str, str]] = {
         'partial_sent': 'retry_unsent_targets_only',
     },
     'worker_probe_recovered': {
+        'family': 'success',
+        'dedupe': 'one_shot_per_dedupe_key',
+        'retry': 'until_all_targets_sent',
+        'partial_sent': 'retry_unsent_targets_only',
+    },
+    'worker_idle_high_resource_recovered': {
         'family': 'success',
         'dedupe': 'one_shot_per_dedupe_key',
         'retry': 'until_all_targets_sent',
@@ -1163,6 +1170,53 @@ def build_success_notifications(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
                 'dedupe_key': f'official_group_manual_review_required:{dedupe_target}:{dedupe_identity}:{reason_code}:{dedupe_remaining}',
             })
 
+    for cycle_row in registration_cycles:
+        if not isinstance(cycle_row, dict):
+            continue
+        monitor_target_obj = cycle_row.get('monitor_target')
+        monitor_target: Dict[str, Any] = monitor_target_obj if isinstance(monitor_target_obj, dict) else {}
+        worker_state_obj = cycle_row.get('worker_state')
+        worker_state: Dict[str, Any] = worker_state_obj if isinstance(worker_state_obj, dict) else {}
+        resource_pressure_obj = worker_state.get('resource_pressure')
+        resource_pressure: Dict[str, Any] = resource_pressure_obj if isinstance(resource_pressure_obj, dict) else {}
+        restart_obj = resource_pressure.get('restart')
+        restart: Dict[str, Any] = restart_obj if isinstance(restart_obj, dict) else {}
+        resource_sample_obj = resource_pressure.get('resource_sample')
+        resource_sample: Dict[str, Any] = resource_sample_obj if isinstance(resource_sample_obj, dict) else {}
+        if not worker_state.get('resource_self_heal') or restart.get('status') != 'ok':
+            continue
+        group_name = str(
+            monitor_target.get('group_name')
+            or monitor_target.get('binding_group_name')
+            or monitor_target.get('registration_group')
+            or cycle_row.get('registration_group')
+            or ''
+        ).strip()
+        top_processes = list(resource_sample.get('top_processes') or []) if isinstance(resource_sample.get('top_processes'), list) else []
+        top_process: Dict[str, Any] = top_processes[0] if top_processes and isinstance(top_processes[0], dict) else {}
+        recovery_obj = worker_state.get('recovery')
+        recovery: Dict[str, Any] = recovery_obj if isinstance(recovery_obj, dict) else {}
+        dedupe_suffix = '|'.join(part for part in [group_name, str(recovery.get('recovered_at') or ''), str(resource_pressure.get('idle_anchor_at') or '')] if part) or 'unknown'
+        append_notification({
+            'severity': 'info',
+            'code': 'worker_idle_high_resource_recovered',
+            'summary': '审批 Runtime 空闲高占用已自愈',
+            'details': {
+                'group_name': group_name or None,
+                'idle_seconds': resource_pressure.get('idle_seconds'),
+                'rss_mb': resource_sample.get('total_rss_mb'),
+                'cpu_pct': resource_sample.get('total_cpu_pct'),
+                'pressure_reasons': resource_pressure.get('pressure_reasons'),
+                'top_process_command': top_process.get('command'),
+                'top_process_rss_mb': top_process.get('rss_mb'),
+                'top_process_cpu_pct': top_process.get('cpu_pct'),
+                'trigger_reason': resource_pressure.get('trigger_reason'),
+            },
+            'notify_profile_name': str(monitor_target.get('notify_profile_name') or '').strip() or None,
+            'notify_robot_name': str(monitor_target.get('notify_robot_name') or '').strip() or None,
+            'dedupe_key': f'worker_idle_high_resource_recovered:{dedupe_suffix}',
+        })
+
     return notifications
 
 
@@ -1454,6 +1508,43 @@ def format_lark_alert(service_name: str, incident: Dict[str, Any], cycle: Dict[s
             lines.append(f'原因: {reason}')
         return '\n'.join(line for line in lines if line)
 
+    if code == 'worker_idle_high_resource_recovered':
+        details_obj = incident.get('details')
+        details: Dict[str, Any] = details_obj if isinstance(details_obj, dict) else {}
+        monitor_target_obj = cycle.get('monitor_target')
+        monitor_target: Dict[str, Any] = monitor_target_obj if isinstance(monitor_target_obj, dict) else {}
+        registration_group_label = str(
+            details.get('group_name')
+            or details.get('target_group_label')
+            or monitor_target.get('group_name')
+            or monitor_target.get('binding_group_name')
+            or cycle.get('registration_group')
+            or ''
+        ).strip()
+        idle_seconds = details.get('idle_seconds')
+        rss_mb = details.get('rss_mb')
+        cpu_pct = details.get('cpu_pct')
+        pressure_reasons = ', '.join(str(item).strip() for item in list(details.get('pressure_reasons') or []) if str(item).strip())
+        top_process_command = str(details.get('top_process_command') or '').strip()
+        lines = [
+            '✅ 生产守护恢复｜空闲高占用 Runtime 已重启',
+            f'时间: {checked_at}',
+        ]
+        if registration_group_label:
+            lines.append(f'注册群: {registration_group_label}')
+        if idle_seconds is not None:
+            lines.append(f'空闲时长: {idle_seconds}s')
+        if rss_mb is not None:
+            lines.append(f'重启前内存: {rss_mb} MB')
+        if cpu_pct is not None:
+            lines.append(f'重启前CPU: {cpu_pct}%')
+        if pressure_reasons:
+            lines.append(f'触发原因: {pressure_reasons}')
+        lines.append('结果: 队列空闲且占用偏高，守护已自动重启审批 Runtime 并恢复探针')
+        if top_process_command:
+            lines.append(f'主进程: {top_process_command}')
+        return '\n'.join(line for line in lines if line)
+
     if code == 'formal_approval_recovered':
         details = incident.get('details') if isinstance(incident.get('details'), dict) else {}
         registration_group_label = str(
@@ -1557,6 +1648,8 @@ def format_lark_alert(service_name: str, incident: Dict[str, Any], cycle: Dict[s
 
 
 class FeishuNotifier:
+    _MESSAGE_MAX_ATTEMPTS = 3
+
     def __init__(self, *, app_id: str, app_secret: str, chat_id: str, domain: str = 'lark') -> None:
         self.app_id = app_id
         self.app_secret = app_secret
@@ -1580,6 +1673,18 @@ class FeishuNotifier:
         self._tenant_access_token = str(body['tenant_access_token'])
         return self._tenant_access_token
 
+    @staticmethod
+    def _retry_after_delay_seconds(value: Optional[str], *, attempt: int) -> float:
+        raw = str(value or '').strip()
+        if raw:
+            try:
+                parsed = float(raw)
+            except (TypeError, ValueError):
+                parsed = 0.0
+            if parsed > 0:
+                return min(max(parsed, 1.0), 5.0)
+        return min(1.0 * (2 ** max(attempt - 1, 0)), 5.0)
+
     def send_text(self, text: str) -> Dict[str, Any]:
         token = self._get_tenant_access_token()
         payload = {
@@ -1596,11 +1701,23 @@ class FeishuNotifier:
             },
             method='POST',
         )
-        with urllib.request.urlopen(request, timeout=15) as response:
-            body = json.loads(response.read().decode('utf-8'))
-        if body.get('code') != 0:
-            raise RuntimeError(f'im_message failed: {body}')
-        return body
+        last_http_error: Optional[urllib.error.HTTPError] = None
+        for attempt in range(1, self._MESSAGE_MAX_ATTEMPTS + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=15) as response:
+                    body = json.loads(response.read().decode('utf-8'))
+            except urllib.error.HTTPError as exc:
+                last_http_error = exc
+                if exc.code == 429 and attempt < self._MESSAGE_MAX_ATTEMPTS:
+                    time.sleep(self._retry_after_delay_seconds(exc.headers.get('Retry-After') if exc.headers else None, attempt=attempt))
+                    continue
+                raise
+            if body.get('code') != 0:
+                raise RuntimeError(f'im_message failed: {body}')
+            return body
+        if last_http_error is not None:
+            raise last_http_error
+        raise RuntimeError('im_message_failed_without_response')
 
 
 def run_formal_approval_command(command: List[str], *, timeout: float = 180.0) -> Dict[str, Any]:

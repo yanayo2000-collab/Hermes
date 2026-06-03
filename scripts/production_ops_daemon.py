@@ -100,6 +100,114 @@ def _parse_iso_datetime(value: Any) -> Optional[datetime]:
     return parsed
 
 
+def _safe_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+
+def _sample_runtime_process_tree(root_pid: Any) -> Dict[str, Any]:
+    pid = _safe_int(root_pid)
+    if not pid or pid <= 0:
+        return {'ok': False, 'error': 'runtime_pid_missing'}
+    try:
+        completed = subprocess.run(
+            ['ps', '-axo', 'pid=,ppid=,rss=,%cpu=,etimes=,command='],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+        )
+    except Exception as exc:
+        return {'ok': False, 'error': f'ps_failed:{exc}', 'pid': pid}
+    if completed.returncode != 0:
+        return {
+            'ok': False,
+            'error': f'ps_exit_{completed.returncode}',
+            'pid': pid,
+            'stderr': str(completed.stderr or '').strip()[-500:],
+        }
+    by_pid: Dict[int, Dict[str, Any]] = {}
+    children_by_ppid: Dict[int, List[int]] = {}
+    for raw_line in str(completed.stdout or '').splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 5)
+        if len(parts) < 6:
+            continue
+        row_pid = _safe_int(parts[0])
+        row_ppid = _safe_int(parts[1])
+        rss_kb = _safe_int(parts[2])
+        cpu_pct = _safe_float(parts[3])
+        elapsed_seconds = _safe_int(parts[4])
+        command = str(parts[5]).strip()
+        if row_pid is None or row_ppid is None:
+            continue
+        row = {
+            'pid': row_pid,
+            'ppid': row_ppid,
+            'rss_kb': max(rss_kb or 0, 0),
+            'cpu_pct': max(cpu_pct or 0.0, 0.0),
+            'elapsed_seconds': max(elapsed_seconds or 0, 0),
+            'command': command,
+        }
+        by_pid[row_pid] = row
+        children_by_ppid.setdefault(row_ppid, []).append(row_pid)
+    root = by_pid.get(pid)
+    if not root:
+        return {'ok': False, 'error': 'runtime_pid_not_found', 'pid': pid}
+    tree_pids: List[int] = []
+    stack = [pid]
+    visited: set[int] = set()
+    while stack:
+        current = stack.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        tree_pids.append(current)
+        stack.extend(children_by_ppid.get(current, []))
+    tree_rows = [by_pid[item] for item in tree_pids if item in by_pid]
+    total_rss_kb = sum(int(item.get('rss_kb') or 0) for item in tree_rows)
+    total_cpu_pct = round(sum(float(item.get('cpu_pct') or 0.0) for item in tree_rows), 1)
+    top_processes = sorted(
+        tree_rows,
+        key=lambda item: (int(item.get('rss_kb') or 0), float(item.get('cpu_pct') or 0.0)),
+        reverse=True,
+    )[:5]
+    return {
+        'ok': True,
+        'pid': pid,
+        'sampled_at': utc_now_iso(),
+        'tree_pids': tree_pids,
+        'process_count': len(tree_rows),
+        'root_elapsed_seconds': int(root.get('elapsed_seconds') or 0),
+        'total_rss_kb': total_rss_kb,
+        'total_rss_mb': round(total_rss_kb / 1024.0, 1),
+        'total_cpu_pct': total_cpu_pct,
+        'top_processes': [
+            {
+                'pid': item.get('pid'),
+                'rss_mb': round(int(item.get('rss_kb') or 0) / 1024.0, 1),
+                'cpu_pct': round(float(item.get('cpu_pct') or 0.0), 1),
+                'elapsed_seconds': int(item.get('elapsed_seconds') or 0),
+                'command': str(item.get('command') or '')[:240],
+            }
+            for item in top_processes
+        ],
+    }
+
+
 
 def _maybe_auto_cleanup_temp_profiles(args: argparse.Namespace, state: Dict[str, Any], *, now: datetime) -> Dict[str, Any]:
     enabled = bool(getattr(args, 'temp_cleanup_enabled', True))
@@ -1439,6 +1547,106 @@ def _false_zero_recovery_gate_decision(
     )
 
 
+def _idle_high_resource_restart_gate_decision(
+    args: argparse.Namespace,
+    monitoring_session: Optional[Dict[str, Any]],
+    *,
+    trigger_reason: str,
+    now: datetime,
+) -> Dict[str, Any]:
+    return _recovery_gate_decision(
+        args,
+        monitoring_session,
+        trigger_reason=trigger_reason,
+        now=now,
+        gate_name='idle_high_resource_restart_gate',
+        threshold_attr='idle_high_resource_restart_threshold',
+        threshold_default=1,
+        cooldown_attr='idle_high_resource_restart_cooldown_seconds',
+        cooldown_default=1800.0,
+    )
+
+
+def _evaluate_idle_high_resource_restart(
+    args: argparse.Namespace,
+    monitoring_session: Optional[Dict[str, Any]],
+    *,
+    target: Dict[str, Any],
+    worker_payload: Dict[str, Any],
+    now: datetime,
+) -> Dict[str, Any]:
+    runtime_state_obj = target.get('runtime_state')
+    runtime_state: Dict[str, Any] = runtime_state_obj if isinstance(runtime_state_obj, dict) else {}
+    pending_count = max(int(worker_payload.get('pending_count') or 0), 0)
+    result: Dict[str, Any] = {
+        'enabled': bool(getattr(args, 'idle_high_resource_restart_enabled', True)),
+        'pending_count': pending_count,
+        'trigger_reason': 'idle_high_resource_usage',
+    }
+    if not result['enabled']:
+        result['skipped'] = True
+        result['reason'] = 'disabled'
+        return result
+    if str(target.get('source') or '').strip() != 'account_binding':
+        result['skipped'] = True
+        result['reason'] = 'non_binding_target'
+        return result
+    if pending_count > 0:
+        result['skipped'] = True
+        result['reason'] = 'pending_queue_present'
+        return result
+    idle_min_seconds = max(float(getattr(args, 'idle_high_resource_restart_idle_seconds', 1800.0) or 1800.0), 60.0)
+    rss_threshold_mb = max(float(getattr(args, 'idle_high_resource_restart_rss_mb', 1200.0) or 1200.0), 1.0)
+    cpu_threshold_pct = max(float(getattr(args, 'idle_high_resource_restart_cpu_pct', 250.0) or 250.0), 1.0)
+    idle_anchor = _parse_iso_datetime(runtime_state.get('last_action_at')) or _parse_iso_datetime(runtime_state.get('last_started_at')) or _parse_iso_datetime(runtime_state.get('started_at'))
+    result['idle_min_seconds'] = idle_min_seconds
+    result['rss_threshold_mb'] = rss_threshold_mb
+    result['cpu_threshold_pct'] = cpu_threshold_pct
+    result['idle_anchor_at'] = idle_anchor.isoformat() if idle_anchor is not None else None
+    if idle_anchor is None:
+        result['skipped'] = True
+        result['reason'] = 'idle_anchor_missing'
+        return result
+    idle_seconds = max((now - idle_anchor).total_seconds(), 0.0)
+    result['idle_seconds'] = int(idle_seconds)
+    if idle_seconds < idle_min_seconds:
+        result['skipped'] = True
+        result['reason'] = 'idle_window_not_met'
+        return result
+    sample = _sample_runtime_process_tree(runtime_state.get('pid'))
+    result['resource_sample'] = sample
+    if not sample.get('ok'):
+        result['skipped'] = True
+        result['reason'] = str(sample.get('error') or 'resource_sample_failed')
+        return result
+    total_rss_mb = float(sample.get('total_rss_mb') or 0.0)
+    total_cpu_pct = float(sample.get('total_cpu_pct') or 0.0)
+    pressure_reasons: List[str] = []
+    if total_rss_mb >= rss_threshold_mb:
+        pressure_reasons.append('rss_high')
+    if total_cpu_pct >= cpu_threshold_pct:
+        pressure_reasons.append('cpu_high')
+    result['pressure_reasons'] = pressure_reasons
+    if not pressure_reasons:
+        result['skipped'] = True
+        result['reason'] = 'resource_threshold_not_met'
+        return result
+    gate = _idle_high_resource_restart_gate_decision(
+        args,
+        monitoring_session,
+        trigger_reason='idle_high_resource_usage',
+        now=now,
+    )
+    result['gate'] = gate
+    if not gate.get('allowed'):
+        result['skipped'] = True
+        result['reason'] = str(gate.get('reason') or 'cooldown_blocked')
+        return result
+    result['triggered'] = True
+    result['reason'] = 'idle_high_resource_usage'
+    return result
+
+
 def _recovery_gate_decision(
     args: argparse.Namespace,
     monitoring_session: Optional[Dict[str, Any]],
@@ -2153,7 +2361,7 @@ def _run_registration_group_cycle(
             passive_retry_count=passive_retry_count,
         )
         if worker_fetch.get('ok'):
-            worker_payload = worker_fetch['payload']
+            worker_payload = dict(worker_fetch.get('payload') or {})
             previous_probe_failure_gate = _clear_worker_probe_failure_gate(monitoring_session)
             _clear_binding_rebuild_gate(monitoring_session)
             duration_seconds = float(worker_fetch.get('duration_seconds') or 0.0)
@@ -2297,6 +2505,110 @@ def _run_registration_group_cycle(
     empty_queue_evidence = collect_empty_queue_evidence(worker_payload)
     probe_data_quality = classify_probe_data_quality(empty_queue_evidence)
     pending_zero_confidence = 'unverified' if empty_queue_evidence.get('zero_pending_unverified') else ('verified' if probe_data_quality == 'confirmed_empty' else None)
+    resource_pressure = _evaluate_idle_high_resource_restart(
+        args,
+        monitoring_session,
+        target=target,
+        worker_payload=worker_payload,
+        now=now,
+    )
+    if resource_pressure.get('triggered') and bool(target.get('auto_recover_worker')):
+        recovery = _recover_worker_for_target(
+            args,
+            target,
+            failed_worker_base_url=target_worker_base_url,
+            error=RuntimeError('idle_high_resource_usage'),
+            trigger_reason='idle_high_resource_usage',
+        )
+        recovery['trigger_reason'] = 'idle_high_resource_usage'
+        recovery['resource_pressure'] = resource_pressure
+        recovered_worker_base_url = str(recovery.get('recovered_worker_base_url') or '').strip() or target_worker_base_url
+        if recovery.get('status') == 'ok' and recovered_worker_base_url:
+            recovery_retry_wait_seconds = max(2.0, min(float(args.restart_wait_seconds or 2.0), 5.0))
+            recovery_worker_fetch = _fetch_worker_group_state_with_passive_retry(
+                recovered_worker_base_url,
+                target_registration_group,
+                timeout_seconds=worker_timeout_seconds,
+                passive_retry_wait_seconds=recovery_retry_wait_seconds,
+                passive_retry_count=4,
+            )
+            recovery['recovery_probe'] = {
+                'retry_attempts': recovery_worker_fetch.get('attempts') or [],
+                'retry_count': int(recovery_worker_fetch.get('retry_count') or 0),
+                'total_attempts': int(recovery_worker_fetch.get('total_attempts') or 1),
+                'wait_seconds': recovery_retry_wait_seconds,
+            }
+            if recovery_worker_fetch.get('ok'):
+                worker_payload = dict(recovery_worker_fetch.get('payload') or {})
+                target_worker_base_url = recovered_worker_base_url
+                cycle['monitor_target']['worker_base_url'] = target_worker_base_url
+                try:
+                    worker_pending_count = max(int(worker_payload.get('pending_count') or 0), 0)
+                except (TypeError, ValueError):
+                    worker_pending_count = 0
+                zero_pending_recheck = worker_pending_count <= 0
+                empty_queue_evidence = collect_empty_queue_evidence(worker_payload)
+                probe_data_quality = classify_probe_data_quality(empty_queue_evidence)
+                pending_zero_confidence = 'unverified' if empty_queue_evidence.get('zero_pending_unverified') else ('verified' if probe_data_quality == 'confirmed_empty' else None)
+                cycle['worker_state'] = {
+                    'ok': True,
+                    'payload': worker_payload,
+                    'recovered_after_restart': True,
+                    'resource_self_heal': True,
+                    'recovery': recovery,
+                    'resource_pressure': {
+                        **resource_pressure,
+                        'restart': {
+                            'attempted': True,
+                            'status': 'ok',
+                            'recovered_worker_base_url': recovered_worker_base_url,
+                            'recovered_pending_count': worker_pending_count,
+                        },
+                    },
+                    'recovery_probe': recovery['recovery_probe'],
+                }
+            else:
+                recovery['retry_error'] = str(recovery_worker_fetch.get('error') or 'worker_group_state_failed_after_idle_high_resource_recovery')
+                cycle['worker_state'] = {
+                    'ok': False,
+                    'error': recovery['retry_error'],
+                    'recovery': recovery,
+                    'resource_pressure': {
+                        **resource_pressure,
+                        'restart': {
+                            'attempted': True,
+                            'status': 'retry_failed',
+                            'error': recovery['retry_error'],
+                        },
+                    },
+                }
+                return cycle
+        else:
+            cycle['worker_state'] = {
+                'ok': False,
+                'error': str(recovery.get('error') or 'idle_high_resource_recovery_failed'),
+                'recovery': recovery,
+                'resource_pressure': {
+                    **resource_pressure,
+                    'restart': {
+                        'attempted': True,
+                        'status': str(recovery.get('status') or 'failed'),
+                        'error': str(recovery.get('error') or 'idle_high_resource_recovery_failed'),
+                    },
+                },
+            }
+            return cycle
+    elif resource_pressure.get('triggered'):
+        cycle['worker_state']['resource_pressure'] = {
+            **resource_pressure,
+            'restart': {
+                'attempted': False,
+                'status': 'skipped',
+                'reason': 'auto_recover_disabled',
+            },
+        }
+    else:
+        cycle['worker_state']['resource_pressure'] = resource_pressure
 
     cycle['fresh_probe'] = {
         'ok': False,
@@ -3878,6 +4190,13 @@ def main() -> int:
     parser.add_argument('--worker-probe-failure-threshold', type=int, default=10)
     parser.add_argument('--false-zero-recovery-threshold', type=int, default=10)
     parser.add_argument('--false-zero-recovery-cooldown-seconds', type=float, default=120.0)
+    parser.add_argument('--idle-high-resource-restart-enabled', action='store_true', default=True)
+    parser.add_argument('--idle-high-resource-restart-disabled', dest='idle_high_resource_restart_enabled', action='store_false')
+    parser.add_argument('--idle-high-resource-restart-threshold', type=int, default=1)
+    parser.add_argument('--idle-high-resource-restart-cooldown-seconds', type=float, default=1800.0)
+    parser.add_argument('--idle-high-resource-restart-idle-seconds', type=float, default=1800.0)
+    parser.add_argument('--idle-high-resource-restart-rss-mb', type=float, default=1200.0)
+    parser.add_argument('--idle-high-resource-restart-cpu-pct', type=float, default=250.0)
     parser.add_argument('--area', default='Indonesia')
     parser.add_argument('--remark', default='production auto approval daemon')
     parser.add_argument('--approved-count', type=int, default=1)

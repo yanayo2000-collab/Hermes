@@ -49,14 +49,35 @@ def test_group_atmosphere_config_upsert_and_list():
 def test_group_atmosphere_dispatch_once_uses_worker_and_logs(monkeypatch):
     calls = []
 
-    class FakeResponse:
-        status_code = 200
-        text = '{"status":"success"}'
-        def json(self):
-            return {'status': 'success', 'message_id': 'msg-1', 'group_name': 'ID Group'}
-
     def fake_post(url, json, timeout):
         calls.append({'url': url, 'json': json, 'timeout': timeout})
+        if url.endswith('/fetch-group-messages'):
+            if len(calls) == 1:
+                body = {'status': 'success', 'result_code': 'messages_fetched', 'group_id': '120363000000000000@g.us', 'group_name': 'ID Group', 'records': []}
+            else:
+                body = {
+                    'status': 'success',
+                    'result_code': 'messages_fetched',
+                    'group_id': '120363000000000000@g.us',
+                    'group_name': 'ID Group',
+                    'records': [{
+                        'message_id': 'msg-1',
+                        'chat_id': '120363000000000000@g.us',
+                        'from_me': True,
+                        'text': 'Hari ini jangan lupa cek profil.',
+                        'created_at': '2026-05-29T07:00:00+00:00',
+                    }],
+                }
+        else:
+            body = {'status': 'success', 'message_id': 'msg-1', 'group_name': 'ID Group'}
+
+        class FakeResponse:
+            status_code = 200
+            text = str(body)
+
+            def json(self_inner):
+                return body
+
         return FakeResponse()
 
     monkeypatch.setattr('app.main.requests.post', fake_post)
@@ -78,20 +99,21 @@ def test_group_atmosphere_dispatch_once_uses_worker_and_logs(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body['sent'] is True
+    assert body['accepted'] is True
+    assert body['delivery_verified'] is False
+    assert body['delivery_state'] == 'runtime_observed'
+    assert body['evidence_level'] == 'observed_in_runtime_history'
     assert body['message_text'] == 'Hari ini jangan lupa cek profil.'
-    assert calls == [{
-        'url': 'http://127.0.0.1:9010/send-group-message',
-        'json': {
-            'target_group': '120363000000000000@g.us',
-            'message_text': 'Hari ini jangan lupa cek profil.',
-            'metadata': {'config_name': 'indo-reg-01', 'trigger_type': 'manual_test'},
-        },
-        'timeout': 30,
-    }]
+    assert [call['url'] for call in calls] == [
+        'http://127.0.0.1:9010/fetch-group-messages',
+        'http://127.0.0.1:9010/send-group-message',
+        'http://127.0.0.1:9010/fetch-group-messages',
+    ]
     logs = client.get('/api/ops/group-atmosphere/logs').json()['rows']
     assert logs[0]['config_name'] == 'indo-reg-01'
     assert logs[0]['direction'] == 'outbound'
     assert logs[0]['status'] == 'success'
+    assert logs[0]['delivery_state'] == 'runtime_observed'
 
 
 def test_group_atmosphere_dispatch_respects_rate_limit():
@@ -196,7 +218,7 @@ def test_mcn_state_trust_tables_and_flags_are_initialized():
     assert service.task_engine_enabled is False
 
 
-def test_group_atmosphere_successful_send_writes_event_ledger_and_card_count(monkeypatch):
+def test_group_atmosphere_message_id_only_send_counts_as_real_success_without_delivery_verification(monkeypatch):
     class FakeResponse:
         status_code = 200
         text = '{"status":"success","result_code":"sent","message_id":"msg-ledger-1"}'
@@ -219,7 +241,13 @@ def test_group_atmosphere_successful_send_writes_event_ledger_and_card_count(mon
 
     response = client.post('/api/ops/group-atmosphere/dispatch-once', json={'config_name': 'indo-reg-01'})
     assert response.status_code == 200
-    assert response.json()['sent'] is True
+    body = response.json()
+    assert body['sent'] is False
+    assert body['accepted'] is True
+    assert body['delivery_verified'] is False
+    assert body['result_code'] == 'sent'
+    assert body['delivery_state'] == 'readback_missing'
+    assert body['evidence_level'] == 'accepted_by_runtime_api'
 
     service = client.app.state.service
     rows = service.db.connect().execute(
@@ -228,8 +256,79 @@ def test_group_atmosphere_successful_send_writes_event_ledger_and_card_count(mon
     assert len(rows) == 1
     assert rows[0]['object_type'] == 'group_atmosphere_config'
     assert rows[0]['object_key'] == 'indo-reg-01'
-    assert rows[0]['evidence_level'] == 'whatsapp_message_id'
+    assert rows[0]['status'] == 'accepted'
+    assert rows[0]['evidence_level'] == 'accepted_by_runtime_api'
     assert rows[0]['external_id'] == 'msg-ledger-1'
 
+    config = service._get_group_atmosphere_config('indo-reg-01')
+    assert config['status'] == 'awaiting_delivery_verification'
+    assert service._trusted_group_atmosphere_sent_count_today(account_key='wa-seed-01', target_group='group-a@g.us') == 0
+
+
+def test_group_atmosphere_runtime_observed_send_writes_trusted_success(monkeypatch):
+    def fake_post(url, json, timeout):
+        if url.endswith('/fetch-group-messages'):
+            if json.get('limit') == 1:
+                body = {'status': 'success', 'result_code': 'messages_fetched', 'group_id': 'group-a@g.us', 'group_name': 'ID Group', 'records': []}
+            else:
+                body = {
+                    'status': 'success',
+                    'result_code': 'messages_fetched',
+                    'group_id': 'group-a@g.us',
+                    'group_name': 'ID Group',
+                    'records': [{
+                        'message_id': 'msg-ledger-verified-1',
+                        'chat_id': 'group-a@g.us',
+                        'from_me': True,
+                        'text': 'First message',
+                        'created_at': '2026-05-29T07:00:00+00:00',
+                    }],
+                }
+        else:
+            body = {
+                'status': 'success',
+                'result_code': 'sent',
+                'message_id': 'msg-ledger-verified-1',
+                'group_name': 'ID Group',
+            }
+
+        class FakeResponse:
+            status_code = 200
+            text = str(body)
+
+            def json(self_inner):
+                return body
+
+        return FakeResponse()
+
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+    client = make_client()
+    client.post('/api/ops/group-atmosphere/configs', json={
+        'config_name': 'indo-reg-02',
+        'enabled': True,
+        'account_key': 'wa-seed-01',
+        'target_group': 'group-a@g.us',
+        'worker_base_url': 'http://127.0.0.1:9010',
+        'daily_max_messages': 999,
+        'min_interval_minutes': 0,
+        'template_pool': [{'template_id': 't1', 'text': 'First message'}],
+    })
+
+    response = client.post('/api/ops/group-atmosphere/dispatch-once', json={'config_name': 'indo-reg-02'})
+    assert response.status_code == 200
+    body = response.json()
+    assert body['sent'] is True
+    assert body['accepted'] is True
+    assert body['delivery_verified'] is False
+    assert body['delivery_state'] == 'runtime_observed'
+
+    service = client.app.state.service
+    rows = service.db.connect().execute(
+        "SELECT * FROM mcn_event_ledger WHERE event_type='group_message_sent' AND object_key='indo-reg-02'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]['status'] == 'success'
+    assert rows[0]['evidence_level'] == 'observed_in_runtime_history'
+    assert rows[0]['external_id'] == 'msg-ledger-verified-1'
     assert service._trusted_group_atmosphere_sent_count_today(account_key='wa-seed-01', target_group='group-a@g.us') == 1
 

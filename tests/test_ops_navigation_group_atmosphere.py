@@ -65,6 +65,9 @@ def test_group_atmosphere_has_visible_ops_page_and_common_nav():
     assert 'ga_reload_btn:()=>reloadAll()' not in html
     assert '.group-card-grid{display:flex;flex-direction:column' in html
     assert "setSelectedAtmosphereAccountKey('${esc(r.account_key)}');startAtmosphereQr(false)" in html
+    assert "refreshAtmosphereSessionForAccount('${esc(r.account_key)}')" in html
+    assert '刷新群名' in html
+    assert 'showTip(\'正在刷新群名\')' in html
     assert "selectAtmosphereAccount('${esc(r.account_key)}');startAtmosphereQr(false)" not in html
     assert '账号用途' not in html
     assert '运行状态' not in html

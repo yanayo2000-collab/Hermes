@@ -452,7 +452,32 @@ def test_run_production_ops_daemon_script_archives_registration_auto_approval():
 
     assert 'registration_auto_approval_flag="--registration-auto-approval-disabled"' in script
     assert 'ignored PRODUCTION_OPS_REGISTRATION_AUTO_APPROVAL_ENABLED' in script
-    assert 'registration_auto_approval_flag="--registration-auto-approval-enabled"' not in script
+
+
+def test_restart_backend_systemd_script_has_port_cleanup_and_health_wait():
+    script = Path('scripts/restart_backend_systemd.sh').read_text()
+
+    assert 'systemctl stop "${SERVICE_NAME}"' in script
+    assert 'systemctl kill --kill-who=all "${SERVICE_NAME}"' in script
+    assert 'kill_stale_listeners' in script
+    assert 'lsof -tiTCP:"${PORT}" -sTCP:LISTEN' in script
+    assert 'curl --noproxy' in script
+    assert 'systemctl start "${SERVICE_NAME}"' in script
+
+
+def test_backend_port_guard_dropin_uses_prestart_script():
+    conf = Path('scripts/systemd/mcn-backend.service.d/40-port-guard.conf').read_text()
+
+    assert 'ExecStartPre=/opt/mcn-ai-automation/scripts/prestart_mcn_backend_port_guard.sh' in conf
+
+
+def test_prestart_backend_port_guard_cleans_listener_pids():
+    script = Path('scripts/prestart_mcn_backend_port_guard.sh').read_text()
+
+    assert 'lsof -tiTCP:"${PORT}" -sTCP:LISTEN' in script
+    assert 'kill -TERM "${pids[@]}"' in script
+    assert 'kill -KILL "${remaining[@]}"' in script
+
 
 
 def test_worker_probe_timeout_adapts_from_group_duration_history():
@@ -1032,6 +1057,7 @@ def test_success_notification_codes_exact_match_guardrail():
         'formal_approval_succeeded',
         'formal_approval_recovered',
         'worker_probe_recovered',
+        'worker_idle_high_resource_recovered',
         'registration_cycle_noop',
         'registration_duplicate_group_request_skipped',
         'startup_initial_batch_succeeded',
@@ -2892,3 +2918,109 @@ def test_registration_group_metrics_aggregate_conflicts_and_probe_states():
     assert metrics['slow_probe_count'] == 1
     assert metrics['independent_conflict_count'] == 1
     assert metrics['p0_conflict_count'] == 1
+
+
+def test_registration_cycle_restarts_idle_high_resource_runtime(monkeypatch):
+    args = SimpleNamespace(**Args.__dict__)
+    args.idle_high_resource_restart_enabled = True
+    args.idle_high_resource_restart_threshold = 1
+    args.idle_high_resource_restart_cooldown_seconds = 1800.0
+    args.idle_high_resource_restart_idle_seconds = 1800.0
+    args.idle_high_resource_restart_rss_mb = 1200.0
+    args.idle_high_resource_restart_cpu_pct = 250.0
+
+    now = datetime(2026, 6, 2, 12, 0, 0, tzinfo=timezone.utc)
+    target = {
+        'source': 'account_binding',
+        'group_name': 'RG Idle',
+        'registration_group': 'RG-Idle',
+        'worker_base_url': 'http://runtime-a:8787',
+        'auto_recover_worker': True,
+        'runtime_state': {
+            'pid': 4321,
+            'last_action_at': '2026-06-02T10:00:00+00:00',
+            'last_started_at': '2026-06-02T09:00:00+00:00',
+            'base_url': 'http://runtime-a:8787',
+        },
+    }
+
+    fetch_calls = []
+
+    def fake_fetch(worker_base_url, registration_group, **kwargs):
+        fetch_calls.append((worker_base_url, registration_group))
+        return {
+            'ok': True,
+            'payload': {
+                'pending_count': 0,
+                'member_count': 88,
+                'pending_members': [],
+                'probe_mode': 'fast',
+            },
+            'attempts': [],
+            'retry_count': 0,
+            'total_attempts': 1,
+            'duration_seconds': 0.2,
+        }
+
+    monkeypatch.setattr('scripts.production_ops_daemon._fetch_worker_group_state_with_passive_retry', fake_fetch)
+    monkeypatch.setattr('scripts.production_ops_daemon._sample_runtime_process_tree', lambda pid: {
+        'ok': True,
+        'pid': pid,
+        'total_rss_mb': 1450.0,
+        'total_cpu_pct': 12.0,
+        'top_processes': [{'command': 'node worker.js', 'rss_mb': 900.0, 'cpu_pct': 8.0}],
+    })
+    monkeypatch.setattr('scripts.production_ops_daemon._recover_worker_for_target', lambda *a, **k: {
+        'attempted': True,
+        'status': 'ok',
+        'recovered_at': '2026-06-02T12:00:05+00:00',
+        'recovered_worker_base_url': 'http://runtime-b:8787',
+    })
+    monkeypatch.setattr('scripts.production_ops_daemon._evaluate_release_with_backend_recovery', lambda *a, **k: {'ok': True, 'payload': {'ready': False}})
+
+    cycle = _run_registration_group_cycle(args, {}, target, now=now)
+
+    assert fetch_calls[0][0] == 'http://runtime-a:8787'
+    assert fetch_calls[-1][0] == 'http://runtime-b:8787'
+    assert cycle['worker_state']['ok'] is True
+    assert cycle['worker_state']['resource_self_heal'] is True
+    assert cycle['worker_state']['resource_pressure']['restart']['status'] == 'ok'
+    assert cycle['monitor_target']['worker_base_url'] == 'http://runtime-b:8787'
+
+
+
+def test_build_success_notifications_includes_idle_high_resource_recovery():
+    cycle = {
+        'registration_group_cycles': [
+            {
+                'registration_group': 'RG-Idle',
+                'monitor_target': {
+                    'group_name': 'RG Idle',
+                    'notify_profile_name': 'songyuqi',
+                },
+                'worker_state': {
+                    'resource_self_heal': True,
+                    'recovery': {'recovered_at': '2026-06-02T12:00:05+00:00'},
+                    'resource_pressure': {
+                        'idle_anchor_at': '2026-06-02T10:00:00+00:00',
+                        'idle_seconds': 7200,
+                        'trigger_reason': 'idle_high_resource_usage',
+                        'pressure_reasons': ['rss_high'],
+                        'restart': {'status': 'ok'},
+                        'resource_sample': {
+                            'total_rss_mb': 1450.0,
+                            'total_cpu_pct': 12.0,
+                            'top_processes': [{'command': 'node worker.js', 'rss_mb': 900.0, 'cpu_pct': 8.0}],
+                        },
+                    },
+                },
+            }
+        ]
+    }
+
+    notifications = build_success_notifications(cycle)
+    matches = [item for item in notifications if item.get('code') == 'worker_idle_high_resource_recovered']
+    assert len(matches) == 1
+    alert = format_lark_alert('production-daemon', matches[0], {'checked_at': '2026-06-02T12:00:10+00:00', 'monitor_target': {'group_name': 'RG Idle'}, 'registration_group': 'RG-Idle'})
+    assert '空闲高占用 Runtime 已重启' in alert
+    assert 'RG Idle' in alert

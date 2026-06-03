@@ -59,6 +59,20 @@ def test_group_atmosphere_account_mutations_are_allowed_for_operator_role(tmp_pa
     assert listed.json()['rows'][0]['account_key'] == 'atmosphere-indo-01'
 
 
+def test_group_atmosphere_page_keeps_operator_nav_and_trigger_rules_access(tmp_path):
+    operator_client, _ = make_auth_client(tmp_path / 'operator-page', role='operator')
+
+    response = operator_client.get('/ops/group-atmosphere')
+
+    assert response.status_code == 200
+    html = response.text
+    assert 'href="/ops/group-atmosphere"' in html
+    assert 'href="/ops/accounts"' in html
+    assert 'data-admin-only-nav="true"' not in html
+    assert 'ga_trigger_rules_modal' in html
+    assert 'openTriggerRulesModal' in html
+
+
 def test_group_atmosphere_rejects_untrusted_worker_base_url(tmp_path):
     client, _ = make_auth_client(tmp_path, role='admin')
 

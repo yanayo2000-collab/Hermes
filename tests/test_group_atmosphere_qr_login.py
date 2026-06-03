@@ -97,19 +97,23 @@ def test_group_atmosphere_candidate_pool_exposes_own_account_selector_and_action
     assert "ga_candidate_target_role_select" in html
     assert "ga_batch_add_candidates_to_role_btn" in html
     assert "新增话术" in html
-    assert "新增图片" in html
+    assert "新增图片" not in html
     assert 'ga_open_image_candidate_modal_btn' in html
-    assert 'data-ga-image-candidate-entry="image"' in html
-    assert "ga-candidate-manual-draft" in html
+    assert 'data-ga-image-candidate-entry="add"' in html
+    assert 'data-ga-image-candidate-entry="image"' not in html
+    assert "ga-candidate-manual-draft" not in html
     assert "openImageCandidateModal" in html
     assert "saveImageCandidate" in html
     assert "saveCustomCandidate" in html
     assert "/api/ops/group-atmosphere/candidate-pool/custom" in html
-    assert "人工写入" in html
     assert "candidateSourceLabel(item)" in html
     assert "保存自定义" not in html
     assert ">编辑</button>" in html
-    assert "图片可选" in html
+    assert "可直接粘贴图片" in html
+    assert "ga_image_candidate_media_preview" in html
+    assert "handleImageCandidatePaste" in html
+    assert "bindImageCandidatePaste" in html
+    assert "uploadImageCandidateMedia" in html
     assert "未真正发送" in html
 
 
@@ -786,6 +790,99 @@ def test_group_atmosphere_account_list_persists_actual_group_name_after_login(mo
     assert rows[0]['groups'][0]['target_group'] == 'https://chat.whatsapp.com/EoHAaKPML7p3BG7LNEbOl1'
 
 
+def test_group_atmosphere_session_refresh_persists_probed_group_name_to_account_and_bridge(monkeypatch, tmp_path):
+    client = make_client({'DB_PATH': str(tmp_path / 'automation.db'), 'AUTH_INTERNAL_TOKEN': 'dev-internal-token'})
+    service = client.app.state.service
+    headers = {'x-ops-internal-token': 'dev-internal-token'}
+    role = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'auto-br-community_seed',
+        'role_name': '巴西活跃BOT',
+        'region': '巴西',
+        'language': 'pt',
+        'role_positioning': 'community_seed',
+        'phrases': ['欢迎进群。'],
+        'enabled': True,
+    }, headers=headers)
+    assert role.status_code == 200
+    role_key = role.json()['role']['role_key']
+    account = client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_key': 'atmosphere-br-02',
+        'account_name': '+55 11 99999 2222',
+        'region': '巴西',
+        'language': 'pt',
+        'role_positioning': 'community_seed',
+        'groups': [{'target_group': 'https://chat.whatsapp.com/refreshInvite', 'enabled': True}],
+        'enabled': True,
+    }, headers=headers)
+    assert account.status_code == 200
+    binding = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': role_key,
+        'account_key': 'atmosphere-br-02',
+        'group_indexes': [0],
+        'auto_speaking_enabled': True,
+    }, headers=headers)
+    assert binding.status_code == 200
+    auth_path = str(service._whatsapp_approval_session_auth_path('atmosphere-br-02'))
+    client_id = service._whatsapp_approval_session_client_id('atmosphere-br-02')
+    meta = {
+        'pid': 7788,
+        'port': 59994,
+        'base_url': 'http://127.0.0.1:59994',
+        'auth_path': auth_path,
+        'client_id': client_id,
+        'started_at': datetime.now(timezone.utc).isoformat(),
+    }
+    monkeypatch.setattr(service, '_read_whatsapp_approval_runtime_meta', lambda key: meta if key == 'atmosphere-br-02' else {})
+    monkeypatch.setattr(service, '_write_whatsapp_approval_runtime_meta', lambda key, payload: payload)
+    monkeypatch.setattr(service, '_pid_running', lambda pid: True)
+    monkeypatch.setattr(service, '_request_whatsapp_approval_worker_health', lambda base_url: {
+        'status': 'warm',
+        'ready': True,
+        'authenticated': True,
+        'approval_client': {
+            'status': 'warm',
+            'ready': True,
+            'authenticated': True,
+            'client_id': client_id,
+            'auth_path': auth_path,
+            'auth_strategy': 'LocalAuth',
+        },
+    })
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    probe_calls = []
+
+    def fake_post(url, json=None, timeout=None):
+        probe_calls.append({'url': url, 'json': json, 'timeout': timeout})
+        return FakeResponse({'group_name': '🇧🇷 Grupo Gallen Oficial', 'group_id': '120363499999999999@g.us'})
+
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+
+    refreshed = client.get('/api/ops/group-atmosphere/accounts/atmosphere-br-02/session', headers=headers)
+
+    assert refreshed.status_code == 200
+    assert probe_calls == [{
+        'url': 'http://127.0.0.1:59994/probe-group-state',
+        'json': {'registration_group': 'https://chat.whatsapp.com/refreshInvite'},
+        'timeout': 8.0,
+    }]
+    listed = client.get('/api/ops/group-atmosphere/accounts', headers=headers).json()['rows'][0]
+    assert listed['groups'][0]['group_name'] == '🇧🇷 Grupo Gallen Oficial'
+    assert listed['groups'][0]['group_id'] == '120363499999999999@g.us'
+    rels = client.get('/api/ops/group-atmosphere/role-bindings', headers=headers).json()
+    bridge_group = rels['relationships'][0]['groups'][0]
+    assert bridge_group['group_name'] == '🇧🇷 Grupo Gallen Oficial'
+
+
 def test_group_atmosphere_session_start_persists_probed_group_name_to_account_and_bridge(monkeypatch, tmp_path):
     client = make_client({'DB_PATH': str(tmp_path / 'automation.db'), 'AUTH_INTERNAL_TOKEN': 'dev-internal-token'})
     service = client.app.state.service
@@ -878,6 +975,112 @@ def test_group_atmosphere_session_start_persists_probed_group_name_to_account_an
     bridge_group = rels['relationships'][0]['groups'][0]
     assert bridge_group['group_name'] == '香港创作者群'
     assert bridge_group['target_group'] == 'https://chat.whatsapp.com/probeInvite'
+    runtime_meta = service._read_whatsapp_approval_runtime_meta('atmosphere-hk-01')
+    assert runtime_meta['last_resolved_groups']['https://chat.whatsapp.com/probeInvite']['group_name'] == '香港创作者群'
+    assert runtime_meta['last_resolved_groups']['https://chat.whatsapp.com/probeInvite']['group_id'] == '12036344568277@g.us'
+
+
+def test_group_atmosphere_session_start_uses_cached_group_identity_when_probe_times_out(monkeypatch, tmp_path):
+    client = make_client({'DB_PATH': str(tmp_path / 'automation.db'), 'AUTH_INTERNAL_TOKEN': 'dev-internal-token'})
+    service = client.app.state.service
+    headers = {'x-ops-internal-token': 'dev-internal-token'}
+    role = client.post('/api/ops/group-atmosphere/roles/manual-phrases', json={
+        'role_key': 'auto-br-community_seed',
+        'role_name': '巴西活跃BOT',
+        'region': '巴西',
+        'language': 'pt',
+        'role_positioning': 'community_seed',
+        'phrases': ['欢迎进群。'],
+        'enabled': True,
+    }, headers=headers)
+    assert role.status_code == 200
+    role_key = role.json()['role']['role_key']
+    account = client.post('/api/ops/group-atmosphere/accounts', json={
+        'account_key': 'atmosphere-br-01',
+        'account_name': '+55 11 99999 1111',
+        'region': '巴西',
+        'language': 'pt',
+        'role_positioning': 'community_seed',
+        'groups': [{'target_group': 'https://chat.whatsapp.com/brInvite', 'enabled': True}],
+        'enabled': True,
+    }, headers=headers)
+    assert account.status_code == 200
+    binding = client.post('/api/ops/group-atmosphere/role-bindings', json={
+        'role_key': role_key,
+        'account_key': 'atmosphere-br-01',
+        'group_indexes': [0],
+        'auto_speaking_enabled': True,
+    }, headers=headers)
+    assert binding.status_code == 200
+    auth_path = str(service._whatsapp_approval_session_auth_path('atmosphere-br-01'))
+    client_id = service._whatsapp_approval_session_client_id('atmosphere-br-01')
+    meta = {
+        'pid': 5511,
+        'port': 59993,
+        'base_url': 'http://127.0.0.1:59993',
+        'auth_path': auth_path,
+        'client_id': client_id,
+        'started_at': datetime.now(timezone.utc).isoformat(),
+        'last_resolved_groups': {
+            'https://chat.whatsapp.com/brInvite': {
+                'target_group': 'https://chat.whatsapp.com/brInvite',
+                'group_name': '🇧🇷 31- Grupo Oficial de Registro do Linky',
+                'group_id': '120363408549074493@g.us',
+                'resolved_at': datetime.now(timezone.utc).isoformat(),
+            }
+        },
+    }
+    monkeypatch.setattr(service, 'start_whatsapp_approval_account_runtime', lambda key, reset=False: {'runtime': meta})
+    monkeypatch.setattr(service, '_read_whatsapp_approval_runtime_meta', lambda key: meta if key == 'atmosphere-br-01' else {})
+    monkeypatch.setattr(service, '_write_whatsapp_approval_runtime_meta', lambda key, payload: payload)
+    monkeypatch.setattr(service, '_pid_running', lambda pid: True)
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    probe_calls = []
+
+    def fake_post(url, json=None, timeout=None):
+        if url.endswith('/warmup'):
+            return FakeResponse({
+                'status': 'warm',
+                'ready': True,
+                'authenticated': True,
+                'approval_client': {
+                    'status': 'warm',
+                    'ready': True,
+                    'authenticated': True,
+                    'client_id': client_id,
+                    'auth_path': auth_path,
+                    'auth_strategy': 'LocalAuth',
+                },
+            })
+        probe_calls.append({'url': url, 'json': json, 'timeout': timeout})
+        raise TimeoutError('probe timeout')
+
+    monkeypatch.setattr('app.main.requests.post', fake_post)
+
+    started = client.post('/api/ops/group-atmosphere/accounts/atmosphere-br-01/session/start', headers=headers)
+
+    assert started.status_code == 200
+    assert probe_calls == [{
+        'url': 'http://127.0.0.1:59993/probe-group-state',
+        'json': {'registration_group': 'https://chat.whatsapp.com/brInvite'},
+        'timeout': 8.0,
+    }]
+    listed = client.get('/api/ops/group-atmosphere/accounts', headers=headers).json()['rows'][0]
+    assert listed['groups'][0]['group_name'] == '🇧🇷 31- Grupo Oficial de Registro do Linky'
+    assert listed['groups'][0]['group_id'] == '120363408549074493@g.us'
+    rels = client.get('/api/ops/group-atmosphere/role-bindings', headers=headers).json()
+    bridge_group = rels['relationships'][0]['groups'][0]
+    assert bridge_group['group_name'] == '🇧🇷 31- Grupo Oficial de Registro do Linky'
 
 
 def test_group_atmosphere_account_list_does_not_auto_recover_stopped_dedicated_runtime(monkeypatch):
