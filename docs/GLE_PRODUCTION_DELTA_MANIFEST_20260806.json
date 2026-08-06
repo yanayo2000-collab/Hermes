@@ -1,0 +1,154 @@
+{
+  "schema_version": "1.0",
+  "record_type": "gle_production_delta_manifest",
+  "delta_id": "gle-production-delta-20260806",
+  "created_at_utc": "2026-08-06T05:02:35Z",
+  "branch": "codex/gle-production-delta-20260806",
+  "mechanical_sync_only": true,
+  "manual_source_edits": false,
+  "base": {
+    "commit": "afa4a9f1679770540776ad2872844cc9c58c23a9",
+    "tree": "cbab44e0b216482e5aabd038989c5830c810bbcc",
+    "baseline_manifest_path": "docs/GLE_PRODUCTION_BASELINE_MANIFEST_20260806.json",
+    "baseline_manifest_sha256": "9f8321128228cfcd60e20a153343ba7a11d2eb2aad2109809409f62c748de551",
+    "baseline_manifest_modified": false
+  },
+  "source": {
+    "host_alias": "mcn-crm",
+    "production_root": "/opt/mcn-ai-automation",
+    "capture_method": "production_stable_double_read",
+    "first_capture_utc": "2026-08-06T05:00:22.880867+00:00",
+    "second_capture_utc": "2026-08-06T05:00:23.139953+00:00",
+    "stable": true,
+    "export_matches_both_reads": true,
+    "transport_archive_sha256": "d96ede125b3ea114fc430e6bd6c7c2701b93df405363cec1c445d6a5eca56e66",
+    "production_write_performed": false
+  },
+  "release": {
+    "release_id": "growth-copy-reload-v2-20260806T124300CST",
+    "manifest_path": "/var/lib/mcn-ai-automation/releases/growth-copy-reload-v2-20260806T124300CST.json",
+    "manifest_sha256": "b4a30e71aafe826d9709222c48065a221fef4adba78ee6a0dfecac652c262087",
+    "payload_sha256": "0f411a7b241e1b4571354490a35f731a6d6d28bbde408a9b077344787af68ffe",
+    "plan_sha256": "2dda82917b014e88e395610bab55a4a6b3d6b1fcaa9002307e1ce31d973457b7",
+    "created_at": "2026-08-06T04:43:20.391712+00:00",
+    "artifact_sha_match": true
+  },
+  "restart_receipt": {
+    "receipt_id": "growth-copy-reload-v2-20260806T124300CST-1785991400899432169",
+    "path": "/var/lib/mcn-ai-automation/release-receipts/growth-copy-reload-v2-20260806T124300CST-1785991400899432169.json",
+    "file_sha256": "0c8fff069e9e2bda7a3040ab2a94cbcf2d02c19d8156b4e77a721e562088e520",
+    "payload_sha256": "e7f7e2f04bf822633d57ab27aa83278516c08e73f086393b3b7b3542e6a286d5",
+    "status": "passed",
+    "unit": "mcn-backend.service",
+    "started_at": "2026-08-06T04:43:20.880467+00:00",
+    "finished_at": "2026-08-06T04:43:35.143997+00:00",
+    "before_invocation_id": "b0e39ed308ca4b589b16f3c4b54bc02c",
+    "after_invocation_id": "19c891136c2141c69cb24248a119ae44",
+    "current_invocation_id_at_audit": "19c891136c2141c69cb24248a119ae44",
+    "audit_classification": "attributed_controlled_restart",
+    "systemd_smoke": "passed",
+    "http_health_smoke": "passed",
+    "restart_triggered_by_this_delta_capture": false
+  },
+  "rollback": {
+    "strategy": "restore the three preimages from the base commit",
+    "base_commit": "afa4a9f1679770540776ad2872844cc9c58c23a9",
+    "production_preimage_archive": "/opt/mcn-ai-automation/backups/releases/growth-copy-reload-v2-20260806T124300CST/files-preimage.tar.gz",
+    "production_preimage_archive_sha256": "f3f90449865c88cbdbce41992b43763a0d1b9565f51876f907874985c89e2943",
+    "production_preimage_archive_size_bytes": 425136,
+    "production_preimage_archive_mode": "0600",
+    "production_preimage_archive_status": "verified"
+  },
+  "files": [
+    {
+      "path": "app/growth/api.py",
+      "preimage": {
+        "source": "git:afa4a9f1679770540776ad2872844cc9c58c23a9:app/growth/api.py",
+        "sha256": "2ecec2c7ff483682161314c91c2307e6f75169d87573fcd800045c7a129e227f",
+        "mode": "100644",
+        "size_bytes": 266133
+      },
+      "postimage": {
+        "source": "production_stable_double_read",
+        "sha256": "ab1fdb7e0a182dfbee39300aade28ea41f5f43c831da021ae3e583fbda4ab689",
+        "mode": "0644",
+        "size_bytes": 266280
+      },
+      "release_artifact_match": true
+    },
+    {
+      "path": "app/main_pages.py",
+      "preimage": {
+        "source": "git:afa4a9f1679770540776ad2872844cc9c58c23a9:app/main_pages.py",
+        "sha256": "e46adeac83ba559f6d3b3d335a1a3ed15b4216c848cd4a024fa91b9381ed32bc",
+        "mode": "100644",
+        "size_bytes": 1386894
+      },
+      "postimage": {
+        "source": "production_stable_double_read",
+        "sha256": "64215df4ae207d593f5f970129df9293b0ca470d9640191d09eefd64b6486c71",
+        "mode": "0644",
+        "size_bytes": 1386885
+      },
+      "release_artifact_match": true
+    },
+    {
+      "path": "app/static/ops/growth-workspace.js",
+      "preimage": {
+        "source": "git:afa4a9f1679770540776ad2872844cc9c58c23a9:app/static/ops/growth-workspace.js",
+        "sha256": "568b6391e11d041f2ca4c7b21f03df8ff3b6431f2433e7147b9a512658321c6f",
+        "mode": "100644",
+        "size_bytes": 366204
+      },
+      "postimage": {
+        "source": "production_stable_double_read",
+        "sha256": "61c7bd246e05a29644f3337889ca3dd20bde92c4d9ef9291a85b4ada2b881a69",
+        "mode": "0644",
+        "size_bytes": 367043
+      },
+      "release_artifact_match": true
+    }
+  ],
+  "verification": {
+    "status": "passed",
+    "secret_scan": {
+      "tool": "detect-secrets 1.5.0",
+      "plugins_used": 27,
+      "scope": "the three synchronized source files and this delta manifest",
+      "raw_findings": 16,
+      "reviewed_false_positives": 16,
+      "unresolved_findings": 0,
+      "review": "16 documented commit, tree, artifact, archive, receipt, or file hashes"
+    },
+    "python_compile": {
+      "status": "passed",
+      "files": [
+        "app/growth/api.py",
+        "app/main_pages.py"
+      ]
+    },
+    "javascript_syntax": {
+      "status": "passed",
+      "command": "node --check app/static/ops/growth-workspace.js"
+    },
+    "growth_copy_reload_api_test": {
+      "status": "passed",
+      "selector": "tests/test_growth_api.py::test_new_account_copy_only_mode_freezes_image_and_builds_randomized_plan",
+      "result": "1 passed",
+      "writes": "temporary local SQLite fixture only; Meta live write disabled"
+    },
+    "growth_copy_reload_page_smoke": {
+      "status": "passed",
+      "assertions": 6,
+      "coverage": "API reload exposes copy_variant, page cache key is copy-reload-v1, and workspace blocks incomplete headline or primary text"
+    }
+  },
+  "exclusions": [
+    "no environment contents or credentials",
+    "no token, database, cache, backup, receipt, or runtime-state payloads",
+    "no production write or deployment",
+    "no Meta write",
+    "no backend start, stop, or restart",
+    "no change to the frozen baseline manifest"
+  ]
+}
