@@ -444,6 +444,17 @@ CREATE TABLE IF NOT EXISTS growth_idempotency_record (
     PRIMARY KEY (route_key, idempotency_key)
 );
 
+CREATE TABLE IF NOT EXISTS growth_execution_resource_claim (
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    operation_action_id TEXT NOT NULL UNIQUE,
+    execution_task_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (resource_type, resource_id),
+    FOREIGN KEY (operation_action_id) REFERENCES growth_operation_action(operation_action_id),
+    FOREIGN KEY (execution_task_id) REFERENCES meta_execution_task(execution_task_id)
+);
+
 CREATE TABLE IF NOT EXISTS growth_state_transition (
     transition_id TEXT PRIMARY KEY,
     entity_type TEXT NOT NULL,
@@ -594,6 +605,7 @@ DROP TABLE IF EXISTS ad_new_account_launch_purge_audit;
 DROP TABLE IF EXISTS ad_new_account_launch_archive;
 DROP TABLE IF EXISTS growth_state_transition;
 DROP TABLE IF EXISTS growth_idempotency_record;
+DROP TABLE IF EXISTS growth_execution_resource_claim;
 DROP TABLE IF EXISTS growth_simulation;
 DROP TABLE IF EXISTS ad_creative_generation;
 DROP TABLE IF EXISTS ad_creative_group_evaluation;
@@ -636,3 +648,21 @@ def ensure_growth_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE growth_operation_approval ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''")
     if "consumed_at" not in approval_columns:
         conn.execute("ALTER TABLE growth_operation_approval ADD COLUMN consumed_at TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        """INSERT OR IGNORE INTO growth_execution_resource_claim
+        (resource_type,resource_id,operation_action_id,execution_task_id,created_at)
+        SELECT 'NEW_ACCOUNT_LAUNCH',json_extract(a.payload_json,'$.launch_id'),
+               a.operation_action_id,t.execution_task_id,datetime('now')
+        FROM growth_operation_action a
+        JOIN meta_execution_task t ON t.operation_action_id=a.operation_action_id
+        WHERE a.action_type='CREATE_PAUSED_AD' AND t.status='SUCCESS'
+          AND COALESCE(json_extract(a.payload_json,'$.launch_id'),'')<>''
+          AND COALESCE(json_extract(t.meta_object_ids_json,'$.campaign_id'),'')<>''
+          AND EXISTS (
+              SELECT 1 FROM ad_experiment e
+              WHERE e.source_report_id=json_extract(a.payload_json,'$.launch_id')
+                AND e.source_campaign_id=json_extract(t.meta_object_ids_json,'$.campaign_id')
+          )
+        ORDER BY t.updated_at DESC,t.execution_task_id DESC"""
+    )
+    conn.commit()

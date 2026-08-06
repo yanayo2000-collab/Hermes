@@ -15,6 +15,7 @@ from app.timo_incremental_materialization import (
     TimoIncrementalSyncError,
     TimoSyncLockBusy,
     check_timo_circuit_breaker,
+    ensure_timo_incremental_schema,
     materialize_timo_revenue_snapshot,
     record_timo_circuit_failure,
     record_timo_circuit_success,
@@ -27,9 +28,26 @@ from app.timo_bi_mart import (
     TimoBiMartQueryTimeout,
     query_timo_bi_mart,
 )
+from app.streamer_app_fan import (
+    app_fan_history_complete,
+    confirmed_app_fan_ids,
+    reconcile_streamer_app_fans,
+)
 
 
 class TimoServiceMixin:
+    _TIMO_LIVE_REVENUE_MAPPING = {
+        'active_1v1_hosts': 'activeFemaleNum',
+        'quality_hosts': 'commandoFemaleTotal',
+        'total_income': 'oneToOneIncomeTotal',
+        'qualified_revenue': 'oneToOneStandardIncomeByLeaderInvited',
+        'private_message_income': 'privateMsgIncome',
+        'private_gift_income': 'privateGiftIncome',
+        'call_income': 'oneToOneCallIncome',
+        'matching_income': 'matchIncome',
+        'quality_revenue': 'commandoFemaleSceneIncome',
+    }
+
     def _timo_yesterday_export_date_bj(self) -> str:
         return (datetime.now(timezone.utc).astimezone(ZoneInfo('Asia/Shanghai')).date() - timedelta(days=1)).isoformat()
 
@@ -77,6 +95,7 @@ class TimoServiceMixin:
             cell.alignment = Alignment(horizontal='center', vertical='center')
         for row in export_rows:
             sheet.append(list(row))
+        self._apply_timo_app_fan_column(sheet)
         sheet.freeze_panes = 'A2'
         sheet.column_dimensions['A'].width = 14
         sheet.column_dimensions['B'].width = 18
@@ -525,6 +544,7 @@ class TimoServiceMixin:
                 str(row.get('timo_id') or '').strip(),
                 str(row.get('anchor_name') or '').strip(),
             ])
+        self._apply_timo_app_fan_column(sheet)
         self._timo_export_style_sheet(sheet)
         buffer = io.BytesIO()
         workbook.save(buffer)
@@ -550,6 +570,68 @@ class TimoServiceMixin:
             if found:
                 return found
         return None
+
+    def _timo_app_fan_identity_snapshot(self) -> Tuple[set[str], bool]:
+        with self.db.connect() as conn:
+            confirmed_ids = confirmed_app_fan_ids(conn, app_name='timo', ensure_schema=False)
+            history_complete = app_fan_history_complete(conn, app_name='timo', ensure_schema=False)
+        return confirmed_ids, history_complete
+
+    def _apply_timo_app_fan_column(self, detail_sheet: Any) -> Dict[str, int]:
+        header_map = self._timo_revenue_header_map(detail_sheet)
+        id_col = self._timo_revenue_col(
+            header_map,
+            'userId', 'user id', '用戶id', '用户id', '主播id', '主播ID', 'timo id', 'id',
+        )
+        if not id_col:
+            raise HTTPException(status_code=502, detail='timo_revenue_user_id_column_missing')
+        app_fan_col = self._timo_revenue_col(header_map, '是否App粉', '是否app粉', 'is app fan')
+        if not app_fan_col:
+            app_fan_col = id_col + 1
+            detail_sheet.insert_cols(app_fan_col, 1)
+            source_header = detail_sheet.cell(row=1, column=id_col)
+            target_header = detail_sheet.cell(row=1, column=app_fan_col)
+            if source_header.has_style:
+                target_header._style = copy.copy(source_header._style)
+            target_header.alignment = copy.copy(source_header.alignment)
+            detail_sheet.column_dimensions[target_header.column_letter].width = 12
+        detail_sheet.cell(row=1, column=app_fan_col).value = '是否App粉'
+
+        confirmed_ids, history_complete = self._timo_app_fan_identity_snapshot()
+        counts = {'app_fan': 0, 'non_app_fan': 0, 'historical_unknown': 0}
+        for row_index in range(2, detail_sheet.max_row + 1):
+            timo_id = self._timo_export_numeric_id(detail_sheet.cell(row=row_index, column=id_col).value)
+            if not timo_id:
+                continue
+            if timo_id in confirmed_ids:
+                value = '是'
+                counts['app_fan'] += 1
+            elif history_complete:
+                value = '否'
+                counts['non_app_fan'] += 1
+            else:
+                value = '历史待确认'
+                counts['historical_unknown'] += 1
+            cell = detail_sheet.cell(row=row_index, column=app_fan_col)
+            cell.value = value
+            source_cell = detail_sheet.cell(row=row_index, column=id_col)
+            if source_cell.has_style:
+                cell._style = copy.copy(source_cell._style)
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+        return counts
+
+    def _add_timo_app_fan_column_to_cached_export(self, content: bytes) -> bytes:
+        try:
+            workbook = load_workbook(io.BytesIO(content))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f'timo_revenue_export_invalid_xlsx:{str(exc)[:120]}') from exc
+        detail_sheet = next((workbook[name] for name in workbook.sheetnames if name != '收益统计'), None)
+        if detail_sheet is None:
+            raise HTTPException(status_code=502, detail='timo_revenue_detail_sheet_missing')
+        self._apply_timo_app_fan_column(detail_sheet)
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        return buffer.getvalue()
 
     def _timo_join_times_by_executor(self, executor_key: str) -> Dict[str, str]:
         normalized_key = str(executor_key or '').strip()
@@ -1070,6 +1152,167 @@ class TimoServiceMixin:
         finally:
             lease.release()
 
+    def _materialize_timo_live_revenue_aggregate(
+        self,
+        *,
+        parent_run_id: str,
+        executor: Dict[str, Any],
+        executor_key: str,
+        guild_name: str,
+        country: str,
+        target_date: date,
+        snapshot_at: str,
+    ) -> Dict[str, Any]:
+        run_id = create_id('timo_live_revenue')
+        normalized_date = target_date.isoformat()
+        try:
+            body = self._timo_guild_api_post(
+                executor=executor,
+                path='website-frontend/v1/officalWebGuild/getFrontPageStatByTimeRange',
+                payload={
+                    'uuid': str(executor.get('cms_guild_sid') or executor.get('cms_guild_id') or '').strip(),
+                    'timeType': 0,
+                    'startTime': '',
+                    'endTime': '',
+                },
+                timeout_seconds=float(executor.get('request_timeout_seconds') or 30),
+            )
+            source = body.get('data') if isinstance(body.get('data'), dict) else body
+            if not isinstance(source, dict) or 'oneToOneIncomeTotal' not in source:
+                raise RuntimeError('timo_live_revenue_summary_missing_metrics')
+            metrics = {
+                target: (
+                    int(self._timo_revenue_number(source.get(source_key)))
+                    if target in {'active_1v1_hosts', 'quality_hosts'}
+                    else self._timo_revenue_number(source.get(source_key))
+                )
+                for target, source_key in self._TIMO_LIVE_REVENUE_MAPPING.items()
+            }
+            checksum_payload = {
+                'guild_executor_key': executor_key,
+                'stat_date_bj': normalized_date,
+                'source_time_type': 0,
+                **metrics,
+            }
+            checksum = hashlib.sha256(
+                json.dumps(
+                    checksum_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(',', ':'),
+                ).encode('utf-8')
+            ).hexdigest()
+            with self.db.connect() as conn:
+                ensure_timo_incremental_schema(conn)
+                conn.commit()
+                conn.execute('BEGIN IMMEDIATE')
+                previous = conn.execute(
+                    """
+                    SELECT checksum, revision_version
+                    FROM timo_live_revenue_aggregate
+                    WHERE guild_executor_key=? AND stat_date_bj=?
+                    """,
+                    (executor_key, normalized_date),
+                ).fetchone()
+                previous_checksum = str(previous['checksum'] or '') if previous else ''
+                previous_revision = int(previous['revision_version'] or 0) if previous else 0
+                revision_version = (
+                    previous_revision
+                    if previous and previous_checksum == checksum
+                    else max(1, previous_revision + 1)
+                )
+                values = (
+                    executor_key, guild_name, country, normalized_date,
+                    metrics['active_1v1_hosts'], metrics['quality_hosts'],
+                    metrics['total_income'], metrics['qualified_revenue'],
+                    metrics['matching_income'], metrics['private_message_income'],
+                    metrics['private_gift_income'], metrics['call_income'],
+                    metrics['quality_revenue'], checksum, revision_version,
+                    run_id, snapshot_at, snapshot_at,
+                )
+                conn.execute(
+                    """
+                    INSERT INTO timo_live_revenue_aggregate (
+                        guild_executor_key, guild_name, country, stat_date_bj,
+                        active_1v1_hosts, quality_hosts, total_income,
+                        qualified_revenue, matching_income, private_message_income,
+                        private_gift_income, call_income, quality_revenue,
+                        checksum, revision_version, source_time_type,
+                        last_success_run_id, fetched_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                    ON CONFLICT(guild_executor_key, stat_date_bj) DO UPDATE SET
+                        guild_name=excluded.guild_name,
+                        country=excluded.country,
+                        active_1v1_hosts=excluded.active_1v1_hosts,
+                        quality_hosts=excluded.quality_hosts,
+                        total_income=excluded.total_income,
+                        qualified_revenue=excluded.qualified_revenue,
+                        matching_income=excluded.matching_income,
+                        private_message_income=excluded.private_message_income,
+                        private_gift_income=excluded.private_gift_income,
+                        call_income=excluded.call_income,
+                        quality_revenue=excluded.quality_revenue,
+                        checksum=excluded.checksum,
+                        revision_version=excluded.revision_version,
+                        source_time_type=0,
+                        last_success_run_id=excluded.last_success_run_id,
+                        fetched_at=excluded.fetched_at,
+                        updated_at=excluded.updated_at
+                    """,
+                    values,
+                )
+                conn.execute(
+                    """
+                    INSERT INTO timo_live_revenue_aggregate_runs (
+                        run_id, parent_run_id, guild_executor_key, guild_name,
+                        country, stat_date_bj, status, checksum,
+                        revision_version, total_income, source_time_type,
+                        fetched_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'success', ?, ?, ?, 0, ?, ?, ?)
+                    """,
+                    (
+                        run_id, parent_run_id, executor_key, guild_name, country,
+                        normalized_date, checksum, revision_version,
+                        metrics['total_income'], snapshot_at, snapshot_at, snapshot_at,
+                    ),
+                )
+                conn.commit()
+            return {
+                'ok': True,
+                'status': 'success',
+                'run_id': run_id,
+                'checksum': checksum,
+                'revision_version': revision_version,
+                'changed': not previous or previous_checksum != checksum,
+                **metrics,
+            }
+        except Exception as exc:
+            try:
+                with self.db.connect() as conn:
+                    ensure_timo_incremental_schema(conn)
+                    conn.commit()
+                    conn.execute('BEGIN IMMEDIATE')
+                    conn.execute(
+                        """
+                        INSERT INTO timo_live_revenue_aggregate_runs (
+                            run_id, parent_run_id, guild_executor_key, guild_name,
+                            country, stat_date_bj, status, error_code, error,
+                            source_time_type, fetched_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, ?, 0, ?, ?, ?)
+                        """,
+                        (
+                            run_id, parent_run_id, executor_key, guild_name,
+                            country, normalized_date,
+                            str(getattr(exc, 'detail', '') or type(exc).__name__)[:120],
+                            str(getattr(exc, 'detail', exc))[:500],
+                            snapshot_at, snapshot_at, snapshot_at,
+                        ),
+                    )
+                    conn.commit()
+            except Exception:
+                pass
+            raise
+
     def materialize_timo_external_feed_snapshot(
         self,
         *,
@@ -1089,6 +1332,7 @@ class TimoServiceMixin:
         snapshot_at = utc_now()
         run_id = create_id('timo_external_sync')
         guild_count = streamer_count = revenue_count = task_count = 0
+        live_aggregate_count = detail_not_ready_count = 0
         errors: List[str] = []
         with self.db.connect() as conn:
             conn.execute(
@@ -1172,6 +1416,19 @@ class TimoServiceMixin:
                             streamer_count += 1
                         conn.commit()
                 try:
+                    live_aggregate_ready = False
+                    if provisional:
+                        self._materialize_timo_live_revenue_aggregate(
+                            parent_run_id=run_id,
+                            executor=executor,
+                            executor_key=executor_key,
+                            guild_name=guild_name,
+                            country=country,
+                            target_date=target_date,
+                            snapshot_at=snapshot_at,
+                        )
+                        live_aggregate_ready = True
+                        live_aggregate_count += 1
                     revenue_result = self._materialize_timo_revenue_incrementally(
                         parent_run_id=run_id,
                         executor=executor,
@@ -1187,7 +1444,15 @@ class TimoServiceMixin:
                     )
                     revenue_count += int(revenue_result.get('revenue_count') or 0)
                 except Exception as exc:
-                    errors.append(f'{guild_name}:revenue:{str(getattr(exc, "detail", exc))[:180]}')
+                    error_code = str(getattr(exc, 'code', '') or '')
+                    if (
+                        provisional
+                        and live_aggregate_ready
+                        and error_code == 'quality_gate_provisional_zero_income_not_ready'
+                    ):
+                        detail_not_ready_count += 1
+                    else:
+                        errors.append(f'{guild_name}:revenue:{str(getattr(exc, "detail", exc))[:180]}')
                 try:
                     if not refresh_tasks:
                         continue
@@ -1255,6 +1520,14 @@ class TimoServiceMixin:
             'guild_count': guild_count,
             'streamer_count': streamer_count,
             'revenue_count': revenue_count,
+            'live_aggregate_count': live_aggregate_count,
+            'detail_not_ready_count': detail_not_ready_count,
+            'latest_complete_date_bj': latest_complete.isoformat(),
+            'revenue_contract': (
+                'provisional_guild_aggregate'
+                if provisional
+                else 'complete_guild_and_streamer'
+            ),
             'task_count': task_count,
             'errors': errors,
         }
@@ -1768,6 +2041,7 @@ class TimoServiceMixin:
                 str(row.get('anchor_name') or '').strip(),
                 self._timo_revenue_format(float(row.get('diamond_amount') or 0.0)),
             ])
+        self._apply_timo_app_fan_column(sheet)
         self._timo_export_style_sheet(sheet)
         buffer = io.BytesIO()
         workbook.save(buffer)
@@ -1859,6 +2133,7 @@ class TimoServiceMixin:
                 )
                 conn.commit()
             return None
+        content = self._add_timo_app_fan_column_to_cached_export(content)
         return content, str(row['filename'] or file_path.name)
 
     def _timo_export_cache_status_for_executor(self, executor: Dict[str, Any]) -> Dict[str, Any]:
@@ -2748,6 +3023,7 @@ class TimoServiceMixin:
             date_to_bj=date_to_bj,
             country=country,
         )
+        self._apply_timo_app_fan_column(detail_sheet)
         totals = self._timo_revenue_detail_totals(detail_sheet)
         mismatch_errors = self._timo_revenue_summary_detail_mismatches(totals, dict(summary_override or {}))
         if mismatch_errors:
@@ -2964,6 +3240,7 @@ class TimoServiceMixin:
                     normalized_item_id,
                 ),
             )
+            reconcile_streamer_app_fans(conn, app_names=('timo',))
             conn.commit()
             updated = conn.execute("SELECT * FROM ops_timo_intake_items WHERE item_id = ?", (normalized_item_id,)).fetchone()
         return {

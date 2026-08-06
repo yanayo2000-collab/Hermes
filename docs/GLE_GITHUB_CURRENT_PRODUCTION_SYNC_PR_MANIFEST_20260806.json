@@ -1,0 +1,303 @@
+{
+  "accepted_sync_source": {
+    "candidate_composite_sha256": "1509b181360e0424d95b9fa0d9380b1deb9c484d9b42167f3b624ade2a6fd732",
+    "closure_file_count": 122,
+    "path": "docs/GLE_CURRENT_PRODUCTION_SYNC_MANIFEST_20260806.json",
+    "sha256": "e4a935d7bcf744c9f6a09c25ed064c945c1aaebd872b9aed8d26d07a6c1153a7"
+  },
+  "branch": "codex/gle-current-production-sync-20260806",
+  "created_at_utc": "2026-08-07T02:37:32.831876+00:00",
+  "exclusions": [
+    "No source path outside the 24 byte-changed production paths is modified.",
+    "The production-only 0640 mode on app/ad_dashboard_repository.py is evidence only because Git cannot represent group-read removal without executable-bit change.",
+    "Cleanup business evidence is referenced only by immutable path/hash provenance and is not copied into Git.",
+    "No production action, DB/Meta write, backend restart, push, PR, merge, functional repair, formatting, or test modification."
+  ],
+  "pr_dependency": {
+    "base_commit": "8cfa50e87c877fc5ae8c49e217ab3ed13b33f3f0",
+    "base_pr": "#3",
+    "base_tree": "2af7034cb0bda9d4d1251d203b80bcaefbfa3e19",
+    "required_stack_order": [
+      "PR #3",
+      "this mechanical current-production sync candidate",
+      "PR #4",
+      "PR #5",
+      "G0-02A"
+    ]
+  },
+  "production_cutoff": {
+    "final_capture_utc": "2026-08-07T02:46:41.926229+00:00",
+    "first_capture_utc": "2026-08-07T02:37:32.831876+00:00",
+    "post_amend_revalidated_utc": "2026-08-07T02:46:41.926229+00:00",
+    "receipt": {
+      "classification": "attributed_controlled_restart",
+      "invocation_id": "722ed6317ac3425691caf08ae683ce2d",
+      "path": "/var/lib/mcn-ai-automation/release-receipts/ad-dashboard-no-blank-fallback-v1-20260807T103000CST-1786069915464924727.json",
+      "sha256": "d86505314ac9433a344a887736842f1f09a14767522c3415ad55a16f99e89144",
+      "status": "passed"
+    },
+    "second_capture_utc": "2026-08-07T02:46:41.926229+00:00",
+    "stable": true
+  },
+  "purpose": "A reviewable mechanical bridge from exact Draft PR #3 head to the internally consistent current-production cutoff.",
+  "record_type": "gle_github_current_production_sync_pr_manifest",
+  "rollback": {
+    "production_rollback_performed": false,
+    "remove_paths": [
+      "app/growth/meta_read_service.py",
+      "app/growth/meta_readback.py",
+      "app/growth/meta_sdk_contract.py",
+      "app/streamer_app_fan.py",
+      "config/meta_sdk_contract_v25_0_1.json",
+      "docs/GLE_CURRENT_PRODUCTION_SYNC_MANIFEST_20260806.json",
+      "docs/GLE_GITHUB_CURRENT_PRODUCTION_SYNC_PR_MANIFEST_20260806.json",
+      "docs/GLE_META_SDK_CAPABILITY_BASELINE.md",
+      "scripts/generate_meta_sdk_contract.py",
+      "scripts/import_streamer_app_fan_history.py"
+    ],
+    "restore_from_commit": "8cfa50e87c877fc5ae8c49e217ab3ed13b33f3f0",
+    "restore_paths": [
+      "app/growth/ad_experiment_service.py",
+      "app/growth/api.py",
+      "app/growth/execution_service.py",
+      "app/growth/meta_execution_worker.py",
+      "app/growth/meta_graph_adapter.py",
+      "app/growth/new_account_autopilot.py",
+      "app/growth/schema.py",
+      "app/main_app.py",
+      "app/main_pages.py",
+      "app/main_service_intake.py",
+      "app/main_service_timo.py",
+      "app/static/ops/growth-workspace.js",
+      "app/streamer_analytics.py",
+      "app/streamer_data_foundation.py",
+      "requirements.txt",
+      "scripts/run_growth_meta_worker.py"
+    ],
+    "strategy": "Reset this local candidate commit from review by restoring modified source paths from PR #3, deleting added source paths, and removing both new manifests."
+  },
+  "schema_version": 1,
+  "scope": {
+    "extra_paths": [],
+    "manifest_added": 2,
+    "manifest_paths": [
+      "docs/GLE_CURRENT_PRODUCTION_SYNC_MANIFEST_20260806.json",
+      "docs/GLE_GITHUB_CURRENT_PRODUCTION_SYNC_PR_MANIFEST_20260806.json"
+    ],
+    "production_mode_difference_only": [
+      "app/ad_dashboard_repository.py"
+    ],
+    "refresh_paths": [
+      "app/growth/ad_experiment_service.py",
+      "app/growth/execution_service.py",
+      "app/growth/meta_graph_adapter.py",
+      "app/growth/schema.py",
+      "app/main_app.py",
+      "app/main_pages.py",
+      "app/main_service_intake.py",
+      "app/main_service_timo.py",
+      "app/streamer_analytics.py",
+      "app/streamer_app_fan.py",
+      "app/streamer_data_foundation.py",
+      "scripts/import_streamer_app_fan_history.py"
+    ],
+    "source_added": 8,
+    "source_deleted": 0,
+    "source_modified": 16,
+    "source_paths": [
+      "app/growth/ad_experiment_service.py",
+      "app/growth/api.py",
+      "app/growth/execution_service.py",
+      "app/growth/meta_execution_worker.py",
+      "app/growth/meta_graph_adapter.py",
+      "app/growth/meta_read_service.py",
+      "app/growth/meta_readback.py",
+      "app/growth/meta_sdk_contract.py",
+      "app/growth/new_account_autopilot.py",
+      "app/growth/schema.py",
+      "app/main_app.py",
+      "app/main_pages.py",
+      "app/main_service_intake.py",
+      "app/main_service_timo.py",
+      "app/static/ops/growth-workspace.js",
+      "app/streamer_analytics.py",
+      "app/streamer_app_fan.py",
+      "app/streamer_data_foundation.py",
+      "config/meta_sdk_contract_v25_0_1.json",
+      "docs/GLE_META_SDK_CAPABILITY_BASELINE.md",
+      "requirements.txt",
+      "scripts/generate_meta_sdk_contract.py",
+      "scripts/import_streamer_app_fan_history.py",
+      "scripts/run_growth_meta_worker.py"
+    ],
+    "total_git_paths": 26
+  },
+  "test_evidence": {
+    "app_main_router_smoke": {
+      "ad_data_dashboard_routes": 72,
+      "database": ":memory:",
+      "global_bootstrap_disabled": true,
+      "growth_routes": 24,
+      "meta_live_write_enabled": false,
+      "new_background_threads": 0,
+      "status": "passed",
+      "unique_routes": 466
+    },
+    "external_test_sources": [
+      {
+        "path": "tests/test_ad_dashboard_appsflyer_fallback.py",
+        "sha256": "3543fb09b7e40d69a482c2bd5c935aecc43ae5c2d3756c41df56ec6f01552043"
+      },
+      {
+        "path": "tests/test_ad_dashboard_freshness_contract.py",
+        "sha256": "c26a99e73e2d8d5321c72303bbb5367eb657a957b8c3978b143330812d195d52"
+      },
+      {
+        "path": "tests/test_ad_dashboard_trend_request_race.py",
+        "sha256": "cadf0ff5207ebb5a8c0448ef42f0f4778314e66c97f79b58c09d1381908f7878"
+      },
+      {
+        "path": "tests/test_growth_api.py",
+        "sha256": "b2a6714bef5966cd0b30bbaa8cd76f6f07b5f024131b7b9a8be781ddf14929e4"
+      },
+      {
+        "path": "tests/test_growth_autonomy.py",
+        "sha256": "2eeda5ae4d8e1bba6475e9c2bb5898b056bfbe77cf40d81cb81fa78f8bf15886"
+      },
+      {
+        "path": "tests/test_growth_delivery_guardrails.py",
+        "sha256": "7d18e4ed875b26844dd0431f6daa69f2aea9eeef10e017e506cd0ec4f75ebaf8"
+      },
+      {
+        "path": "tests/test_growth_meta_graph_adapter.py",
+        "sha256": "fd9edee78775ade54ac48c25495b073deab695d90f244787dbda9b690f005925"
+      },
+      {
+        "path": "tests/test_growth_meta_readback.py",
+        "sha256": "ebc7f122cd3b507aef1476c778124ac88bee5e31f6a48520187e9936276a4945"
+      },
+      {
+        "path": "tests/test_growth_meta_rejection_remediation.py",
+        "sha256": "d208609453a242ec1ce929ac900a545078016a82bab168805a6487845c0ea95a"
+      },
+      {
+        "path": "tests/test_growth_meta_sdk_contract.py",
+        "sha256": "70f71e195ebdf7c1bd961574be8ac85dee4347e41532851538304d4f2028196c"
+      },
+      {
+        "path": "tests/test_growth_meta_worker.py",
+        "sha256": "cde07c357d3cbf049b553949dc81fad584206407e946a37c67f4e8aa9b9f838f"
+      },
+      {
+        "path": "tests/test_growth_operation_approval.py",
+        "sha256": "e3ee05135c4f0407e54baef585cd89cab7896053f5b66183a7bd8cdd288da173"
+      },
+      {
+        "path": "tests/test_growth_schema.py",
+        "sha256": "5d55cdd900abb6806ab37752b0d8b58cdc9123781020ac89810e36e09a45ecb6"
+      },
+      {
+        "path": "tests/test_growth_worker_runtime.py",
+        "sha256": "7218daa9fe760800f27dfee226c69ae3f53d101be94483db21d08574076c7f16"
+      },
+      {
+        "path": "tests/test_streamer_app_fan.py",
+        "sha256": "b8f0aef5d1846402ef96cfa78d1c9100d6605e102dea218e4554d2b6fdbc87be"
+      },
+      {
+        "path": "tests/test_timo_intake.py",
+        "sha256": "4fd6744782d34aa402672261476e178583e30e9298b3330e3478e04d283aa3b8"
+      },
+      {
+        "path": "tests/test_timo_revenue_readiness_contract.py",
+        "sha256": "abb6905d7661c4d5d5aa7746d79124bb5baf6d59bd7880e8b61f6c1863dc5fc7"
+      }
+    ],
+    "hash_mode_verification": {
+      "closure_files": 122,
+      "production_mode_difference_only": 1,
+      "production_revalidated_utc": "2026-08-07T02:46:41.926229+00:00",
+      "source_added": 8,
+      "source_deleted": 0,
+      "source_modified": 16,
+      "status": "passed"
+    },
+    "javascript_syntax": {
+      "command": "node --check app/static/ops/growth-workspace.js",
+      "node": "v22.22.2",
+      "status": "passed"
+    },
+    "mechanical_diff_check": {
+      "disposition": "Retained byte-for-byte because the two Markdown hard-break spaces are part of the governed production artifact; removing them would violate the mechanical sync contract.",
+      "findings": [
+        "docs/GLE_META_SDK_CAPABILITY_BASELINE.md:3 trailing whitespace",
+        "docs/GLE_META_SDK_CAPABILITY_BASELINE.md:4 trailing whitespace"
+      ],
+      "status": "mechanical_inherited_findings"
+    },
+    "python_compile": {
+      "compiled_files": 111,
+      "python": "Python 3.9.6",
+      "status": "passed"
+    },
+    "secret_scan": {
+      "plugins_used": 27,
+      "raw_findings": 217,
+      "review_categories": {
+        "generated_contract_hash": 1,
+        "manifest_hash_and_audit_evidence": 209,
+        "official_logo_hash": 1,
+        "password_ui_and_generator": 4,
+        "public_timo_api_path": 1,
+        "source_identifier": 1
+      },
+      "reviewed_false_positives": 217,
+      "status": "passed",
+      "tool": "detect-secrets 1.5.0",
+      "unresolved_findings": 0
+    },
+    "serialized_tests": {
+      "deselected": [
+        {
+          "reason": "external test resolves its SQL fixture relative to the separate main repository rather than this isolated candidate; not portable across the production-sync worktree and not a runtime-code failure",
+          "selector": "tests/test_growth_schema.py::test_checked_in_up_and_down_sql_are_executable"
+        }
+      ],
+      "external_test_source_tracked_in_candidate": false,
+      "pytest": "pytest 8.4.2",
+      "status": "passed",
+      "suites": [
+        {
+          "passed": 65,
+          "scope": "previous accepted Growth/Timo bounded selectors"
+        },
+        {
+          "passed": 8,
+          "scope": "streamer app-fan identity and lock/materialization contracts"
+        },
+        {
+          "passed": 6,
+          "scope": "portable Growth schema runtime and rollback contracts"
+        },
+        {
+          "passed": 3,
+          "scope": "Growth operation approval contracts"
+        },
+        {
+          "passed": 24,
+          "scope": "Growth Meta worker idempotency, claims, verify, and recovery contracts"
+        },
+        {
+          "passed": 1,
+          "scope": "Timo app-fan export column contract"
+        },
+        {
+          "passed": 27,
+          "scope": "ad dashboard AppsFlyer fallback, persistent-cache fastpath, freshness, request-race, and browser startup fallback contracts"
+        }
+      ],
+      "total_passed": 134
+    },
+    "status": "passed"
+  }
+}

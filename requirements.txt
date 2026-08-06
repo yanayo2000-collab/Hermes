@@ -1,7 +1,11 @@
 fastapi
 uvicorn
 requests
+facebook-business==25.0.1
 gunicorn
 psycopg[binary]
 redis
 openpyxl
+pillow
+rapidocr_onnxruntime
+opencv-python-headless

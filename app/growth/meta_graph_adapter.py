@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 from app.growth.errors import GrowthValidationError
 from app.growth.audience_strategy import assert_strict_targeting
 from app.growth.common import payload_hash
+from app.growth.meta_readback import MetaCopyOnlyReadback
+from app.growth.meta_sdk_contract import relevant_meta_error_evidence
 
 
 @dataclass(frozen=True)
@@ -370,10 +372,19 @@ class MetaGraphExecutionAdapter:
             }
         if normalized_step == "VERIFY" and list(plan.get("cells") or []):
             strict_country = str(dict(plan.get("invariants") or {}).get("base_conditions", {}).get("country") or "")
-            return self._verify_created_objects(
+            result = self._verify_created_objects(
                 object_ids, cells=list(plan.get("cells") or []), strict_country=strict_country,
                 require_study=str(plan.get("test_variable") or "").lower() in {"audience_strategy", "copy_variant"},
             )
+            if result.get("status") != "SUCCESS":
+                return result
+            contract_readback = MetaCopyOnlyReadback(get_json=self._read_fields).verify(
+                plan=plan, object_ids=object_ids,
+            )
+            if contract_readback.get("status") == "UNKNOWN":
+                return contract_readback
+            result["contract_readback"] = contract_readback
+            return result
         keys = {
             "IMAGE_UPLOAD": (f"{prefix}image_hash",),
             "CAMPAIGN_CREATE": ("campaign_id",),
@@ -401,6 +412,11 @@ class MetaGraphExecutionAdapter:
             "AD_CREATE": "id,status,effective_status,creative",
             "CREATIVE_CREATE": "id",
         }.get(base_step, "id,status,effective_status,daily_budget,lifetime_budget,creative,bid_strategy,bid_amount")
+        if base_step == "AD_CREATIVE_UPDATE" or (
+            normalized_step == "VERIFY"
+            and str(payload.get("action_type") or "").upper() == "REPLACE_CREATIVE"
+        ):
+            fields = "id,status,effective_status,creative"
         response = self.session.get(
             self._url(object_id),
             params={"access_token": self.access_token, "fields": fields},
@@ -812,7 +828,7 @@ class MetaGraphExecutionAdapter:
         }
 
     def _post_existing(self, object_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        request_body = dict(body)
+        request_body = self._form_payload(body)
         request_body["access_token"] = self.access_token
         response = self.session.post(self._url(object_id), data=request_body, timeout=self.timeout_seconds)
         result = self._response_json(response)
@@ -846,16 +862,26 @@ class MetaGraphExecutionAdapter:
     def _url(self, path: str) -> str:
         return f"{self.validate_runtime_configuration()}/{str(path).lstrip('/')}"
 
+    def _read_fields(self, object_id: str, fields: str) -> Dict[str, Any]:
+        response = self.session.get(
+            self._url(object_id),
+            params={"access_token": self.access_token, "fields": fields},
+            timeout=self.timeout_seconds,
+        )
+        return self._response_json(response)
+
     @staticmethod
     def _response_json(response: Any) -> Dict[str, Any]:
         body = response.json() if hasattr(response, "json") else {}
         if not isinstance(body, dict):
             raise GrowthValidationError("meta_response_invalid")
         if body.get("error"):
-            error = dict(body.get("error") or {})
-            code = str(error.get("code") or "unknown")
-            subcode = str(error.get("error_subcode") or "unknown")
-            raise GrowthValidationError(f"meta_graph_error:{code}:{subcode}")
+            status = getattr(response, "status_code", None)
+            evidence = relevant_meta_error_evidence(body, http_status=status)
+            code = str(evidence.get("code") or "unknown")
+            subcode = str(evidence.get("error_subcode") or "unknown")
+            encoded = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            raise GrowthValidationError(f"meta_graph_error:{code}:{subcode}:{encoded}")
         if hasattr(response, "raise_for_status"):
             response.raise_for_status()
         return body

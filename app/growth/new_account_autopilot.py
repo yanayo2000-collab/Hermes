@@ -44,7 +44,7 @@ def _enabled(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _live_allowed(account_id: str) -> bool:
+def _live_action_allowed(account_id: str, action_type: str) -> bool:
     accounts = {
         item.strip().removeprefix("act_")
         for item in str(os.getenv("GROWTH_META_ALLOWED_ACCOUNT_IDS") or "").split(",")
@@ -58,8 +58,12 @@ def _live_allowed(account_id: str) -> bool:
     return bool(
         _enabled(os.getenv("GROWTH_META_WRITES_ENABLED", ""))
         and str(account_id or "").removeprefix("act_") in accounts
-        and "CREATE_PAUSED_AD" in actions
+        and str(action_type or "").strip().upper() in actions
     )
+
+
+def _live_allowed(account_id: str) -> bool:
+    return _live_action_allowed(account_id, "CREATE_PAUSED_AD")
 
 
 def _dry_run_receipt(plan_id: str, plan: Dict[str, Any], approval: Dict[str, Any]) -> Dict[str, Any]:
@@ -581,6 +585,67 @@ class NewAccountLaunchAutopilot:
             except Exception as exc:
                 results.append({"launch_id": str(row["source_report_id"]), "status": "DEFERRED", "reason": str(exc)[:180]})
         return {"processed": len(results), "results": results}
+
+    def advance_approved_replacements(self, *, limit: int = 20, allow_live: bool = True) -> Dict[str, Any]:
+        """Resume only operator-approved rejection repairs after the exact lane opens."""
+        if not allow_live:
+            return {"processed": 0, "queued": [], "deferred": []}
+        rows = self.conn.execute(
+            """
+            SELECT a.operation_action_id,a.payload_json,p.approval_id,p.plan_hash,p.plan_json
+            FROM growth_operation_action a
+            JOIN growth_operation_approval p ON p.operation_action_id=a.operation_action_id
+            LEFT JOIN meta_execution_task t ON t.operation_action_id=a.operation_action_id
+            WHERE upper(a.action_type)='REPLACE_CREATIVE'
+              AND upper(a.status)='CREATED'
+              AND upper(p.status)='APPROVED'
+              AND COALESCE(p.consumed_at,'')=''
+              AND t.execution_task_id IS NULL
+            ORDER BY p.approved_at,a.created_at,a.operation_action_id
+            LIMIT ?
+            """,
+            (max(1, min(int(limit or 20), 100)),),
+        ).fetchall()
+        queued: List[Dict[str, str]] = []
+        deferred: List[Dict[str, str]] = []
+        for row in rows:
+            action_id = str(row["operation_action_id"] or "")
+            plan = decode_json(row["plan_json"], {})
+            action_payload = decode_json(row["payload_json"], {})
+            account_id = str(plan.get("target_account_id") or "").removeprefix("act_")
+            if not _live_action_allowed(account_id, "REPLACE_CREATIVE"):
+                deferred.append({"operation_action_id": action_id, "reason": "exact_live_lane_closed"})
+                continue
+            dry_run = self.conn.execute(
+                """
+                SELECT response_json FROM growth_idempotency_record
+                WHERE route_key='ad_experiment.plan_dry_run'
+                  AND json_extract(response_json,'$.plan_id')=?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (action_id,),
+            ).fetchone()
+            receipt = decode_json(dry_run["response_json"], {}) if dry_run else {}
+            if (
+                str(receipt.get("status") or "") != "DRY_RUN_VERIFIED"
+                or str(receipt.get("plan_hash") or "") != str(row["plan_hash"] or "")
+                or payload_hash(plan) != str(row["plan_hash"] or "")
+            ):
+                deferred.append({"operation_action_id": action_id, "reason": "matching_dry_run_required"})
+                continue
+            task = ExecutionTaskService(self.conn).enqueue_task(
+                action_id,
+                idempotency_key=f"approved-replacement-live:{action_id}:{str(row['plan_hash'])[:12]}",
+                payload={
+                    "execution_mode": "live", "approval_id": str(row["approval_id"] or ""),
+                    "account_id": account_id, "plan": plan,
+                    "experiment_id": str(action_payload.get("experiment_id") or plan.get("experiment_id") or ""),
+                    "experiment_ids": list(action_payload.get("experiment_ids") or plan.get("experiment_ids") or []),
+                    "launch_id": str(action_payload.get("launch_id") or plan.get("launch_id") or ""),
+                },
+            )
+            queued.append({"operation_action_id": action_id, "execution_task_id": str(task.get("execution_task_id") or "")})
+        return {"processed": len(rows), "queued": queued, "deferred": deferred}
 
     def advance(self, launch_id: str, *, allow_live: bool = True) -> Dict[str, Any]:
         rows = self.conn.execute(

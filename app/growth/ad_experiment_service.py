@@ -12,6 +12,7 @@ from app.growth.approval_service import OperationApprovalService
 from app.growth.ad_copy_benchmark import copy_version_id
 from app.growth.audience_strategy import audience_contract, assert_strict_targeting, audience_strategy, strict_meta_targeting
 from app.growth.common import canonical_json, decode_json, new_id, payload_hash, utc_now
+from app.growth.meta_sdk_contract import META_SDK_CONTRACT_VERSION
 from app.growth.delivery_guardrails import new_account_delivery_guardrails
 from app.growth.errors import GrowthNotFound, GrowthStateConflict, GrowthValidationError
 from app.growth.execution_service import ExecutionTaskService
@@ -411,6 +412,14 @@ class AdExperimentService:
                 raise GrowthStateConflict("idempotency_key_payload_conflict")
             return decode_json(existing["response_json"], {})
 
+        claimed = self.conn.execute(
+            """SELECT execution_task_id FROM growth_execution_resource_claim
+            WHERE resource_type='NEW_ACCOUNT_LAUNCH' AND resource_id=?""",
+            (normalized_launch_id,),
+        ).fetchone()
+        if claimed:
+            raise GrowthStateConflict("launch_already_has_live_creation")
+
         cells_request = list(request.get("cells") or [])
         by_id = {str(item["experiment_id"]): item for item in experiments}
         if {str(item.get("experiment_id") or "") for item in cells_request} != set(by_id):
@@ -658,6 +667,7 @@ class AdExperimentService:
             "campaign": {"name": campaign_name, "objective": "OUTCOME_APP_PROMOTION", "buying_type": "AUCTION", "special_ad_categories": [], "status": "PAUSED"},
             "cells": compiled_cells, "baseline_experiment_id": baseline_experiment_id,
             "test_variable": test_variable,
+            "sdk_contract_version": META_SDK_CONTRACT_VERSION if test_variable == "copy_variant" else "",
             "copy_benchmark_versions": sorted({
                 str(cell.get("copy_benchmark_version") or "")
                 for cell in compiled_cells if str(cell.get("copy_benchmark_version") or "")

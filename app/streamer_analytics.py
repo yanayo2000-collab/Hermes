@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import math
 import os
 import sqlite3
@@ -17,13 +16,19 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from app.streamer_app_fan import (
+    APP_FAN_COVERAGE_START,
+    app_fan_history_complete,
+    classify_app_fan_status,
+    confirmed_app_fan_ids,
+    reconcile_streamer_app_fans,
+)
 from app.streamer_data_foundation import (
     ensure_streamer_foundation_tables,
     ensure_streamer_foundation_views,
 )
+from app.sqlite_observability import connect_observed_sqlite
 from app.sqlite_write_window import connect_short_write_sqlite
-
-logger = logging.getLogger(__name__)
 
 SUPPORTED_APPS = ('timo', 'linky', 'sugo')
 APP_LABELS = {'timo': 'Timo', 'linky': 'Linky', 'sugo': 'Sugo'}
@@ -56,7 +61,7 @@ APP_CAPABILITIES = {
     },
 }
 
-PROFILE_VIEW = 'streamer_analytics_profiles_v6'
+PROFILE_VIEW = 'streamer_analytics_profiles_v5'
 DAILY_FACT_VIEW = 'streamer_analytics_daily_facts_v11'
 TIMO_DIAMONDS_PER_USD = 20000.0
 RETENTION_DAY_OFFSETS = {1: 1, 7: 7, 30: 30}
@@ -81,12 +86,12 @@ LINKY_OFFLINE_PUBLISH_BATCH_SIZE = 2048
 LINKY_PRODUCTION_BATCH_SLICE = 'mcn-batch-linky.slice'
 PRODUCTION_PROJECT_ROOT = Path('/opt/mcn-ai-automation')
 STREAMER_ANALYTICS_SUPPORT_COPY_BATCH_SIZE = 2048
-STREAMER_ANALYTICS_INCREMENTAL_MAX_DAYS = 3
-STREAMER_ANALYTICS_FULL_REFRESH_INTERVAL_DAYS = 7
-STREAMER_ANALYTICS_DEFAULT_WINDOW_DAYS = 30
-STREAMER_ANALYTICS_DEFAULT_LIMIT = 30
 STREAMER_ANALYTICS_PAYLOAD_CACHE_TTL_SECONDS = 60.0
 STREAMER_ANALYTICS_PAYLOAD_CACHE_MAX_ENTRIES = 96
+STREAMER_ANALYTICS_INHERITED_QUEUE_LOCK_PATHS = (
+    '/tmp/mcn-ai-automation-sqlite-job-locks/sqlite-etl.lock',
+    '/tmp/mcn-ai-automation-sqlite-job-locks/sqlite-writer.lock',
+)
 _STREAMER_ANALYTICS_PAYLOAD_CACHE: OrderedDict[tuple[Any, ...], tuple[float, Dict[str, Any]]] = OrderedDict()
 _STREAMER_ANALYTICS_PAYLOAD_CACHE_LOCK = threading.Lock()
 STREAMER_ANALYTICS_STORE_TABLES = (
@@ -99,6 +104,7 @@ STREAMER_ANALYTICS_STORE_TABLES = (
     'streamer_analytics_materialization_state',
 )
 STREAMER_ANALYTICS_STORE_SUPPORT_TABLES = (
+    'streamer_app_fan_identities',
     'guild_executors',
     'guild_anchor_daily_stats',
     'streamer_external_sync_runs',
@@ -106,13 +112,6 @@ STREAMER_ANALYTICS_STORE_SUPPORT_TABLES = (
     'streamer_external_guild_revenue_daily',
     'timo_external_revenue_daily',
     'timo_external_sync_runs',
-)
-LINKY_STREAMER_ANALYTICS_SUPPORT_TABLES = (
-    'guild_executors',
-    'guild_anchor_daily_stats',
-    'streamer_external_sync_runs',
-    'streamer_external_revenue_daily',
-    'streamer_external_guild_revenue_daily',
 )
 STREAMER_ANALYTICS_STORE_SUPPORT_SELECTS = {
     # The standalone read store needs freshness coverage, not every raw detail row.
@@ -134,6 +133,7 @@ STREAMER_ANALYTICS_STORE_SUPPORT_SELECTS = {
 STREAMER_ANALYTICS_PROFILE_COLUMNS = (
     'app_name', 'guild_executor_key', 'guild_name', 'country', 'streamer_id',
     'display_name', 'registered_date', 'last_active_date', 'is_real_person',
+    'is_app_fan', 'app_fan_status', 'app_fan_source',
     'source_updated_at', 'materialized_at',
 )
 STREAMER_ANALYTICS_STREAMER_DAILY_COLUMNS = (
@@ -329,6 +329,9 @@ def ensure_streamer_analytics_views(conn: sqlite3.Connection) -> None:
             registered_date TEXT NOT NULL DEFAULT '',
             last_active_date TEXT NOT NULL DEFAULT '',
             is_real_person INTEGER NOT NULL DEFAULT 0,
+            is_app_fan INTEGER,
+            app_fan_status TEXT NOT NULL DEFAULT 'historical_unknown',
+            app_fan_source TEXT NOT NULL DEFAULT '',
             source_updated_at TEXT NOT NULL DEFAULT '',
             materialized_at TEXT NOT NULL,
             PRIMARY KEY(app_name, guild_executor_key, streamer_id)
@@ -434,7 +437,8 @@ def ensure_streamer_analytics_views(conn: sqlite3.Connection) -> None:
             guild_name,
             timo_id AS streamer_id,
             nickname AS display_name,
-            CASE WHEN length(registered_at_bj) >= 10 THEN substr(registered_at_bj, 1, 10) ELSE '' END AS registered_date,
+            CASE WHEN length(COALESCE(NULLIF(joined_guild_at_bj, ''), registered_at_bj)) >= 10
+                 THEN substr(COALESCE(NULLIF(joined_guild_at_bj, ''), registered_at_bj), 1, 10) ELSE '' END AS registered_date,
             CASE WHEN length(last_active_at_bj) >= 10 THEN substr(last_active_at_bj, 1, 10) ELSE '' END AS last_active_date,
             is_real_person,
             updated_at AS source_updated_at
@@ -479,7 +483,8 @@ def ensure_streamer_analytics_views(conn: sqlite3.Connection) -> None:
             revenue.guild_name,
             revenue.timo_id AS streamer_id,
             revenue.stat_date_bj AS stat_date,
-            CASE WHEN substr(profile.registered_at_bj, 1, 10) = revenue.stat_date_bj THEN 1 ELSE 0 END AS is_new,
+            CASE WHEN substr(COALESCE(NULLIF(profile.joined_guild_at_bj, ''), profile.registered_at_bj), 1, 10)
+                           = revenue.stat_date_bj THEN 1 ELSE 0 END AS is_new,
             CASE WHEN revenue.total_income > 0 OR revenue.online_hours > 0 OR revenue.call_count > 0 THEN 1 ELSE 0 END AS is_active,
             revenue.total_income,
             revenue.qualified_revenue,
@@ -524,7 +529,8 @@ def ensure_streamer_analytics_views(conn: sqlite3.Connection) -> None:
         SELECT
             'timo' AS app_name, guild_executor_key, guild_name, timo_id AS streamer_id,
             nickname AS display_name,
-            CASE WHEN length(registered_at_bj) >= 10 THEN substr(registered_at_bj, 1, 10) ELSE '' END AS registered_date,
+            CASE WHEN length(COALESCE(NULLIF(joined_guild_at_bj, ''), registered_at_bj)) >= 10
+                 THEN substr(COALESCE(NULLIF(joined_guild_at_bj, ''), registered_at_bj), 1, 10) ELSE '' END AS registered_date,
             CASE WHEN length(last_active_at_bj) >= 10 THEN substr(last_active_at_bj, 1, 10) ELSE '' END AS last_active_date,
             is_real_person, updated_at AS source_updated_at
         FROM timo_external_streamers
@@ -560,7 +566,8 @@ def ensure_streamer_analytics_views(conn: sqlite3.Connection) -> None:
         SELECT
             'timo' AS app_name, revenue.guild_executor_key, revenue.guild_name,
             revenue.timo_id AS streamer_id, revenue.stat_date_bj AS stat_date,
-            CASE WHEN substr(profile.registered_at_bj, 1, 10) = revenue.stat_date_bj THEN 1 ELSE 0 END AS is_new,
+            CASE WHEN substr(COALESCE(NULLIF(profile.joined_guild_at_bj, ''), profile.registered_at_bj), 1, 10)
+                           = revenue.stat_date_bj THEN 1 ELSE 0 END AS is_new,
             CASE WHEN revenue.total_income > 0 OR revenue.online_hours > 0 OR revenue.call_count > 0 THEN 1 ELSE 0 END AS is_active,
             revenue.total_income, revenue.qualified_revenue, revenue.matching_income,
             revenue.private_message_income, revenue.private_gift_income, revenue.call_income,
@@ -672,7 +679,6 @@ def ensure_streamer_analytics_views(conn: sqlite3.Connection) -> None:
              AND profile.guild_executor_key = external_profile.guild_executor_key
              AND profile.streamer_id = external_profile.streamer_id
             WHERE profile.app_name = 'linky'
-              AND NULLIF(external_profile.platform_character_id, '') IS NOT NULL
         ), ranked_linky AS (
             SELECT
                 linky_profiles.*,
@@ -693,24 +699,6 @@ def ensure_streamer_analytics_views(conn: sqlite3.Connection) -> None:
             display_name, registered_date, last_active_date, is_real_person, country, source_updated_at
         FROM streamer_analytics_profiles_v4
         WHERE app_name <> 'linky';
-
-        CREATE VIEW IF NOT EXISTS streamer_analytics_profiles_v6 AS
-        SELECT
-            profile.app_name, profile.guild_executor_key, profile.guild_name,
-            profile.streamer_id, profile.display_name,
-            CASE
-                WHEN profile.app_name = 'timo'
-                 AND length(COALESCE(NULLIF(timo_profile.joined_guild_at_bj, ''), timo_profile.registered_at_bj)) >= 10
-                THEN substr(COALESCE(NULLIF(timo_profile.joined_guild_at_bj, ''), timo_profile.registered_at_bj), 1, 10)
-                ELSE profile.registered_date
-            END AS registered_date,
-            profile.last_active_date, profile.is_real_person, profile.country,
-            profile.source_updated_at
-        FROM streamer_analytics_profiles_v5 AS profile
-        LEFT JOIN timo_external_streamers AS timo_profile
-          ON profile.app_name = 'timo'
-         AND timo_profile.guild_executor_key = profile.guild_executor_key
-         AND timo_profile.timo_id = profile.streamer_id;
 
         CREATE VIEW IF NOT EXISTS streamer_analytics_daily_facts_v6 AS
         WITH canonical_facts AS (
@@ -866,6 +854,22 @@ def ensure_streamer_analytics_views(conn: sqlite3.Connection) -> None:
             "ALTER TABLE streamer_external_revenue_daily "
             "ADD COLUMN voice_room_income REAL NOT NULL DEFAULT 0"
         )
+    profile_summary_columns = {
+        str(row[1])
+        for row in conn.execute(
+            'PRAGMA table_info(streamer_analytics_profile_summary)'
+        ).fetchall()
+    }
+    for column_name, column_sql in (
+        ('is_app_fan', 'INTEGER'),
+        ('app_fan_status', "TEXT NOT NULL DEFAULT 'historical_unknown'"),
+        ('app_fan_source', "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if column_name not in profile_summary_columns:
+            conn.execute(
+                f'ALTER TABLE streamer_analytics_profile_summary '
+                f'ADD COLUMN {column_name} {column_sql}'
+            )
     guild_revenue_columns = {
         str(row[1]) for row in conn.execute('PRAGMA table_info(streamer_external_guild_revenue_daily)').fetchall()
     }
@@ -2018,9 +2022,10 @@ def _build_streamer_analytics_payload_live(
                     country=country_name,
                 )
                 official_cohort_count = sum(newcomer_count_by_guild.values())
-                # Aggregate counts are completeness evidence only.  The
-                # displayed denominator is the exact frozen identity set used
-                # by the numerator.
+                # The displayed denominator must be the same frozen identity
+                # set used by the numerator.  The daily aggregate is only an
+                # independent completeness guard; it is never a substitute
+                # denominator.
                 cohort_count = len(mature)
             else:
                 official_cohort_count = len(mature)
@@ -2467,13 +2472,13 @@ def _latest_authoritative_external_sync(
     conn: sqlite3.Connection,
     app: str,
 ) -> Optional[sqlite3.Row]:
-    """Return the latest full or scope-verified composite source run."""
+    """Return the latest full run; scoped repair runs must never publish source readiness."""
     try:
         row = conn.execute(
             """
             SELECT status, error_code, run_scope
             FROM streamer_external_sync_runs
-            WHERE app_name = ? AND run_scope IN ('full', 'composite')
+            WHERE app_name = ? AND run_scope = 'full'
             ORDER BY created_at DESC, rowid DESC
             LIMIT 1
             """,
@@ -2894,6 +2899,7 @@ def _validate_streamer_analytics_source_schema(conn: sqlite3.Connection) -> None
         DAILY_FACT_VIEW: 'view',
         **{name: 'table' for name in STREAMER_ANALYTICS_STORE_TABLES},
         **{name: 'table' for name in STREAMER_ANALYTICS_STORE_SUPPORT_TABLES},
+        'streamer_app_fan_coverage': 'table',
     }
     names = tuple(required_types)
     placeholders = ','.join('?' for _ in names)
@@ -2976,6 +2982,20 @@ def _ensure_streamer_analytics_store_schema(
         if name not in existing_tables:
             target_conn.execute(table_sql[name])
             continue
+        if name == 'streamer_analytics_profile_summary':
+            target_columns = {
+                str(row[1])
+                for row in target_conn.execute(f'PRAGMA table_info({name})').fetchall()
+            }
+            for column_name, column_sql in (
+                ('is_app_fan', 'INTEGER'),
+                ('app_fan_status', "TEXT NOT NULL DEFAULT 'historical_unknown'"),
+                ('app_fan_source', "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if column_name not in target_columns:
+                    target_conn.execute(
+                        f'ALTER TABLE {name} ADD COLUMN {column_name} {column_sql}'
+                    )
         if name not in STREAMER_ANALYTICS_STORE_SUPPORT_TABLES:
             continue
         source_columns = [
@@ -2987,9 +3007,8 @@ def _ensure_streamer_analytics_store_schema(
             for row in target_conn.execute(f'PRAGMA table_info({name})').fetchall()
         ]
         if source_columns != target_columns:
-            # Support tables are non-authoritative snapshots. Rebuild a drifted
-            # cache table transactionally from the source schema instead of
-            # relying on positional INSERTs against an obsolete column layout.
+            # Support tables are reproducible caches. Rebuild drifted schemas
+            # before positional copy rather than failing every future run.
             target_conn.execute(f'DROP TABLE {name}')
             target_conn.execute(table_sql[name])
     index_rows = source_conn.execute(
@@ -3022,8 +3041,6 @@ def _ensure_streamer_analytics_store_schema(
 def _refresh_streamer_analytics_support_tables(
     source_conn: sqlite3.Connection,
     target_conn: sqlite3.Connection,
-    *,
-    tables: Iterable[str] = STREAMER_ANALYTICS_STORE_SUPPORT_TABLES,
 ) -> None:
     if _same_sqlite_database(source_conn, target_conn):
         return
@@ -3041,16 +3058,7 @@ def _refresh_streamer_analytics_support_tables(
         source_conn.execute('SELECT 1 FROM sqlite_master LIMIT 1').fetchone()
         target_conn.execute('BEGIN IMMEDIATE')
         target_started = True
-        selected_tables = tuple(dict.fromkeys(str(table) for table in tables))
-        unknown_tables = sorted(
-            set(selected_tables) - set(STREAMER_ANALYTICS_STORE_SUPPORT_TABLES)
-        )
-        if unknown_tables:
-            raise RuntimeError(
-                'streamer_analytics_support_table_unknown:'
-                + ','.join(unknown_tables)
-            )
-        for table in selected_tables:
+        for table in STREAMER_ANALYTICS_STORE_SUPPORT_TABLES:
             target_conn.execute(f'DELETE FROM {table}')
             select_sql = STREAMER_ANALYTICS_STORE_SUPPORT_SELECTS.get(
                 table,
@@ -3099,6 +3107,171 @@ def _connect_streamer_analytics_store(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA synchronous=NORMAL')
     return conn
+
+
+def _connect_streamer_analytics_store_with_inherited_queue_locks(
+    path: Path,
+) -> sqlite3.Connection:
+    """Open the publish DB without recursively taking queue-owned SQLite locks."""
+    inherited = {
+        value
+        for value in str(os.getenv('MCN_DEPLOY_EXTRA_LOCK_PATHS') or '').split(':')
+        if value
+    }
+    required = set(STREAMER_ANALYTICS_INHERITED_QUEUE_LOCK_PATHS)
+    if os.getenv('MCN_DEPLOY_QUEUE_ACTIVE') != '1' or not required.issubset(inherited):
+        raise RuntimeError('streamer_analytics_inherited_queue_locks_not_proven')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect_observed_sqlite(
+        str(path),
+        source='streamer-analytics-store-inherited-queue-locks',
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA busy_timeout=5000')
+    conn.execute('PRAGMA synchronous=NORMAL')
+    return conn
+
+
+def refresh_streamer_app_fan_support_table(
+    source_conn: sqlite3.Connection,
+    target_conn: sqlite3.Connection,
+    *,
+    app_names: Iterable[object] = SUPPORTED_APPS,
+    phase_logger: Optional[Callable[[str], None]] = None,
+    performance_budget_seconds: float = 60.0,
+) -> Dict[str, Any]:
+    """Publish only App-fan identity/profile fields without rebuilding revenue facts."""
+    started = time.monotonic()
+    apps = tuple(dict.fromkeys(normalize_streamer_app(value) for value in app_names))
+
+    def phase(name: str, **details: Any) -> None:
+        elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
+        suffix = ' '.join(f'{key}={value}' for key, value in sorted(details.items()))
+        _emit_streamer_analytics_phase(
+            phase_logger,
+            f'app_fan_targeted.{name} elapsed_ms={elapsed_ms}' + (f' {suffix}' if suffix else ''),
+        )
+        if time.monotonic() - started > max(float(performance_budget_seconds), 0.1):
+            raise RuntimeError(f'app_fan_targeted_performance_budget_exceeded:{name}:{elapsed_ms}ms')
+
+    if source_conn.in_transaction:
+        raise RuntimeError('app_fan_targeted_source_transaction_active')
+    if target_conn.in_transaction:
+        raise RuntimeError('app_fan_targeted_target_transaction_active')
+    phase('start', apps=','.join(apps))
+    _validate_streamer_analytics_source_schema(source_conn)
+    phase('source_schema_validated')
+    _ensure_streamer_analytics_store_schema(source_conn, target_conn)
+    phase('target_schema_ready')
+
+    placeholders = ','.join('?' for _ in apps)
+    source_started = False
+    target_started = False
+    try:
+        source_conn.execute('BEGIN')
+        source_started = True
+        identity_rows = source_conn.execute(
+            "SELECT app_name,streamer_id,is_app_fan,identity_status,acquisition_source,"
+            "source_record_type,first_source_record_id,last_source_record_id,"
+            "first_confirmed_at,last_confirmed_at,evidence_version,created_at,updated_at "
+            f"FROM streamer_app_fan_identities WHERE app_name IN ({placeholders})",
+            apps,
+        ).fetchall()
+        history_complete = {
+            app: app_fan_history_complete(
+                source_conn,
+                app_name=app,
+                ensure_schema=False,
+            )
+            for app in apps
+        }
+        phase('source_snapshot_ready', identity_rows=len(identity_rows))
+
+        target_conn.execute('BEGIN IMMEDIATE')
+        target_started = True
+        for app in apps:
+            target_conn.execute(
+                'DELETE FROM streamer_app_fan_identities WHERE app_name=?',
+                (app,),
+            )
+        if identity_rows:
+            target_conn.executemany(
+                "INSERT INTO streamer_app_fan_identities VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (tuple(row) for row in identity_rows),
+            )
+        updated_profiles: Dict[str, int] = {}
+        for app in apps:
+            before = target_conn.total_changes
+            coverage_start = APP_FAN_COVERAGE_START.get(app, '')
+            target_conn.execute(
+                """
+                UPDATE streamer_analytics_profile_summary AS profile
+                SET is_app_fan = CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM streamer_app_fan_identities AS fan
+                            WHERE fan.app_name=profile.app_name
+                              AND fan.streamer_id=profile.streamer_id
+                              AND fan.is_app_fan=1 AND fan.identity_status='confirmed'
+                        ) THEN 1
+                        WHEN ?=1 THEN 0
+                        WHEN registered_date>=? THEN 0
+                        ELSE NULL
+                    END,
+                    app_fan_status = CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM streamer_app_fan_identities AS fan
+                            WHERE fan.app_name=profile.app_name
+                              AND fan.streamer_id=profile.streamer_id
+                              AND fan.is_app_fan=1 AND fan.identity_status='confirmed'
+                        ) THEN 'app_fan'
+                        WHEN ?=1 OR registered_date>=? THEN 'non_app_fan'
+                        ELSE 'historical_unknown'
+                    END,
+                    app_fan_source = CASE
+                        WHEN EXISTS (
+                            SELECT 1 FROM streamer_app_fan_identities AS fan
+                            WHERE fan.app_name=profile.app_name
+                              AND fan.streamer_id=profile.streamer_id
+                              AND fan.is_app_fan=1 AND fan.identity_status='confirmed'
+                        ) THEN 'tugao_app' ELSE '' END
+                WHERE profile.app_name=?
+                """,
+                (
+                    int(history_complete[app]), coverage_start,
+                    int(history_complete[app]), coverage_start, app,
+                ),
+            )
+            updated_profiles[app] = target_conn.total_changes - before
+        target_conn.commit()
+        target_started = False
+        phase(
+            'target_committed',
+            identity_rows=len(identity_rows),
+            profile_rows=sum(updated_profiles.values()),
+        )
+    except Exception:
+        if target_started and target_conn.in_transaction:
+            target_conn.rollback()
+            target_started = False
+        raise
+    finally:
+        if target_started and target_conn.in_transaction:
+            target_conn.rollback()
+        if source_started and source_conn.in_transaction:
+            source_conn.rollback()
+
+    elapsed_seconds = round(time.monotonic() - started, 3)
+    return {
+        'status': 'ready',
+        'apps': list(apps),
+        'identity_rows': len(identity_rows),
+        'profile_rows_updated': updated_profiles,
+        'history_complete': history_complete,
+        'elapsed_seconds': elapsed_seconds,
+        'performance_budget_seconds': float(performance_budget_seconds),
+        'scope': 'app_fan_identity_and_profile_fields_only',
+    }
 
 
 def _configure_linky_sqlite_workload(
@@ -3181,191 +3354,26 @@ def _publish_staged_streamer_analytics_app(
     expected_platform_income: float,
     expected_newcomer_income: Dict[int, float],
     materialized_at: str,
-    full_materialization: bool = True,
-    previous_full_materialized_at: str = '',
-    publish_scopes: Optional[Dict[str, tuple[str, tuple[object, ...]]]] = None,
 ) -> tuple[Dict[str, Any], str]:
     """Atomically publish one staged app snapshot or leave the old one untouched."""
     publication_id = uuid4().hex
     tables = tuple(publish_tables)
-    publish_changes: Dict[str, Dict[str, int]] = {}
-    prepared_stages: list[Dict[str, Any]] = []
-    prepared_temp_tables: list[str] = []
-
-    def prepare_stage(
-        table: str,
-        stage_table: str,
-        columns: tuple[str, ...],
-        *,
-        scope_sql: str,
-        scope_params: tuple[object, ...],
-        index: int,
-    ) -> Dict[str, Any]:
-        table_info = publish_conn.execute(f'PRAGMA table_info({table})').fetchall()
-        primary_key = tuple(
-            str(row[1])
-            for row in sorted(table_info, key=lambda row: int(row[5] or 0))
-            if int(row[5] or 0) > 0
-        )
-        if not primary_key:
-            raise RuntimeError(f'streamer_analytics_publish_primary_key_missing:{table}')
-        primary_key_sql = ', '.join(primary_key)
-        publish_conn.execute(
-            f'CREATE UNIQUE INDEX IF NOT EXISTS temp.{stage_table}_publish_pk '
-            f'ON {stage_table} ({primary_key_sql})'
-        )
-        mutable_columns = tuple(column for column in columns if column not in primary_key)
-        business_columns = tuple(
-            column for column in mutable_columns if column != 'materialized_at'
-        )
-        key_match = ' AND '.join(
-            f'target.{column} = stage.{column}' for column in primary_key
-        )
-        current_key_match = ' AND '.join(
-            f'current.{column} = stage.{column}' for column in primary_key
-        )
-        current_business_same = ' AND '.join(
-            f'current.{column} IS stage.{column}' for column in business_columns
-        ) or '1'
-        stage_scope_sql = scope_sql.replace('target.', 'stage.')
-        delta_table = f'_tmp_publish_delta_{index}'
-        stale_table = f'_tmp_publish_stale_{index}'
-        prepared_temp_tables.extend((delta_table, stale_table))
-        staged_column_sql = ', '.join(f'stage.{column}' for column in columns)
-        publish_conn.execute(
-            f'CREATE TEMP TABLE {delta_table} AS '
-            f'SELECT {staged_column_sql} FROM {stage_table} AS stage '
-            f'WHERE {stage_scope_sql} AND NOT EXISTS ('
-            f'SELECT 1 FROM {table} AS current '
-            f'WHERE {current_key_match} AND {current_business_same})',
-            scope_params,
-        )
-        publish_conn.execute(
-            f'CREATE UNIQUE INDEX temp.{delta_table}_pk '
-            f'ON {delta_table} ({primary_key_sql})'
-        )
-        stale_column_sql = ', '.join(
-            f'target.{column} AS {column}' for column in primary_key
-        )
-        publish_conn.execute(
-            f'CREATE TEMP TABLE {stale_table} AS '
-            f'SELECT {stale_column_sql} FROM {table} AS target '
-            f'WHERE {scope_sql} AND NOT EXISTS ('
-            f'SELECT 1 FROM {stage_table} AS stage WHERE {key_match})',
-            scope_params,
-        )
-        publish_conn.execute(
-            f'CREATE UNIQUE INDEX temp.{stale_table}_pk '
-            f'ON {stale_table} ({primary_key_sql})'
-        )
-        return {
-            'table': table,
-            'columns': columns,
-            'primary_key': primary_key,
-            'mutable_columns': mutable_columns,
-            'business_columns': business_columns,
-            'delta_table': delta_table,
-            'stale_table': stale_table,
-            'delta_count': int(
-                publish_conn.execute(
-                    f'SELECT COUNT(*) FROM {delta_table}'
-                ).fetchone()[0]
-            ),
-            'stale_count': int(
-                publish_conn.execute(
-                    f'SELECT COUNT(*) FROM {stale_table}'
-                ).fetchone()[0]
-            ),
-        }
-
-    def publish_prepared_stage(prepared: Dict[str, Any]) -> None:
-        table = str(prepared['table'])
-        columns = tuple(prepared['columns'])
-        primary_key = tuple(prepared['primary_key'])
-        mutable_columns = tuple(prepared['mutable_columns'])
-        business_columns = tuple(prepared['business_columns'])
-        delta_table = str(prepared['delta_table'])
-        stale_table = str(prepared['stale_table'])
-        primary_key_sql = ', '.join(primary_key)
-        stale_key_match = ' AND '.join(
-            f'target.{column} = stale.{column}' for column in primary_key
-        )
-        stale_cursor = publish_conn.execute(
-            f'DELETE FROM {table} AS target WHERE EXISTS ('
-            f'SELECT 1 FROM {stale_table} AS stale WHERE {stale_key_match})'
-        )
-        column_sql = ', '.join(columns)
-        conflict_sql = primary_key_sql
-        update_sql = ', '.join(
-            f'{column} = excluded.{column}' for column in mutable_columns
-        )
-        changed_sql = ' OR '.join(
-            f'{table}.{column} IS NOT excluded.{column}' for column in business_columns
-        ) or '0'
-        before_changes = publish_conn.total_changes
-        publish_conn.execute(
-            f'INSERT INTO {table} ({column_sql}) '
-            f'SELECT {column_sql} FROM {delta_table} WHERE 1 = 1 '
-            f'ON CONFLICT ({conflict_sql}) DO UPDATE SET {update_sql} '
-            f'WHERE {changed_sql}'
-        )
-        publish_changes[table] = {
-            'deleted': max(0, int(stale_cursor.rowcount or 0)),
-            'inserted_or_updated': publish_conn.total_changes - before_changes,
-        }
-
     try:
-        has_store_meta = publish_conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' "
-            "AND name='streamer_analytics_store_meta'"
-        ).fetchone()
-        active_key = f'active_generation:{app}'
-        previous_row = (
-            publish_conn.execute(
-                'SELECT value FROM streamer_analytics_store_meta WHERE key = ?',
-                (active_key,),
-            ).fetchone()
-            if has_store_meta else None
-        )
-        expected_active_generation = str(previous_row[0] or '') if previous_row else ''
-        for index, (table, stage_table, columns) in enumerate(tables):
-            scope_sql, scope_params = (
-                (publish_scopes or {}).get(table)
-                or ('target.app_name = ?', (app,))
-            )
-            prepared_stages.append(prepare_stage(
-                table,
-                stage_table,
-                columns,
-                scope_sql=scope_sql,
-                scope_params=scope_params,
-                index=index,
-            ))
-        if include_cohorts:
-            prepared_stages.append(prepare_stage(
-                cohort_table,
-                '_stage_streamer_analytics_cohort',
-                STREAMER_ANALYTICS_COHORT_COLUMNS,
-                scope_sql='1 = 1',
-                scope_params=(),
-                index=len(prepared_stages),
-            ))
         publish_conn.execute('BEGIN IMMEDIATE')
-        if has_store_meta:
-            current_row = publish_conn.execute(
-                'SELECT value FROM streamer_analytics_store_meta WHERE key = ?',
-                (active_key,),
-            ).fetchone()
-            current_active_generation = (
-                str(current_row[0] or '') if current_row else ''
+        for table, stage_table, columns in tables:
+            column_sql = ', '.join(columns)
+            publish_conn.execute(f'DELETE FROM {table} WHERE app_name = ?', (app,))
+            publish_conn.execute(
+                f'INSERT INTO {table} ({column_sql}) '
+                f'SELECT {column_sql} FROM {stage_table}'
             )
-            if current_active_generation != expected_active_generation:
-                raise RuntimeError(
-                    'streamer_analytics_publish_generation_changed:'
-                    f'{expected_active_generation}:{current_active_generation}'
-                )
-        for prepared in prepared_stages:
-            publish_prepared_stage(prepared)
+        if include_cohorts:
+            cohort_column_sql = ', '.join(STREAMER_ANALYTICS_COHORT_COLUMNS)
+            publish_conn.execute(f'DELETE FROM {cohort_table}')
+            publish_conn.execute(
+                f'INSERT INTO {cohort_table} ({cohort_column_sql}) '
+                f'SELECT {cohort_column_sql} FROM _stage_streamer_analytics_cohort'
+            )
         parity = _assert_streamer_materialization_parity(
             publish_conn,
             app=app,
@@ -3404,7 +3412,16 @@ def _publish_staged_streamer_analytics_app(
                 materialized_at,
             ),
         )
+        has_store_meta = publish_conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='streamer_analytics_store_meta'"
+        ).fetchone()
         if has_store_meta:
+            active_key = f'active_generation:{app}'
+            previous_row = publish_conn.execute(
+                'SELECT value FROM streamer_analytics_store_meta WHERE key = ?',
+                (active_key,),
+            ).fetchone()
             if previous_row and str(previous_row[0] or ''):
                 publish_conn.execute(
                     "INSERT INTO streamer_analytics_store_meta (key, value, updated_at) "
@@ -3418,145 +3435,11 @@ def _publish_staged_streamer_analytics_app(
                 "value=excluded.value, updated_at=excluded.updated_at",
                 (active_key, publication_id, materialized_at),
             )
-            last_full_value = (
-                materialized_at
-                if full_materialization
-                else previous_full_materialized_at
-            )
-            if last_full_value:
-                publish_conn.execute(
-                    "INSERT INTO streamer_analytics_store_meta (key, value, updated_at) "
-                    "VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET "
-                    "value=excluded.value, updated_at=excluded.updated_at",
-                    (f'last_full_materialization:{app}', last_full_value, materialized_at),
-                )
-        parity['publish_changes'] = publish_changes
         publish_conn.commit()
     except Exception:
         publish_conn.rollback()
-        _drop_linky_temp_tables(publish_conn, prepared_temp_tables)
         raise
-    if has_store_meta and data_as_of:
-        try:
-            default_end = date.fromisoformat(data_as_of)
-            default_start = default_end - timedelta(
-                days=STREAMER_ANALYTICS_DEFAULT_WINDOW_DAYS - 1
-            )
-            default_payload = _build_streamer_analytics_payload_materialized(
-                publish_conn,
-                app_name=app,
-                date_from=default_start,
-                date_to=default_end,
-                guild_name='',
-                country='',
-                limit=STREAMER_ANALYTICS_DEFAULT_LIMIT,
-            )
-            default_envelope = json.dumps(
-                {
-                    'generation': publication_id,
-                    'date_from': default_start.isoformat(),
-                    'date_to': default_end.isoformat(),
-                    'limit': STREAMER_ANALYTICS_DEFAULT_LIMIT,
-                    'payload': default_payload,
-                },
-                ensure_ascii=False,
-                separators=(',', ':'),
-            )
-            publish_conn.execute('BEGIN IMMEDIATE')
-            current_row = publish_conn.execute(
-                'SELECT value FROM streamer_analytics_store_meta WHERE key = ?',
-                (active_key,),
-            ).fetchone()
-            if not current_row or str(current_row[0] or '') != publication_id:
-                publish_conn.rollback()
-                logger.info(
-                    'streamer_analytics_default_payload_generation_superseded '
-                    'app=%s generation=%s',
-                    app,
-                    publication_id,
-                )
-            else:
-                publish_conn.execute(
-                    "INSERT INTO streamer_analytics_store_meta (key, value, updated_at) "
-                    "VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET "
-                    "value=excluded.value, updated_at=excluded.updated_at",
-                    (f'default_payload:{app}', default_envelope, materialized_at),
-                )
-                publish_conn.commit()
-        except Exception:
-            publish_conn.rollback()
-            logger.exception(
-                'streamer_analytics_default_payload_refresh_failed '
-                'app=%s generation=%s',
-                app,
-                publication_id,
-            )
-    _drop_linky_temp_tables(publish_conn, prepared_temp_tables)
     return parity, publication_id
-
-
-def _linky_incremental_seed(
-    publish_conn: sqlite3.Connection,
-    *,
-    date_from: Optional[date],
-    date_to: Optional[date],
-) -> Dict[str, Any]:
-    """Return a fail-closed plan for reusing the previous Linky daily snapshot."""
-    plan: Dict[str, Any] = {
-        'enabled': False,
-        'reason': 'incremental_window_missing',
-        'date_from': date_from,
-        'date_to': date_to,
-        'database_path': '',
-        'last_full_materialized_at': '',
-    }
-    if date_from is None or date_to is None or date_from > date_to:
-        return plan
-    if (date_to - date_from).days + 1 > STREAMER_ANALYTICS_INCREMENTAL_MAX_DAYS:
-        plan['reason'] = 'incremental_window_too_wide'
-        return plan
-    database_row = next(
-        (row for row in publish_conn.execute('PRAGMA database_list') if str(row[1]) == 'main'),
-        None,
-    )
-    database_path = str(database_row[2] or '') if database_row else ''
-    if not database_path:
-        plan['reason'] = 'incremental_target_not_file_backed'
-        return plan
-    state = publish_conn.execute(
-        "SELECT status, data_as_of, materialized_at "
-        "FROM streamer_analytics_materialization_state WHERE app_name = 'linky'"
-    ).fetchone()
-    if not state or str(state[0] or '') != 'ready':
-        plan['reason'] = 'incremental_previous_snapshot_not_ready'
-        return plan
-    previous_data_as_of = _iso_date(state[1])
-    if previous_data_as_of is None or previous_data_as_of < date_from - timedelta(days=1):
-        plan['reason'] = 'incremental_previous_snapshot_has_gap'
-        return plan
-    meta_row = publish_conn.execute(
-        "SELECT value FROM streamer_analytics_store_meta "
-        "WHERE key = 'last_full_materialization:linky'"
-    ).fetchone()
-    last_full = str(meta_row[0] or '') if meta_row else str(state[2] or '')
-    try:
-        last_full_at = datetime.fromisoformat(last_full)
-        if last_full_at.tzinfo is None:
-            last_full_at = last_full_at.replace(tzinfo=timezone.utc)
-        full_age = datetime.now(timezone.utc) - last_full_at.astimezone(timezone.utc)
-    except (TypeError, ValueError):
-        plan['reason'] = 'incremental_last_full_invalid'
-        return plan
-    if full_age > timedelta(days=STREAMER_ANALYTICS_FULL_REFRESH_INTERVAL_DAYS):
-        plan['reason'] = 'incremental_full_refresh_due'
-        return plan
-    plan.update({
-        'enabled': True,
-        'reason': 'incremental_previous_snapshot_ready',
-        'database_path': database_path,
-        'last_full_materialized_at': last_full,
-    })
-    return plan
 
 
 def _materialize_linky_streamed(
@@ -3564,8 +3447,8 @@ def _materialize_linky_streamed(
     *,
     publish_conn: sqlite3.Connection,
     offline_candidate_path: Optional[Path] = None,
-    incremental_date_from: Optional[date] = None,
-    incremental_date_to: Optional[date] = None,
+    source_overlay: Optional[Callable[[sqlite3.Connection], None]] = None,
+    source_overlay_cleanup: Optional[Callable[[sqlite3.Connection], None]] = None,
     phase_logger: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """Build Linky's large summaries in SQLite and stream only final rows."""
@@ -3576,44 +3459,6 @@ def _materialize_linky_streamed(
             raise RuntimeError('offline_linky_candidate_requires_separate_target')
         _assert_offline_linky_candidate_refresh_started(publish_conn)
     materialized_at = datetime.now().astimezone().isoformat(timespec='seconds')
-    incremental_plan = _linky_incremental_seed(
-        publish_conn,
-        date_from=incremental_date_from,
-        date_to=incremental_date_to,
-    ) if not offline_candidate and publish_conn is not conn else {
-        'enabled': False,
-        'reason': 'incremental_separate_target_required',
-        'last_full_materialized_at': '',
-    }
-    if incremental_plan['enabled']:
-        historical_change = conn.execute(
-            """
-            SELECT 1
-            FROM streamer_external_revenue_daily
-            WHERE app_name = 'linky'
-              AND datetime(updated_at) > datetime(?)
-              AND substr(stat_date_bj, 1, 10) NOT BETWEEN ? AND ?
-            UNION ALL
-            SELECT 1
-            FROM streamer_external_guild_revenue_daily
-            WHERE app_name = 'linky'
-              AND datetime(updated_at) > datetime(?)
-              AND substr(stat_date_bj, 1, 10) NOT BETWEEN ? AND ?
-            LIMIT 1
-            """,
-            (
-                incremental_plan['last_full_materialized_at'],
-                incremental_date_from.isoformat(),
-                incremental_date_to.isoformat(),
-                incremental_plan['last_full_materialized_at'],
-                incremental_date_from.isoformat(),
-                incremental_date_to.isoformat(),
-            ),
-        ).fetchone()
-        if historical_change:
-            incremental_plan['enabled'] = False
-            incremental_plan['reason'] = 'incremental_historical_revenue_change'
-    previous_store_attached = False
     data_as_of_date: Optional[date] = None
     cohort_payloads: List[tuple[str, str, str, str, str]] = []
     source_temp_tables = (
@@ -3640,15 +3485,11 @@ def _materialize_linky_streamed(
         _configure_linky_sqlite_workload(conn)
         if publish_conn is not conn:
             _configure_linky_sqlite_workload(publish_conn, publish=True)
+        if source_overlay is not None:
+            source_overlay(conn)
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.configure.done')
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.source_snapshot.start')
         _drop_linky_temp_tables(conn, source_temp_tables)
-        if incremental_plan['enabled']:
-            conn.execute(
-                'ATTACH DATABASE ? AS _previous_analytics',
-                (f"file:{incremental_plan['database_path']}?mode=ro",),
-            )
-            previous_store_attached = True
         conn.execute('BEGIN')
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.source_metadata.start')
         data_as_of_date = _revenue_data_as_of(conn, app=app)
@@ -3689,6 +3530,9 @@ def _materialize_linky_streamed(
                 registered_date TEXT NOT NULL,
                 last_active_date TEXT NOT NULL,
                 is_real_person INTEGER NOT NULL,
+                is_app_fan INTEGER,
+                app_fan_status TEXT NOT NULL,
+                app_fan_source TEXT NOT NULL,
                 source_updated_at TEXT NOT NULL,
                 materialized_at TEXT NOT NULL,
                 raw_streamer_id TEXT NOT NULL,
@@ -3702,129 +3546,32 @@ def _materialize_linky_streamed(
             INSERT INTO _source_linky_profile (
                 app_name, guild_executor_key, guild_name, country, streamer_id,
                 display_name, registered_date, last_active_date, is_real_person,
+                is_app_fan, app_fan_status, app_fan_source,
                 source_updated_at, materialized_at, raw_streamer_id,
                 is_direct_canonical
             )
-            SELECT profile.app_name,
-                   profile.guild_executor_key,
-                   profile.guild_name,
-                   COALESCE(
-                       NULLIF(profile.country, ''),
-                       NULLIF(executor.country, ''),
-                       ''
-                   ) AS country,
-                   profile.platform_character_id AS streamer_id,
-                   profile.nickname AS display_name,
-                   CASE WHEN length(profile.registered_at_bj) >= 10
-                        THEN substr(profile.registered_at_bj, 1, 10) ELSE '' END
-                       AS registered_date,
-                   CASE WHEN length(profile.last_active_at_bj) >= 10
-                        THEN substr(profile.last_active_at_bj, 1, 10) ELSE '' END
-                       AS last_active_date,
-                   profile.is_real_person,
-                   profile.updated_at AS source_updated_at,
-                   ? AS materialized_at,
-                   profile.streamer_id AS raw_streamer_id,
-                   profile.streamer_id = profile.platform_character_id
-                       AS is_direct_canonical
-            FROM streamer_external_profiles AS profile
-            LEFT JOIN guild_executors AS executor
-              ON executor.guild_name = profile.guild_name
-             AND lower(executor.app_name) = 'linky'
+            SELECT profile.app_name, profile.guild_executor_key,
+                   profile.guild_name, profile.country, profile.streamer_id,
+                   profile.display_name, profile.registered_date,
+                   profile.last_active_date, profile.is_real_person,
+                   CASE WHEN fan.streamer_id IS NOT NULL THEN 1
+                        WHEN profile.registered_date >= '2026-05-17' THEN 0
+                        ELSE NULL END,
+                   CASE WHEN fan.streamer_id IS NOT NULL THEN 'app_fan'
+                        WHEN profile.registered_date >= '2026-05-17' THEN 'non_app_fan'
+                        ELSE 'historical_unknown' END,
+                   CASE WHEN fan.streamer_id IS NOT NULL THEN 'tugao_app' ELSE '' END,
+                   profile.source_updated_at, ?, profile.streamer_id, 1
+            FROM streamer_analytics_profiles_v5 AS profile
+            LEFT JOIN streamer_app_fan_identities AS fan
+              ON fan.app_name = 'linky'
+             AND fan.streamer_id = profile.streamer_id
+             AND fan.is_app_fan = 1
             WHERE profile.app_name = 'linky'
-              AND NULLIF(profile.platform_character_id, '') IS NOT NULL
-            ON CONFLICT (app_name, streamer_id) DO UPDATE SET
-                guild_executor_key = excluded.guild_executor_key,
-                guild_name = excluded.guild_name,
-                country = excluded.country,
-                display_name = excluded.display_name,
-                registered_date = excluded.registered_date,
-                last_active_date = excluded.last_active_date,
-                is_real_person = excluded.is_real_person,
-                source_updated_at = excluded.source_updated_at,
-                materialized_at = excluded.materialized_at,
-                raw_streamer_id = excluded.raw_streamer_id,
-                is_direct_canonical = excluded.is_direct_canonical
-            WHERE excluded.source_updated_at > _source_linky_profile.source_updated_at
-               OR (
-                    excluded.source_updated_at = _source_linky_profile.source_updated_at
-                AND excluded.is_direct_canonical > _source_linky_profile.is_direct_canonical
-               )
             """,
             (materialized_at,),
         )
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.source_profile.done')
-        if incremental_plan['enabled']:
-            structural_change = conn.execute(
-                """
-                WITH previous_missing AS (
-                    SELECT streamer_id, guild_executor_key, guild_name, country,
-                           registered_date
-                    FROM _previous_analytics.streamer_analytics_profile_summary
-                    WHERE app_name = 'linky' AND registered_date < ?
-                    EXCEPT
-                    SELECT streamer_id, guild_executor_key, guild_name, country,
-                           registered_date
-                    FROM _source_linky_profile
-                    WHERE app_name = 'linky' AND registered_date < ?
-                ),
-                current_missing AS (
-                    SELECT streamer_id, guild_executor_key, guild_name, country,
-                           registered_date
-                    FROM _source_linky_profile
-                    WHERE app_name = 'linky' AND registered_date < ?
-                    EXCEPT
-                    SELECT streamer_id, guild_executor_key, guild_name, country,
-                           registered_date
-                    FROM _previous_analytics.streamer_analytics_profile_summary
-                    WHERE app_name = 'linky' AND registered_date < ?
-                )
-                SELECT 1 FROM previous_missing
-                UNION ALL
-                SELECT 1 FROM current_missing
-                LIMIT 1
-                """,
-                (
-                    incremental_date_from.isoformat(),
-                    incremental_date_from.isoformat(),
-                    incremental_date_from.isoformat(),
-                    incremental_date_from.isoformat(),
-                ),
-            ).fetchone()
-            if structural_change:
-                incremental_plan['enabled'] = False
-                incremental_plan['reason'] = 'incremental_historical_profile_change'
-        incremental_dependency_start: Optional[date] = None
-        incremental_dependency_end: Optional[date] = None
-        incremental_newcomer_start: Optional[date] = None
-        incremental_rebuild_cohorts = False
-        if incremental_plan['enabled']:
-            min_registered_row = conn.execute(
-                "SELECT MIN(registered_date) FROM _source_linky_profile "
-                "WHERE length(COALESCE(registered_date, '')) >= 10"
-            ).fetchone()
-            min_registered = _iso_date(
-                min_registered_row[0] if min_registered_row else None
-            ) or incremental_date_from
-            cohort_start, _ = _timo_cohort_display_window(
-                min_registered,
-                data_as_of_date or incremental_date_to,
-            )
-            incremental_newcomer_start = incremental_date_from - timedelta(
-                days=NEWCOMER_COMPLETE_WINDOW_DAYS - 1
-            )
-            incremental_rebuild_cohorts = any(
-                (incremental_date_from + timedelta(days=offset)).weekday() == 6
-                for offset in range(
-                    (incremental_date_to - incremental_date_from).days + 1
-                )
-            )
-            incremental_dependency_start = (
-                min(cohort_start, incremental_newcomer_start)
-                if incremental_rebuild_cohorts
-                else incremental_newcomer_start
-            )
-            incremental_dependency_end = data_as_of_date or incremental_date_to
         _emit_streamer_analytics_phase(
             phase_logger, 'app.linky.source_newcomer_identity.start',
         )
@@ -3844,60 +3591,6 @@ def _materialize_linky_streamed(
             ON _source_linky_snapshot_day(guild_executor_key, stat_date)
             """
         )
-        snapshot_integrity_error = conn.execute(
-            """
-            WITH run_counts AS (
-                SELECT run.guild_executor_key, run.stat_date, run.member_count,
-                       COUNT(member.anchor_id) AS actual_count,
-                       COUNT(DISTINCT NULLIF(member.streamer_sid, '')) AS sid_count,
-                       SUM(CASE WHEN member.anchor_id IS NOT NULL
-                                     AND NULLIF(member.streamer_sid, '') IS NULL
-                                THEN 1 ELSE 0 END) AS missing_sid_count
-                FROM guild_anchor_newcomer_snapshot_runs AS run
-                LEFT JOIN guild_anchor_newcomer_identity_snapshots AS member
-                  ON member.guild_executor_key = run.guild_executor_key
-                 AND member.stat_date = run.stat_date
-                GROUP BY run.guild_executor_key, run.stat_date, run.member_count
-            ),
-            orphan_member AS (
-                SELECT 1
-                FROM guild_anchor_newcomer_identity_snapshots AS member
-                LEFT JOIN guild_anchor_newcomer_snapshot_runs AS run
-                  ON run.guild_executor_key = member.guild_executor_key
-                 AND run.stat_date = member.stat_date
-                WHERE run.guild_executor_key IS NULL
-                LIMIT 1
-            ),
-            anchor_conflict AS (
-                SELECT 1
-                FROM guild_anchor_newcomer_identity_snapshots
-                GROUP BY guild_executor_key, anchor_id
-                HAVING COUNT(DISTINCT streamer_sid) > 1
-                LIMIT 1
-            ),
-            sid_conflict AS (
-                SELECT 1
-                FROM guild_anchor_newcomer_identity_snapshots
-                GROUP BY guild_executor_key, streamer_sid
-                HAVING COUNT(DISTINCT anchor_id) > 1
-                LIMIT 1
-            )
-            SELECT 'run_count'
-            FROM run_counts
-            WHERE member_count <> actual_count
-               OR sid_count <> actual_count
-               OR missing_sid_count <> 0
-            UNION ALL SELECT 'orphan_member' FROM orphan_member
-            UNION ALL SELECT 'anchor_conflict' FROM anchor_conflict
-            UNION ALL SELECT 'sid_conflict' FROM sid_conflict
-            LIMIT 1
-            """
-        ).fetchone()
-        if snapshot_integrity_error is not None:
-            raise RuntimeError(
-                f'linky_newcomer_snapshot_integrity:'
-                f'{snapshot_integrity_error[0]}'
-            )
         conn.execute(
             """
             CREATE TEMP TABLE _source_linky_newcomer_identity AS
@@ -3917,8 +3610,8 @@ def _materialize_linky_streamed(
                  AND lower(COALESCE(executor.app_name, '')) = 'linky'
             ), snapshot_members AS (
                 SELECT app_name, guild_executor_key, guild_name, country,
-                       streamer_id, identity_key, registered_date,
-                       source_updated_at, materialized_at
+                       streamer_id, identity_key, registered_date, source_updated_at,
+                       materialized_at
                 FROM resolved_snapshot_members
                 WHERE NULLIF(streamer_id, '') IS NOT NULL
                   AND NULLIF(identity_key, '') IS NOT NULL
@@ -3969,21 +3662,11 @@ def _materialize_linky_streamed(
             """
         )
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.source_daily.schema.done')
-        revenue_range_clause = (
-            ' AND substr(revenue.stat_date_bj, 1, 10) BETWEEN ? AND ?'
-            if incremental_plan['enabled'] else ''
-        )
-        revenue_params: tuple[object, ...] = (materialized_at,)
-        if incremental_plan['enabled']:
-            revenue_params += (
-                incremental_dependency_start.isoformat(),
-                incremental_dependency_end.isoformat(),
-            )
         _emit_streamer_analytics_phase(
             phase_logger, 'app.linky.source_daily.revenue_upsert.start',
         )
         conn.execute(
-            f"""
+            """
             INSERT INTO _source_linky_daily (
                 app_name, guild_executor_key, guild_name, country, stat_date,
                 streamer_id, total_income, is_new, is_active, materialized_at,
@@ -4044,7 +3727,6 @@ def _materialize_linky_streamed(
              AND lower(revenue_executor.app_name) = 'linky'
             WHERE revenue.app_name = 'linky'
               AND length(COALESCE(revenue.stat_date_bj, '')) >= 10
-              {revenue_range_clause}
             ON CONFLICT (app_name, guild_executor_key, stat_date, streamer_id)
             DO UPDATE SET
                 guild_name = CASE
@@ -4074,7 +3756,7 @@ def _materialize_linky_streamed(
                     ELSE _source_linky_daily.source_updated_at END,
                 has_revenue = 1
             """,
-            revenue_params,
+            (materialized_at,),
         )
         _emit_streamer_analytics_phase(
             phase_logger, 'app.linky.source_daily.revenue_upsert.done',
@@ -4082,18 +3764,8 @@ def _materialize_linky_streamed(
         _emit_streamer_analytics_phase(
             phase_logger, 'app.linky.source_daily.registration_upsert.start',
         )
-        registration_range_clause = (
-            ' AND substr(profile.registered_at_bj, 1, 10) BETWEEN ? AND ?'
-            if incremental_plan['enabled'] else ''
-        )
-        registration_params: tuple[object, ...] = (materialized_at,)
-        if incremental_plan['enabled']:
-            registration_params += (
-                incremental_dependency_start.isoformat(),
-                incremental_dependency_end.isoformat(),
-            )
         conn.execute(
-            f"""
+            """
             INSERT INTO _source_linky_daily (
                 app_name, guild_executor_key, guild_name, country, stat_date,
                 streamer_id, total_income, is_new, is_active, materialized_at,
@@ -4122,7 +3794,6 @@ def _materialize_linky_streamed(
             WHERE profile.app_name = 'linky'
               AND NULLIF(profile.platform_character_id, '') IS NOT NULL
               AND length(COALESCE(profile.registered_at_bj, '')) >= 10
-              {registration_range_clause}
             ON CONFLICT (app_name, guild_executor_key, stat_date, streamer_id)
             DO UPDATE SET
                 guild_name = CASE
@@ -4141,25 +3812,15 @@ def _materialize_linky_streamed(
                     THEN excluded.source_updated_at
                     ELSE _source_linky_daily.source_updated_at END
             """,
-            registration_params,
+            (materialized_at,),
         )
         _emit_streamer_analytics_phase(
             phase_logger, 'app.linky.source_daily.registration_upsert.done',
         )
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.source_daily.done')
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.source_official_daily.start')
-        source_range_clause = (
-            ' AND stat_date_bj BETWEEN ? AND ?'
-            if incremental_plan['enabled'] else ''
-        )
-        source_range_params: tuple[object, ...] = ()
-        if incremental_plan['enabled']:
-            source_range_params = (
-                incremental_dependency_start.isoformat(),
-                incremental_dependency_end.isoformat(),
-            )
         conn.execute(
-            f"""
+            """
             CREATE TEMP TABLE _source_linky_official_daily AS
             SELECT guild_executor_key,
                    MAX(COALESCE(guild_name, '')) AS guild_name,
@@ -4172,23 +3833,19 @@ def _materialize_linky_streamed(
                    END) AS total_income
             FROM streamer_external_guild_revenue_daily
             WHERE app_name = 'linky'
-              {source_range_clause}
             GROUP BY guild_executor_key, stat_date_bj
-            """,
-            source_range_params,
+            """
         )
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.source_official_daily.done')
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.source_observed_date.start')
         conn.execute(
-            f"""
+            """
             CREATE TEMP TABLE _source_linky_observed_date AS
             SELECT DISTINCT guild_executor_key, stat_date_bj AS stat_date
             FROM streamer_external_guild_revenue_daily
             WHERE app_name = 'linky'
               AND ABS(COALESCE(reconciliation_delta, 0)) <= 0.000001
-              {source_range_clause}
-            """,
-            source_range_params,
+            """
         )
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.source_observed_date.done')
         # The rest of the build reads only connection-local temp tables. Release
@@ -4279,18 +3936,8 @@ def _materialize_linky_streamed(
         )
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.daily_summary.done')
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.newcomer.start')
-        newcomer_scope_clause = (
-            ' AND p.registered_date BETWEEN ? AND ?'
-            if incremental_plan['enabled'] else ''
-        )
-        newcomer_scope_params: tuple[object, ...] = ()
-        if incremental_plan['enabled']:
-            newcomer_scope_params = (
-                incremental_newcomer_start.isoformat(),
-                incremental_date_to.isoformat(),
-            )
         conn.execute(
-            f"""
+            """
             CREATE TEMP TABLE _source_linky_newcomer AS
             WITH maturity AS (
                 SELECT p.*, c.data_as_of,
@@ -4336,7 +3983,6 @@ def _materialize_linky_streamed(
                 CROSS JOIN _source_linky_context AS c
                 WHERE length(COALESCE(p.registered_date, '')) >= 10
                   AND date(p.registered_date) IS NOT NULL
-                  {newcomer_scope_clause}
             )
             SELECT m.app_name, m.guild_executor_key, m.guild_name, m.country,
                    m.streamer_id, substr(m.registered_date, 1, 10) AS registered_date,
@@ -4374,77 +4020,21 @@ def _materialize_linky_streamed(
              AND d.stat_date BETWEEN substr(m.registered_date, 1, 10)
                                  AND date(m.registered_date, '+30 days')
             GROUP BY m.app_name, m.guild_executor_key, m.streamer_id
-            """,
-            newcomer_scope_params,
+            """
         )
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.newcomer.done')
 
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.metrics.start')
         profile_count = int(conn.execute('SELECT COUNT(*) FROM _source_linky_profile').fetchone()[0])
-        if incremental_plan['enabled']:
-            date_scope = (
-                incremental_date_from.isoformat(),
-                incremental_date_to.isoformat(),
-            )
-            newcomer_scope = (
-                incremental_newcomer_start.isoformat(),
-                incremental_date_to.isoformat(),
-            )
-            streamer_daily_count = int(publish_conn.execute(
-                "SELECT COUNT(*) FROM streamer_analytics_streamer_daily_summary "
-                "WHERE app_name = 'linky' AND stat_date NOT BETWEEN ? AND ?",
-                date_scope,
-            ).fetchone()[0]) + int(conn.execute(
-                'SELECT COUNT(*) FROM _source_linky_daily '
-                'WHERE stat_date BETWEEN ? AND ?',
-                date_scope,
-            ).fetchone()[0])
-            daily_summary_count = int(publish_conn.execute(
-                "SELECT COUNT(*) FROM streamer_analytics_daily_summary "
-                "WHERE app_name = 'linky' AND stat_date NOT BETWEEN ? AND ?",
-                date_scope,
-            ).fetchone()[0]) + int(conn.execute(
-                'SELECT COUNT(*) FROM _source_linky_daily_summary '
-                'WHERE stat_date BETWEEN ? AND ?',
-                date_scope,
-            ).fetchone()[0])
-            newcomer_count = int(publish_conn.execute(
-                "SELECT COUNT(*) FROM streamer_analytics_newcomer_summary "
-                "WHERE app_name = 'linky' AND registered_date NOT BETWEEN ? AND ?",
-                newcomer_scope,
-            ).fetchone()[0]) + int(conn.execute(
-                'SELECT COUNT(*) FROM _source_linky_newcomer'
-            ).fetchone()[0])
-            expected_streamer_income = float(publish_conn.execute(
-                "SELECT COALESCE(SUM(total_income), 0) "
-                "FROM streamer_analytics_streamer_daily_summary "
-                "WHERE app_name = 'linky' AND stat_date NOT BETWEEN ? AND ?",
-                date_scope,
-            ).fetchone()[0] or 0) + float(conn.execute(
-                'SELECT COALESCE(SUM(total_income), 0) FROM _source_linky_daily '
-                'WHERE stat_date BETWEEN ? AND ?',
-                date_scope,
-            ).fetchone()[0] or 0)
-            expected_platform_income = float(publish_conn.execute(
-                "SELECT COALESCE(SUM(total_income), 0) "
-                "FROM streamer_analytics_daily_summary "
-                "WHERE app_name = 'linky' AND stat_date NOT BETWEEN ? AND ?",
-                date_scope,
-            ).fetchone()[0] or 0) + float(conn.execute(
-                'SELECT COALESCE(SUM(total_income), 0) '
-                'FROM _source_linky_daily_summary WHERE stat_date BETWEEN ? AND ?',
-                date_scope,
-            ).fetchone()[0] or 0)
-        else:
-            streamer_daily_count = int(conn.execute('SELECT COUNT(*) FROM _source_linky_daily').fetchone()[0])
-            daily_summary_count = int(conn.execute('SELECT COUNT(*) FROM _source_linky_daily_summary').fetchone()[0])
-            newcomer_count = int(conn.execute('SELECT COUNT(*) FROM _source_linky_newcomer').fetchone()[0])
-            expected_streamer_income = float(
-                conn.execute('SELECT COALESCE(SUM(total_income), 0) FROM _source_linky_daily').fetchone()[0] or 0
-            )
-            expected_platform_income = float(
-                conn.execute('SELECT COALESCE(SUM(total_income), 0) FROM _source_linky_daily_summary').fetchone()[0] or 0
-            )
+        streamer_daily_count = int(conn.execute('SELECT COUNT(*) FROM _source_linky_daily').fetchone()[0])
+        daily_summary_count = int(conn.execute('SELECT COUNT(*) FROM _source_linky_daily_summary').fetchone()[0])
+        newcomer_count = int(conn.execute('SELECT COUNT(*) FROM _source_linky_newcomer').fetchone()[0])
+        expected_streamer_income = float(
+            conn.execute('SELECT COALESCE(SUM(total_income), 0) FROM _source_linky_daily').fetchone()[0] or 0
+        )
+        expected_platform_income = float(
+            conn.execute('SELECT COALESCE(SUM(total_income), 0) FROM _source_linky_daily_summary').fetchone()[0] or 0
+        )
         newcomer_income_row = conn.execute(
             """
             SELECT COALESCE(SUM(CASE WHEN mature_income_d1 = 1 THEN income_d1 ELSE 0 END), 0),
@@ -4453,27 +4043,15 @@ def _materialize_linky_streamed(
             FROM _source_linky_newcomer
             """
         ).fetchone()
-        expected_newcomer_income = {}
-        for index, days in enumerate((1, 7, 30)):
-            incremental_income = float(newcomer_income_row[index] or 0)
-            if incremental_plan['enabled']:
-                previous_income = float(publish_conn.execute(
-                    f"SELECT COALESCE(SUM(income_d{days}), 0) "
-                    "FROM streamer_analytics_newcomer_summary "
-                    f"WHERE app_name = 'linky' AND mature_income_d{days} = 1 "
-                    "AND registered_date NOT BETWEEN ? AND ?",
-                    newcomer_scope,
-                ).fetchone()[0] or 0)
-                incremental_income += previous_income
-            expected_newcomer_income[days] = incremental_income
+        expected_newcomer_income = {
+            1: float(newcomer_income_row[0] or 0),
+            7: float(newcomer_income_row[1] or 0),
+            30: float(newcomer_income_row[2] or 0),
+        }
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.metrics.done')
 
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.cohorts.start')
-        if (
-            profile_count
-            and data_as_of_date
-            and (not incremental_plan['enabled'] or incremental_rebuild_cohorts)
-        ):
+        if profile_count and data_as_of_date:
             min_registered_row = conn.execute(
                 "SELECT MIN(registered_date) FROM _source_linky_profile "
                 "WHERE length(COALESCE(registered_date, '')) >= 10"
@@ -4518,29 +4096,7 @@ def _materialize_linky_streamed(
                         json.dumps(payload, ensure_ascii=False, separators=(',', ':')),
                         materialized_at,
                     ))
-        if incremental_plan['enabled'] and not incremental_rebuild_cohorts:
-            for row in publish_conn.execute(
-                'SELECT scope_type, scope_key, payload_json '
-                'FROM streamer_analytics_linky_cohort_summary '
-                'ORDER BY scope_type, scope_key'
-            ):
-                payload = json.loads(str(row[2] or '{}'))
-                if not isinstance(payload, dict):
-                    raise StreamerAnalyticsCohortSnapshotUnavailable(
-                        'streamer_analytics_linky_cohort_snapshot_unavailable'
-                    )
-                payload['data_as_of'] = (
-                    data_as_of_date.isoformat() if data_as_of_date else None
-                )
-                cohort_payloads.append((
-                    str(row[0] or ''),
-                    str(row[1] or ''),
-                    data_as_of_date.isoformat() if data_as_of_date else '',
-                    json.dumps(payload, ensure_ascii=False, separators=(',', ':')),
-                    materialized_at,
-                ))
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.cohorts.done')
-        cohort_scope_count = len(cohort_payloads)
         _emit_streamer_analytics_phase(
             phase_logger, 'app.linky.temp_index.daily_member_drop.start',
         )
@@ -4548,35 +4104,25 @@ def _materialize_linky_streamed(
         _emit_streamer_analytics_phase(
             phase_logger, 'app.linky.temp_index.daily_member_drop.done',
         )
-        incremental_date_scope: tuple[object, ...] = ()
-        incremental_date_where = ''
-        if incremental_plan['enabled']:
-            incremental_date_scope = (
-                incremental_date_from.isoformat(),
-                incremental_date_to.isoformat(),
-            )
-            incremental_date_where = ' WHERE stat_date BETWEEN ? AND ?'
         stage_specs = (
             (
                 'streamer_analytics_profile_summary', '_stage_streamer_analytics_profile',
-                STREAMER_ANALYTICS_PROFILE_COLUMNS, '_source_linky_profile', '', (),
+                STREAMER_ANALYTICS_PROFILE_COLUMNS, '_source_linky_profile',
             ),
             (
                 'streamer_analytics_streamer_daily_summary', '_stage_streamer_analytics_daily',
                 STREAMER_ANALYTICS_STREAMER_DAILY_COLUMNS, '_source_linky_daily',
-                incremental_date_where, incremental_date_scope,
             ),
             (
                 'streamer_analytics_daily_summary', '_stage_streamer_analytics_platform_daily',
                 STREAMER_ANALYTICS_DAILY_COLUMNS, '_source_linky_daily_summary',
-                incremental_date_where, incremental_date_scope,
             ),
             (
                 'streamer_analytics_newcomer_summary', '_stage_streamer_analytics_newcomer',
-                STREAMER_ANALYTICS_NEWCOMER_COLUMNS, '_source_linky_newcomer', '', (),
+                STREAMER_ANALYTICS_NEWCOMER_COLUMNS, '_source_linky_newcomer',
             ),
         )
-        for target_table, stage_table, columns, source_table, query_where, query_params in stage_specs:
+        for target_table, stage_table, columns, source_table in stage_specs:
             stage_name = source_table.removeprefix('_source_linky_')
             column_sql = ', '.join(columns)
             if offline_candidate:
@@ -4590,8 +4136,7 @@ def _materialize_linky_streamed(
                     columns=columns,
                     rows=_iter_query_tuples(
                         conn,
-                        f'SELECT {column_sql} FROM {source_table}{query_where}',
-                        query_params,
+                        f'SELECT {column_sql} FROM {source_table}',
                     ),
                     delete_where='app_name = ?',
                     delete_params=(app,),
@@ -4624,8 +4169,7 @@ def _materialize_linky_streamed(
                     stage_table=stage_table,
                     source_table=target_table,
                     columns=columns,
-                    query=f'SELECT {column_sql} FROM {source_table}{query_where}',
-                    params=query_params,
+                    query=f'SELECT {column_sql} FROM {source_table}',
                 )
                 _emit_streamer_analytics_phase(
                     phase_logger,
@@ -4682,11 +4226,8 @@ def _materialize_linky_streamed(
     finally:
         try:
             _drop_linky_temp_tables(conn, source_temp_tables)
-            if previous_store_attached:
-                if conn.in_transaction:
-                    conn.rollback()
-                conn.execute('DETACH DATABASE _previous_analytics')
-                previous_store_attached = False
+            if source_overlay_cleanup is not None:
+                source_overlay_cleanup(conn)
         except Exception:
             _drop_linky_temp_tables(publish_conn, stage_temp_tables)
             raise
@@ -4697,31 +4238,6 @@ def _materialize_linky_streamed(
         ('streamer_analytics_daily_summary', '_stage_streamer_analytics_platform_daily', STREAMER_ANALYTICS_DAILY_COLUMNS),
         ('streamer_analytics_newcomer_summary', '_stage_streamer_analytics_newcomer', STREAMER_ANALYTICS_NEWCOMER_COLUMNS),
     )
-    publish_scopes: Optional[Dict[str, tuple[str, tuple[object, ...]]]] = None
-    if incremental_plan['enabled']:
-        date_scope = (
-            incremental_date_from.isoformat(),
-            incremental_date_to.isoformat(),
-        )
-        newcomer_scope = (
-            incremental_newcomer_start.isoformat(),
-            incremental_date_to.isoformat(),
-        )
-        publish_scopes = {
-            'streamer_analytics_streamer_daily_summary': (
-                "target.app_name = 'linky' AND target.stat_date BETWEEN ? AND ?",
-                date_scope,
-            ),
-            'streamer_analytics_daily_summary': (
-                "target.app_name = 'linky' AND target.stat_date BETWEEN ? AND ?",
-                date_scope,
-            ),
-            'streamer_analytics_newcomer_summary': (
-                "target.app_name = 'linky' "
-                "AND target.registered_date BETWEEN ? AND ?",
-                newcomer_scope,
-            ),
-        }
     try:
         if publish_conn is not conn:
             _emit_streamer_analytics_phase(
@@ -4743,16 +4259,11 @@ def _materialize_linky_streamed(
             streamer_daily_count=streamer_daily_count,
             daily_summary_count=daily_summary_count,
             newcomer_count=newcomer_count,
-            cohort_scope_count=cohort_scope_count,
+            cohort_scope_count=len(cohort_payloads),
             expected_streamer_income=expected_streamer_income,
             expected_platform_income=expected_platform_income,
             expected_newcomer_income=expected_newcomer_income,
             materialized_at=materialized_at,
-            full_materialization=not incremental_plan['enabled'],
-            previous_full_materialized_at=str(
-                incremental_plan.get('last_full_materialized_at') or ''
-            ),
-            publish_scopes=publish_scopes,
         )
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.publish.done')
     finally:
@@ -4764,20 +4275,13 @@ def _materialize_linky_streamed(
         'streamer_daily_count': streamer_daily_count,
         'daily_summary_count': daily_summary_count,
         'newcomer_count': newcomer_count,
-        'cohort_scope_count': cohort_scope_count,
+        'cohort_scope_count': len(cohort_payloads),
         'materialized_at': materialized_at,
         'publication_id': publication_id,
         'source_processing': (
             'sqlite_streamed_offline_batched'
-            if offline_candidate else (
-                'sqlite_streamed_incremental_scoped'
-                if incremental_plan['enabled'] else 'sqlite_streamed'
-            )
+            if offline_candidate else 'sqlite_streamed'
         ),
-        'incremental': {
-            'used': bool(incremental_plan['enabled']),
-            'reason': str(incremental_plan['reason']),
-        },
         'parity': parity,
     }
 
@@ -4790,25 +4294,16 @@ def materialize_streamer_analytics_tables(
     target_conn: Optional[sqlite3.Connection] = None,
     analytics_db_path: object = None,
     validate_source_schema_only: bool = False,
-    refresh_support_tables: bool | Iterable[str] = True,
+    refresh_support_tables: bool = True,
     offline_linky_candidate_path: object = None,
-    incremental_date_from: object = None,
-    incremental_date_to: object = None,
+    linky_source_overlay: Optional[Callable[[sqlite3.Connection], None]] = None,
+    linky_source_overlay_cleanup: Optional[Callable[[sqlite3.Connection], None]] = None,
     phase_logger: Optional[Callable[[str], None]] = None,
+    inherited_queue_write_locks: bool = False,
 ) -> Dict[str, Any]:
     apps = tuple(dict.fromkeys(normalize_streamer_app(value) for value in app_names))
     _assert_production_linky_materialization_slice(apps)
     resolved_offline_candidate: Optional[Path] = None
-    resolved_incremental_from = _iso_date(incremental_date_from)
-    resolved_incremental_to = _iso_date(incremental_date_to)
-    if (incremental_date_from is None) != (incremental_date_to is None):
-        raise ValueError('incremental_date_range_incomplete')
-    if (
-        resolved_incremental_from is not None
-        and resolved_incremental_to is not None
-        and resolved_incremental_from > resolved_incremental_to
-    ):
-        raise ValueError('incremental_date_range_invalid')
     if offline_linky_candidate_path is not None:
         if target_conn is None or apps != ('linky',):
             raise RuntimeError(
@@ -4836,8 +4331,8 @@ def materialize_streamer_analytics_tables(
                 validate_source_schema_only=validate_source_schema_only,
                 refresh_support_tables=refresh_support_tables,
                 offline_linky_candidate_path=resolved_offline_candidate,
-                incremental_date_from=resolved_incremental_from,
-                incremental_date_to=resolved_incremental_to,
+                linky_source_overlay=linky_source_overlay,
+                linky_source_overlay_cleanup=linky_source_overlay_cleanup,
                 phase_logger=phase_logger,
             )
         finally:
@@ -4848,7 +4343,12 @@ def materialize_streamer_analytics_tables(
                     f'PRAGMA main.synchronous={original_synchronous}'
                 )
     if configured_path:
-        with _connect_streamer_analytics_store(Path(configured_path)) as store_conn:
+        connector = (
+            _connect_streamer_analytics_store_with_inherited_queue_locks
+            if inherited_queue_write_locks
+            else _connect_streamer_analytics_store
+        )
+        with connector(Path(configured_path)) as store_conn:
             return _materialize_streamer_analytics_tables(
                 conn,
                 publish_conn=store_conn,
@@ -4856,8 +4356,8 @@ def materialize_streamer_analytics_tables(
                 include_timo_cohorts=include_timo_cohorts,
                 validate_source_schema_only=validate_source_schema_only,
                 refresh_support_tables=refresh_support_tables,
-                incremental_date_from=resolved_incremental_from,
-                incremental_date_to=resolved_incremental_to,
+                linky_source_overlay=linky_source_overlay,
+                linky_source_overlay_cleanup=linky_source_overlay_cleanup,
                 phase_logger=phase_logger,
             )
     return _materialize_streamer_analytics_tables(
@@ -4867,8 +4367,8 @@ def materialize_streamer_analytics_tables(
         include_timo_cohorts=include_timo_cohorts,
         validate_source_schema_only=validate_source_schema_only,
         refresh_support_tables=refresh_support_tables,
-        incremental_date_from=resolved_incremental_from,
-        incremental_date_to=resolved_incremental_to,
+        linky_source_overlay=linky_source_overlay,
+        linky_source_overlay_cleanup=linky_source_overlay_cleanup,
         phase_logger=phase_logger,
     )
 
@@ -4907,10 +4407,10 @@ def _materialize_streamer_analytics_tables(
     app_names: Iterable[object] = SUPPORTED_APPS,
     include_timo_cohorts: bool = True,
     validate_source_schema_only: bool = False,
-    refresh_support_tables: bool | Iterable[str] = True,
+    refresh_support_tables: bool = True,
     offline_linky_candidate_path: Optional[Path] = None,
-    incremental_date_from: Optional[date] = None,
-    incremental_date_to: Optional[date] = None,
+    linky_source_overlay: Optional[Callable[[sqlite3.Connection], None]] = None,
+    linky_source_overlay_cleanup: Optional[Callable[[sqlite3.Connection], None]] = None,
     phase_logger: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """Rebuild the dashboard read models after raw feed synchronization.
@@ -4921,35 +4421,30 @@ def _materialize_streamer_analytics_tables(
     """
     conn.row_factory = sqlite3.Row
     publish_conn.row_factory = sqlite3.Row
+    apps = tuple(dict.fromkeys(normalize_streamer_app(value) for value in app_names))
     source_schema_phase = (
         'source_schema.validate' if validate_source_schema_only else 'source_schema.ensure'
     )
     _emit_streamer_analytics_phase(phase_logger, f'{source_schema_phase}.start')
+    app_fan_reconcile: Dict[str, Any] = {}
     if validate_source_schema_only:
         _validate_streamer_analytics_source_schema(conn)
     else:
         ensure_streamer_analytics_views(conn)
+        app_fan_reconcile = reconcile_streamer_app_fans(conn, app_names=apps)
         conn.commit()
     _emit_streamer_analytics_phase(phase_logger, f'{source_schema_phase}.done')
     _emit_streamer_analytics_phase(phase_logger, 'analytics_store_schema.start')
     _ensure_streamer_analytics_store_schema(conn, publish_conn)
     _emit_streamer_analytics_phase(phase_logger, 'analytics_store_schema.done')
+    if linky_source_overlay is not None:
+        linky_source_overlay(conn)
     if refresh_support_tables:
         _emit_streamer_analytics_phase(phase_logger, 'analytics_support_refresh.start')
-        support_tables = (
-            STREAMER_ANALYTICS_STORE_SUPPORT_TABLES
-            if refresh_support_tables is True
-            else tuple(refresh_support_tables)
-        )
-        _refresh_streamer_analytics_support_tables(
-            conn,
-            publish_conn,
-            tables=support_tables,
-        )
+        _refresh_streamer_analytics_support_tables(conn, publish_conn)
         _emit_streamer_analytics_phase(phase_logger, 'analytics_support_refresh.done')
     else:
         _emit_streamer_analytics_phase(phase_logger, 'analytics_support_refresh.skipped')
-    apps = tuple(dict.fromkeys(normalize_streamer_app(value) for value in app_names))
     results: Dict[str, Any] = {}
     for app in apps:
         _emit_streamer_analytics_phase(phase_logger, f'app.{app}.start')
@@ -4958,8 +4453,8 @@ def _materialize_streamer_analytics_tables(
                 conn,
                 publish_conn=publish_conn,
                 offline_candidate_path=offline_linky_candidate_path,
-                incremental_date_from=incremental_date_from,
-                incremental_date_to=incremental_date_to,
+                source_overlay=linky_source_overlay,
+                source_overlay_cleanup=linky_source_overlay_cleanup,
                 phase_logger=phase_logger,
             )
             _emit_streamer_analytics_phase(phase_logger, f'app.{app}.done')
@@ -4972,6 +4467,32 @@ def _materialize_streamer_analytics_tables(
             f"SELECT * FROM {PROFILE_VIEW} WHERE app_name = ?",
             (app,),
         )
+        app_fan_ids = confirmed_app_fan_ids(
+            conn,
+            app_name=app,
+            ensure_schema=not validate_source_schema_only,
+        )
+        app_fan_complete = app_fan_history_complete(
+            conn,
+            app_name=app,
+            ensure_schema=not validate_source_schema_only,
+        )
+        for profile in profiles:
+            profile['app_fan_status'] = classify_app_fan_status(
+                app_name=app,
+                streamer_id=str(profile.get('streamer_id') or ''),
+                registered_date=str(profile.get('registered_date') or ''),
+                confirmed_ids=app_fan_ids,
+                history_complete=app_fan_complete,
+            )
+            profile['is_app_fan'] = (
+                1 if profile['app_fan_status'] == 'app_fan'
+                else 0 if profile['app_fan_status'] == 'non_app_fan'
+                else None
+            )
+            profile['app_fan_source'] = (
+                'tugao_app' if profile['app_fan_status'] == 'app_fan' else ''
+            )
         raw_facts = _rows(
             conn,
             f"""
@@ -5164,7 +4685,9 @@ def _materialize_streamer_analytics_tables(
                     (
                         app, row['guild_executor_key'], row['guild_name'], row['country'], row['streamer_id'],
                         row['display_name'], row['registered_date'], row['last_active_date'],
-                        int(row.get('is_real_person') or 0), row['source_updated_at'], materialized_at,
+                        int(row.get('is_real_person') or 0), row.get('is_app_fan'),
+                        row.get('app_fan_status') or 'historical_unknown',
+                        row.get('app_fan_source') or '', row['source_updated_at'], materialized_at,
                     )
                     for row in profiles
                 ),
@@ -5249,7 +4772,11 @@ def _materialize_streamer_analytics_tables(
             'parity': parity,
         }
         _emit_streamer_analytics_phase(phase_logger, f'app.{app}.done')
-    return {'ok': True, 'apps': results}
+    return {
+        'ok': True,
+        'apps': results,
+        'app_fan_reconcile': app_fan_reconcile,
+    }
 
 
 def build_timo_weekly_cohorts(
@@ -5535,6 +5062,7 @@ def _build_streamer_analytics_payload_materialized(
         conn,
         f"""
         SELECT p.guild_name, p.streamer_id, p.display_name, p.registered_date,
+               p.is_app_fan, p.app_fan_status, p.app_fan_source,
                COALESCE(SUM(d.total_income), 0) AS total_income
         FROM streamer_analytics_profile_summary AS p
         LEFT JOIN streamer_analytics_streamer_daily_summary AS d
@@ -5562,6 +5090,34 @@ def _build_streamer_analytics_payload_materialized(
     else:
         for row in ranking:
             row['total_income'] = round(float(row.get('total_income') or 0), 2)
+
+    app_fan_revenue_comparison = _rows(
+        conn,
+        f"""
+        SELECT p.app_fan_status,
+               COUNT(DISTINCT p.guild_executor_key || char(31) || p.streamer_id)
+                   AS streamer_count,
+               COUNT(DISTINCT CASE WHEN d.is_active = 1
+                    THEN p.guild_executor_key || char(31) || p.streamer_id END)
+                   AS active_streamers,
+               COALESCE(SUM(d.total_income), 0) AS total_income
+        FROM streamer_analytics_profile_summary AS p
+        LEFT JOIN streamer_analytics_streamer_daily_summary AS d
+          ON d.app_name = p.app_name
+         AND d.guild_executor_key = p.guild_executor_key
+         AND d.streamer_id = p.streamer_id
+         AND d.stat_date BETWEEN ? AND ?
+        WHERE p.app_name = ?{ranking_scope}
+        GROUP BY p.app_fan_status
+        ORDER BY CASE p.app_fan_status
+            WHEN 'app_fan' THEN 1 WHEN 'non_app_fan' THEN 2 ELSE 3 END
+        """,
+        [start.isoformat(), end.isoformat(), app, *ranking_params],
+    )
+    for row in app_fan_revenue_comparison:
+        row['streamer_count'] = int(row.get('streamer_count') or 0)
+        row['active_streamers'] = int(row.get('active_streamers') or 0)
+        row['total_income'] = round(float(row.get('total_income') or 0), 2)
 
     newcomer_revenue: List[Dict[str, Any]] = []
     retention: List[Dict[str, Any]] = []
@@ -5598,6 +5154,8 @@ def _build_streamer_analytics_payload_materialized(
                     country=country_name,
                 )
                 official_cohort_count = sum(newcomer_count_by_guild.values())
+                # Keep numerator and denominator on the exact same immutable
+                # ledger identities.  Aggregate counts only prove completeness.
                 count = newcomer_profile_count
             else:
                 official_cohort_count = newcomer_profile_count
@@ -5714,6 +5272,7 @@ def _build_streamer_analytics_payload_materialized(
         'newcomer_cohort_date_from': newcomer_start.isoformat(),
         'newcomer_cohort_date_to': newcomer_end.isoformat(),
         'weekly_cohorts': weekly_cohorts,
+        'app_fan_revenue_comparison': app_fan_revenue_comparison,
         'countries': countries,
         'guild_options': [
             {
@@ -5802,43 +5361,6 @@ def _streamer_analytics_payload_cache_set(
     return payload
 
 
-def _streamer_analytics_precomputed_default_payload(
-    conn: sqlite3.Connection,
-    *,
-    app: str,
-    generation: str,
-    start: date,
-    end: date,
-    guild_name: str,
-    country: str,
-    limit: int,
-) -> Optional[Dict[str, Any]]:
-    if guild_name or country or limit != STREAMER_ANALYTICS_DEFAULT_LIMIT:
-        return None
-    if (end - start).days + 1 != STREAMER_ANALYTICS_DEFAULT_WINDOW_DAYS:
-        return None
-    try:
-        row = conn.execute(
-            "SELECT value FROM streamer_analytics_store_meta WHERE key = ?",
-            (f'default_payload:{app}',),
-        ).fetchone()
-        envelope = json.loads(str(row[0])) if row else {}
-    except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
-        return None
-    if not isinstance(envelope, dict):
-        return None
-    if str(envelope.get('generation') or '') != generation:
-        return None
-    if str(envelope.get('date_from') or '') != start.isoformat():
-        return None
-    if str(envelope.get('date_to') or '') != end.isoformat():
-        return None
-    if int(envelope.get('limit') or 0) != limit:
-        return None
-    payload = envelope.get('payload')
-    return deepcopy(payload) if isinstance(payload, dict) else None
-
-
 def build_streamer_analytics_metadata(conn: sqlite3.Connection) -> Dict[str, Any]:
     try:
         rows = _rows(
@@ -5908,18 +5430,6 @@ def build_streamer_analytics_payload(
         cached = _streamer_analytics_payload_cache_get(cache_key)
         if cached is not None:
             return cached
-        precomputed = _streamer_analytics_precomputed_default_payload(
-            conn,
-            app=app,
-            generation=generation,
-            start=start,
-            end=end,
-            guild_name=normalized_guild,
-            country=normalized_country,
-            limit=normalized_limit,
-        )
-        if precomputed is not None:
-            return _streamer_analytics_payload_cache_set(cache_key, precomputed)
         payload = _build_streamer_analytics_payload_materialized(
             conn,
             app_name=app,

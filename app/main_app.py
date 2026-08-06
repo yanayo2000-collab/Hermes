@@ -5279,6 +5279,65 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
             }
             return payload
 
+        def read_fresh_cached_payload() -> Optional[Dict[str, Any]]:
+            with ad_dashboard_cache_lock:
+                cached = ad_dashboard_cache.get(cache_key)
+                cached_at = float(cached.get('created_at') or 0.0) if cached else 0.0
+                cache_fresh = (
+                    cached_at > 0
+                    and (
+                        now_ts - cached_at < ad_dashboard_cache_ttl_seconds
+                        if ad_dashboard_cache_ttl_seconds > 0
+                        else cached_at >= cache_window_start
+                    )
+                )
+                if cached and cache_fresh:
+                    payload = copy.deepcopy(cached.get('payload') or {})
+                    payload['cache'] = {
+                        'hit': True,
+                        'layer': 'memory',
+                        'ttl_seconds': cache_max_age_seconds,
+                        'cached_at': datetime.fromtimestamp(cached_at, timezone.utc).isoformat(),
+                        'next_refresh_at': datetime.fromtimestamp(cache_next_refresh, ZoneInfo(ad_dashboard_cache_timezone)).isoformat(),
+                        'schedule': f'{ad_dashboard_cache_timezone} 09:20 daily',
+                    }
+                    return payload
+            persistent_payload = _read_persistent_ad_dashboard_cache(
+                cache_key,
+                now_ts=now_ts,
+                cache_window_start=cache_window_start,
+                cache_next_refresh=cache_next_refresh,
+                cache_max_age_seconds=cache_max_age_seconds,
+                cache_timezone=ad_dashboard_cache_timezone,
+            )
+            if persistent_payload is not None:
+                persistent_cached_at = datetime.fromisoformat(persistent_payload['cache']['cached_at']).timestamp()
+                with ad_dashboard_cache_lock:
+                    ad_dashboard_cache[cache_key] = {
+                        'created_at': persistent_cached_at,
+                        'payload': copy.deepcopy(persistent_payload),
+                    }
+            return persistent_payload
+
+        if cache_max_age_seconds > 0 and not refresh:
+            cached_payload = read_fresh_cached_payload()
+            if cached_payload is not None:
+                return attach_data_freshness(cached_payload)
+
+        if cache_max_age_seconds > 0 and not refresh:
+            stale_payload = _read_any_persistent_ad_dashboard_cache(
+                cache_key,
+                now_ts=now_ts,
+                cache_timezone=ad_dashboard_cache_timezone,
+            )
+            if stale_payload is not None:
+                stale_payload['cache']['serving_reason'] = 'fresh_cache_expired'
+                stale_payload['cache']['refresh_mode'] = 'scheduled_or_manual'
+                stale_payload.setdefault('insights', []).append(
+                    '当前先展示最近一次完整缓存；后台定时任务会继续更新，页面无需等待媒体接口。'
+                )
+                return attach_data_freshness(stale_payload)
+
         force_live_for_missing_fact_dates = False
         if cache_max_age_seconds > 0 and not refresh:
             fact_start_date, fact_end_date = ad_dashboard_fact_window_for_context(context)
@@ -5348,45 +5407,6 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                         'payload': copy.deepcopy(payload),
                     }
                 return attach_data_freshness(payload)
-        if cache_max_age_seconds > 0 and not refresh and not force_live_for_missing_fact_dates:
-            with ad_dashboard_cache_lock:
-                cached = ad_dashboard_cache.get(cache_key)
-                cached_at = float(cached.get('created_at') or 0.0) if cached else 0.0
-                cache_fresh = (
-                    cached_at > 0
-                    and (
-                        now_ts - cached_at < ad_dashboard_cache_ttl_seconds
-                        if ad_dashboard_cache_ttl_seconds > 0
-                        else cached_at >= cache_window_start
-                    )
-                )
-                if cached and cache_fresh:
-                    payload = copy.deepcopy(cached.get('payload') or {})
-                    payload['cache'] = {
-                        'hit': True,
-                        'layer': 'memory',
-                        'ttl_seconds': cache_max_age_seconds,
-                        'cached_at': datetime.fromtimestamp(cached_at, timezone.utc).isoformat(),
-                        'next_refresh_at': datetime.fromtimestamp(cache_next_refresh, ZoneInfo(ad_dashboard_cache_timezone)).isoformat(),
-                        'schedule': f'{ad_dashboard_cache_timezone} 09:20 daily',
-                    }
-                    return attach_data_freshness(payload)
-            persistent_payload = _read_persistent_ad_dashboard_cache(
-                cache_key,
-                now_ts=now_ts,
-                cache_window_start=cache_window_start,
-                cache_next_refresh=cache_next_refresh,
-                cache_max_age_seconds=cache_max_age_seconds,
-                cache_timezone=ad_dashboard_cache_timezone,
-            )
-            if persistent_payload is not None:
-                persistent_cached_at = datetime.fromisoformat(persistent_payload['cache']['cached_at']).timestamp()
-                with ad_dashboard_cache_lock:
-                    ad_dashboard_cache[cache_key] = {
-                        'created_at': persistent_cached_at,
-                        'payload': copy.deepcopy(persistent_payload),
-                    }
-                return attach_data_freshness(persistent_payload)
 
         try:
             payload = build_ad_data_dashboard_snapshot(

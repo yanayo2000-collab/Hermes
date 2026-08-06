@@ -1428,6 +1428,33 @@ def create_ad_experiment_router(
             raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "new_account_launch_not_found"})
         archived = bool(archive_row and str(archive_row["status"] or "").upper() == "ARCHIVED")
 
+        try:
+            meta_review_rows = conn.execute(
+                """
+                SELECT experiment_id,configured_status,effective_status,remediation_status,
+                       replacement_image_id,replacement_plan_id,last_checked_at,updated_at
+                FROM ad_meta_review_state
+                WHERE experiment_id IN (
+                    SELECT experiment_id FROM ad_experiment WHERE source_report_id=?
+                )
+                """,
+                (normalized_launch_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            meta_review_rows = []
+        meta_reviews = {
+            str(review["experiment_id"]): {
+                "configured_status": str(review["configured_status"] or ""),
+                "effective_status": str(review["effective_status"] or ""),
+                "remediation_status": str(review["remediation_status"] or "NONE"),
+                "replacement_image_id": str(review["replacement_image_id"] or ""),
+                "replacement_plan_id": str(review["replacement_plan_id"] or ""),
+                "last_checked_at": str(review["last_checked_at"] or ""),
+                "updated_at": str(review["updated_at"] or ""),
+            }
+            for review in meta_review_rows
+        }
+
         experiments: List[Dict[str, Any]] = []
         variants: List[Dict[str, Any]] = []
         for index, row in enumerate(rows, start=1):
@@ -1450,6 +1477,9 @@ def create_ad_experiment_router(
                 "adset_id": str(row["source_adset_id"] or ""),
                 "ad_id": str(row["source_ad_id"] or ""),
                 "updated_at": str(row["updated_at"]),
+                "workflow": {
+                    "meta_review": meta_reviews.get(str(row["experiment_id"]), {}),
+                },
             })
             variants.append({
                 "variant": int(hypothesis.get("variant") or index),
@@ -1506,6 +1536,78 @@ def create_ad_experiment_router(
                 tuple(ad_ids),
             ).fetchall()
 
+        performance_source = "creative_performance_projection"
+        performance_granularity_note = "广告级归因"
+        if not performance_rows and ad_ids:
+            fact_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ad_dashboard_fact_rows'",
+            ).fetchone()
+            if fact_table:
+                placeholders = ",".join("?" for _ in ad_ids)
+                media_rows = conn.execute(
+                    f"""
+                    SELECT date AS report_date_london,ad_id,cost AS spend,impressions,clicks,
+                           CASE WHEN meta_installs > 0 THEN meta_installs ELSE installs END AS installs,
+                           0 AS tugao_real_bind_count,
+                           'media_only_ad_id' AS data_quality_status,
+                           '广告级媒体' AS attribution_level
+                    FROM ad_dashboard_fact_rows
+                    WHERE LOWER(data_source)='meta' AND ad_id IN ({placeholders})
+                    ORDER BY date,ad_id
+                    """,
+                    tuple(ad_ids),
+                ).fetchall()
+                if media_rows:
+                    performance_rows = list(media_rows)
+                    performance_source = "dashboard_fact_fallback"
+                    performance_granularity_note = "Meta 媒体数据已按广告回流"
+                    campaign_ids = sorted({str(item["campaign_id"] or "") for item in experiments if item["campaign_id"]})
+                    campaign_names = sorted({
+                        str(item.get("meta_names", {}).get("campaign") or "").strip()
+                        for item in variants if str(item.get("meta_names", {}).get("campaign") or "").strip()
+                    })
+                    predicates: List[str] = []
+                    params: List[str] = []
+                    if campaign_ids:
+                        predicates.append(f"campaign_id IN ({','.join('?' for _ in campaign_ids)})")
+                        params.extend(campaign_ids)
+                    if campaign_names:
+                        predicates.append(f"campaign IN ({','.join('?' for _ in campaign_names)})")
+                        params.extend(campaign_names)
+                    if predicates:
+                        downstream_rows = conn.execute(
+                            f"""
+                            SELECT date,data_source,installs,af_installs,promotion_guild_joins,
+                                   bind_success_users,crm_succeed_users
+                            FROM ad_dashboard_fact_rows
+                            WHERE LOWER(data_source) IN ('appsflyer','bindsuccess','tugaofunnel')
+                              AND ({' OR '.join(predicates)})
+                            ORDER BY date,data_source
+                            """,
+                            tuple(params),
+                        ).fetchall()
+                        downstream_by_date: Dict[str, Dict[str, float]] = {}
+                        for item in downstream_rows:
+                            date_key = str(item["date"] or "")
+                            bucket = downstream_by_date.setdefault(date_key, {"installs": 0.0, "real_joins": 0.0})
+                            bucket["installs"] = max(bucket["installs"], float(item["af_installs"] or item["installs"] or 0))
+                            bucket["real_joins"] = max(
+                                bucket["real_joins"],
+                                float(item["promotion_guild_joins"] or item["bind_success_users"] or item["crm_succeed_users"] or 0),
+                            )
+                        for date_key, values in downstream_by_date.items():
+                            if not values["installs"] and not values["real_joins"]:
+                                continue
+                            performance_rows.append({
+                                "report_date_london": date_key, "ad_id": "", "spend": 0.0,
+                                "impressions": 0.0, "clicks": 0.0, "installs": values["installs"],
+                                "tugao_real_bind_count": values["real_joins"],
+                                "data_quality_status": "campaign_level_downstream",
+                                "attribution_level": "广告系列级后链路",
+                            })
+                        if downstream_by_date:
+                            performance_granularity_note = "Meta 媒体数据已按广告回流；安装/真实入会仅能按广告系列归因"
+
         def aggregate_performance(metric_rows: List[sqlite3.Row]) -> Dict[str, Any]:
             spend = sum(float(item["spend"] or 0) for item in metric_rows)
             impressions = sum(float(item["impressions"] or 0) for item in metric_rows)
@@ -1518,11 +1620,11 @@ def create_ad_experiment_router(
                 "spend": round(spend, 4),
                 "impressions": round(impressions, 4),
                 "clicks": round(clicks, 4),
-                "ctr": clicks / impressions if impressions else None,
+                "ctr": round(clicks / impressions, 6) if impressions else None,
                 "installs": round(installs, 4),
-                "cpi": spend / installs if installs else None,
+                "cpi": round(spend / installs, 4) if installs else None,
                 "real_bind_count": round(real_joins, 4),
-                "real_bind_cpa": spend / real_joins if real_joins else None,
+                "real_bind_cpa": round(spend / real_joins, 4) if real_joins else None,
                 "first_data_date": dates[0] if dates else "",
                 "latest_data_date": dates[-1] if dates else "",
                 "day_count": len(dates),
@@ -1539,6 +1641,10 @@ def create_ad_experiment_router(
             )
 
         delivery_performance = aggregate_performance(performance_rows)
+        delivery_performance.update({
+            "source": performance_source,
+            "granularity_note": performance_granularity_note,
+        })
         maturity_rule = decode_json(rows[0]["maturity_rule_json"], {})
         minimum_installs = int(maturity_rule.get("minimum_installs") or 100)
         minimum_real_joins = int(maturity_rule.get("minimum_real_joins") or 10)
