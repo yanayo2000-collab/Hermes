@@ -6,11 +6,28 @@ import sqlite3
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
 TUGAO_BIND_SUCCESS_PATH = '/api/v1/analytics/bind-success-events'
 TUGAO_PII_KEYS = {'phone', 'mobile', 'email', 'name', 'real_name', 'whatsapp', 'wa'}
+GLE_CANONICAL_IDENTITY_CONTRACT_VERSION = 'gle-canonical-identity-v1'
+
+_PERMANENT_CANONICAL_IDENTITY_REASONS = {
+    'AMBIGUOUS_CANONICAL_IDENTITY',
+    'CANONICAL_IDENTITY_INVALID',
+    'CANONICAL_IDENTITY_SOURCE_UNAVAILABLE',
+    'CANONICAL_IDENTITY_STORED_INCOMPLETE',
+    'EVENT_IDENTITY_DRIFT',
+    'EVENT_IDENTITY_MISSING_AFTER_VALID',
+    'LEAD_CUSTOMER_LINK_CONFLICT',
+}
+_PRE_ACCEPTANCE_PERMANENT_REASONS = {
+    'CANONICAL_IDENTITY_INVALID',
+    'CANONICAL_IDENTITY_MISSING',
+    'IDENTITY_CONTRACT_VERSION_INVALID',
+    'IDENTITY_CONTRACT_VERSION_UNSUPPORTED',
+}
 
 
 class TugaoBiClientError(RuntimeError):
@@ -82,6 +99,27 @@ def _coalesce(raw: Dict[str, Any], *keys: str) -> str:
     return ''
 
 
+def _exact_identity_value(value: Any) -> bool:
+    return isinstance(value, str) and bool(value) and value == value.strip()
+
+
+def _canonical_identity_input(raw: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    if 'identity_contract_version' not in raw:
+        return '', '', '', 'LEGACY_UNVERIFIED'
+    version = raw.get('identity_contract_version')
+    if not _exact_identity_value(version):
+        return '', '', '', 'IDENTITY_CONTRACT_VERSION_INVALID'
+    if version != GLE_CANONICAL_IDENTITY_CONTRACT_VERSION:
+        return '', '', '', 'IDENTITY_CONTRACT_VERSION_UNSUPPORTED'
+    if 'lead_id' not in raw or 'customer_id' not in raw:
+        return '', '', '', 'CANONICAL_IDENTITY_MISSING'
+    lead_id = raw.get('lead_id')
+    customer_id = raw.get('customer_id')
+    if not _exact_identity_value(lead_id) or not _exact_identity_value(customer_id):
+        return '', '', '', 'CANONICAL_IDENTITY_INVALID'
+    return version, lead_id, customer_id, ''
+
+
 def normalize_tugao_bind_event(raw: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise TugaoBiResponseError('event_not_object')
@@ -93,7 +131,16 @@ def normalize_tugao_bind_event(raw: Dict[str, Any]) -> Dict[str, Any]:
     occurred_at = _coalesce(raw, 'bind_success_time', 'occurred_at', 'event_time', 'created_at')
     updated_at = _coalesce(raw, 'updated_at', 'bind_updated_at')
     business_date = _coalesce(raw, 'business_date_jakarta', 'business_date', 'date')
-    customer_user_id = _coalesce(raw, 'customer_user_id', 'customer_id', 'user_id')
+    (
+        identity_contract_version,
+        canonical_lead_id,
+        canonical_customer_id,
+        canonical_identity_input_reason,
+    ) = _canonical_identity_input(raw)
+    if 'identity_contract_version' in raw:
+        customer_user_id = _coalesce(raw, 'customer_user_id')
+    else:
+        customer_user_id = _coalesce(raw, 'customer_user_id', 'customer_id', 'user_id')
     bind_id = _coalesce(raw, 'bind_id', 'guild_bind_id')
     user_key = customer_user_id or bind_id or event_id
     raw_payload_json = json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
@@ -116,6 +163,10 @@ def normalize_tugao_bind_event(raw: Dict[str, Any]) -> Dict[str, Any]:
         'customer_user_id': customer_user_id,
         'user_key': user_key,
         'has_wa': _parse_bool(raw.get('has_wa')),
+        'identity_contract_version': identity_contract_version,
+        'canonical_lead_id': canonical_lead_id,
+        'canonical_customer_id': canonical_customer_id,
+        'canonical_identity_input_reason': canonical_identity_input_reason,
         'raw_payload_json': raw_payload_json,
         'raw_payload_sha256': hashlib.sha256(raw_payload_json.encode('utf-8')).hexdigest(),
     }
@@ -256,7 +307,12 @@ def ensure_tugao_bind_tables(conn: sqlite3.Connection) -> None:
             raw_payload_sha256 TEXT NOT NULL,
             raw_payload_json TEXT NOT NULL,
             first_seen_at_utc TEXT NOT NULL,
-            last_seen_at_utc TEXT NOT NULL
+            last_seen_at_utc TEXT NOT NULL,
+            identity_contract_version TEXT,
+            canonical_lead_id TEXT,
+            canonical_customer_id TEXT,
+            canonical_identity_status TEXT NOT NULL DEFAULT 'LEGACY_UNVERIFIED',
+            canonical_identity_reason TEXT NOT NULL DEFAULT 'LEGACY_UNVERIFIED'
         );
 
         CREATE TABLE IF NOT EXISTS tugao_bind_success_sync_audit (
@@ -288,52 +344,299 @@ def ensure_tugao_bind_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    existing_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(tugao_bind_success_raw_events)").fetchall()
+    }
+    identity_columns = {
+        'identity_contract_version': 'TEXT',
+        'canonical_lead_id': 'TEXT',
+        'canonical_customer_id': 'TEXT',
+        'canonical_identity_status': "TEXT NOT NULL DEFAULT 'LEGACY_UNVERIFIED'",
+        'canonical_identity_reason': "TEXT NOT NULL DEFAULT 'LEGACY_UNVERIFIED'",
+    }
+    for name, declaration in identity_columns.items():
+        if name not in existing_columns:
+            conn.execute(
+                f'ALTER TABLE tugao_bind_success_raw_events ADD COLUMN {name} {declaration}'
+            )
+
+
+def verify_tugao_canonical_identity(
+    conn: sqlite3.Connection,
+    *,
+    lead_id: str,
+    customer_id: str,
+) -> Tuple[str, str]:
+    if not _exact_identity_value(lead_id) or not _exact_identity_value(customer_id):
+        return 'BLOCKED', 'CANONICAL_IDENTITY_INVALID'
+    try:
+        lead_rows = conn.execute(
+            "SELECT lead_id,matched_customer_id FROM leads WHERE lead_id=? LIMIT 2",
+            (lead_id,),
+        ).fetchall()
+        customer_rows = conn.execute(
+            "SELECT customer_id,lead_id FROM customer_projection WHERE customer_id=? LIMIT 2",
+            (customer_id,),
+        ).fetchall()
+        leads_for_customer = conn.execute(
+            "SELECT lead_id FROM leads WHERE matched_customer_id=? ORDER BY lead_id LIMIT 2",
+            (customer_id,),
+        ).fetchall()
+        customers_for_lead = conn.execute(
+            "SELECT customer_id FROM customer_projection WHERE lead_id=? ORDER BY customer_id LIMIT 2",
+            (lead_id,),
+        ).fetchall()
+        lead_row = lead_rows[0] if len(lead_rows) == 1 else None
+        customer_row = customer_rows[0] if len(customer_rows) == 1 else None
+        if lead_row is not None and (
+            not _exact_identity_value(lead_row[0])
+            or not _exact_identity_value(lead_row[1])
+        ):
+            return 'BLOCKED', 'CANONICAL_IDENTITY_INVALID'
+        if customer_row is not None and (
+            not _exact_identity_value(customer_row[0])
+            or not _exact_identity_value(customer_row[1])
+        ):
+            return 'BLOCKED', 'CANONICAL_IDENTITY_INVALID'
+        if lead_row is not None and (
+            lead_row[0] != lead_id or lead_row[1] != customer_id
+        ):
+            return 'BLOCKED', 'LEAD_CUSTOMER_LINK_CONFLICT'
+        if customer_row is not None and (
+            customer_row[0] != customer_id or customer_row[1] != lead_id
+        ):
+            return 'BLOCKED', 'LEAD_CUSTOMER_LINK_CONFLICT'
+        reverse_leads = tuple(row[0] for row in leads_for_customer)
+        reverse_customers = tuple(row[0] for row in customers_for_lead)
+        if not all(
+            _exact_identity_value(value)
+            for value in (*reverse_leads, *reverse_customers)
+        ):
+            return 'BLOCKED', 'CANONICAL_IDENTITY_INVALID'
+        if len(reverse_leads) > 1 or len(reverse_customers) > 1:
+            return 'BLOCKED', 'AMBIGUOUS_CANONICAL_IDENTITY'
+        reverse_lead = reverse_leads[0] if reverse_leads else None
+        reverse_customer = reverse_customers[0] if reverse_customers else None
+        if (
+            reverse_lead is not None and reverse_lead != lead_id
+        ) or (
+            reverse_customer is not None and reverse_customer != customer_id
+        ):
+            return 'BLOCKED', 'LEAD_CUSTOMER_LINK_CONFLICT'
+        if lead_row is None or customer_row is None:
+            return 'PENDING_VERIFICATION', 'CANONICAL_IDENTITY_NOT_IN_CRM'
+        if (reverse_lead, reverse_customer) != (lead_id, customer_id):
+            return 'BLOCKED', 'AMBIGUOUS_CANONICAL_IDENTITY'
+        return 'VERIFIED', ''
+    except sqlite3.Error:
+        return 'BLOCKED', 'CANONICAL_IDENTITY_SOURCE_UNAVAILABLE'
+
+
+def _canonical_identity_state(
+    conn: sqlite3.Connection,
+    *,
+    normalized: Dict[str, Any],
+    existing: Optional[Mapping[str, Any]],
+) -> Tuple[Optional[str], Optional[str], Optional[str], str, str]:
+    incoming_version = str(normalized.get('identity_contract_version') or '')
+    incoming_lead = str(normalized.get('canonical_lead_id') or '')
+    incoming_customer = str(normalized.get('canonical_customer_id') or '')
+    input_reason = str(normalized.get('canonical_identity_input_reason') or '')
+    incoming_pair_valid = bool(incoming_version and incoming_lead and incoming_customer)
+
+    if existing is None:
+        stored_version = stored_lead = stored_customer = None
+        stored_status = stored_reason = ''
+    else:
+        stored_version = existing['identity_contract_version']
+        stored_lead = existing['canonical_lead_id']
+        stored_customer = existing['canonical_customer_id']
+        stored_status = str(existing['canonical_identity_status'] or '')
+        stored_reason = str(existing['canonical_identity_reason'] or '')
+
+    stored_identity_values = (stored_version, stored_lead, stored_customer)
+    if any(stored_identity_values) and (
+        not all(stored_identity_values)
+        or stored_version != GLE_CANONICAL_IDENTITY_CONTRACT_VERSION
+        or not _exact_identity_value(stored_lead)
+        or not _exact_identity_value(stored_customer)
+    ):
+        return (
+            stored_version,
+            stored_lead,
+            stored_customer,
+            'BLOCKED',
+            'CANONICAL_IDENTITY_STORED_INCOMPLETE',
+        )
+    if all(stored_identity_values) and (
+        (stored_status == 'VERIFIED' and stored_reason != '')
+        or (
+            stored_status == 'PENDING_VERIFICATION'
+            and stored_reason != 'CANONICAL_IDENTITY_NOT_IN_CRM'
+        )
+        or (
+            stored_status == 'BLOCKED'
+            and stored_reason not in _PERMANENT_CANONICAL_IDENTITY_REASONS
+        )
+        or stored_status not in {'VERIFIED', 'PENDING_VERIFICATION', 'BLOCKED'}
+    ):
+        return (
+            stored_version,
+            stored_lead,
+            stored_customer,
+            'BLOCKED',
+            'CANONICAL_IDENTITY_STORED_INCOMPLETE',
+        )
+    if existing is not None and not any(stored_identity_values):
+        if stored_status == 'BLOCKED' and stored_reason in _PRE_ACCEPTANCE_PERMANENT_REASONS:
+            return None, None, None, 'BLOCKED', stored_reason
+        if (stored_status, stored_reason) != ('LEGACY_UNVERIFIED', 'LEGACY_UNVERIFIED'):
+            return None, None, None, 'BLOCKED', 'CANONICAL_IDENTITY_STORED_INCOMPLETE'
+    if all(stored_identity_values):
+        if stored_reason in _PERMANENT_CANONICAL_IDENTITY_REASONS:
+            return stored_version, stored_lead, stored_customer, 'BLOCKED', stored_reason
+        if not incoming_pair_valid:
+            return (
+                stored_version,
+                stored_lead,
+                stored_customer,
+                'BLOCKED',
+                'EVENT_IDENTITY_MISSING_AFTER_VALID',
+            )
+        if incoming_lead != stored_lead or incoming_customer != stored_customer:
+            return stored_version, stored_lead, stored_customer, 'BLOCKED', 'EVENT_IDENTITY_DRIFT'
+        if stored_status == 'VERIFIED':
+            return stored_version, stored_lead, stored_customer, 'VERIFIED', ''
+        if stored_status == 'PENDING_VERIFICATION' and stored_reason == 'CANONICAL_IDENTITY_NOT_IN_CRM':
+            status, reason = verify_tugao_canonical_identity(
+                conn,
+                lead_id=stored_lead,
+                customer_id=stored_customer,
+            )
+            return stored_version, stored_lead, stored_customer, status, reason
+        return stored_version, stored_lead, stored_customer, 'BLOCKED', stored_reason
+
+    if incoming_pair_valid:
+        status, reason = verify_tugao_canonical_identity(
+            conn,
+            lead_id=incoming_lead,
+            customer_id=incoming_customer,
+        )
+        return incoming_version, incoming_lead, incoming_customer, status, reason
+    if input_reason == 'LEGACY_UNVERIFIED':
+        return None, None, None, 'LEGACY_UNVERIFIED', 'LEGACY_UNVERIFIED'
+    return None, None, None, 'BLOCKED', input_reason
 
 
 def upsert_tugao_bind_event(conn: sqlite3.Connection, normalized: Dict[str, Any]) -> str:
     now = _utc_now_iso()
-    existing = conn.execute(
-        "SELECT raw_payload_sha256 FROM tugao_bind_success_raw_events WHERE event_id = ?",
-        (normalized['event_id'],),
-    ).fetchone()
-    conn.execute(
-        """
+    for _ in range(4):
+        existing_row = conn.execute(
+            """SELECT raw_payload_sha256,identity_contract_version,canonical_lead_id,
+                      canonical_customer_id,canonical_identity_status,canonical_identity_reason
+               FROM tugao_bind_success_raw_events WHERE event_id = ?""",
+            (normalized['event_id'],),
+        ).fetchone()
+        existing = None
+        if existing_row is not None:
+            existing = {
+                'raw_payload_sha256': existing_row[0],
+                'identity_contract_version': existing_row[1],
+                'canonical_lead_id': existing_row[2],
+                'canonical_customer_id': existing_row[3],
+                'canonical_identity_status': existing_row[4],
+                'canonical_identity_reason': existing_row[5],
+            }
+        (
+            identity_contract_version,
+            canonical_lead_id,
+            canonical_customer_id,
+            canonical_identity_status,
+            canonical_identity_reason,
+        ) = _canonical_identity_state(conn, normalized=normalized, existing=existing)
+        values = {
+            **normalized,
+            'identity_contract_version': identity_contract_version,
+            'canonical_lead_id': canonical_lead_id,
+            'canonical_customer_id': canonical_customer_id,
+            'canonical_identity_status': canonical_identity_status,
+            'canonical_identity_reason': canonical_identity_reason,
+            'first_seen_at_utc': now,
+            'last_seen_at_utc': now,
+        }
+        if existing is None:
+            cursor = conn.execute(
+                """
         INSERT INTO tugao_bind_success_raw_events (
             event_id, bind_status, occurred_at_utc, updated_at_utc, business_date, project, country,
             media_source, campaign_id, campaign_name, adset_id, adset_name, ad_id, ad_name,
             bind_id, customer_user_id, user_key, has_wa, raw_payload_sha256, raw_payload_json,
-            first_seen_at_utc, last_seen_at_utc
+            first_seen_at_utc, last_seen_at_utc, identity_contract_version, canonical_lead_id,
+            canonical_customer_id, canonical_identity_status, canonical_identity_reason
         ) VALUES (
             :event_id, :bind_status, :occurred_at_utc, :updated_at_utc, :business_date, :project, :country,
             :media_source, :campaign_id, :campaign_name, :adset_id, :adset_name, :ad_id, :ad_name,
             :bind_id, :customer_user_id, :user_key, :has_wa, :raw_payload_sha256, :raw_payload_json,
-            :first_seen_at_utc, :last_seen_at_utc
+            :first_seen_at_utc, :last_seen_at_utc, :identity_contract_version, :canonical_lead_id,
+            :canonical_customer_id, :canonical_identity_status, :canonical_identity_reason
         )
-        ON CONFLICT(event_id) DO UPDATE SET
-            bind_status = excluded.bind_status,
-            occurred_at_utc = excluded.occurred_at_utc,
-            updated_at_utc = excluded.updated_at_utc,
-            business_date = excluded.business_date,
-            project = excluded.project,
-            country = excluded.country,
-            media_source = excluded.media_source,
-            campaign_id = excluded.campaign_id,
-            campaign_name = excluded.campaign_name,
-            adset_id = excluded.adset_id,
-            adset_name = excluded.adset_name,
-            ad_id = excluded.ad_id,
-            ad_name = excluded.ad_name,
-            bind_id = excluded.bind_id,
-            customer_user_id = excluded.customer_user_id,
-            user_key = excluded.user_key,
-            has_wa = excluded.has_wa,
-            raw_payload_sha256 = excluded.raw_payload_sha256,
-            raw_payload_json = excluded.raw_payload_json,
-            last_seen_at_utc = excluded.last_seen_at_utc
+        ON CONFLICT(event_id) DO NOTHING
         """,
-        {**normalized, 'first_seen_at_utc': now, 'last_seen_at_utc': now},
-    )
-    return 'updated' if existing else 'inserted'
+                values,
+            )
+            if cursor.rowcount == 1:
+                return 'inserted'
+            continue
+        values.update(
+            {
+                'expected_identity_contract_version': existing['identity_contract_version'],
+                'expected_canonical_lead_id': existing['canonical_lead_id'],
+                'expected_canonical_customer_id': existing['canonical_customer_id'],
+                'expected_canonical_identity_status': existing['canonical_identity_status'],
+                'expected_canonical_identity_reason': existing['canonical_identity_reason'],
+            }
+        )
+        cursor = conn.execute(
+            """
+        UPDATE tugao_bind_success_raw_events SET
+            bind_status = :bind_status,
+            occurred_at_utc = :occurred_at_utc,
+            updated_at_utc = :updated_at_utc,
+            business_date = :business_date,
+            project = :project,
+            country = :country,
+            media_source = :media_source,
+            campaign_id = :campaign_id,
+            campaign_name = :campaign_name,
+            adset_id = :adset_id,
+            adset_name = :adset_name,
+            ad_id = :ad_id,
+            ad_name = :ad_name,
+            bind_id = :bind_id,
+            customer_user_id = :customer_user_id,
+            user_key = :user_key,
+            has_wa = :has_wa,
+            raw_payload_sha256 = :raw_payload_sha256,
+            raw_payload_json = :raw_payload_json,
+            identity_contract_version = :identity_contract_version,
+            canonical_lead_id = :canonical_lead_id,
+            canonical_customer_id = :canonical_customer_id,
+            canonical_identity_status = :canonical_identity_status,
+            canonical_identity_reason = :canonical_identity_reason,
+            last_seen_at_utc = :last_seen_at_utc
+        WHERE event_id = :event_id
+          AND identity_contract_version IS :expected_identity_contract_version
+          AND canonical_lead_id IS :expected_canonical_lead_id
+          AND canonical_customer_id IS :expected_canonical_customer_id
+          AND canonical_identity_status IS :expected_canonical_identity_status
+          AND canonical_identity_reason IS :expected_canonical_identity_reason
+        """,
+            values,
+        )
+        if cursor.rowcount == 1:
+            return 'updated'
+    raise TugaoBiResponseError('canonical_identity_concurrent_update')
 
 
 def sync_tugao_bind_success_events(
