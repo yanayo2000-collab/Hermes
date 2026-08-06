@@ -1,0 +1,42 @@
+{
+  "baseline": "FINAL_EXECUTION_PLAN_v1.1",
+  "contract_version": "gle-phase1-governance-v1",
+  "global_enabled": false,
+  "mode": "OFF",
+  "golden_path": {
+    "experiment_type": "COPY_ONLY",
+    "unique_variable": "PRIMARY_TEXT"
+  },
+  "canary": {
+    "account_ids": [],
+    "markets": []
+  },
+  "action_allowlist": [],
+  "gates": {
+    "gate_0": {"status": "NOT_STARTED", "receipt_hash": null},
+    "gate_1": {"status": "NOT_STARTED", "receipt_hash": null},
+    "gate_2": {"status": "NOT_STARTED", "receipt_hash": null},
+    "gate_3": {"status": "NOT_STARTED", "receipt_hash": null}
+  },
+  "canonical_versions": {
+    "schema": {"version": "UNFROZEN", "hash": null},
+    "evaluator": {"version": "UNFROZEN", "hash": null},
+    "policy": {"version": "UNFROZEN", "hash": null},
+    "dataset": {"version": "UNFROZEN", "hash": null}
+  },
+  "kill_switches": {
+    "block_all_actions": true,
+    "block_all_meta_writes": true,
+    "block_account_writes": true,
+    "block_action_writes": true,
+    "disable_evaluation_scheduler": true,
+    "block_new_experiment_activation": true,
+    "force_manual_review_for_uncertain_post": true
+  },
+  "owners": {
+    "gate_owner": {"name": "UNASSIGNED", "signed_at": null, "signature_hash": null},
+    "business_signer": {"name": "UNASSIGNED", "signed_at": null, "signature_hash": null},
+    "technical_signer": {"name": "UNASSIGNED", "signed_at": null, "signature_hash": null},
+    "data_signer": {"name": "UNASSIGNED", "signed_at": null, "signature_hash": null}
+  }
+}
