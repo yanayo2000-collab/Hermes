@@ -1,0 +1,22 @@
+[Unit]
+Description=MCN Growth Loop Meta execution worker
+After=network-online.target mcn-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/mcn-ai-automation
+EnvironmentFile=-/opt/mcn-ai-automation/.env
+EnvironmentFile=-/etc/mcn-ai-automation/growth-meta.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/mcn-ai-automation
+# The checked-in default is non-writing. A governed release may change this to
+# live only after configuring the dedicated token, allowlist and global switch.
+ExecStart=/opt/mcn-ai-automation/.venv/bin/python scripts/run_growth_meta_worker.py --mode dry_run
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

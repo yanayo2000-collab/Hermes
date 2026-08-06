@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Growth Loop D1/D3/D7 evaluation after daily ad facts
+
+[Timer]
+OnCalendar=*-*-* 10:05:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=120
+Unit=mcn-growth-experiment-evaluator.service
+
+[Install]
+WantedBy=timers.target

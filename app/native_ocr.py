@@ -11,6 +11,7 @@ class NativeOcrParseResult:
     raw_text: str
     sid: Optional[str] = None
     profile_id: Optional[str] = None
+    timo_id: Optional[str] = None
     invite_code: Optional[str] = None  # backward-compatible alias
     guild_invite_code: Optional[str] = None
     person_code: Optional[str] = None
@@ -20,7 +21,7 @@ class NativeOcrParseResult:
 
     @property
     def account_id(self) -> Optional[str]:
-        return self.sid or self.profile_id
+        return self.timo_id or self.sid or self.profile_id
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -33,7 +34,11 @@ SID_PATTERNS = [
     r"(?:^|\n)\s*(?:Meu\s+SID|My\s+SID)\s*[:：]?\s*(\d{6,12})\b",
 ]
 PROFILE_ID_PATTERNS = [
-    r"(?:^|\n)\s*ID\s*[:：]\s*(\d{6,12})\b",
+    r"(?:^|\n|\b)\s*(?:ID|[I1l]D)\s*[:：]?\s*(\d{6,15})\b",
+]
+TIMO_ID_PATTERNS = [
+    r"(?:^|\n|\b)\s*(?:Timo\s*)?(?:ID|[I1l]D)\s*[:：]?\s*(\d{9,15})\b",
+    r"(?:^|\n|\b)\s*Timo\s*(?:ID|[I1l]D)\s*[:：]?\s*(\d{9,15})\b",
 ]
 GUILD_INVITE_CODE_PATTERNS = [
     r"(?:^|\n)\s*Kode\s+Undangan\s*[:：]?\s*([A-Z0-9]{4,10})\b",
@@ -55,6 +60,26 @@ GUILD_PATTERNS = [
 USERNAME_PATTERNS = [
     r"(?:^|\n)([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\n|$)",
 ]
+
+TIMO_PROFILE_MARKERS = (
+    "seguidores",
+    "seguir",
+    "amigos",
+    "visitantes",
+    "ingresos",
+    "recarga",
+    "centro de host",
+    "tribu",
+    "invitar amigos",
+    "centro comercial",
+    "mi autenticacion",
+    "mi autenticación",
+    "mi bolsa",
+    "para ti",
+    "momentos",
+    "salas",
+    "mensajes",
+)
 
 
 UNJOINED_AGENCY_PATTERNS = [
@@ -110,10 +135,21 @@ def _normalize_code(value: Optional[str]) -> Optional[str]:
     return value.upper() if value else None
 
 
+def _looks_like_timo_profile(text: str) -> bool:
+    cleaned = _clean_text(text)
+    lowered = cleaned.lower()
+    if not _search_first(cleaned, TIMO_ID_PATTERNS, flags=re.IGNORECASE):
+        return False
+    marker_count = sum(1 for marker in TIMO_PROFILE_MARKERS if marker in lowered)
+    return marker_count >= 2
+
+
 def infer_screen_type(raw_text: str) -> str:
     text = _clean_text(raw_text)
     lowered = text.lower()
     compact = lowered.replace(" ", "")
+    if _looks_like_timo_profile(text):
+        return "timo_profile_page"
     if "nama guild" in lowered or "selamat datang" in lowered or "kamuberhasilbergabung" in compact:
         return "invite_success_toast"
     if "kode undangan" in lowered or "isi kode undangan" in lowered:
@@ -154,7 +190,10 @@ def parse_native_ocr_text(raw_text: str) -> NativeOcrParseResult:
         username = None
 
     profile_id = _search_first(text, PROFILE_ID_PATTERNS, flags=re.IGNORECASE)
-    if not sid and profile_id:
+    timo_id = None
+    if screen_type == "timo_profile_page":
+        timo_id = _search_first(text, TIMO_ID_PATTERNS, flags=re.IGNORECASE) or profile_id
+    if not sid and profile_id and screen_type != "timo_profile_page":
         sid = profile_id
 
     invite_code = person_code or guild_invite_code
@@ -164,6 +203,7 @@ def parse_native_ocr_text(raw_text: str) -> NativeOcrParseResult:
         raw_text=text,
         sid=sid,
         profile_id=profile_id,
+        timo_id=timo_id,
         invite_code=invite_code,
         guild_invite_code=guild_invite_code,
         person_code=person_code,
@@ -204,6 +244,7 @@ def normalize_native_ocr_fields(raw_text: str) -> Dict[str, Any]:
     data["evidence"] = {
         "matched_sid": bool(result.sid),
         "matched_profile_id": bool(result.profile_id),
+        "matched_timo_id": bool(result.timo_id),
         "matched_invite_code": bool(result.invite_code),
         "matched_guild_invite_code": bool(result.guild_invite_code),
         "matched_person_code": bool(result.person_code),

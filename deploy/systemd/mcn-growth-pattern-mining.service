@@ -1,0 +1,12 @@
+[Unit]
+Description=MCN Growth Loop pattern mining
+After=mcn-backend.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/mcn-ai-automation
+EnvironmentFile=-/opt/mcn-ai-automation/.env
+Environment=PYTHONPATH=/opt/mcn-ai-automation
+ExecStart=/opt/mcn-ai-automation/.venv/bin/python scripts/run_growth_pattern_mining.py --minimum-support 2
+NoNewPrivileges=true
+PrivateTmp=true

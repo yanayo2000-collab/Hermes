@@ -1,0 +1,1396 @@
+{
+  "schema_version": 1,
+  "record_type": "gle_github_baseline_pr_manifest",
+  "created_at_utc": "2026-08-06T05:10:25Z",
+  "branch": "codex/gle-production-baseline-origin-main-20260806",
+  "purpose": "Remote-reviewable mechanical import of the accepted frozen 113-file production baseline without local-main history.",
+  "remote_base": {
+    "ref": "origin/main",
+    "commit": "041b830a6682b614e3f57537aa646eb95d976eb7",
+    "tree": "1d77b487b3a456349bd5a3afecd512e84fdf25c8",
+    "remote_refs_observed": {
+      "refs/remotes/origin/main": "041b830a6682b614e3f57537aa646eb95d976eb7"
+    },
+    "fetch_or_pull_performed": false
+  },
+  "source_audit": {
+    "commit": "afa4a9f1679770540776ad2872844cc9c58c23a9",
+    "commit_tree": "cbab44e0b216482e5aabd038989c5830c810bbcc",
+    "manifest_path": "docs/GLE_PRODUCTION_BASELINE_MANIFEST_20260806.json",
+    "manifest_sha256": "9f8321128228cfcd60e20a153343ba7a11d2eb2aad2109809409f62c748de551",
+    "snapshot_tree_sha256": "2b86a944871a13a954c97ac15f14d9755163728d39a7be6dc81a6b3dd606a841",
+    "accepted_candidate_composite_algorithm": "gle-candidate-v2",
+    "accepted_candidate_composite_sha256": "8f802a2dacfbae712fff6f47d1258f4fb5e43d47a9da41d08b8453c4bc461dc3",
+    "frozen_manifest_byte_identical": true,
+    "historical_target_git_commit_retained_unmodified": "a9152430ab7e7da4d50f34f90b452aaefc773eed",
+    "source_transport": "local accepted Git objects only; no production export and no dirty-worktree copy"
+  },
+  "scope": {
+    "manifest_file_count": 113,
+    "classification_counts_vs_origin_main": {
+      "A": 97,
+      "M": 10,
+      "U": 6
+    },
+    "expected_source_path_diff_counts": {
+      "added": 97,
+      "modified": 10,
+      "unchanged": 6,
+      "deleted": 0
+    },
+    "expected_complete_pr_diff_counts": {
+      "added": 99,
+      "modified": 10,
+      "deleted": 0
+    },
+    "complete_pr_additions_explained": [
+      "97 source paths absent from origin/main",
+      "docs/GLE_PRODUCTION_BASELINE_MANIFEST_20260806.json",
+      "docs/GLE_GITHUB_BASELINE_PR_MANIFEST_20260806.json"
+    ],
+    "files": [
+      {
+        "path": "app/__init__.py",
+        "classification_vs_origin_main": "U",
+        "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "source_size_bytes": 0,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "origin_main_size_bytes": 0,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/ad_creative_intelligence.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "5cbba98a9cb03206976c249aa4d688a658ab03fcc60774c4a257032bd78a6373",
+        "source_size_bytes": 107354,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/ad_daily_report.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "107b793b8bddd790b2d4e8b602b47a8b5d457e93c99093e1e22983325adb332b",
+        "source_size_bytes": 154204,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/ad_dashboard_repository.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "a197d2ddd2b8488340831a87644a0ee58c543f75d2b36600445d0ce238d3cbb7",
+        "source_size_bytes": 30715,
+        "source_manifest_posix_mode": "0640",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/ad_production_closure.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "7cd5f323eb7c0c5cc995f543410f43a9a58771669874f3df985bdb19b3ca821e",
+        "source_size_bytes": 25259,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/ad_recommendation_v4.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "a97275be139ae100817eb9f46999b50cbd381b62bf6373bab255d5446770e008",
+        "source_size_bytes": 10208,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/approval_accounts.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "293427d42de1f83c4c7e6d07a2a4148caf0b13f9288c3191972a9c5217c464d3",
+        "source_size_bytes": 4052,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/async_pipeline.py",
+        "classification_vs_origin_main": "U",
+        "source_sha256": "aaab468d91dfdc741f42f4e562e59bad6dfdb9f000042f6297119a2cd857c722",
+        "source_size_bytes": 2438,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "aaab468d91dfdc741f42f4e562e59bad6dfdb9f000042f6297119a2cd857c722",
+        "origin_main_size_bytes": 2438,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/baileys_accounts.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "0602b107e953724e371f0d134d0ce9848b6b2d5d0f9e6cc28160f0e6f338e63d",
+        "source_size_bytes": 1728,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/creative_image_generation.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "1fa443d2a13b1c3ba8f072d6a5941059dad28b6b1034accf635dd99e03e9760b",
+        "source_size_bytes": 327796,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/crm_adapter.py",
+        "classification_vs_origin_main": "M",
+        "source_sha256": "be16a683dc505d9d03b0658ee12ae6692513763e080516177aec2897c69d238b",
+        "source_size_bytes": 13283,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "7c67563164639a33773ef99d0369743573103f3ae73376aa33a0aba96dfb2f71",
+        "origin_main_size_bytes": 12534,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/growth/__init__.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "6e711d44632572c15353f5e65b70a5461b8e8f051f6936cb17b41e5fa99a51a7",
+        "source_size_bytes": 160,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/ad_copy_benchmark.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "2ba2ef25c049b843fc921a441cbc71d349e9aded97818381814071b77c6fe650",
+        "source_size_bytes": 9841,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/ad_experiment_evaluator.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "ba02b343dceda14f5c461f899f22cb211c7cbba99eeaf40e77bba945c1c06b3b",
+        "source_size_bytes": 29045,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/ad_experiment_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "be6293a63e3b2f18772b83efcefbf53159a1f736e607599a7a4957aded403bca",
+        "source_size_bytes": 64684,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/ad_observation_materializer.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "1d1cd0649f9d37d09a334455c1ddea8214d2a136933e58437d23a1d409ed5dbd",
+        "source_size_bytes": 13615,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/adaptive_agent_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "4606e27cca004a589d698a12f0520465e03c7cff10b4e5cc8dbcab52ccccef4f",
+        "source_size_bytes": 12425,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/api.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "2ecec2c7ff483682161314c91c2307e6f75169d87573fcd800045c7a129e227f",
+        "source_size_bytes": 266133,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/approval_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "0a8224e4d733db66e755442ce7b00b75ba62e7c9fb4bc19da9863a2c9acdf254",
+        "source_size_bytes": 6919,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/audience_experiment_evaluator.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "d4ee3efe71f146ff902b0bbc8207fdfa67cca7a983a656de97c47fa85fed5846",
+        "source_size_bytes": 13890,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/audience_strategy.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "bc078b7557e267cac3d1283acbed095d348f909951f87a853a8cf7f691683f39",
+        "source_size_bytes": 10597,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/autonomy_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "fce4f6005bb6cf45a373ba53b897e8e50e62462186d3290e80449248e34d9a84",
+        "source_size_bytes": 21811,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/common.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "b6000a90b9cd94b78bc110f63f24214e5d7e975256f597bda77a3033fd9567d5",
+        "source_size_bytes": 901,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/context_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "34546f4382de90a59e80ea65d81127390b04701eb6d6d84b561b26a527b54c1c",
+        "source_size_bytes": 5306,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/creative_group_evaluator.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "986488f9fac372c62f9d6a60a74e578fb5a55e33f674aacc6805118e6e96e993",
+        "source_size_bytes": 25905,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/creative_naming.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "d0b17ae1b7e8b1831c1adc02f074653384c1f4d50299ddbaf9cfb5d70a88cee5",
+        "source_size_bytes": 8373,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/creative_reference_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "cab2b99b7f5b4a7b9a51a7adb8d8027287aeba57970da5ba6518ddbcf2d456fb",
+        "source_size_bytes": 11519,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/decision_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "c2a9e61beed8379a74136a0dde9bcdad7990b0f9728293e3bc68f1aa2f10f867",
+        "source_size_bytes": 12075,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/delivery_guardrails.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "5fb2c18f99a9086e55d4579be2969d9636c4d63c93387ee429b6be409b3a8030",
+        "source_size_bytes": 2752,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/episode_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "f63a7fbe9f7bb039220d71f8526da2968e0c9041f5d663b6ac5a81eb66e680e4",
+        "source_size_bytes": 3603,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/errors.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "a28e3930942dfac6d2fed28fed47e345cfff4066d339298a437ee2ce092bef2d",
+        "source_size_bytes": 450,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/execution_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "9ccc1a174ca0371e83d698fc2572a277e2588398dfd7ea720d5e5783fb3186a8",
+        "source_size_bytes": 45262,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/knowledge_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "69c4bde1a9978a09df07ed09d39ff3deb05adc0e7cf9ac31c8dccbc38250fc03",
+        "source_size_bytes": 6392,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/meta_audience_preflight.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "29935f702cc1626831ccf322cfd495efea8a0ea29df5b1fa1c21b256a6003671",
+        "source_size_bytes": 10247,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/meta_execution_worker.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "b69bd9a430d911082f4e1afe1457b28ee27199be50becf2b320a6724f4921262",
+        "source_size_bytes": 20584,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/meta_graph_adapter.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "77605ea2a1a326117384f2c0de95ad6080f4b663331d790b1b954953d86d21ac",
+        "source_size_bytes": 47815,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/migrate.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "7a9f97812bf157c0ed3f61c1c53c1b9f2490bc27b18034be27029ae0e896f2e6",
+        "source_size_bytes": 729,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/new_account_autopilot.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "d36a465b368c467a38a628477615f43e3b21aba1579f077539956358e5b37fad",
+        "source_size_bytes": 44203,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/new_account_launch_meta_delete.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "1ff4e63c00b353570d963ccf49ac1152c9a027a757b5e15e6246fba2e1821512",
+        "source_size_bytes": 24876,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/new_account_launch_retention.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "bbb4e534b2325ad631b29b810c70c74feb95bb115221b6a55c7f7199b7bbd58c",
+        "source_size_bytes": 15473,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/pattern_mining_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "08190420981524c8ead02cb3c7763ede37b6e0c288bdcf2d43c2bf1a0fec1580",
+        "source_size_bytes": 5972,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/read_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "5c701800a76a63c706296ad20e586d00df9cde5ef9d3c6c2a0e243178e4c2fbf",
+        "source_size_bytes": 14154,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/recommendation_management.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "54b22bc1823f72a06cfb9e0dceb66023aed50caf0cc86be1903cab8f361c7d7e",
+        "source_size_bytes": 4330,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/schema.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "c34adbe4c158b366094d4292abe2397d9cee19bb8cb470fab18c41ca91acc21e",
+        "source_size_bytes": 27837,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/growth/similar_episode_service.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "3a8fa0fd5acf8f819de9dd39463d55e4453583b071f585dbf9ae0ec610099024",
+        "source_size_bytes": 2725,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/im_diagnostics.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "6d59128b4a0c094a30cdb1b8e58ae568fd7bf2d8ca0fecf84ff80f2a595c0095",
+        "source_size_bytes": 254718,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/im_diagnostics_api.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "cfcd0185934fc66d60e4d2eb2a482cf645f4936e186dc556ad16578e359cc70e",
+        "source_size_bytes": 41897,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/im_result_message_api.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "b84c29f0a96dcdc5c07a2c23763b37e6836e92c51719f9009774e65ddb9697f8",
+        "source_size_bytes": 5984,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/im_result_message_facts.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "400caf6d5527692d72e786877c19e98b9ffb2564623b07f1908ee321ada46ea6",
+        "source_size_bytes": 18076,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/lark_cli_adapter.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "93235eb5b35b889a90179a839154f9d4413580358174e4c15f04757080ac6676",
+        "source_size_bytes": 6075,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/live_bind_executor.py",
+        "classification_vs_origin_main": "M",
+        "source_sha256": "1e76448e2a6a22f6f1993e0807e84d93eda289a9a7fec8abd475a4624b0b52bc",
+        "source_size_bytes": 63369,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "f59a63c05991a586e4420738a475364edc770c16b38d423be52ae36d1816af9e",
+        "origin_main_size_bytes": 57365,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/main.py",
+        "classification_vs_origin_main": "M",
+        "source_sha256": "b16f54aaddb01529cd0d8aaada9d7d31af8e979d5de2da4496c75b448af8959e",
+        "source_size_bytes": 110327,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "a782bcd4290ef17de723ff1e529686d18987f374270f2a9d38cc5f2b46d24c51",
+        "origin_main_size_bytes": 2751363,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/main_app.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "ac65804b5177126f2b6193bd628748cb238a679bde828e6c9c910f04668bd4fd",
+        "source_size_bytes": 680850,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/main_pages.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "e46adeac83ba559f6d3b3d335a1a3ed15b4216c848cd4a024fa91b9381ed32bc",
+        "source_size_bytes": 1386894,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/main_service_approval.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "b85631a226ddae105d6616e369de563b57332b56bdcc2ba2d79bf2b575a26c52",
+        "source_size_bytes": 702172,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/main_service_executor.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "23d28d668c8de922161b474e01f2bded07a7e264084a0e92bbeb5ea5bb774b40",
+        "source_size_bytes": 263069,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/main_service_group_atmosphere.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "1fad69e560d70e36c60a31d32786719a6f047d8599ad3214dee54dcd7ca7bcb2",
+        "source_size_bytes": 746355,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/main_service_intake.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "a6abed5578f40c80a42e2652cd8d8c61c7da3527f7eec488008a925ad6b26887",
+        "source_size_bytes": 555245,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/main_service_timo.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "98609859341dbe1a96243ad7cc1751d9f0f4e0d75e15fb8a743a8b16ee47e80e",
+        "source_size_bytes": 265359,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/main_service_whatsapp.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "84eda3b345e4ac67b09683962665cc4d925ef23b70b4308123f9aa1dc055a21a",
+        "source_size_bytes": 291555,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/main_shared.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "b53d9604544f24ca04d4cbd491bc8ee2112655d681397b229d91dd6843ee2b45",
+        "source_size_bytes": 399330,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/marketing_diagnostics_api.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "4fdaca5815d4256f926adf7e8cba1968069bfc8919e445eef7b67a2305710661",
+        "source_size_bytes": 10609,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/meta_ad_account_access.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "c0e12ab9631410bde1d0d5933b39895bddb185fa94d64bf66611c46589f6f587",
+        "source_size_bytes": 5703,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/meta_api_budget.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "ce2ebd39249d86f73a4f6d84f396ac10c3709bfbec932346a2981982f3b340da",
+        "source_size_bytes": 15676,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/native_ocr.py",
+        "classification_vs_origin_main": "M",
+        "source_sha256": "941102e91ab161e93dd7d8c481f0f3e31b04fe17d0c344a3ad374caffdf97bc2",
+        "source_size_bytes": 8244,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "b81fe858ee472d72af3d68c40a3ab935db19af25ff355e932ae4f2aab9f1639e",
+        "origin_main_size_bytes": 7027,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/ocr_adapter.py",
+        "classification_vs_origin_main": "U",
+        "source_sha256": "150086e161bd1bb567a50ce171b2a3fd4ab2ebfaf2855245dd8475941b40c580",
+        "source_size_bytes": 2290,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "150086e161bd1bb567a50ce171b2a3fd4ab2ebfaf2855245dd8475941b40c580",
+        "origin_main_size_bytes": 2290,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/official_group_executor.py",
+        "classification_vs_origin_main": "U",
+        "source_sha256": "6437d649a9f11bbc5d7d7121ac42b51058584f081eeff6a176024a9785140829",
+        "source_size_bytes": 5009,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "6437d649a9f11bbc5d7d7121ac42b51058584f081eeff6a176024a9785140829",
+        "origin_main_size_bytes": 5009,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/operation_tasks.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "f1765ae822b9ff8c808c1b97528f4df1190521103dfdc9729adbc142b12bbfe8",
+        "source_size_bytes": 5172,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/ops_auth.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "8e42d8fc1f0d51fb7df51e2f3e9d1d80c8cc3dc5bbcf6deb21f9c8460cb66285",
+        "source_size_bytes": 923,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/production_ops.py",
+        "classification_vs_origin_main": "M",
+        "source_sha256": "fed880f86cb79d883007e87ebf348120878c3d408cbc7a49514f2f99bf8b52ae",
+        "source_size_bytes": 104435,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "8a99318b12e2dfc16f4677800d39960a64093db770cbbd8ba90bdd4dcc24aea5",
+        "origin_main_size_bytes": 86852,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/realtime_approval_state.py",
+        "classification_vs_origin_main": "M",
+        "source_sha256": "2b4c153ccee023b3f1c6e834a8a859e714bc00c05f2d081743914b11c1f448ea",
+        "source_size_bytes": 46347,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "6939fce56a02035df4d0499ef2a7dd139813fe64628dc07b0f7a8de87442486e",
+        "origin_main_size_bytes": 24844,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/registration_group_baileys_executor.py",
+        "classification_vs_origin_main": "M",
+        "source_sha256": "ca79ee932398e473244a65b4a0cc3d153b2e4f85e124ac1bb9e72c237b51cbed",
+        "source_size_bytes": 39896,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "7ffcc773d33f21ff0b7d2b03221915bde12f2cc625096ab25f44f1df72a2c120",
+        "origin_main_size_bytes": 15976,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/registration_group_executor.py",
+        "classification_vs_origin_main": "U",
+        "source_sha256": "96b70c135706515fafcf5abe94ce8ba7c18123d4d29940e193567ed0cd74085a",
+        "source_size_bytes": 103149,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "96b70c135706515fafcf5abe94ce8ba7c18123d4d29940e193567ed0cd74085a",
+        "origin_main_size_bytes": 103149,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/registration_group_truth.py",
+        "classification_vs_origin_main": "M",
+        "source_sha256": "ad032ad56e7d5ac2fa915c638fb8fb0f865084cfb16f5648f76645f8fd90fca4",
+        "source_size_bytes": 19722,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "7dddc5fe2d3c775329af83daed2765211acf3b238ca53b2042fa6a76bcf82e05",
+        "origin_main_size_bytes": 14183,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/registration_group_webjs_executor.py",
+        "classification_vs_origin_main": "U",
+        "source_sha256": "083120c5261c62c6d1faabfa970919e04d3d9fea1bc58a4137c95b5d42bb56da",
+        "source_size_bytes": 7258,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "083120c5261c62c6d1faabfa970919e04d3d9fea1bc58a4137c95b5d42bb56da",
+        "origin_main_size_bytes": 7258,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/registration_truth_diagnostics.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "027c4e89a915c00a84329d575ead136501eee6b48357601360eca92813bb83a0",
+        "source_size_bytes": 15651,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/report_routes.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "18db6958f1628b88ead269292a3be38cd14f63864f907f2593d98e2b2466b6c9",
+        "source_size_bytes": 591,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/schema_migrations.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "f23d6584bb0dde5d5f61c9cf1b1902af71c3aaa79ef945b2affcd51a4d07e034",
+        "source_size_bytes": 69016,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/secret_redaction.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "b47813255bdbd4ac9679c531371ffdb860940fb6fb453d855f070f1a91f7565a",
+        "source_size_bytes": 10774,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/sqlite_bootstrap.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "6f9229285cf07317f3d42441e19fe2409944096151c6c10a913fdce6e157ce75",
+        "source_size_bytes": 3728,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/sqlite_job_lock.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "795a2ab483a744509e81a515f5b271a3663b61814b311047015747de06d14903",
+        "source_size_bytes": 7736,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/sqlite_observability.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "ba068f2617b54f42676de335bcddf39943817670a954b5c8fa9be33e589ad43e",
+        "source_size_bytes": 7402,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/sqlite_write_queue.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "8eccd1b74096f23c3274f5424d5cc9d4ad6471d0c66df34defa4ef15e35ae0d2",
+        "source_size_bytes": 29585,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/sqlite_write_window.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "582715b894b93e72ec402a118587ac1a209acdca9a023472295856eb8f97d9a4",
+        "source_size_bytes": 6317,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/static/ops/growth-decision.js",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "d5405e41d6e3d3275a718c0ca70c65ce546c516d0577ca17cbe1c706496a57dc",
+        "source_size_bytes": 33578,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/static/ops/growth-workspace.js",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "568b6391e11d041f2ca4c7b21f03df8ff3b6431f2433e7147b9a512658321c6f",
+        "source_size_bytes": 366204,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/streamer_analytics.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "2631a55d4f1f65779c68317f84510578c9ecf3ec9a9373d8ffbca78a8a5d4159",
+        "source_size_bytes": 259280,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/streamer_analytics_page.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "49b17ee91e5aaab7ea91bf70811e7fe558caedcdce41f21fa829824f6a4055d9",
+        "source_size_bytes": 103207,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/streamer_analytics_routes.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "31192598cfcca25a5683d52c3b166a4aebf09d869ea9e5b6c53bbcca1d73ae53",
+        "source_size_bytes": 15079,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/streamer_data_foundation.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "13e241eda9e9830422bc930d29334a1465cb6c6a5cb46229503ea1a9575f8171",
+        "source_size_bytes": 57997,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/streamer_external_sync.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "851dd725faffee0b07ed5afa97a40eb8597b0af71fff004efca4e5bdefc546fc",
+        "source_size_bytes": 63646,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/streamer_history_export.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "86d6a6d426cb356ab9a5452aeb79e7a9a50341c2dd5dd4e4576333b26e258ea0",
+        "source_size_bytes": 17095,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/streamer_roi.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "60ad4d0c0bc73205ced9bab03feb5103140d9ab0b98fe9b777d3e464be027801",
+        "source_size_bytes": 104355,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/task_control_plane.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "8074b65b934f6739c940031dfec8eba96c459b972257516e7db81bab6b59013d",
+        "source_size_bytes": 35716,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/timo_auth_station.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "da4818c2d8857c9f37d7c00d292e85d0cf4ea104570740b4a93345d83fd36dc3",
+        "source_size_bytes": 169283,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/timo_bi_mart.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "1d06ea51da7733305c81bf25d3e24d1442c0aba183e2ba39c0a3fa33ead47954",
+        "source_size_bytes": 21318,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/timo_guild_executor.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "95175e506177f7c66f54f72503c953a9ef9b259cdf5183cc1a664fa9d8f10f5e",
+        "source_size_bytes": 9796,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/timo_guild_identity.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "a9030e1f09cf89fe66816b59792a6e3929f3ab782538ebef554efc35bc0deed4",
+        "source_size_bytes": 5576,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/timo_incremental_materialization.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "3b910c2e1bbd2d379fcec457284ff6300d3e7566df44b119bcede51560b40029",
+        "source_size_bytes": 73564,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/timo_membership_query_page.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "2779300ee3b9b5eeb69f845730b00d9b15e9b0a1bfed14b04d87d1b2a6326ca0",
+        "source_size_bytes": 7052,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/tugao_bi.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "6a0a01246e891cd2815c7c50c0a1879459d9cf9d75efd9bbde282d04bed3227a",
+        "source_size_bytes": 17871,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "app/whatsapp_approval_runtime.py",
+        "classification_vs_origin_main": "M",
+        "source_sha256": "abb02347a0b25108bf24d574bbbb51fe43390eb54f47e9fa0f3f6a851c469bd3",
+        "source_size_bytes": 21759,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "9ed8ca9637032376b5db61bcf7e2f5d17b15bf87492a3791fbd085ec598a6f7a",
+        "origin_main_size_bytes": 22561,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "app/whatsapp_login_state.py",
+        "classification_vs_origin_main": "M",
+        "source_sha256": "872fa8dd97548a91935783d4f17924a9b392874ebcfbf6ff36771177a83d93ea",
+        "source_size_bytes": 8161,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": "a09decbd960fc99874e24aa656f80ed537f2649fd878a06e0100531410b1fc25",
+        "origin_main_size_bytes": 6932,
+        "origin_main_git_mode": "100644"
+      },
+      {
+        "path": "config/growth_ad_copy_benchmarks.json",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "4f922247164e17a326efc4725c8c2aa0803256b1878b2d8014f7c2d0b7ad8de2",
+        "source_size_bytes": 4103,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "deploy/systemd/mcn-growth-experiment-evaluator.service",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "4b5f4f0dfc71aae98572523be9e5a452423b5261defa528c6465992afe1650bf",
+        "source_size_bytes": 667,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "deploy/systemd/mcn-growth-experiment-evaluator.timer",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "18cac20a0c8ffe0ce214c25579b7676aba8430ae56c2a3ece6ed0281731fb2fd",
+        "source_size_bytes": 243,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "deploy/systemd/mcn-growth-meta-worker.service",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "ffadd4afc0fc147f877157035d75b1d3062e35500a80bc26e86d0a2afe35e9cc",
+        "source_size_bytes": 739,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "deploy/systemd/mcn-growth-pattern-mining.service",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "dc30903f117ddba6e39dc8fdcc62358e24ea7e674f1f35ae53a5a75f60c28b59",
+        "source_size_bytes": 375,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "deploy/systemd/mcn-growth-pattern-mining.timer",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "c3d571f8b88bfbe57b62cdd3766f6a9744515288dbabf78ee292f6ba814fa962",
+        "source_size_bytes": 217,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "scripts/backfill_growth_creative_names.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "2370657c72792c395f3c50686fddc706372a4de624583911de2075054fe7edbd",
+        "source_size_bytes": 670,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "scripts/run_growth_experiment_evaluator.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "31077ab0a4346d206b8c7680c549d509f93a88cb0e8ffd7c33411451267748c0",
+        "source_size_bytes": 2154,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "scripts/run_growth_meta_worker.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "ad68677ef45171c8fd642d8154f6201d55c68a1a5c4926ab137f11a599bd6398",
+        "source_size_bytes": 6746,
+        "source_manifest_posix_mode": "0644",
+        "source_git_mode": "100644",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      },
+      {
+        "path": "scripts/run_growth_pattern_mining.py",
+        "classification_vs_origin_main": "A",
+        "source_sha256": "8383b8088cb8aa9d181c0dc27c8772e54b3d0ac56798e31c33387d09e19685e6",
+        "source_size_bytes": 1158,
+        "source_manifest_posix_mode": "0755",
+        "source_git_mode": "100755",
+        "origin_main_sha256": null,
+        "origin_main_size_bytes": null,
+        "origin_main_git_mode": null
+      }
+    ]
+  },
+  "git_mode_normalization": {
+    "path": "app/ad_dashboard_repository.py",
+    "source_manifest_posix_mode": "0640",
+    "source_git_mode": "100644",
+    "explanation": "Git trees preserve only executable versus non-executable mode bits; group-read/write bits are not representable. The isolated worktree was chmod 0640 for validation, while the PR tree necessarily records 100644.",
+    "other_paths_exact_at_git_executable_semantics": true
+  },
+  "test_evidence": {
+    "status": "passed",
+    "python_file_count": 105,
+    "external_test_sources": [
+      {
+        "path": "tests/test_growth_autonomy.py",
+        "sha256": "2eeda5ae4d8e1bba6475e9c2bb5898b056bfbe77cf40d81cb81fa78f8bf15886",
+        "tracked_in_origin_repository": false
+      },
+      {
+        "path": "tests/test_growth_delivery_guardrails.py",
+        "sha256": "7d18e4ed875b26844dd0431f6daa69f2aea9eeef10e017e506cd0ec4f75ebaf8",
+        "tracked_in_origin_repository": false
+      },
+      {
+        "path": "tests/test_growth_meta_graph_adapter.py",
+        "sha256": "a7745e3197c490ea098007de7205282d963d0368e62e6ec066cd774bdcee4007",
+        "tracked_in_origin_repository": false
+      }
+    ],
+    "secret_scan": {
+      "status": "passed",
+      "tool": "detect-secrets 1.5.0",
+      "plugins_used": 27,
+      "scanned_paths": 115,
+      "raw_findings": 349,
+      "reviewed_false_positives": 349,
+      "unresolved_findings": 0,
+      "review_categories": {
+        "manifest_hash_evidence": 342,
+        "official_logo_sha256": 1,
+        "noncredential_cpa_source_label": 1,
+        "temporary_value_generator_alphabet": 1,
+        "public_timo_api_path": 1,
+        "credential_ui_function_names": 3
+      }
+    },
+    "py_compile": {
+      "status": "passed",
+      "python": "Python 3.9.6",
+      "compiled_files": 105,
+      "bytecode_location": "isolated temporary PYTHONPYCACHEPREFIX outside the worktree"
+    },
+    "app_main_router_smoke": {
+      "status": "passed",
+      "database": ":memory:",
+      "global_bootstrap_disabled": true,
+      "meta_live_write_enabled": false,
+      "unique_routes": 466,
+      "growth_routes": 24,
+      "ad_data_dashboard_routes": 71,
+      "new_background_threads": 0
+    },
+    "serialized_tests": {
+      "status": "passed",
+      "python": "Python 3.9.6",
+      "pytest": "pytest 8.4.2",
+      "total_passed": 41,
+      "suites": [
+        {
+          "path": "tests/test_growth_autonomy.py",
+          "passed": 7
+        },
+        {
+          "path": "tests/test_growth_delivery_guardrails.py",
+          "passed": 3
+        },
+        {
+          "path": "tests/test_growth_meta_graph_adapter.py",
+          "passed": 31
+        }
+      ],
+      "execution": "serial, candidate PYTHONPATH, temporary SQLite paths, Meta live writes disabled"
+    },
+    "diff_check": {
+      "status": "mechanical_inherited_findings",
+      "finding_count": 2,
+      "findings": [
+        "app/main_pages.py:77 trailing whitespace",
+        "app/main_pages.py:2847 trailing whitespace"
+      ],
+      "disposition": "Retained byte-for-byte because both lines are part of the accepted frozen source object; changing them would violate the mechanical baseline contract."
+    }
+  },
+  "exclusions": [
+    "the 30 local-main commits after origin/main and their unrelated files",
+    "the accepted post-baseline delta commit 438c751f110e189e80416403843bfa47989e5369",
+    "dirty or untracked files from /Users/chauncey/work/mcn-ai-automation",
+    "environment contents, credentials, databases, caches, bytecode, backups, receipts, logs, and runtime state",
+    "functional changes, formatting, refactors, or fixes",
+    "push, pull request creation, merge, deployment, production write, Meta write, and backend restart"
+  ]
+}

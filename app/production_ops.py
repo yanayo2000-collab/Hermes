@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shlex
 import subprocess
 import time
 import urllib.error
@@ -13,6 +15,9 @@ from typing import Any, Dict, List, Optional
 
 DEFAULT_NOTIFICATION_COOLDOWN_SECONDS = 900
 DEFAULT_TRIGGER_COOLDOWN_SECONDS = 120
+OFFICIAL_GROUP_MANUAL_REVIEW_REPORT_WINDOW_MINUTES = 5
+OFFICIAL_GROUP_NOTIFY_PROFILE_NAME = 'wa-approval-broadcast-03'
+OFFICIAL_GROUP_NOTIFY_ROBOT_NAME = '审批Bot03'
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_ALERT_TEMPLATES_PATH = ROOT_DIR / 'data' / 'production_ops_alert_templates.json'
 
@@ -203,10 +208,19 @@ def expand_notify_profile_targets(profile_name: Optional[str], notify_robot_name
             'profile_name': 'wa-approval-broadcast-02',
             'robot_name': normalized_robot_name or '审批Bot02',
         }]
+    if normalized == 'wa-approval-broadcast-03':
+        return [{
+            'profile_name': 'wa-approval-broadcast-03',
+            'robot_name': normalized_robot_name or '审批Bot03',
+        }]
     return [{
         'profile_name': normalized,
         'robot_name': normalized_robot_name or normalized,
     }]
+
+
+def is_official_group_notification_code(code: Any) -> bool:
+    return str(code or '').strip().startswith('official_group_')
 
 
 def utc_now() -> datetime:
@@ -241,7 +255,8 @@ def fetch_json(url: str, *, method: str = 'GET', payload: Optional[Dict[str, Any
         data = json.dumps(payload).encode('utf-8')
         headers['Content-Type'] = 'application/json'
     internal_token = str(os.getenv('AUTH_INTERNAL_TOKEN') or '').strip()
-    if internal_token and '/api/ops/' in str(url or ''):
+    url_text = str(url or '')
+    if internal_token and ('/api/ops/' in url_text or '/api/internal/' in url_text):
         headers['x-ops-internal-token'] = internal_token
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -260,10 +275,26 @@ def check_backend_health(api_base_url: str, *, timeout: float = 10.0) -> Dict[st
         return {'ok': False, 'error': str(exc)}
 
 
+def split_configured_command(command: str) -> List[str]:
+    argv = shlex.split(str(command or '').strip())
+    if not argv:
+        raise ValueError('command_missing')
+    return argv
+
+
+def run_configured_command(command: str, *, timeout: float = 120.0) -> subprocess.CompletedProcess[str]:
+    argv = split_configured_command(command)
+    return subprocess.run(argv, shell=False, capture_output=True, text=True, timeout=timeout)
+
+
 def maybe_restart(command: Optional[str], *, timeout: float = 120.0) -> Dict[str, Any]:
     if not command:
         return {'attempted': False, 'ok': False, 'reason': 'restart_command_missing'}
-    completed = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
+    try:
+        argv = split_configured_command(command)
+    except ValueError:
+        return {'attempted': False, 'ok': False, 'reason': 'restart_command_missing'}
+    completed = subprocess.run(argv, shell=False, capture_output=True, text=True, timeout=timeout)
     return {
         'attempted': True,
         'ok': completed.returncode == 0,
@@ -271,6 +302,7 @@ def maybe_restart(command: Optional[str], *, timeout: float = 120.0) -> Dict[str
         'stdout': completed.stdout,
         'stderr': completed.stderr,
         'command': command,
+        'argv': argv,
     }
 
 
@@ -467,6 +499,36 @@ def requester_fingerprint(group_state: Dict[str, Any]) -> str:
     return ''
 
 
+def notification_fingerprint_token(value: Any) -> str:
+    raw = str(value or '').strip()
+    if not raw:
+        return 'unknown'
+    return hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]
+
+
+def _coerce_aware_utc_datetime(value: Any) -> datetime:
+    raw = str(value or '').strip()
+    if not raw:
+        return utc_now()
+    try:
+        dt = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+    except Exception:
+        return utc_now()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def official_group_manual_review_hour_bucket(value: Any) -> str:
+    dt = _coerce_aware_utc_datetime(value)
+    return dt.replace(minute=0, second=0, microsecond=0).strftime('%Y%m%dT%H00Z')
+
+
+def should_emit_official_group_manual_review_hourly_report(value: Any) -> bool:
+    dt = _coerce_aware_utc_datetime(value)
+    return dt.minute < OFFICIAL_GROUP_MANUAL_REVIEW_REPORT_WINDOW_MINUTES
+
+
 def should_trigger_action(state: Dict[str, Any], *, fingerprint: str, now: datetime, cooldown_seconds: int = DEFAULT_TRIGGER_COOLDOWN_SECONDS) -> bool:
     if not fingerprint:
         return True
@@ -569,10 +631,169 @@ def build_observation_warnings(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
     return warnings
 
 
+_LOGIN_UNREADY_WORKER_REASONS = {
+    'whatsapp_account_waiting_for_scan',
+    'whatsapp_qr_initializing',
+    'whatsapp_login_failed',
+    'whatsapp_account_restricted',
+    'whatsapp_disabled',
+    'whatsapp_runtime_stopped',
+    'whatsapp_runtime_unready',
+}
+
+_WORKER_UNPROBEABLE_REASONS = {
+    'runtime_unhealthy',
+    'service_unready',
+    'pending_runtime',
+    'runtime_stopped',
+    'worker_base_url_missing_for_selected_binding',
+}
+
+
+def _worker_state_has_logged_in_probe_evidence(worker: Dict[str, Any]) -> bool:
+    if not isinstance(worker, dict):
+        return False
+    recovery = worker.get('recovery') if isinstance(worker.get('recovery'), dict) else {}
+    if worker.get('can_probe') is True or worker.get('login_verified') is True or worker.get('authenticated') is True:
+        return True
+    ready_values = {'logged_in', 'authenticated', 'ready'}
+    for value in (
+        worker.get('login_state'),
+        worker.get('login_check_status'),
+        worker.get('status'),
+        recovery.get('login_state'),
+        recovery.get('login_check_status'),
+        recovery.get('status'),
+    ):
+        if str(value or '').strip() in ready_values:
+            return True
+    return False
+
+
+def _worker_state_login_unready(worker: Dict[str, Any]) -> bool:
+    if not isinstance(worker, dict):
+        return False
+    recovery = worker.get('recovery') if isinstance(worker.get('recovery'), dict) else {}
+    if recovery.get('trigger_reason') == 'login_unready':
+        return True
+    reason_values = {
+        worker.get('error'),
+        worker.get('reason'),
+        worker.get('login_state'),
+        worker.get('login_check_status'),
+        recovery.get('reason'),
+        recovery.get('login_state'),
+        recovery.get('login_check_status'),
+        recovery.get('trigger_reason'),
+    }
+    if any(str(value or '') in _LOGIN_UNREADY_WORKER_REASONS for value in reason_values):
+        return True
+    if (
+        any(str(value or '') in _WORKER_UNPROBEABLE_REASONS for value in reason_values)
+        and not _worker_state_has_logged_in_probe_evidence(worker)
+    ):
+        return True
+    return bool(worker.get('can_probe') is False and (worker.get('login_state') or recovery.get('login_state')))
+
+
+def _dedupe_key_part(value: Any) -> str:
+    text = ' '.join(str(value or '').split())
+    return text[:180]
+
+
+def worker_state_failed_dedupe_key(
+    cycle: Dict[str, Any],
+    worker_state: Optional[Dict[str, Any]] = None,
+) -> str:
+    monitor_target = cycle.get('monitor_target') if isinstance(cycle.get('monitor_target'), dict) else {}
+    worker = worker_state if isinstance(worker_state, dict) else cycle.get('worker_state')
+    worker = worker if isinstance(worker, dict) else {}
+
+    account_key = _dedupe_key_part(
+        monitor_target.get('account_key')
+        or monitor_target.get('account_name')
+        or worker.get('account_key')
+        or worker.get('baileys_account_id')
+    )
+    group_key = _dedupe_key_part(
+        monitor_target.get('binding_id')
+        or monitor_target.get('group_id')
+        or monitor_target.get('registration_group')
+        or monitor_target.get('group_name')
+        or cycle.get('registration_group')
+        or worker.get('group_id')
+        or worker.get('group_name')
+    )
+    parts = [part for part in (account_key, group_key) if part]
+    if not parts:
+        return 'worker_state_failed'
+    return 'worker_state_failed:' + ':'.join(parts)
+
+
+def _worker_state_error_text(worker: Dict[str, Any]) -> str:
+    fragments: List[str] = []
+    for key in ('error', 'status_text', 'reason'):
+        value = worker.get(key)
+        if value:
+            fragments.append(str(value))
+    recovery = worker.get('recovery') if isinstance(worker.get('recovery'), dict) else {}
+    for key in ('error', 'retry_error', 'reason'):
+        value = recovery.get(key)
+        if value:
+            fragments.append(str(value))
+    return ' '.join(fragments).strip()
+
+
+def _is_whatsapp_invite_target(value: Any) -> bool:
+    text = str(value or '').strip().lower()
+    return text.startswith('https://chat.whatsapp.com/') or text.startswith('http://chat.whatsapp.com/')
+
+
+def _is_worker_state_invalid_invite_404(cycle: Dict[str, Any], worker: Dict[str, Any]) -> bool:
+    error_text = _worker_state_error_text(worker).lower()
+    if '404' not in error_text or 'not found' not in error_text:
+        return False
+    monitor_target = cycle.get('monitor_target') if isinstance(cycle.get('monitor_target'), dict) else {}
+    candidate_targets = (
+        monitor_target.get('registration_group'),
+        monitor_target.get('binding_link'),
+        monitor_target.get('group_name'),
+        cycle.get('registration_group'),
+    )
+    return any(_is_whatsapp_invite_target(value) for value in candidate_targets)
+
+
+def should_suppress_lark_alert(
+    incident: Optional[Dict[str, Any]] = None,
+    cycle: Optional[Dict[str, Any]] = None,
+    message_text: Optional[str] = None,
+) -> bool:
+    incident_payload = incident if isinstance(incident, dict) else {}
+    cycle_payload = cycle if isinstance(cycle, dict) else {}
+    if incident_payload.get('notify_disabled'):
+        return True
+    code = str(incident_payload.get('code') or '').strip()
+    details = incident_payload.get('details') if isinstance(incident_payload.get('details'), dict) else {}
+    if code == 'worker_state_failed' and _is_worker_state_invalid_invite_404(cycle_payload, details):
+        return True
+    text = str(message_text or '').strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if '生产守护告警' in text and '群状态探测失败' in text:
+        return True
+    return (
+        ('群状态探测失败' in text or 'worker_state_failed' in lowered)
+        and 'chat.whatsapp.com' in lowered
+        and '404' in lowered
+        and ('not found' in lowered or 'http error 404' in lowered)
+    )
+
+
 def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
     incidents: List[Dict[str, Any]] = []
     backend = cycle.get('backend_health') or {}
-    if not backend.get('ok'):
+    if not backend.get('ok') and not bool(backend.get('suppress_incident')):
         incidents.append({
             'severity': 'critical',
             'code': 'backend_unhealthy',
@@ -581,14 +802,25 @@ def build_incidents(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
             'dedupe_key': 'backend_unhealthy',
         })
     worker = cycle.get('worker_state') or {}
-    if worker.get('ok') is False and not bool(worker.get('suppress_incident')):
-        incidents.append({
+    if (
+        worker.get('ok') is False
+        and not bool(worker.get('suppress_incident'))
+        and not _worker_state_login_unready(worker)
+    ):
+        incident = {
             'severity': 'critical',
             'code': 'worker_state_failed',
             'summary': '群状态探测失败',
             'details': worker,
-            'dedupe_key': 'worker_state_failed',
-        })
+            'dedupe_key': worker_state_failed_dedupe_key(cycle, worker),
+        }
+        if _is_worker_state_invalid_invite_404(cycle, worker):
+            incident.update({
+                'severity': 'warning',
+                'notify_disabled': True,
+                'suppressed_reason': 'invalid_registration_group_invite_404',
+            })
+        incidents.append(incident)
     release = cycle.get('release_evaluation') or {}
     if release.get('ok') is False:
         incidents.append({
@@ -735,6 +967,9 @@ def build_success_notifications(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     def append_notification(notification: Dict[str, Any]) -> None:
         code = str(notification.get('code') or '').strip()
+        if is_official_group_notification_code(code):
+            notification['notify_profile_name'] = OFFICIAL_GROUP_NOTIFY_PROFILE_NAME
+            notification['notify_robot_name'] = OFFICIAL_GROUP_NOTIFY_ROBOT_NAME
         details = notification.get('details') if isinstance(notification.get('details'), dict) else {}
         approval_scope = str(notification.get('approval_scope') or '').strip()
         if not approval_scope:
@@ -1044,6 +1279,8 @@ def build_success_notifications(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
             for item in ready_groups
             if isinstance(item, dict) and str(item.get('target_group') or '').strip()
         }
+        approval_type_raw = str(official_dispatch.get('approval_type') or official_dispatch.get('approval_kind') or '').strip().lower()
+        approval_type_text = '人工审批' if approval_type_raw in {'manual', 'manual_approve', 'manual_approval'} else '自动审批'
         dispatch_result = official_dispatch.get('result') or {}
         result_rows = list(dispatch_result.get('results') or []) if isinstance(dispatch_result.get('results'), list) else []
         grouped_successes: Dict[str, Dict[str, Any]] = {}
@@ -1096,11 +1333,13 @@ def build_success_notifications(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
                     'approved_count': bucket.get('approved_count', 0),
                     'pending_after': bucket.get('pending_after'),
                     'member_count_after': bucket.get('member_count_after'),
+                    'approval_type': approval_type_text,
                 },
                 'notify_profile_name': bucket.get('notify_profile_name'),
                 'notify_robot_name': bucket.get('notify_robot_name'),
                 'dedupe_key': f'official_group_approval_succeeded:{dedupe_suffix}',
             })
+        manual_review_buckets: Dict[str, Dict[str, Any]] = {}
         for item in result_rows:
             if not isinstance(item, dict) or item.get('executed'):
                 continue
@@ -1140,34 +1379,117 @@ def build_success_notifications(cycle: Dict[str, Any]) -> List[Dict[str, Any]]:
             except (TypeError, ValueError):
                 remaining_pending_count = None
             dedupe_target = target_group or group_name or 'unknown'
-            dedupe_identity = lead_id or requester_id or mobile or 'unknown'
-            dedupe_remaining = remaining_pending_count if remaining_pending_count is not None else 'na'
             reason_text = (
                 'CRM无记录，请人工复核' if reason_code == 'crm_customer_not_found'
-                else '申请账号未匹配到当前有效收口记录，请人工复核' if reason_code == 'official_group_requester_unmatched'
+                else '申请账号未匹配到当前有效收口记录，请人工复核' if reason_code in {'official_group_requester_unmatched', 'official_group_requester_phone_unmatched'}
                 else '申请记录命中异常标记，请人工复核' if reason_code == 'abnormal_flagged'
                 else 'CRM服务未就绪，请人工复核' if reason_code == 'crm_adapter_not_configured'
                 else str(item.get('reason_detail') or '').strip() or '官方群审批需人工复核'
             )
+            queue_fingerprint = requester_fingerprint(ready_group)
+            item_fingerprint = requester_fingerprint({'requesters': [requester]}) if requester else ''
+            dedupe_identity = queue_fingerprint or item_fingerprint or lead_id or requester_id or mobile or 'unknown'
+            dedupe_token = notification_fingerprint_token(dedupe_identity)
+            bucket_key = dedupe_target
+            bucket = manual_review_buckets.setdefault(bucket_key, {
+                'target_group': target_group or None,
+                'group_name': group_name or None,
+                'reason_code': reason_code,
+                'reason_text': reason_text,
+                'reason_detail': str(item.get('reason_detail') or '').strip() or None,
+                'next_action': str(item.get('next_action') or '').strip() or None,
+                'remaining_pending_count': remaining_pending_count,
+                'notify_profile_name': str(item.get('notify_profile_name') or ready_group.get('notify_profile_name') or '').strip() or None,
+                'notify_robot_name': str(item.get('notify_robot_name') or ready_group.get('notify_robot_name') or '').strip() or None,
+                'dedupe_target': dedupe_target,
+                'dedupe_identity': dedupe_identity,
+                'dedupe_token': dedupe_token,
+                'lead_ids': [],
+                'requester_ids': [],
+                'mobiles': [],
+                'reason_codes': [],
+                'reason_texts': [],
+                'manual_review_item_count': 0,
+            })
+            bucket['manual_review_item_count'] = int(bucket.get('manual_review_item_count') or 0) + 1
+            if remaining_pending_count is not None:
+                existing_remaining = bucket.get('remaining_pending_count')
+                try:
+                    bucket['remaining_pending_count'] = max(int(existing_remaining), int(remaining_pending_count)) if existing_remaining is not None else int(remaining_pending_count)
+                except (TypeError, ValueError):
+                    bucket['remaining_pending_count'] = int(remaining_pending_count)
+            for field_name, value in (
+                ('lead_ids', lead_id),
+                ('requester_ids', requester_id),
+                ('mobiles', mobile),
+                ('reason_codes', reason_code),
+                ('reason_texts', reason_text),
+            ):
+                if value and value not in bucket[field_name]:
+                    bucket[field_name].append(value)
+
+        if manual_review_buckets and should_emit_official_group_manual_review_hourly_report(cycle.get('checked_at')):
+            hour_bucket = official_group_manual_review_hour_bucket(cycle.get('checked_at'))
+            groups: List[Dict[str, Any]] = []
+            notify_profile_name: Optional[str] = None
+            notify_robot_name: Optional[str] = None
+            for bucket in manual_review_buckets.values():
+                lead_ids = list(bucket.get('lead_ids') or [])
+                requester_ids = list(bucket.get('requester_ids') or [])
+                mobiles = list(bucket.get('mobiles') or [])
+                reason_codes = list(bucket.get('reason_codes') or [])
+                reason_texts = list(bucket.get('reason_texts') or [])
+                if notify_profile_name is None and bucket.get('notify_profile_name'):
+                    notify_profile_name = str(bucket.get('notify_profile_name') or '').strip() or None
+                if notify_robot_name is None and bucket.get('notify_robot_name'):
+                    notify_robot_name = str(bucket.get('notify_robot_name') or '').strip() or None
+                groups.append({
+                    'target_group': bucket.get('target_group'),
+                    'group_name': bucket.get('group_name'),
+                    'lead_ids': lead_ids,
+                    'mobiles': mobiles,
+                    'requester_ids': requester_ids,
+                    'manual_review_item_count': int(bucket.get('manual_review_item_count') or 0),
+                    'reason_code': reason_codes[0] if reason_codes else bucket.get('reason_code'),
+                    'reason_codes': reason_codes,
+                    'reason_text': reason_texts[0] if reason_texts else bucket.get('reason_text'),
+                    'reason_texts': reason_texts,
+                    'reason_detail': bucket.get('reason_detail'),
+                    'next_action': bucket.get('next_action'),
+                    'remaining_pending_count': bucket.get('remaining_pending_count'),
+                    'dedupe_fingerprint': bucket.get('dedupe_identity'),
+                    'dedupe_token': bucket.get('dedupe_token'),
+                })
+            total_pending = 0
+            has_pending_count = False
+            for group in groups:
+                try:
+                    total_pending += max(int(group.get('remaining_pending_count')), 0)
+                    has_pending_count = True
+                except (TypeError, ValueError):
+                    pass
+            manual_review_item_count = 0
+            for group in groups:
+                try:
+                    manual_review_item_count += max(int(group.get('manual_review_item_count')), 0)
+                except (TypeError, ValueError):
+                    pass
             append_notification({
                 'severity': 'warning',
                 'code': 'official_group_manual_review_required',
-                'summary': '官方群审批需人工复核',
+                'summary': '官方群审批待处理汇总',
                 'details': {
-                    'target_group': target_group or None,
-                    'group_name': group_name or None,
-                    'lead_id': lead_id,
-                    'mobile': mobile,
-                    'requester_id': requester_id,
-                    'reason_code': reason_code,
-                    'reason_detail': str(item.get('reason_detail') or '').strip() or None,
-                    'next_action': str(item.get('next_action') or '').strip() or None,
-                    'remaining_pending_count': remaining_pending_count,
+                    'hourly_report': True,
+                    'hour_bucket': hour_bucket,
+                    'group_count': len(groups),
+                    'groups': groups,
+                    'manual_review_item_count': manual_review_item_count,
+                    'remaining_pending_count': total_pending if has_pending_count else None,
                 },
-                'reason_text': reason_text,
-                'notify_profile_name': str(item.get('notify_profile_name') or ready_group.get('notify_profile_name') or '').strip() or None,
-                'notify_robot_name': str(item.get('notify_robot_name') or ready_group.get('notify_robot_name') or '').strip() or None,
-                'dedupe_key': f'official_group_manual_review_required:{dedupe_target}:{dedupe_identity}:{reason_code}:{dedupe_remaining}',
+                'reason_text': '整点汇总：官方群审批待处理汇总',
+                'notify_profile_name': notify_profile_name,
+                'notify_robot_name': notify_robot_name,
+                'dedupe_key': f'official_group_manual_review_required:hourly:{hour_bucket}',
             })
 
     for cycle_row in registration_cycles:
@@ -1279,7 +1601,12 @@ def _compact_reason_text(incident: Dict[str, Any], cycle: Dict[str, Any]) -> str
 
     if code == 'backend_unhealthy':
         error = str(details.get('error') or '').strip()
-        return error or '后端健康检查失败'
+        lowered = error.lower()
+        if 'connection refused' in lowered or 'errno 111' in lowered or 'errno 61' in lowered:
+            return '后台服务暂时无法连接，系统已停止自动审批并持续复查'
+        if 'timed out' in lowered or 'timeout' in lowered:
+            return '后台服务响应超时，系统已停止自动审批并持续复查'
+        return '后台服务暂时不可用，系统已停止自动审批并持续复查'
 
     if code == 'worker_state_failed':
         recovery = details.get('recovery') if isinstance(details.get('recovery'), dict) else {}
@@ -1431,8 +1758,62 @@ def format_lark_alert(service_name: str, incident: Dict[str, Any], cycle: Dict[s
     severity_key = str(incident.get('severity') or 'info').strip().lower()
     summary = str(incident.get('summary') or '').strip()
     code = str(incident.get('code') or 'incident').strip()
+    if code == 'backend_unhealthy':
+        reason = str(incident.get('reason_text') or '').strip() or _compact_reason_text(incident, cycle)
+        return '\n'.join([
+            '🚨 后台服务持续不可用',
+            f'时间: {checked_at}',
+            '影响: 注册群自动审批已暂停，不会继续操作',
+            f'状态: {reason}',
+            '处理: 系统正在持续复查；恢复后会自动继续',
+        ])
     if code == 'official_group_manual_review_required':
         details = incident.get('details') or {}
+        groups = details.get('groups') if isinstance(details.get('groups'), list) else []
+        if groups:
+            lines = ['⚠️🙋🏻‍♀️⚠️官方群审批待处理汇总']
+            lines.append(f'时间: {checked_at}')
+            try:
+                group_count = max(int(details.get('group_count') or len(groups)), 0)
+            except (TypeError, ValueError):
+                group_count = len(groups)
+            lines.append(f'待处理群数: {group_count}')
+            try:
+                total_pending = max(int(details.get('remaining_pending_count')), 0)
+            except (TypeError, ValueError):
+                total_pending = None
+            if total_pending is not None:
+                lines.append(f'总待放行人数: {total_pending}')
+            try:
+                manual_review_item_count = max(int(details.get('manual_review_item_count')), 0)
+            except (TypeError, ValueError):
+                manual_review_item_count = None
+            if manual_review_item_count:
+                lines.append(f'本轮需人工复核人数: {manual_review_item_count}')
+            for index, group in enumerate(groups, start=1):
+                if not isinstance(group, dict):
+                    continue
+                group_name = str(group.get('group_name') or group.get('target_group') or '').strip()
+                if not group_name:
+                    group_name = '未命名官方群'
+                try:
+                    group_pending = max(int(group.get('remaining_pending_count')), 0)
+                except (TypeError, ValueError):
+                    group_pending = None
+                try:
+                    group_manual_review_count = max(int(group.get('manual_review_item_count')), 0)
+                except (TypeError, ValueError):
+                    group_manual_review_count = 0
+                group_line = f'{index}. {group_name}'
+                if group_pending is not None:
+                    group_line += f' · 待放行 {group_pending} 人'
+                if group_manual_review_count:
+                    group_line += f' · 本轮需人工复核 {group_manual_review_count} 人'
+                lines.append(group_line)
+                reason = str(group.get('reason_text') or '').strip()
+                if reason:
+                    lines.append(f'原因: {reason}')
+            return '\n'.join(lines)
         official_group_name = str(details.get('group_name') or details.get('target_group') or '').strip()
         mobile = str(details.get('mobile') or '').strip()
         remaining_pending_count = details.get('remaining_pending_count')
@@ -1631,6 +2012,9 @@ def format_lark_alert(service_name: str, incident: Dict[str, Any], cycle: Dict[s
             lines.append(f'剩余待审批人数: {pending_after_value}')
     else:
         count_line = _compact_count_line(incident, cycle)
+        if code == 'official_group_approval_succeeded':
+            approval_type = str(details.get('approval_type') or '').strip() or '自动审批'
+            lines.append(f'审批类型: {approval_type}')
         if count_line:
             lines.append(count_line)
         if code == 'official_group_approval_succeeded':
@@ -1686,6 +2070,12 @@ class FeishuNotifier:
         return min(1.0 * (2 ** max(attempt - 1, 0)), 5.0)
 
     def send_text(self, text: str) -> Dict[str, Any]:
+        if should_suppress_lark_alert(message_text=text):
+            return {
+                'code': 0,
+                'suppressed': True,
+                'suppressed_reason': 'invalid_registration_group_invite_404',
+            }
         token = self._get_tenant_access_token()
         payload = {
             'receive_id': self.chat_id,
