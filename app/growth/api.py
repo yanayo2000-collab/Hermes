@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.ad_daily_report import ensure_ad_daily_report_tables
@@ -47,6 +47,7 @@ from app.growth.new_account_launch_meta_delete import (
     LaunchMetaDeleteConflict,
     LaunchMetaDeleteManualReview,
     NewAccountLaunchMetaDeleteService,
+    launch_meta_delete_status,
 )
 from app.growth.pattern_mining_service import PatternMiningService
 from app.growth.read_service import GrowthReadService
@@ -1194,6 +1195,26 @@ def create_ad_experiment_router(
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail={"code": "STATE_CONFLICT", "message": "database_constraint_conflict"}) from exc
 
+    def run_meta_delete_in_background(
+        delete_id: str, launch_id: str, account_id: str, requested_by: str,
+    ) -> None:
+        def action(conn: sqlite3.Connection) -> Dict[str, Any]:
+            return NewAccountLaunchMetaDeleteService(
+                conn, session=meta_session, access_token=meta_access_token,
+                graph_root=meta_graph_root,
+                live_delete_enabled=_meta_live_execution_available(
+                    "DELETE_LAUNCH_META_OBJECTS", account_id,
+                ),
+            ).run_enqueued(delete_id, launch_id, actor=requested_by)
+
+        try:
+            _with_connection(db, action)
+        except Exception:
+            # The durable audit row is the user-facing source of truth. The
+            # service moves uncertain outcomes to MANUAL_REVIEW and never
+            # blindly repeats a DELETE.
+            return
+
     def exact_campaign_matches(account_id: str, campaign_name: str) -> List[Dict[str, Any]]:
         normalized_account = str(account_id or "").strip().removeprefix("act_")
         normalized_name = str(campaign_name or "").strip()
@@ -1613,7 +1634,39 @@ def create_ad_experiment_router(
                         if downstream_by_date:
                             performance_granularity_note = "Meta 媒体数据已按广告回流；安装/真实入会仅能按广告系列归因"
 
-        def aggregate_performance(metric_rows: List[sqlite3.Row]) -> Dict[str, Any]:
+        def deduplicate_ad_daily_rows(metric_rows: List[Any]) -> tuple[List[Dict[str, Any]], int]:
+            """Collapse creative projections to the canonical date + ad_id fact grain."""
+            grouped: Dict[tuple[str, str], Dict[str, Any]] = {}
+            numeric_fields = (
+                "spend", "impressions", "clicks", "installs", "tugao_real_bind_count",
+            )
+            for item in metric_rows:
+                record = dict(item)
+                key = (str(record.get("report_date_london") or ""), str(record.get("ad_id") or ""))
+                current = grouped.setdefault(key, {
+                    "report_date_london": key[0],
+                    "ad_id": key[1],
+                    **{field: 0.0 for field in numeric_fields},
+                    "_quality_statuses": set(),
+                    "_attribution_levels": set(),
+                })
+                for field in numeric_fields:
+                    current[field] = max(float(current[field] or 0), float(record.get(field) or 0))
+                if record.get("data_quality_status"):
+                    current["_quality_statuses"].add(str(record["data_quality_status"]))
+                if record.get("attribution_level"):
+                    current["_attribution_levels"].add(str(record["attribution_level"]))
+            unique_rows: List[Dict[str, Any]] = []
+            for current in grouped.values():
+                current["data_quality_status"] = " | ".join(sorted(current.pop("_quality_statuses")))
+                current["attribution_level"] = " | ".join(sorted(current.pop("_attribution_levels")))
+                unique_rows.append(current)
+            unique_rows.sort(key=lambda item: (str(item["report_date_london"]), str(item["ad_id"])))
+            return unique_rows, max(0, len(metric_rows) - len(unique_rows))
+
+        performance_rows, duplicate_performance_rows = deduplicate_ad_daily_rows(performance_rows)
+
+        def aggregate_performance(metric_rows: List[Any]) -> Dict[str, Any]:
             spend = sum(float(item["spend"] or 0) for item in metric_rows)
             impressions = sum(float(item["impressions"] or 0) for item in metric_rows)
             clicks = sum(float(item["clicks"] or 0) for item in metric_rows)
@@ -1637,7 +1690,7 @@ def create_ad_experiment_router(
                 "attribution_levels": sorted({str(item["attribution_level"] or "") for item in metric_rows if item["attribution_level"]}),
             }
 
-        performance_by_ad: Dict[str, List[sqlite3.Row]] = {}
+        performance_by_ad: Dict[str, List[Dict[str, Any]]] = {}
         for metric_row in performance_rows:
             performance_by_ad.setdefault(str(metric_row["ad_id"] or ""), []).append(metric_row)
         for experiment in experiments:
@@ -1646,9 +1699,31 @@ def create_ad_experiment_router(
             )
 
         delivery_performance = aggregate_performance(performance_rows)
+        performance_data_updated_at = ""
+        fact_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ad_dashboard_fact_rows'",
+        ).fetchone()
+        if fact_table and ad_ids:
+            fact_columns = {
+                str(column[1]) for column in conn.execute("PRAGMA table_info(ad_dashboard_fact_rows)").fetchall()
+            }
+            if {"updated_at", "ad_id"}.issubset(fact_columns):
+                placeholders = ",".join("?" for _ in ad_ids)
+                updated_row = conn.execute(
+                    f"SELECT MAX(updated_at) FROM ad_dashboard_fact_rows WHERE ad_id IN ({placeholders})",
+                    tuple(ad_ids),
+                ).fetchone()
+                performance_data_updated_at = str(updated_row[0] or "") if updated_row else ""
         delivery_performance.update({
             "source": performance_source,
             "granularity_note": performance_granularity_note,
+            "deduplication_key": "report_date_london+ad_id",
+            "duplicate_rows_removed": duplicate_performance_rows,
+            "statistics_cutoff_date": str(delivery_performance.get("latest_data_date") or ""),
+            "data_updated_at": performance_data_updated_at,
+            "freshness_mode": "T_PLUS_1_DAILY",
+            "is_realtime": False,
+            "delivery_status_is_realtime": True,
         })
         maturity_rule = decode_json(rows[0]["maturity_rule_json"], {})
         minimum_installs = int(maturity_rule.get("minimum_installs") or 100)
@@ -1749,7 +1824,19 @@ def create_ad_experiment_router(
             ]
 
         job_statuses = [str(job.get("status") or "") for job in jobs]
-        experiment_states = [str(item["state"]) for item in experiments]
+        experiment_states = []
+        for item in experiments:
+            state = str(item["state"])
+            review = dict((item.get("workflow") or {}).get("meta_review") or {})
+            effective = str(review.get("effective_status") or "").upper()
+            remediation = str(review.get("remediation_status") or "").upper()
+            configured = str(review.get("configured_status") or "").upper()
+            if configured == "ACTIVE":
+                if effective == "ACTIVE":
+                    state = "RUNNING"
+                elif effective in {"PENDING_REVIEW", "IN_PROCESS", "WITH_ISSUES"}:
+                    state = "META_REVIEW_PENDING"
+            experiment_states.append(state)
         batch_plan_row = conn.execute(
             """
             SELECT operation_action_id,status,payload_json,created_at,updated_at FROM growth_operation_action
@@ -1795,6 +1882,7 @@ def create_ad_experiment_router(
             "page_repair_available": page_repair_available,
         } if batch_plan_row else {}
         retention = launch_retention_status(conn, normalized_launch_id)
+        permanent_delete = launch_meta_delete_status(conn, normalized_launch_id)
         latest_delivery_action = conn.execute(
             """
             SELECT action_type FROM growth_operation_action
@@ -1880,6 +1968,7 @@ def create_ad_experiment_router(
             "can_permanently_delete": retention["can_permanently_delete"],
             "permanent_delete_blocked_reason": retention["permanent_delete_blocked_reason"],
             "permanent_delete_mode": retention["permanent_delete_mode"],
+            "permanent_delete": permanent_delete,
             "protected_audit_present": retention["protected_audit_present"],
             "purge_after": retention["purge_after"],
             "purge_due": retention["purge_due"],
@@ -2832,7 +2921,7 @@ def create_ad_experiment_router(
 
     @router.post("/new-account-launches/{launch_id}/permanent-delete")
     def permanently_delete_new_account_launch(
-        launch_id: str, request: Request,
+        launch_id: str, request: Request, background_tasks: BackgroundTasks,
         body: Optional[NewAccountLaunchPermanentDeleteRequest] = None,
         idempotency_key: str = Header("", alias="Idempotency-Key"),
     ) -> Dict[str, Any]:
@@ -2860,12 +2949,19 @@ def create_ad_experiment_router(
                     ),
                 )
                 try:
-                    return service.execute(
+                    queued = service.enqueue(
                         detail["launch_id"], actor=actor(user),
                         confirmation=request_body.confirmation,
                         plan_hash_value=request_body.plan_hash,
                         idempotency_key=idempotency_key,
                     )
+                    if str(queued.get("status") or "") == "STARTED":
+                        background_tasks.add_task(
+                            run_meta_delete_in_background,
+                            str(queued["delete_id"]), detail["launch_id"],
+                            account_id, actor(user),
+                        )
+                    return {**queued, "accepted": str(queued.get("status") or "") == "STARTED"}
                 except LaunchMetaDeleteConflict as exc:
                     raise HTTPException(
                         status_code=409,
@@ -2896,6 +2992,15 @@ def create_ad_experiment_router(
             return {**result, "meta_writes_performed": False}
 
         return execute(lambda: _with_connection(db, action))
+
+    @router.get("/new-account-launches/{launch_id}/permanent-delete-status")
+    def get_permanent_delete_new_account_launch_status(
+        launch_id: str, request: Request,
+    ) -> Dict[str, Any]:
+        operator(request)
+        return execute(lambda: _with_connection(
+            db, lambda conn: launch_meta_delete_status(conn, launch_id),
+        ))
 
     @router.get("/experiments")
     def list_experiments(

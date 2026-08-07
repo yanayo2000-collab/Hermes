@@ -62,7 +62,7 @@ EXPERIMENT_TRANSITIONS = {
     "EFFECTIVE": {"RECOMMENDATION_READY", "WAITING_ADJUSTMENT_APPROVAL", "ARCHIVED"},
     "INEFFECTIVE": {"RECOMMENDATION_READY", "WAITING_ADJUSTMENT_APPROVAL", "PAUSED", "ARCHIVED"},
     "INCONCLUSIVE": {"MATURING", "RECOMMENDATION_READY", "ARCHIVED"},
-    "DATA_INCOMPLETE": {"ADJUSTING", "RUNNING", "MATURING", "RECOMMENDATION_READY", "PAUSED", "ARCHIVED"},
+    "DATA_INCOMPLETE": {"META_REVIEW_PENDING", "ADJUSTING", "RUNNING", "MATURING", "RECOMMENDATION_READY", "PAUSED", "ARCHIVED"},
     "MIXED_CHANGE": {"RECOMMENDATION_READY", "ARCHIVED"},
     "PAUSED": {"WAITING_ADJUSTMENT_APPROVAL", "ADJUSTING", "ARCHIVED"},
     "ARCHIVED": set(),
@@ -415,6 +415,25 @@ class AdExperimentService:
             if str(existing["request_hash"]) != request_digest:
                 raise GrowthStateConflict("idempotency_key_payload_conflict")
             return decode_json(existing["response_json"], {})
+
+        successful_creation = self.conn.execute(
+            """SELECT 1
+            FROM growth_operation_action action
+            JOIN meta_execution_task task
+              ON task.operation_action_id=action.operation_action_id
+            WHERE action.action_type='CREATE_PAUSED_AD'
+              AND action.status='VERIFIED'
+              AND task.status='SUCCESS'
+              AND (
+                action.target_id=?
+                OR json_extract(action.payload_json,'$.launch_id')=?
+                OR json_extract(action.payload_json,'$.plan.launch_id')=?
+              )
+            LIMIT 1""",
+            (normalized_launch_id, normalized_launch_id, normalized_launch_id),
+        ).fetchone()
+        if successful_creation:
+            raise GrowthStateConflict("launch_already_created")
 
         claimed = self.conn.execute(
             """SELECT execution_task_id FROM growth_execution_resource_claim

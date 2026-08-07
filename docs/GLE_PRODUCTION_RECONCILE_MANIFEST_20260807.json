@@ -1,0 +1,54 @@
+{
+  "schema_version": "gle-production-reconcile-manifest-v1",
+  "created_at": "2026-08-07T14:58:30+08:00",
+  "source": {
+    "production_sync_base_commit": "e97a9e42201ee878a19398de9f1b214eeba0c391",
+    "merged_main_commit": "8ff379c4ff496cbf25aef84be7dcdcd8768c01f5",
+    "merged_main_tree": "02d294ddc6dbede5d3fd4904bfcb275bcc084d12"
+  },
+  "production_restart_gate": {
+    "invocation_id": "7dd787de3a454449a3875d420a4878c7",
+    "receipt": "/var/lib/mcn-ai-automation/release-receipts/growth-performance-freshness-v1-20260807T131000CST-1786079227102945847.json",
+    "receipt_status": "passed",
+    "invalid_receipts": []
+  },
+  "method": {
+    "kind": "three_way_file_reconcile",
+    "base": "production_sync_base_commit",
+    "ours": "merged_main_commit",
+    "theirs": "current_production_readback",
+    "conflict_paths": [
+      "app/ad_dashboard_repository.py",
+      "app/main_shared.py",
+      "app/sqlite_write_queue.py"
+    ],
+    "conflict_resolution": "Preserve both current production behavior and the accepted GLE contracts. Production Tugao completeness changes already subsumed by G0-02B remain represented once, without duplicate declarations, reason codes, or result keys. Import the exact current-production dependency closure for permanent-delete status/background execution and replaced-creative retention."
+  },
+  "paths": [
+    {"path":"app/creative_image_generation.py","base_sha256":"1fa443d2a13b1c3ba8f072d6a5941059dad28b6b1034accf635dd99e03e9760b","production_sha256":"252ff05ab8cef3eab759e9dd548affe7d91989fa7500f261db5bf46047a015b9","merged_main_sha256":"1fa443d2a13b1c3ba8f072d6a5941059dad28b6b1034accf635dd99e03e9760b","reconciled_sha256":"252ff05ab8cef3eab759e9dd548affe7d91989fa7500f261db5bf46047a015b9","result":"production_dependency_closure_exact"},
+    {"path":"app/ad_dashboard_repository.py","base_sha256":"a197d2ddd2b8488340831a87644a0ee58c543f75d2b36600445d0ce238d3cbb7","production_sha256":"f49c8a7ada8f1d9a6a573eb1d491567919f4f5277a187f4894a9c38765caf745","merged_main_sha256":"2dfd5d62c1325c1658f182bafbeeda158d8fcf02096ad117c8cf993529c10851","reconciled_sha256":"2dfd5d62c1325c1658f182bafbeeda158d8fcf02096ad117c8cf993529c10851","result":"production_delta_superseded_by_g0_02b"},
+    {"path":"app/growth/ad_experiment_service.py","base_sha256":"8e15533f0253684f9e0ce391ef442c7f4c01d51e0d0f009f6a1fb9011eb8bda8","production_sha256":"2c19129a29a7f98e56dc2e7e9d9757a39d1b0ef26db1af63da1922cd2c80ee09","merged_main_sha256":"6961fc1a1d37670abfe1d2fdae78f926317a5914d8f2e600d9fe778227aeb90e","reconciled_sha256":"3746ffac817ce1bb418c0a2d6cbd3e0e97447ee4e516c73735d34337824a69ab","result":"combined"},
+    {"path":"app/growth/api.py","base_sha256":"c246cca4ad1a0c5ddfecf1a321c0efe6e33200ffbe0da30dd52ba4edf8f48f48","production_sha256":"f7caabaa23a29d8fbae0e456404b1081b661fcc1ad11732d617dac77671ae191","merged_main_sha256":"064d1a5f2a34366fd9f8b162fd65a3cfc99254615298243842d4a9427cb359df","reconciled_sha256":"98f61a21577f93a441ea4c4ba55a8b240e3ea77bd6db93ffa077e7a6f037c6ff","result":"combined"},
+    {"path":"app/growth/execution_service.py","base_sha256":"de87f2d6bb15ead213ae7b405f676e14f47e8e70ce50b1cd32354c0ce002d089","production_sha256":"93e224d59dce72139e4223d79b8e06393dd834315f7c3d83e75c3b258900dac4","merged_main_sha256":"22714315f3e4f47f8eb907e77f3a8772b90be9795ab1662e48834420439d3db6","reconciled_sha256":"c4d4d64c5c171c5c590a6e34422de39ef8a87d4bb55fe458d5c0e97b9bb20790","result":"combined"},
+    {"path":"app/growth/new_account_autopilot.py","base_sha256":"d48e43e603689f8492497bf5c8555c4227bb8abd3c4000de1748d7297e815af2","production_sha256":"f72386c6a28d3dfbc63955c99f6cf8b4eb27cd8c03914ae23536a6a008be76c1","merged_main_sha256":"2d34cbc9fae94b24c8dd074e6714f9df92f164ac24c862a72cb49b9c987c9f81","reconciled_sha256":"30486399583fb62280b789fcaf212748b4fd89ff22378be493d8f29ccd0f655d","result":"combined"},
+    {"path":"app/growth/new_account_launch_meta_delete.py","base_sha256":"1ff4e63c00b353570d963ccf49ac1152c9a027a757b5e15e6246fba2e1821512","production_sha256":"77c9d46988b55db0c14138109855a9940379f37b36b9b4866a1dedca895352db","merged_main_sha256":"1ff4e63c00b353570d963ccf49ac1152c9a027a757b5e15e6246fba2e1821512","reconciled_sha256":"77c9d46988b55db0c14138109855a9940379f37b36b9b4866a1dedca895352db","result":"production_dependency_closure_exact"},
+    {"path":"app/main_shared.py","base_sha256":"b53d9604544f24ca04d4cbd491bc8ee2112655d681397b229d91dd6843ee2b45","production_sha256":"a53f563ab113b251341adb79e0624dcc5e1b4573b7fb99814de8fd5eecb5f8a8","merged_main_sha256":"688fd39edc05cf6e923a63ce7c1e97575dcd5ba1d22417fc2da206a1e429eafb","reconciled_sha256":"7994c17f83f54f29825e2845e9f4e6120b42b4eaab6eb1fa5902fdb2b49742f7","result":"combined"},
+    {"path":"app/sqlite_write_queue.py","base_sha256":"8eccd1b74096f23c3274f5424d5cc9d4ad6471d0c66df34defa4ef15e35ae0d2","production_sha256":"03d084143d8e51c7a9ddf182d78cc26af7af5d495a36f7f91705bcf041d2ea03","merged_main_sha256":"37253f0327addc0e7b46aca7d3deedef5e1912d56ac92fe01ad1fad462ce3e3b","reconciled_sha256":"37253f0327addc0e7b46aca7d3deedef5e1912d56ac92fe01ad1fad462ce3e3b","result":"production_delta_superseded_by_g0_02b"}
+  ],
+  "safety": {
+    "meta_writes": 0,
+    "production_writes": 0,
+    "database_writes": 0,
+    "backend_restart": false,
+    "gate0_result": "QUASI_ONLY"
+  },
+  "verification": {
+    "focused_tests": "18 passed",
+    "stacked_gle_tests": "228 passed",
+    "python_compile": "passed",
+    "import_closure": "passed",
+    "diff_check": "passed",
+    "independent_reviews": 2,
+    "blocking_findings": 0
+  }
+}

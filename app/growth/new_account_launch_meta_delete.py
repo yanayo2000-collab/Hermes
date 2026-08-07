@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List
 
 from app.growth.common import canonical_json, payload_hash, utc_now
@@ -16,6 +18,9 @@ from app.growth.new_account_launch_retention import (
 DELETE_MODE = "DELETE_ORDER_AND_META_OBJECTS"
 DELETE_CONFIRMATION = "DELETE_ORDER_AND_META_OBJECTS"
 
+_BACKGROUND_DELETE_LOCK = threading.Lock()
+_BACKGROUND_DELETE_IDS: set[str] = set()
+
 
 class LaunchMetaDeleteConflict(RuntimeError):
     pass
@@ -23,6 +28,61 @@ class LaunchMetaDeleteConflict(RuntimeError):
 
 class LaunchMetaDeleteManualReview(RuntimeError):
     pass
+
+
+def launch_meta_delete_status(conn: sqlite3.Connection, launch_id: str) -> Dict[str, Any]:
+    ensure_new_account_launch_retention_tables(conn)
+    fingerprint = hashlib.sha256(str(launch_id or "").encode("utf-8")).hexdigest()[:20]
+    row = conn.execute(
+        """SELECT delete_id,status,object_ids_json,results_json,response_json,created_at,updated_at
+           FROM ad_new_account_launch_meta_delete_audit
+           WHERE launch_fingerprint=? ORDER BY created_at DESC LIMIT 1""",
+        (fingerprint,),
+    ).fetchone()
+    if not row:
+        return {
+            "launch_id": str(launch_id or ""), "status": "NONE",
+            "completed_count": 0, "target_count": 0, "progress_percent": 0,
+            "can_leave": True, "terminal": False, "requires_manual_review": False,
+        }
+    record = dict(row)
+    targets = json.loads(str(record.get("object_ids_json") or "[]"))
+    results = json.loads(str(record.get("results_json") or "[]"))
+    completed = sum(1 for item in results if isinstance(item, dict) and bool(item.get("verified_deleted")))
+    total = len(targets)
+    status = str(record.get("status") or "")
+    stale_started = False
+    if status == "STARTED":
+        try:
+            updated_at = datetime.fromisoformat(str(record.get("updated_at") or "").replace("Z", "+00:00"))
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            stale_started = datetime.now(timezone.utc) - updated_at > timedelta(minutes=5)
+        except ValueError:
+            stale_started = True
+    visible_status = "MANUAL_REVIEW" if stale_started else status
+    response = json.loads(str(record.get("response_json") or "{}"))
+    return {
+        "launch_id": str(launch_id or ""),
+        "delete_id": str(record.get("delete_id") or ""),
+        "status": visible_status,
+        "status_zh": {
+            "STARTED": "正在删除",
+            "MANUAL_REVIEW": "删除需要核对",
+            "SUCCESS": "已删除",
+        }.get(visible_status, "删除状态未知"),
+        "completed_count": completed,
+        "target_count": total,
+        "progress_percent": round((completed / total) * 100) if total else (100 if visible_status == "SUCCESS" else 0),
+        "can_leave": True,
+        "terminal": visible_status in {"SUCCESS", "MANUAL_REVIEW"},
+        "requires_manual_review": visible_status == "MANUAL_REVIEW",
+        "stale_started": stale_started,
+        "created_at": str(record.get("created_at") or ""),
+        "updated_at": str(record.get("updated_at") or ""),
+        "result": response if visible_status == "SUCCESS" else {},
+        "meta_writes_performed": bool(visible_status == "SUCCESS" and response.get("meta_writes_performed")),
+    }
 
 
 class NewAccountLaunchMetaDeleteService:
@@ -176,6 +236,24 @@ class NewAccountLaunchMetaDeleteService:
         plan_hash_value: str,
         idempotency_key: str,
     ) -> Dict[str, Any]:
+        queued = self.enqueue(
+            launch_id, actor=actor, confirmation=confirmation,
+            plan_hash_value=plan_hash_value, idempotency_key=idempotency_key,
+        )
+        return self.continue_started(
+            str(queued["delete_id"]), str(launch_id), actor=actor,
+            allow_manual_resume=True,
+        )
+
+    def enqueue(
+        self,
+        launch_id: str,
+        *,
+        actor: str,
+        confirmation: str,
+        plan_hash_value: str,
+        idempotency_key: str,
+    ) -> Dict[str, Any]:
         if str(confirmation or "").strip().upper() != DELETE_CONFIRMATION:
             raise LaunchMetaDeleteConflict("meta_delete_confirmation_required")
         if not str(idempotency_key or "").strip():
@@ -192,33 +270,7 @@ class NewAccountLaunchMetaDeleteService:
         if existing:
             if str(existing["request_hash"]) != request_hash:
                 raise LaunchMetaDeleteConflict("idempotency_key_payload_conflict")
-            if str(existing["status"]) == "SUCCESS":
-                return json.loads(str(existing["response_json"] or "{}"))
-            if str(existing["status"]) != "MANUAL_REVIEW":
-                raise LaunchMetaDeleteManualReview("meta_delete_attempt_already_started")
-            claimed = self.conn.execute(
-                """
-                UPDATE ad_new_account_launch_meta_delete_audit
-                SET status='STARTED',updated_at=?
-                WHERE delete_id=? AND status='MANUAL_REVIEW'
-                """,
-                (utc_now(), str(existing["delete_id"])),
-            )
-            self.conn.commit()
-            if int(claimed.rowcount or 0) != 1:
-                raise LaunchMetaDeleteManualReview("meta_delete_attempt_already_started")
-            try:
-                return self._resume_existing_attempt(existing, str(launch_id), actor=actor)
-            except Exception:
-                current_results = json.loads(str(existing["results_json"] or "[]"))
-                latest = self.conn.execute(
-                    "SELECT results_json FROM ad_new_account_launch_meta_delete_audit WHERE delete_id=?",
-                    (str(existing["delete_id"]),),
-                ).fetchone()
-                if latest:
-                    current_results = json.loads(str(latest["results_json"] or "[]"))
-                self._update_audit(str(existing["delete_id"]), "MANUAL_REVIEW", current_results)
-                raise
+            return launch_meta_delete_status(self.conn, launch_id)
         preview = self.preview(launch_id)
         if not preview["eligible"]:
             raise LaunchMetaDeleteConflict(preview["blocked_reasons"][0])
@@ -242,11 +294,76 @@ class NewAccountLaunchMetaDeleteService:
             ),
         )
         self.conn.commit()
-        return self._continue_attempt(
-            delete_id, str(launch_id), actor=actor,
-            targets=list(preview["plan"]["delete_order"]), results=[],
-            counts=dict(preview["counts"]),
-        )
+        return launch_meta_delete_status(self.conn, launch_id)
+
+    def continue_started(
+        self, delete_id: str, launch_id: str, *, actor: str,
+        allow_manual_resume: bool = False,
+    ) -> Dict[str, Any]:
+        existing = self.conn.execute(
+            "SELECT * FROM ad_new_account_launch_meta_delete_audit WHERE delete_id=?",
+            (str(delete_id),),
+        ).fetchone()
+        if not existing:
+            raise LaunchMetaDeleteConflict("meta_delete_attempt_not_found")
+        status = str(existing["status"] or "")
+        if status == "SUCCESS":
+            return json.loads(str(existing["response_json"] or "{}"))
+        if status == "MANUAL_REVIEW":
+            if not allow_manual_resume:
+                raise LaunchMetaDeleteManualReview("meta_delete_requires_manual_review")
+            claimed = self.conn.execute(
+                """UPDATE ad_new_account_launch_meta_delete_audit
+                   SET status='STARTED',updated_at=?
+                   WHERE delete_id=? AND status='MANUAL_REVIEW'""",
+                (utc_now(), str(delete_id)),
+            )
+            self.conn.commit()
+            if int(claimed.rowcount or 0) != 1:
+                raise LaunchMetaDeleteManualReview("meta_delete_attempt_already_started")
+            existing = self.conn.execute(
+                "SELECT * FROM ad_new_account_launch_meta_delete_audit WHERE delete_id=?",
+                (str(delete_id),),
+            ).fetchone()
+        if str(existing["status"] or "") != "STARTED":
+            raise LaunchMetaDeleteManualReview("meta_delete_attempt_not_runnable")
+        try:
+            return self._resume_existing_attempt(existing, str(launch_id), actor=actor)
+        except Exception:
+            latest = self.conn.execute(
+                "SELECT results_json,status FROM ad_new_account_launch_meta_delete_audit WHERE delete_id=?",
+                (str(delete_id),),
+            ).fetchone()
+            if latest and str(latest["status"] or "") != "SUCCESS":
+                current_results = json.loads(str(latest["results_json"] or "[]"))
+                self._update_audit(str(delete_id), "MANUAL_REVIEW", current_results)
+            raise
+
+    def run_enqueued(self, delete_id: str, launch_id: str, *, actor: str) -> Dict[str, Any]:
+        normalized_delete_id = str(delete_id or "")
+        with _BACKGROUND_DELETE_LOCK:
+            if normalized_delete_id in _BACKGROUND_DELETE_IDS:
+                return launch_meta_delete_status(self.conn, launch_id)
+            _BACKGROUND_DELETE_IDS.add(normalized_delete_id)
+        try:
+            worker_claim = canonical_json({
+                "worker_claim": hashlib.sha256(
+                    f"{normalized_delete_id}:{threading.get_ident()}:{utc_now()}".encode("utf-8")
+                ).hexdigest()[:20],
+            })
+            with self.conn:
+                claimed = self.conn.execute(
+                    """UPDATE ad_new_account_launch_meta_delete_audit
+                       SET response_json=?,updated_at=?
+                       WHERE delete_id=? AND status='STARTED' AND response_json='{}'""",
+                    (worker_claim, utc_now(), normalized_delete_id),
+                )
+            if int(claimed.rowcount or 0) != 1:
+                return launch_meta_delete_status(self.conn, launch_id)
+            return self.continue_started(normalized_delete_id, launch_id, actor=actor)
+        finally:
+            with _BACKGROUND_DELETE_LOCK:
+                _BACKGROUND_DELETE_IDS.discard(normalized_delete_id)
 
     def _resume_existing_attempt(
         self, existing: sqlite3.Row, launch_id: str, *, actor: str,
@@ -489,13 +606,18 @@ class NewAccountLaunchMetaDeleteService:
         *, response: Dict[str, Any] | None = None,
     ) -> None:
         with self.conn:
-            self.conn.execute(
-                """
-                UPDATE ad_new_account_launch_meta_delete_audit
-                SET status=?,results_json=?,response_json=?,updated_at=? WHERE delete_id=?
-                """,
-                (status, canonical_json(results), canonical_json(response or {}), utc_now(), delete_id),
-            )
+            if response is None:
+                self.conn.execute(
+                    """UPDATE ad_new_account_launch_meta_delete_audit
+                       SET status=?,results_json=?,updated_at=? WHERE delete_id=?""",
+                    (status, canonical_json(results), utc_now(), delete_id),
+                )
+            else:
+                self.conn.execute(
+                    """UPDATE ad_new_account_launch_meta_delete_audit
+                       SET status=?,results_json=?,response_json=?,updated_at=? WHERE delete_id=?""",
+                    (status, canonical_json(results), canonical_json(response), utc_now(), delete_id),
+                )
 
     @staticmethod
     def _body(response: Any, *, allow_error: bool = False) -> Dict[str, Any]:

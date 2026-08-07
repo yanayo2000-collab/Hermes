@@ -249,6 +249,7 @@ from app.secret_redaction import summarize_startup_health_payload as _summarize_
 from app.secret_redaction import redact_sensitive_payload as _redact_sensitive_payload
 from app.sqlite_observability import connect_observed_sqlite, sqlite_observability_snapshot
 from app.sqlite_bootstrap import ensure_sqlite_ready, sqlite_busy_timeout_ms
+from app.sqlite_write_window import connect_short_write_sqlite
 from app.sqlite_write_queue import (
     SQLiteWriteQueueError,
     db_writer_enabled,
@@ -1254,7 +1255,10 @@ def _aggregate_ad_metrics(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             if platform not in platforms_with_media:
                 _add_ad_metrics(metrics, row, af_media_fallback_keys)
         elif source == 'bindsuccess':
-            _add_ad_metrics(metrics, row, true_join_keys)
+            # BindSuccess is the event-level audit shadow for Tugao joins.  It
+            # must never contribute dashboard totals because TugaoFunnel
+            # already contains both paid and organic successful joins.
+            continue
         elif source in {'marketingdiagnostics', 'marketing_diagnostics'}:
             keys = list(tugao_funnel_keys + true_join_keys)
             if platform not in platforms_with_media:
@@ -4356,6 +4360,11 @@ def ad_dashboard_sync_error_user_message(error_message: str) -> str:
         dates = [item.strip() for item in raw.split(',') if item.strip()]
         if dates:
             return f"本地事实表缺少 {', '.join(dates)}，已跳过不完整缓存并尝试实时读取；后台补数任务会自动回填。"
+    if 'missing_tugao_funnel=' in text:
+        raw = text.split('missing_tugao_funnel=', 1)[1].split(';', 1)[0].strip()
+        dates = [item.strip() for item in raw.split(',') if item.strip()]
+        if dates:
+            return f"Tugao 入会数据尚未就绪（{', '.join(dates)}），当前保留上一成功版本，不使用审计影子数据补数。"
     if 'missing_appsflyer=' not in text:
         return text
     raw = text.split('missing_appsflyer=', 1)[1].split(';', 1)[0].strip()
@@ -7015,13 +7024,27 @@ class GroupAtmosphereSimulationRequest(BaseModel):
 
 
 class Database:
-    def __init__(self, db_path: str) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        initialize_schema: bool = True,
+        short_write_lane: bool = False,
+    ) -> None:
         self.db_path = db_path
         self._memory_conn: Optional[sqlite3.Connection] = None
+        self._short_write_lane = bool(short_write_lane and db_path != ':memory:')
         self._ensure_parent()
         if self.db_path != ":memory:":
-            ensure_sqlite_ready(self.db_path, profile="online")
-        self._init_schema()
+            ensure_sqlite_ready(
+                self.db_path,
+                profile="batch" if self._short_write_lane else "online",
+            )
+        schema_mode = str(os.getenv('MCN_SCHEMA_MIGRATIONS') or 'allow').strip().lower()
+        if initialize_schema and schema_mode in {'forbid', 'disabled', 'off'}:
+            raise RuntimeError('schema_migration_forbidden_for_process_role')
+        if initialize_schema:
+            self._init_schema()
 
     def _ensure_parent(self) -> None:
         if self.db_path != ":memory:":
@@ -7029,7 +7052,8 @@ class Database:
 
     def _configure_connection(self, conn: sqlite3.Connection) -> None:
         conn.row_factory = sqlite3.Row
-        conn.execute(f'PRAGMA busy_timeout = {sqlite_busy_timeout_ms("online")}')
+        profile = 'batch' if self._short_write_lane else 'online'
+        conn.execute(f'PRAGMA busy_timeout = {sqlite_busy_timeout_ms(profile)}')
         if self.db_path != ":memory:":
             conn.execute('PRAGMA synchronous=NORMAL')
 
@@ -7044,7 +7068,17 @@ class Database:
                 )
                 self._configure_connection(self._memory_conn)
             return self._memory_conn
-        conn = connect_observed_sqlite(self.db_path, source='app.main', timeout=30.0)
+        if self._short_write_lane:
+            conn = connect_short_write_sqlite(
+                self.db_path,
+                lock_name='sqlite-writer',
+                source='daily-newcomer-short-write',
+                timeout=30.0,
+                write_window_timeout_seconds=5.0,
+                write_lock_timeout_seconds=30.0,
+            )
+        else:
+            conn = connect_observed_sqlite(self.db_path, source='app.main', timeout=30.0)
         self._configure_connection(conn)
         return conn
 

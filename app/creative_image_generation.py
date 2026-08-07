@@ -5580,6 +5580,7 @@ def latest_generated_images(conn: sqlite3.Connection, *, limit: int = 12, target
                 'experiment_inferred': not bool(row['experiment_id']) and bool(inferred.get('experiment_id')),
                 'job_id': inferred.get('job_id', ''),
                 'generated_image_id': row['generated_image_id'] or row['image_id'],
+                'cleanup_after': str(_json_load(row['payload_json'], {}).get('cleanup_after') or ''),
             }
         for image in images:
             image['latest_adoption'] = latest_adoptions.get(str(image.get('image_id') or '')) or None
@@ -6245,6 +6246,129 @@ def mark_generated_image_adopted(
         'binding_status': binding_status,
         'external_write_performed': False,
     }
+
+
+def mark_replaced_creative_pending_cleanup(
+    conn: sqlite3.Connection,
+    *,
+    ad_id: str,
+    old_creative_id: str,
+    replacement_image_id: str,
+    replacement_creative_id: str,
+    retention_days: int = 7,
+    commit: bool = True,
+) -> Dict[str, Any]:
+    """Detach the superseded local image binding without deleting audit history."""
+    ensure_creative_image_generation_tables(conn)
+    normalized_ad_id = str(ad_id or '').strip()
+    normalized_old_creative = str(old_creative_id or '').strip()
+    if not normalized_ad_id or not normalized_old_creative:
+        return {'updated': 0, 'image_ids': [], 'cleanup_after': ''}
+    source_rows = conn.execute(
+        """
+        SELECT DISTINCT image_id FROM creative_adoption_records
+        WHERE ad_id=? AND creative_id=? AND image_id<>?
+        """,
+        (normalized_ad_id, normalized_old_creative, str(replacement_image_id or '').strip()),
+    ).fetchall()
+    image_ids = [str(row['image_id'] or '') for row in source_rows if str(row['image_id'] or '')]
+    if not image_ids:
+        return {'updated': 0, 'image_ids': [], 'cleanup_after': ''}
+    now = datetime.now(timezone.utc)
+    cleanup_after = (now + timedelta(days=max(1, int(retention_days or 7)))).isoformat()
+    placeholders = ','.join('?' for _ in image_ids)
+    rows = conn.execute(
+        f"""
+        SELECT adoption_id,payload_json FROM creative_adoption_records
+        WHERE ad_id=? AND image_id IN ({placeholders})
+          AND (creative_id='' OR creative_id=?)
+        """,
+        (normalized_ad_id, *image_ids, normalized_old_creative),
+    ).fetchall()
+    for row in rows:
+        payload = _json_load(row['payload_json'], {})
+        payload.update({
+            'cleanup_status': 'pending_cleanup',
+            'cleanup_after': cleanup_after,
+            'replaced_at': now.isoformat(),
+            'replacement_image_id': str(replacement_image_id or ''),
+            'replacement_creative_id': str(replacement_creative_id or ''),
+        })
+        conn.execute(
+            """
+            UPDATE creative_adoption_records
+            SET status='PENDING_CLEANUP',binding_status='pending_cleanup',payload_json=?,notes=?
+            WHERE adoption_id=?
+            """,
+            (
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                'replaced creative retained for seven-day audit window',
+                str(row['adoption_id']),
+            ),
+        )
+    if commit:
+        conn.commit()
+    return {'updated': len(rows), 'image_ids': image_ids, 'cleanup_after': cleanup_after}
+
+
+def archive_due_replaced_creatives(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 100,
+    now: Optional[datetime] = None,
+    commit: bool = True,
+) -> Dict[str, Any]:
+    """Archive due local assets only when no confirmed binding still references them."""
+    ensure_creative_image_generation_tables(conn)
+    current = now or datetime.now(timezone.utc)
+    rows = conn.execute(
+        """
+        SELECT adoption_id,image_id,payload_json FROM creative_adoption_records
+        WHERE status='PENDING_CLEANUP' AND binding_status='pending_cleanup'
+        ORDER BY adopted_at,adoption_id LIMIT ?
+        """,
+        (max(1, min(int(limit or 100), 500)),),
+    ).fetchall()
+    due_images: List[str] = []
+    for row in rows:
+        payload = _json_load(row['payload_json'], {})
+        raw_deadline = str(payload.get('cleanup_after') or '')
+        try:
+            deadline = datetime.fromisoformat(raw_deadline.replace('Z', '+00:00'))
+        except ValueError:
+            continue
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        if deadline <= current:
+            due_images.append(str(row['image_id'] or ''))
+    archived: List[str] = []
+    for image_id in dict.fromkeys(item for item in due_images if item):
+        active = conn.execute(
+            """
+            SELECT 1 FROM creative_adoption_records
+            WHERE image_id=? AND status='USED_IN_AD'
+              AND binding_status IN ('confirmed','matched') LIMIT 1
+            """,
+            (image_id,),
+        ).fetchone()
+        if active:
+            continue
+        conn.execute(
+            """
+            UPDATE creative_adoption_records
+            SET status='ARCHIVED',binding_status='archived',notes='seven-day replacement retention completed'
+            WHERE image_id=? AND status='PENDING_CLEANUP' AND binding_status='pending_cleanup'
+            """,
+            (image_id,),
+        )
+        conn.execute(
+            "UPDATE creative_generated_images SET review_status='archived' WHERE image_id=?",
+            (image_id,),
+        )
+        archived.append(image_id)
+    if commit:
+        conn.commit()
+    return {'scanned': len(rows), 'archived': archived}
 
 
 def auto_adopt_generated_image_by_meta_asset(
