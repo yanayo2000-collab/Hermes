@@ -934,6 +934,7 @@ class ExecutionTaskService:
         action = self.get_operation_action(operation_action_id)
         action_payload = dict(action.get("payload_json") or {})
         plan = dict(action_payload.get("plan") or {})
+        action_type = str(action.get("action_type") or "").upper()
         target_account_id = str(plan.get("target_account_id") or "").removeprefix("act_")
         cells = list(plan.get("cells") or [])
         bindings = []
@@ -970,13 +971,21 @@ class ExecutionTaskService:
                     "source_ad_id": str(object_ids.get(f"{prefix}ad_id") or ""),
                 }, image_id))
         else:
+            replacement_image_id = ""
+            if action_type == "REPLACE_CREATIVE":
+                after_creative = dict(dict(plan.get("after_json") or {}).get("creative") or {})
+                replacement_image_id = str(
+                    after_creative.get("image_id")
+                    or dict(dict(plan.get("steps") or {}).get("IMAGE_UPLOAD") or {}).get("image_id")
+                    or ""
+                ).strip()
             bindings.append((str(action_payload.get("experiment_id") or ""), {
                 "source_campaign_id": str(object_ids.get("campaign_id") or ""),
                 "source_adset_id": str(object_ids.get("adset_id") or ""),
                 "source_creative_id": str(object_ids.get("creative_id") or ""),
                 "source_ad_id": str(object_ids.get("ad_id") or object_ids.get("target_id") or ""),
-            }, ""))
-        if require_complete and cells and str(action.get("action_type") or "").upper() == "CREATE_PAUSED_AD":
+            }, replacement_image_id))
+        if require_complete and cells and action_type == "CREATE_PAUSED_AD":
             for index, (experiment_id, values, image_id) in enumerate(bindings, start=1):
                 required = {"experiment_id": experiment_id, "image_id": image_id, **values}
                 missing = [key for key, value in required.items() if not str(value or "").strip()]
@@ -999,11 +1008,23 @@ class ExecutionTaskService:
             )
             ad_id = str(values.get("source_ad_id") or "").strip()
             if ad_id:
-                from app.creative_image_generation import mark_generated_image_adopted
+                from app.creative_image_generation import (
+                    mark_generated_image_adopted,
+                    mark_replaced_creative_pending_cleanup,
+                )
                 from app.growth.ad_experiment_service import AdExperimentService
 
                 experiment = AdExperimentService(self.conn).get(experiment_id)
                 if image_id:
+                    if action_type == "REPLACE_CREATIVE":
+                        mark_replaced_creative_pending_cleanup(
+                            self.conn,
+                            ad_id=ad_id,
+                            old_creative_id=str(dict(plan.get("before_json") or {}).get("creative_id") or ""),
+                            replacement_image_id=image_id,
+                            replacement_creative_id=str(values.get("source_creative_id") or ""),
+                            commit=False,
+                        )
                     mark_generated_image_adopted(
                         self.conn,
                         image_id=image_id,
@@ -1014,7 +1035,10 @@ class ExecutionTaskService:
                         adopted_by="meta_execution_worker",
                         experiment_id=experiment_id,
                         experiment_code=str(experiment.get("experiment_code") or ""),
-                        adoption_type="verified_meta_creation",
+                        adoption_type=(
+                            "verified_meta_replacement" if action_type == "REPLACE_CREATIVE"
+                            else "verified_meta_creation"
+                        ),
                         binding_method="META_EXECUTION_RECEIPT_MATCH",
                         binding_confidence="HIGH",
                         binding_status="confirmed",
@@ -1090,6 +1114,54 @@ class ExecutionTaskService:
                         str(plan.get("launch_id") or ""), now, now,
                     ),
                 )
+
+    def reconcile_verified_replacement_bindings(self, *, limit: int = 100) -> Dict[str, Any]:
+        """Backfill local asset lineage for verified replacement writes exactly once."""
+        rows = self.conn.execute(
+            """
+            SELECT a.operation_action_id,a.payload_json,t.meta_object_ids_json
+            FROM growth_operation_action a
+            JOIN meta_execution_task t ON t.operation_action_id=a.operation_action_id
+            WHERE a.action_type='REPLACE_CREATIVE' AND a.status='VERIFIED' AND t.status='SUCCESS'
+            ORDER BY t.finished_at,t.execution_task_id
+            LIMIT ?
+            """,
+            (max(1, min(int(limit or 100), 500)),),
+        ).fetchall()
+        repaired: List[str] = []
+        skipped: List[str] = []
+        for row in rows:
+            operation_action_id = str(row["operation_action_id"] or "")
+            payload = decode_json(row["payload_json"], {})
+            plan = dict(payload.get("plan") or {})
+            after_creative = dict(dict(plan.get("after_json") or {}).get("creative") or {})
+            image_id = str(
+                after_creative.get("image_id")
+                or dict(dict(plan.get("steps") or {}).get("IMAGE_UPLOAD") or {}).get("image_id")
+                or ""
+            ).strip()
+            object_ids = decode_json(row["meta_object_ids_json"], {})
+            ad_id = str(object_ids.get("ad_id") or object_ids.get("target_id") or "").strip()
+            creative_id = str(object_ids.get("creative_id") or "").strip()
+            if not image_id or not ad_id or not creative_id:
+                skipped.append(operation_action_id)
+                continue
+            existing = self.conn.execute(
+                """
+                SELECT 1 FROM creative_adoption_records
+                WHERE image_id=? AND ad_id=? AND creative_id=?
+                  AND status='USED_IN_AD' AND binding_status IN ('confirmed','matched')
+                LIMIT 1
+                """,
+                (image_id, ad_id, creative_id),
+            ).fetchone()
+            if existing:
+                skipped.append(operation_action_id)
+                continue
+            with self.conn:
+                self._bind_experiment_meta_objects(operation_action_id, object_ids, require_complete=True)
+            repaired.append(operation_action_id)
+        return {"scanned": len(rows), "repaired": repaired, "skipped": skipped}
 
     @staticmethod
     def _serialize_task(row: sqlite3.Row) -> Dict[str, Any]:

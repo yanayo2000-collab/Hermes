@@ -112,7 +112,7 @@ class NewAccountLaunchAutopilot:
             SELECT e.* FROM ad_experiment e
             LEFT JOIN ad_meta_review_state m ON m.experiment_id=e.experiment_id
             WHERE e.source_ad_id<>''
-              AND e.state IN ('META_REVIEW_PENDING','READY_FOR_ACTIVATION','RUNNING','MATURING','CREATIVE_REJECTED','ADJUSTING','EVALUATING_ADJUSTMENT')
+              AND e.state IN ('META_REVIEW_PENDING','READY_FOR_ACTIVATION','RUNNING','MATURING','CREATIVE_REJECTED','ADJUSTING','EVALUATING_ADJUSTMENT','DATA_INCOMPLETE')
               AND (m.last_checked_at IS NULL OR m.last_checked_at<?)
             ORDER BY COALESCE(m.last_checked_at,''),e.updated_at
             LIMIT ?
@@ -203,20 +203,25 @@ class NewAccountLaunchAutopilot:
                     remediation in {"SUBMITTED", "RESOLVED"}
                     and effective in {"PENDING_REVIEW", "IN_PROCESS", "ACTIVE"}
                     and str(review.get("creative_id") or "")
-                    and str(review.get("creative_id") or "") != str(current.get("source_creative_id") or "")
                 ):
                     target = "RUNNING" if effective == "ACTIVE" else "META_REVIEW_PENDING"
                     self.conn.execute(
                         "UPDATE ad_experiment SET source_creative_id=?,updated_at=? WHERE experiment_id=?",
                         (str(review.get("creative_id")), now, experiment_id),
                     )
-                    self.experiments.transition(
-                        experiment_id, target, actor="growth-meta-review-monitor",
-                        reason=f"replacement_creative:{effective}", event_type="META_REPLACEMENT_REVIEWED",
-                        evidence={"ad_id": ad_id, "creative_id": review.get("creative_id"), "effective_status": effective},
-                    )
+                    if target in EXPERIMENT_TRANSITIONS.get(str(current["state"]), set()):
+                        self.experiments.transition(
+                            experiment_id, target, actor="growth-meta-review-monitor",
+                            reason=f"replacement_creative:{effective}", event_type="META_REPLACEMENT_REVIEWED",
+                            evidence={"ad_id": ad_id, "creative_id": review.get("creative_id"), "effective_status": effective},
+                        )
             results.append({"experiment_id": experiment_id, "status": effective or "UNKNOWN"})
         return {"processed": len(results), "results": results, "status": "OK"}
+
+    def reconcile_creative_cleanup(self, *, limit: int = 100) -> Dict[str, Any]:
+        from app.creative_image_generation import archive_due_replaced_creatives
+
+        return archive_due_replaced_creatives(self.conn, limit=limit)
 
     def _rejection_row(self, experiment_id: str) -> Dict[str, Any]:
         row = self.conn.execute(
