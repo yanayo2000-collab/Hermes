@@ -155,6 +155,95 @@ def _capability() -> tuple[dict, dict, dict]:
     return manifest, receipt, evidence
 
 
+def _audience(capability_receipt: dict, subject: dict) -> tuple[dict, dict, dict]:
+    audience_subject = {
+        "ad_account_id": subject["ad_account_id"],
+        "campaign_id": subject["cells"][0]["campaign_id"],
+        "market": subject["market"], "study_id": subject["study_id"],
+        "cells": [
+            {
+                "cell_id": cell["cell_id"], "study_cell_id": cell["study_cell_id"],
+                "adset_id": cell["adset_id"], "ad_id": cell["ad_id"],
+            }
+            for cell in subject["cells"]
+        ],
+    }
+    endpoints = [
+        "/v25.0/study-1", "/v25.0/study-1/cells",
+        "/v25.0/sc-1/adsets", "/v25.0/adset-1", "/v25.0/ad-1",
+        "/v25.0/sc-2/adsets", "/v25.0/adset-2", "/v25.0/ad-2",
+        "/v25.0/act_1012060198097836/delivery_estimate",
+        "/v25.0/act_1012060198097836/delivery_estimate",
+        "/v25.0/act_1012060198097836/delivery_estimate",
+        "/v25.0/adset-1", "/v25.0/ad-1", "/v25.0/sc-1/adsets",
+        "/v25.0/adset-2", "/v25.0/ad-2", "/v25.0/sc-2/adsets",
+        "/v25.0/study-1", "/v25.0/study-1/cells",
+    ]
+    journal = [
+        {
+            "endpoint": endpoint, "fields": "", "page": 1, "http_status": 200,
+            "response_hash": "8" * 64, "response_size": 1,
+            "observed_at": "2026-08-07T10:30:00+00:00",
+        }
+        for endpoint in endpoints
+    ]
+    proof = {
+        "allowed_methods": ["GET"], "get_count": len(journal), "post_count": 0,
+        "put_count": 0, "patch_count": 0, "delete_count": 0,
+        "redirect_count": 0, "batch_count": 0, "async_job_count": 0,
+        "meta_object_writes": 0, "local_db_writes": 0,
+        "request_journal_hash": hash_json(journal),
+    }
+    evidence = {
+        "schema_version": "gle-g0-04a-audience-risk-evidence-v1",
+        "request_hash": "9" * 64, "source_snapshot_sha256": SHA,
+        "g004_receipt_body_hash": capability_receipt["receipt_body_hash"],
+        "g004_evidence_bundle_hash": capability_receipt["evidence_bundle_hash"],
+        "subject": audience_subject,
+        "live_projection_hashes": {"C1": "1" * 64, "C2": "1" * 64, "graph": "2" * 64},
+        "delivery_estimates": {
+            "C1": {"lower": 1000, "upper": 2000, "estimate_ready": True},
+            "C2": {"lower": 1000, "upper": 2000, "estimate_ready": True},
+            "reference": {"lower": 1000, "upper": 2000, "estimate_ready": True},
+        },
+        "configured_targeting_similarity": "IDENTICAL",
+        "inference_basis": "CONFIGURATION_AND_SPLIT_TEST_TOPOLOGY_ONLY",
+        "transport_proof": proof, "transport_journal": journal,
+        "checked_at": "2026-08-07T10:30:00+00:00",
+    }
+    evidence["evidence_body_hash"] = hash_json(evidence)
+    receipt = {
+        "schema_version": "gle-g0-04a-audience-risk-receipt-v1",
+        "engine_version": "gle-g0-04a-audience-risk-audit-v1", "audit_id": "g004a-1",
+        "request_hash": "9" * 64, "source_snapshot_sha256": SHA,
+        "g004_receipt_body_hash": capability_receipt["receipt_body_hash"],
+        "g004_evidence_bundle_hash": capability_receipt["evidence_bundle_hash"],
+        "subject": audience_subject, "checked_at": "2026-08-07T10:30:00+00:00",
+        "expires_at": "2026-08-08T00:00:00+00:00",
+        "checks": {
+            key: {"status": "PASS", "reason_codes": [], "evidence_refs": []}
+            for key in (
+                "g004_binding", "topology", "targeting_equivalence", "delivery_estimate",
+                "freshness", "split_test_topology", "zero_write",
+            )
+        }, "outcome": "INCOMPLETE",
+        "audience_overlap_classification": "TARGETING_CONFIG_EQUIVALENT",
+        "internal_auction_classification": "UNKNOWN",
+        "evidence_body_hash": evidence["evidence_body_hash"], "not_gate_receipt": True,
+        "gate0_result_ceiling": "QUASI_ONLY", "blocking_reasons": [
+            "AUDIENCE_OVERLAP_UNKNOWN", "INTERNAL_AUCTION_CONTAMINATION_UNKNOWN",
+        ],
+    }
+    receipt["receipt_body_hash"] = hash_json(receipt)
+    manifest = {
+        "schema_version": "gle-g0-04a-artifact-manifest-v1",
+        "receipt_file": "audience-receipt.json", "receipt_sha256": _sha_line(receipt),
+        "evidence_file": "audience-evidence.json", "evidence_sha256": _sha_line(evidence),
+        "committed": True,
+    }
+    return manifest, receipt, evidence
+
+
 def _attribution() -> tuple[dict, dict]:
     input_contract = {
         "account_id": "1012060198097836", "market": "MX",
@@ -193,6 +282,7 @@ def _attribution() -> tuple[dict, dict]:
 
 def _bundle(*, golden: bool = False, allowed: bool = True) -> dict:
     manifest, receipt, evidence = _capability()
+    audience_manifest, audience_receipt, audience_evidence = _audience(receipt, _subject())
     attr_input, attr_report = _attribution()
     transport = {
         "schema_version": "gle-g0-02b-qualified-transport-deployment-v1",
@@ -223,6 +313,8 @@ def _bundle(*, golden: bool = False, allowed: bool = True) -> dict:
         "source_snapshot_sha256": SHA,
         "capability_manifest": manifest, "capability_receipt": receipt,
         "capability_evidence": evidence,
+        "audience_manifest": audience_manifest, "audience_receipt": audience_receipt,
+        "audience_evidence": audience_evidence,
         "attribution_input_contract": attr_input, "attribution_report": attr_report,
         "experiment_binding_observation": experiment_binding,
         "allocation_observation": {
@@ -269,7 +361,8 @@ def test_complete_available_inputs_still_build_only_unsigned_quasi_candidate():
     assert candidate["attestation_status"] == "PENDING"
     assert "receipt_hash" not in candidate
     assert "POWER_GOLDEN_VECTORS_UNAPPROVED" in candidate["blocking_reasons"]
-    assert "AUDIENCE_OVERLAP_UNKNOWN" in candidate["blocking_reasons"]
+    assert candidate["checks"]["audience_risk"]["status"] == "UNKNOWN"
+    assert "INTERNAL_AUCTION_CONTAMINATION_UNKNOWN" in candidate["blocking_reasons"]
     unsigned = dict(candidate)
     digest = unsigned.pop("candidate_body_hash")
     assert hash_json(unsigned) == digest
@@ -292,6 +385,8 @@ def test_polluted_study_is_not_feasible_and_cannot_be_signed_here():
     raw["capability_receipt"].pop("receipt_body_hash")
     raw["capability_receipt"]["receipt_body_hash"] = hash_json(raw["capability_receipt"])
     raw["capability_manifest"]["receipt_sha256"] = _sha_line(raw["capability_receipt"])
+    audience = _audience(raw["capability_receipt"], raw["subject"])
+    raw["audience_manifest"], raw["audience_receipt"], raw["audience_evidence"] = audience
     candidate = assess_gate0(raw, now=NOW)
     assert candidate["technical_candidate_result"] == "NOT_FEASIBLE"
     assert "EXTERNAL_ACTIVATION_CONTAMINATION" in candidate["blocking_reasons"]
@@ -308,7 +403,76 @@ def test_golden_vectors_unapproved_blocks_power_without_declaring_study_not_feas
 def test_allowlist_and_audience_unknown_are_explicit_blockers():
     raw = _bundle(allowed=False)
     candidate = assess_gate0(raw, now=NOW)
-    assert {"CANARY_ACCOUNT_NOT_ALLOWLISTED", "CANARY_MARKET_NOT_ALLOWLISTED", "CANARY_ACTION_NOT_ALLOWLISTED", "AUDIENCE_OVERLAP_UNKNOWN"}.issubset(candidate["blocking_reasons"])
+    assert {"CANARY_ACCOUNT_NOT_ALLOWLISTED", "CANARY_MARKET_NOT_ALLOWLISTED", "CANARY_ACTION_NOT_ALLOWLISTED"}.issubset(candidate["blocking_reasons"])
+
+
+def test_audience_artifact_is_subject_bound_and_cannot_claim_pass_when_unknown():
+    raw = _bundle()
+    raw["audience_receipt"]["outcome"] = "INCOMPLETE"
+    raw["audience_receipt"]["audience_overlap_classification"] = "UNKNOWN"
+    raw["audience_receipt"]["internal_auction_classification"] = "UNKNOWN"
+    raw["audience_receipt"]["blocking_reasons"] = ["DELIVERY_ESTIMATE_UNAVAILABLE"]
+    raw["audience_receipt"].pop("receipt_body_hash")
+    raw["audience_receipt"]["receipt_body_hash"] = hash_json(raw["audience_receipt"])
+    raw["audience_manifest"]["receipt_sha256"] = _sha_line(raw["audience_receipt"])
+    candidate = assess_gate0(raw, now=NOW)
+    assert candidate["checks"]["audience_risk"]["status"] == "UNKNOWN"
+    assert "AUDIENCE_OVERLAP_UNKNOWN" in candidate["blocking_reasons"]
+
+    # A caller cannot borrow a self-consistent audience fragment from another
+    # Cell/AdSet subject, even when every artifact hash is recomputed.
+    raw = _bundle()
+    borrowed_subject = deepcopy(raw["subject"])
+    borrowed_subject["cells"][0]["adset_id"] = "borrowed"
+    audience = _audience(raw["capability_receipt"], borrowed_subject)
+    raw["audience_manifest"], raw["audience_receipt"], raw["audience_evidence"] = audience
+    with pytest.raises(G005ContractError, match="G005_AUDIENCE_SUBJECT_MISMATCH"):
+        assess_gate0(raw, now=NOW)
+
+
+def test_audience_pass_labels_without_required_checks_remain_unknown():
+    raw = _bundle()
+    raw["audience_receipt"]["checks"] = {}
+    raw["audience_receipt"].pop("receipt_body_hash")
+    raw["audience_receipt"]["receipt_body_hash"] = hash_json(raw["audience_receipt"])
+    raw["audience_manifest"]["receipt_sha256"] = _sha_line(raw["audience_receipt"])
+    candidate = assess_gate0(raw, now=NOW)
+    assert candidate["checks"]["audience_risk"]["status"] == "UNKNOWN"
+    assert "AUDIENCE_OVERLAP_UNKNOWN" in candidate["blocking_reasons"]
+
+    # Even a fully re-hashed fragment cannot delete consumer-owned blockers.
+    raw = _bundle()
+    raw["audience_receipt"]["blocking_reasons"] = []
+    raw["audience_receipt"].pop("receipt_body_hash")
+    raw["audience_receipt"]["receipt_body_hash"] = hash_json(raw["audience_receipt"])
+    raw["audience_manifest"]["receipt_sha256"] = _sha_line(raw["audience_receipt"])
+    candidate = assess_gate0(raw, now=NOW)
+    assert candidate["checks"]["audience_risk"]["status"] == "UNKNOWN"
+    assert {
+        "AUDIENCE_OVERLAP_UNKNOWN", "INTERNAL_AUCTION_CONTAMINATION_UNKNOWN",
+    }.issubset(candidate["blocking_reasons"])
+
+
+def test_audience_expiry_uses_assessment_clock_and_cannot_outlive_g004():
+    raw = _bundle()
+    stale = assess_gate0(raw, now=datetime(2026, 8, 9, 0, 0, tzinfo=timezone.utc))
+    assert "AUDIENCE_RECEIPT_EXPIRED" in stale["blocking_reasons"]
+
+    raw = _bundle()
+    raw["audience_receipt"]["expires_at"] = "2026-08-09T00:00:00+00:00"
+    raw["audience_receipt"].pop("receipt_body_hash")
+    raw["audience_receipt"]["receipt_body_hash"] = hash_json(raw["audience_receipt"])
+    raw["audience_manifest"]["receipt_sha256"] = _sha_line(raw["audience_receipt"])
+    candidate = assess_gate0(raw, now=NOW)
+    assert "AUDIENCE_RECEIPT_EXPIRED" in candidate["blocking_reasons"]
+
+
+def test_audience_checked_at_cannot_be_after_assessment_request():
+    raw = _bundle()
+    raw["requested_at"] = "2026-08-07T10:15:00+00:00"
+    raw["data_cutoff_at"] = "2026-08-07T10:00:00+00:00"
+    candidate = assess_gate0(raw, now=NOW)
+    assert "AUDIENCE_TIME_CHAIN_INVALID" in candidate["blocking_reasons"]
 
 
 def test_impression_balance_does_not_hide_spend_skew():

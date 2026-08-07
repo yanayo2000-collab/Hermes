@@ -130,6 +130,207 @@ def _validate_capability_artifacts(
     return receipt, evidence
 
 
+def _validate_audience_artifacts(
+    manifest_raw: Any,
+    receipt_raw: Any,
+    evidence_raw: Any,
+    *,
+    subject: Mapping[str, Any],
+    source_snapshot_sha256: str,
+    capability_receipt_hash: str,
+    capability_evidence_hash: str,
+    capability_expires_at: str,
+    requested_at: datetime,
+    assessment_clock: datetime,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    manifest = _exact_object(
+        manifest_raw,
+        ("schema_version", "receipt_file", "receipt_sha256", "evidence_file", "evidence_sha256", "committed"),
+        "G005_AUDIENCE_MANIFEST_INVALID",
+    )
+    receipt = dict(receipt_raw) if isinstance(receipt_raw, dict) else {}
+    evidence = dict(evidence_raw) if isinstance(evidence_raw, dict) else {}
+    if (
+        manifest["schema_version"] != "gle-g0-04a-artifact-manifest-v1"
+        or manifest["committed"] is not True
+        or manifest["receipt_sha256"] != _serialized_sha256(receipt)
+        or manifest["evidence_sha256"] != _serialized_sha256(evidence)
+    ):
+        raise G005ContractError("G005_AUDIENCE_MANIFEST_INVALID")
+    receipt_hash = str(receipt.get("receipt_body_hash") or "")
+    evidence_hash = str(evidence.get("evidence_body_hash") or "")
+    unsigned_receipt = dict(receipt)
+    unsigned_receipt.pop("receipt_body_hash", None)
+    unsigned_evidence = dict(evidence)
+    unsigned_evidence.pop("evidence_body_hash", None)
+    if (
+        receipt.get("schema_version") != "gle-g0-04a-audience-risk-receipt-v1"
+        or evidence.get("schema_version") != "gle-g0-04a-audience-risk-evidence-v1"
+        or hash_json(unsigned_receipt) != receipt_hash
+        or hash_json(unsigned_evidence) != evidence_hash
+        or receipt.get("evidence_body_hash") != evidence_hash
+        or receipt.get("subject") != evidence.get("subject")
+    ):
+        raise G005ContractError("G005_AUDIENCE_HASH_MISMATCH")
+    expected_subject = {
+        "ad_account_id": subject["ad_account_id"],
+        "campaign_id": subject["cells"][0]["campaign_id"],
+        "market": subject["market"],
+        "study_id": subject["study_id"],
+        "cells": [
+            {
+                "cell_id": cell["cell_id"],
+                "study_cell_id": cell["study_cell_id"],
+                "adset_id": cell["adset_id"],
+                "ad_id": cell["ad_id"],
+            }
+            for cell in subject["cells"]
+        ],
+    }
+    if (
+        receipt.get("subject") != expected_subject
+        or receipt.get("source_snapshot_sha256") != source_snapshot_sha256
+        or evidence.get("source_snapshot_sha256") != source_snapshot_sha256
+        or receipt.get("g004_receipt_body_hash") != capability_receipt_hash
+        or evidence.get("g004_receipt_body_hash") != capability_receipt_hash
+        or receipt.get("g004_evidence_bundle_hash") != capability_evidence_hash
+        or evidence.get("g004_evidence_bundle_hash") != capability_evidence_hash
+    ):
+        raise G005ContractError("G005_AUDIENCE_SUBJECT_MISMATCH")
+    try:
+        expires = _utc(receipt.get("expires_at"), "G005_AUDIENCE_RECEIPT_EXPIRED")
+    except G005ContractError:
+        expires = datetime.min.replace(tzinfo=timezone.utc)
+    reasons = list(receipt.get("blocking_reasons") or [])
+    # G0-04A v1 proves configuration/topology only.  The consumer owns these
+    # blockers; a self-hashed producer artifact cannot remove them.
+    reasons.extend([
+        "AUDIENCE_OVERLAP_UNKNOWN", "INTERNAL_AUCTION_CONTAMINATION_UNKNOWN",
+    ])
+    expected_checks = {
+        "g004_binding", "topology", "targeting_equivalence", "delivery_estimate",
+        "freshness", "split_test_topology", "zero_write",
+    }
+    checks = receipt.get("checks")
+    proof = dict(evidence.get("transport_proof") or {})
+    journal = evidence.get("transport_journal")
+    estimates = evidence.get("delivery_estimates")
+    projections = evidence.get("live_projection_hashes")
+    try:
+        checked_at = _utc(receipt.get("checked_at"), "G005_AUDIENCE_RECEIPT_EXPIRED")
+    except G005ContractError:
+        checked_at = datetime.max.replace(tzinfo=timezone.utc)
+    expected_endpoints = [
+        f"/v25.0/{subject['study_id']}", f"/v25.0/{subject['study_id']}/cells",
+        *[
+            endpoint
+            for cell in subject["cells"]
+            for endpoint in (
+                f"/v25.0/{cell['study_cell_id']}/adsets",
+                f"/v25.0/{cell['adset_id']}", f"/v25.0/{cell['ad_id']}",
+            )
+        ],
+        *[f"/v25.0/act_{subject['ad_account_id']}/delivery_estimate"] * 3,
+        *[
+            endpoint
+            for cell in subject["cells"]
+            for endpoint in (
+                f"/v25.0/{cell['adset_id']}", f"/v25.0/{cell['ad_id']}",
+                f"/v25.0/{cell['study_cell_id']}/adsets",
+            )
+        ],
+        f"/v25.0/{subject['study_id']}", f"/v25.0/{subject['study_id']}/cells",
+    ]
+    time_chain_valid = checked_at <= requested_at <= assessment_clock < expires
+    valid_config_fragment = (
+        receipt.get("engine_version") == "gle-g0-04a-audience-risk-audit-v1"
+        and isinstance(checks, dict)
+        and set(checks) == expected_checks
+        and all(
+            isinstance(checks.get(key), dict)
+            and checks[key].get("status") == "PASS"
+            and checks[key].get("reason_codes") == []
+            for key in expected_checks
+        )
+        and evidence.get("configured_targeting_similarity") == "IDENTICAL"
+        and evidence.get("inference_basis") == "CONFIGURATION_AND_SPLIT_TEST_TOPOLOGY_ONLY"
+        and receipt.get("request_hash") == evidence.get("request_hash")
+        and receipt.get("checked_at") == evidence.get("checked_at")
+        and isinstance(estimates, dict)
+        and set(estimates) == {"C1", "C2", "reference"}
+        and all(
+            isinstance(estimates[key], dict)
+            and set(estimates[key]) == {"lower", "upper", "estimate_ready"}
+            and estimates[key].get("estimate_ready") is True
+            and isinstance(estimates[key].get("lower"), int)
+            and isinstance(estimates[key].get("upper"), int)
+            and not isinstance(estimates[key].get("lower"), bool)
+            and estimates[key]["lower"] > 0
+            and estimates[key]["upper"] >= estimates[key]["lower"]
+            for key in ("C1", "C2", "reference")
+        )
+        and isinstance(projections, dict)
+        and set(projections) == {"C1", "C2", "graph"}
+        and all(isinstance(value, str) and bool(_SHA_RE.fullmatch(value)) for value in projections.values())
+        and projections["C1"] == projections["C2"]
+        and time_chain_valid
+        and (expires - checked_at).total_seconds() <= 900
+        and isinstance(proof.get("get_count"), int)
+        and proof.get("get_count", 0) > 0
+        and isinstance(proof.get("request_journal_hash"), str)
+        and bool(_SHA_RE.fullmatch(proof["request_journal_hash"]))
+        and isinstance(journal, list)
+        and proof["get_count"] == len(journal)
+        and proof["request_journal_hash"] == hash_json(journal)
+        and sorted(str(item.get("endpoint") or "") for item in journal if isinstance(item, dict))
+        == sorted(expected_endpoints)
+        and all(
+            isinstance(item, dict)
+            and set(item) == {
+                "endpoint", "fields", "page", "http_status", "response_hash",
+                "response_size", "observed_at",
+            }
+            and item.get("page") == 1
+            and item.get("http_status") == 200
+            and isinstance(item.get("response_hash"), str)
+            and bool(_SHA_RE.fullmatch(item["response_hash"]))
+            and isinstance(item.get("response_size"), int)
+            and 0 < item["response_size"] <= 2 * 1024 * 1024
+            and item.get("observed_at") == receipt.get("checked_at")
+            for item in journal
+        )
+    )
+    try:
+        capability_expires = _utc(capability_expires_at, "G005_AUDIENCE_RECEIPT_EXPIRED")
+    except G005ContractError:
+        capability_expires = datetime.min.replace(tzinfo=timezone.utc)
+    if expires > capability_expires or expires <= assessment_clock:
+        reasons.append("AUDIENCE_RECEIPT_EXPIRED")
+    if not time_chain_valid:
+        reasons.append("AUDIENCE_TIME_CHAIN_INVALID")
+    if (
+        not valid_config_fragment
+        or receipt.get("outcome") != "INCOMPLETE"
+        or receipt.get("audience_overlap_classification") != "TARGETING_CONFIG_EQUIVALENT"
+        or receipt.get("internal_auction_classification") != "UNKNOWN"
+        or receipt.get("not_gate_receipt") is not True
+        or receipt.get("gate0_result_ceiling") != "QUASI_ONLY"
+        or proof.get("allowed_methods") != ["GET"]
+        or any(int(proof.get(key) or 0) for key in (
+            "post_count", "put_count", "patch_count", "delete_count", "redirect_count",
+            "batch_count", "async_job_count", "meta_object_writes", "local_db_writes",
+        ))
+    ):
+        reasons.extend([
+            "AUDIENCE_OVERLAP_UNKNOWN", "INTERNAL_AUCTION_CONTAMINATION_UNKNOWN",
+        ])
+    return receipt, _check(
+        "UNKNOWN",
+        reasons,
+        [receipt_hash, evidence_hash],
+    )
+
+
 def _validate_attribution_artifact(
     report_raw: Any,
     input_raw: Any,
@@ -703,16 +904,6 @@ def _governance_check(raw: Any, subject: Mapping[str, Any]) -> Dict[str, Any]:
     return _check("PASS" if not reasons else "INCOMPLETE", reasons, [contract.canonical_hash])
 
 
-def _audience_risk_check() -> Dict[str, Any]:
-    # G0-04 v1 does not produce a subject-bound overlap/internal-auction
-    # receipt. Keep both dimensions UNKNOWN instead of trusting caller JSON.
-    return _check(
-        "UNKNOWN",
-        ["AUDIENCE_OVERLAP_UNKNOWN", "INTERNAL_AUCTION_CONTAMINATION_UNKNOWN"],
-        ["g004_v1_has_no_audience_risk_fragment"],
-    )
-
-
 def _study_integrity_check(capability: Mapping[str, Any]) -> Dict[str, Any]:
     reasons = set(str(item) for item in (capability.get("blocking_reasons") or []))
     polluted_codes = {
@@ -734,6 +925,7 @@ def assess_gate0(raw: Mapping[str, Any], *, now: Optional[datetime] = None) -> D
         "schema_version", "assessment_id", "requested_at", "data_cutoff_at", "subject", "policy",
         "qualified_transport_evidence",
         "source_snapshot_sha256", "capability_manifest", "capability_receipt", "capability_evidence",
+        "audience_manifest", "audience_receipt", "audience_evidence",
         "attribution_input_contract", "attribution_report", "allocation_observation",
         "experiment_binding_observation", "qualified_join_observation", "baseline_observation", "governance_contract",
     ), "G005_INPUT_SCHEMA_INVALID")
@@ -762,6 +954,15 @@ def assess_gate0(raw: Mapping[str, Any], *, now: Optional[datetime] = None) -> D
         raise G005ContractError("G005_CAPABILITY_EVIDENCE_HASH_MISMATCH")
     if capability.get("source_snapshot_sha256") != source_snapshot_sha256:
         raise G005ContractError("G005_CAPABILITY_SOURCE_SNAPSHOT_MISMATCH")
+    audience_receipt, audience_check = _validate_audience_artifacts(
+        bundle["audience_manifest"], bundle["audience_receipt"], bundle["audience_evidence"],
+        subject=subject, source_snapshot_sha256=source_snapshot_sha256,
+        capability_receipt_hash=str(capability.get("receipt_body_hash") or ""),
+        capability_evidence_hash=str(capability_evidence.get("evidence_bundle_hash") or ""),
+        capability_expires_at=str(capability.get("expires_at") or ""),
+        requested_at=requested_at,
+        assessment_clock=clock,
+    )
     attribution = _validate_attribution_artifact(
         bundle["attribution_report"], bundle["attribution_input_contract"],
         subject, source_snapshot_sha256,
@@ -787,7 +988,7 @@ def assess_gate0(raw: Mapping[str, Any], *, now: Optional[datetime] = None) -> D
     integrity_check = _study_integrity_check(capability)
     checks = {
         "governance_allowlist": _governance_check(bundle["governance_contract"], subject),
-        "audience_risk": _audience_risk_check(),
+        "audience_risk": audience_check,
         "capability": capability_check,
         "canonical_attribution": _check(
             attribution["status"], attribution["reason_codes"], [attribution["report_hash"]],
@@ -811,6 +1012,7 @@ def assess_gate0(raw: Mapping[str, Any], *, now: Optional[datetime] = None) -> D
         "subject": subject, "policy_hash": hash_json(policy),
         "source_snapshot_sha256": source_snapshot_sha256,
         "capability_receipt_hash": capability["receipt_body_hash"],
+        "audience_receipt_hash": audience_receipt["receipt_body_hash"],
         "attribution_report_hash": attribution["report_hash"],
         "checks": checks, "allocation_assessment": allocation,
         "qualified_join_assessment": qualified, "power_assessment": power,
