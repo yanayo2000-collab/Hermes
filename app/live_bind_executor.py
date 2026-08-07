@@ -396,12 +396,78 @@ class LiveChromeBindExecutor:
             raw_result['cms_submit_fail_count'] = submit_result.get('fail_count')
             raw_result['cms_submit_fail_items'] = submit_result.get('fail_items')
             category = str(submit_result.get('category') or '').strip()
+            if category == 'already_in_target_guild':
+                raw_result['postcheck'] = 'ka_addanchor_already_in_target_guild'
+                return {
+                    'status': 'success',
+                    'result_code': 'bind_success',
+                    'result_reason': 'CMS already verifies SID in target guild',
+                    'raw_result': raw_result,
+                }
             if category == 'submitted':
                 raw_result['postcheck'] = 'ka_addanchor_success_count'
                 return {
                     'status': 'success',
                     'result_code': 'bind_success',
                     'result_reason': 'CMS KA-AddAnchor accepted',
+                    'raw_result': raw_result,
+                }
+            if category in {'business_failed', 'invalid_arguments_manual_check', 'temporary_error', 'unexpected_error'}:
+                try:
+                    verification = self._cms_verify_after_ambiguous_add_anchor(
+                        base_url=base_url,
+                        authorization=authorization,
+                        proxy_url=proxy_url,
+                        sid=account_id,
+                        guild=guild,
+                        timeout_seconds=request_timeout_seconds,
+                    )
+                except urllib.error.HTTPError as exc:
+                    raw_result['ambiguous_submit_verification_error_http_status'] = exc.code
+                    raw_result['ambiguous_submit_verification_error'] = f'HTTP {exc.code}'
+                    return {
+                        'status': 'failed',
+                        'result_code': submit_result.get('result_code') or 'cms_add_anchor_business_failed',
+                        'result_reason': submit_result.get('result_reason') or 'CMS KA-AddAnchor returned failed items',
+                        'raw_result': raw_result,
+                    }
+                except Exception as exc:
+                    raw_result['ambiguous_submit_verification_error'] = str(exc)
+                    return {
+                        'status': 'failed',
+                        'result_code': submit_result.get('result_code') or 'cms_add_anchor_business_failed',
+                        'result_reason': submit_result.get('result_reason') or 'CMS KA-AddAnchor returned failed items',
+                        'raw_result': raw_result,
+                    }
+                raw_result['ambiguous_submit_verification'] = verification.get('match')
+                raw_result['ambiguous_submit_cms_rows'] = verification.get('safe_rows')
+                if verification.get('match') == 'target':
+                    raw_result['postcheck'] = 'cms_detail_verified_after_ambiguous_submit'
+                    return {
+                        'status': 'success',
+                        'result_code': 'bind_success',
+                        'result_reason': 'CMS verified SID in target guild after addAnchor response',
+                        'raw_result': raw_result,
+                    }
+                if verification.get('match') == 'other':
+                    return {
+                        'status': 'failed',
+                        'result_code': 'already_in_other_guild',
+                        'result_reason': 'The streamer was in another agency',
+                        'raw_result': raw_result,
+                    }
+                if verification.get('match') == 'none':
+                    return {
+                        'status': 'failed',
+                        'result_code': 'cms_sid_not_found',
+                        'result_reason': 'Invalid or unavailable Linky ID',
+                        'raw_result': raw_result,
+                    }
+                raw_result['postcheck'] = 'cms_detail_unverified_after_ambiguous_submit'
+                return {
+                    'status': 'failed',
+                    'result_code': 'cms_add_anchor_temporary_error',
+                    'result_reason': 'CMS addAnchor response was ambiguous and detail verification is not conclusive; retry automatically',
                     'raw_result': raw_result,
                 }
             return {
@@ -527,7 +593,7 @@ class LiveChromeBindExecutor:
             'refreshToken': normalized_refresh_token,
             'refreshToken_deadtime': refresh_deadtime if refresh_deadtime is not None else '',
         })
-        url = f'{base_url}/admin/base/open/refreshToken?{query}'
+        url = f'{base_url}/api/admin/base/open/refreshToken?{query}'
         payload = self._cms_request_json(
             method='GET',
             url=url,
@@ -537,13 +603,19 @@ class LiveChromeBindExecutor:
         )
         if not isinstance(payload, dict):
             raise RuntimeError('CMS refreshToken returned an unsupported response shape')
-        token = str(payload.get('token') or payload.get('accessToken') or payload.get('authorization') or '').strip()
+        token_payload = payload.get('data') if isinstance(payload.get('data'), dict) else payload
+        token = str(token_payload.get('token') or token_payload.get('accessToken') or token_payload.get('authorization') or payload.get('token') or payload.get('accessToken') or payload.get('authorization') or '').strip()
         authorization = self._normalize_authorization_value(current_authorization=current_authorization, refreshed_token=token)
         if not authorization:
             raise RuntimeError('CMS refreshToken returned an empty access token')
-        refresh_value = str(payload.get('refreshToken') or normalized_refresh_token).strip()
-        refresh_expire = self._coerce_epoch_seconds(payload.get('refreshExpire') or payload.get('refreshToken_deadtime'))
-        access_expire = self._coerce_epoch_seconds(payload.get('expire') or payload.get('access_token_exp') or payload.get('tokenExpire'))
+        refresh_value = str(token_payload.get('refreshToken') or payload.get('refreshToken') or normalized_refresh_token).strip()
+        refresh_expire = self._coerce_epoch_seconds(token_payload.get('refreshExpire') or token_payload.get('refreshToken_deadtime') or payload.get('refreshExpire') or payload.get('refreshToken_deadtime'))
+        access_expire = self._coerce_epoch_seconds(token_payload.get('expire') or token_payload.get('access_token_exp') or token_payload.get('tokenExpire') or payload.get('expire') or payload.get('access_token_exp') or payload.get('tokenExpire'))
+        now_epoch = int(time.time())
+        if refresh_expire is not None and refresh_expire < 10**9:
+            refresh_expire = now_epoch + refresh_expire
+        if access_expire is not None and access_expire < 10**9:
+            access_expire = now_epoch + access_expire
         return {
             'attempted': True,
             'ok': True,
@@ -848,7 +920,16 @@ class LiveChromeBindExecutor:
             }
         if code in (1000, '1000') or success is True:
             if fail_count is not None and fail_count > 0:
-                if 'already_joined_another_guild' in lowered or 'another guild' in lowered or 'another agency' in lowered or 'other guild' in lowered:
+                if (
+                    'already_joined_another_guild' in lowered
+                    or 'another guild' in lowered
+                    or 'another agency' in lowered
+                    or 'other guild' in lowered
+                    or '已加入其他公会' in lowered
+                    or '其他公会' in lowered
+                    or 'uma conta não eliminada neste dispositivo aderiu a uma guilda' in lowered
+                    or 'uma conta nao eliminada neste dispositivo aderiu a uma guilda' in lowered
+                ):
                     return {
                         **common,
                         'category': 'already_in_other_guild',
@@ -862,7 +943,16 @@ class LiveChromeBindExecutor:
                         'result_code': 'already_in_target_guild',
                         'result_reason': 'Previously registered in this agency',
                     }
-                if 'invalid' in lowered or 'not found' in lowered or 'not anchor' in lowered or 'unavailable' in lowered:
+                if (
+                    'sid格式错误' in lowered
+                    or 'sid 格式错误' in lowered
+                    or 'sid format' in lowered
+                    or 'invalid sid' in lowered
+                    or 'invalid' in lowered
+                    or 'not found' in lowered
+                    or 'not anchor' in lowered
+                    or 'unavailable' in lowered
+                ):
                     return {
                         **common,
                         'category': 'invalid_sid',
@@ -897,6 +987,25 @@ class LiveChromeBindExecutor:
             'result_code': 'cms_add_anchor_unexpected_error',
             'result_reason': message or reasons or 'CMS addAnchor returned an unexpected error',
         }
+
+    def _cms_verify_after_ambiguous_add_anchor(self, *, base_url: str, authorization: str, proxy_url: str = '', sid: str, guild: dict[str, Any], timeout_seconds: float = 8.0) -> dict[str, Any]:
+        rows = self._cms_query_sid(
+            base_url=base_url,
+            authorization=authorization,
+            proxy_url=proxy_url,
+            sid=sid,
+            timeout_seconds=timeout_seconds,
+        )
+        match = self._cms_match_target_guild(rows, guild)
+        safe_rows = [
+            {
+                key: row.get(key)
+                for key in ('sid', 'user_id', 'guild_id', 'guild_name', 'industrial_id', 'industrial_name', 'nickname', 'admin_name')
+                if key in row
+            }
+            for row in rows[:3]
+        ]
+        return {'match': match, 'safe_rows': safe_rows}
 
     def _cms_add_anchor(self, *, base_url: str, authorization: str, proxy_url: str = '', sid: str, guild_id: str, timeout_seconds: float = 8.0) -> dict[str, Any]:
         if not guild_id:

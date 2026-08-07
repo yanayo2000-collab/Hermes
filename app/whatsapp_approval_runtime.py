@@ -19,6 +19,13 @@ SHADOW_PROVIDER_MODES = {
     'baileys_advisory',
     'baileys_authoritative',
     'baileys_manual_approve_gray',
+}
+
+BAILEYS_PROVIDER_MODES = {
+    'baileys_shadow',
+    'baileys_advisory',
+    'baileys_authoritative',
+    'baileys_manual_approve_gray',
     'baileys_primary',
 }
 
@@ -27,6 +34,7 @@ ADVISORY_PROVIDER_MODES = {
 }
 
 DEFAULT_REGISTRATION_GROUP_PROVIDER_MODE = 'baileys_primary'
+DEFAULT_OFFICIAL_GROUP_PROVIDER_MODE = 'baileys_manual_approve_gray'
 DEFAULT_PROVIDER_MODE = 'legacy_only'
 
 RUNTIME_MODE_KEYS = (
@@ -42,6 +50,8 @@ def default_whatsapp_approval_provider_mode(*, responsible_type: Any = '') -> st
     normalized_type = str(responsible_type or '').strip().lower()
     if normalized_type == 'registration_group':
         return DEFAULT_REGISTRATION_GROUP_PROVIDER_MODE
+    if normalized_type == 'official_group':
+        return DEFAULT_OFFICIAL_GROUP_PROVIDER_MODE
     return DEFAULT_PROVIDER_MODE
 
 
@@ -60,7 +70,7 @@ def resolve_whatsapp_approval_provider_mode(*, binding: Optional[Dict[str, Any]]
 class WARuntimeProvider(Protocol):
     provider_name: str
 
-    def full_queue_sync(self, *, service: Any, account: Dict[str, Any], binding: Dict[str, Any], timeout_seconds: float) -> Dict[str, Any]: ...
+    def full_queue_sync(self, *, service: Any, account: Dict[str, Any], binding: Dict[str, Any], timeout_seconds: float, priority: str = 'P1') -> Dict[str, Any]: ...
 
     def probe_binding_group_state(
         self,
@@ -74,6 +84,7 @@ class WARuntimeProvider(Protocol):
         allow_non_jid_fallback: bool = False,
         attempts: int = 2,
         timeout_seconds: float = 25.0,
+        priority: str = 'P1',
     ) -> Dict[str, Any]: ...
 
     def execute_registration_group_approval(
@@ -120,7 +131,7 @@ class ProviderDecision:
 class LegacyPlaywrightRuntime:
     provider_name = 'legacy_playwright'
 
-    def full_queue_sync(self, *, service: Any, account: Dict[str, Any], binding: Dict[str, Any], timeout_seconds: float) -> Dict[str, Any]:
+    def full_queue_sync(self, *, service: Any, account: Dict[str, Any], binding: Dict[str, Any], timeout_seconds: float, priority: str = 'P1') -> Dict[str, Any]:
         return service._call_whatsapp_worker_full_queue_sync(account=account, binding=binding, timeout_seconds=timeout_seconds)
 
     def registration_group_executor_state(
@@ -152,6 +163,7 @@ class LegacyPlaywrightRuntime:
         allow_non_jid_fallback: bool = False,
         attempts: int = 2,
         timeout_seconds: float = 25.0,
+        priority: str = 'P1',
     ) -> Dict[str, Any]:
         return service._probe_whatsapp_binding_group_state(
             responsible_type=responsible_type,
@@ -177,21 +189,12 @@ class LegacyPlaywrightRuntime:
 class BaileysRuntimeProvider(LegacyPlaywrightRuntime):
     provider_name = 'baileys'
 
-    def full_queue_sync(self, *, service: Any, account: Dict[str, Any], binding: Dict[str, Any], timeout_seconds: float) -> Dict[str, Any]:
+    def full_queue_sync(self, *, service: Any, account: Dict[str, Any], binding: Dict[str, Any], timeout_seconds: float, priority: str = 'P1') -> Dict[str, Any]:
         if hasattr(service, '_call_baileys_full_queue_sync'):
-            result = service._call_baileys_full_queue_sync(account=account, binding=binding, timeout_seconds=timeout_seconds)
+            result = service._call_baileys_full_queue_sync(account=account, binding=binding, timeout_seconds=timeout_seconds, priority=priority)
             if isinstance(result, dict) and result:
                 return result
-        legacy = super().full_queue_sync(service=service, account=account, binding=binding, timeout_seconds=timeout_seconds)
-        if isinstance(legacy, dict):
-            merged = dict(legacy)
-            merged.setdefault('source', {})
-            if isinstance(merged['source'], dict):
-                merged['source'].setdefault('provider', self.provider_name)
-                merged['source'].setdefault('mode', 'baileys_shadow_fallback')
-            merged.setdefault('provider', self.provider_name)
-            return merged
-        return legacy
+        return {}
 
     def probe_binding_group_state(
         self,
@@ -205,6 +208,7 @@ class BaileysRuntimeProvider(LegacyPlaywrightRuntime):
         allow_non_jid_fallback: bool = False,
         attempts: int = 2,
         timeout_seconds: float = 25.0,
+        priority: str = 'P1',
     ) -> Dict[str, Any]:
         if hasattr(service, '_probe_baileys_binding_group_state'):
             result = service._probe_baileys_binding_group_state(
@@ -216,25 +220,11 @@ class BaileysRuntimeProvider(LegacyPlaywrightRuntime):
                 allow_non_jid_fallback=allow_non_jid_fallback,
                 attempts=attempts,
                 timeout_seconds=timeout_seconds,
+                priority=priority,
             )
             if isinstance(result, dict) and result:
                 return result
-        fallback = super().probe_binding_group_state(
-            service=service,
-            responsible_type=responsible_type,
-            binding=binding,
-            runtime_state=runtime_state,
-            session_state=session_state,
-            allow_shared_fallback=allow_shared_fallback,
-            allow_non_jid_fallback=allow_non_jid_fallback,
-            attempts=attempts,
-            timeout_seconds=timeout_seconds,
-        )
-        if isinstance(fallback, dict):
-            merged = dict(fallback)
-            merged.setdefault('provider', self.provider_name)
-            return merged
-        return fallback
+        return {}
 
     def execute_registration_group_approval(
         self,
@@ -247,17 +237,7 @@ class BaileysRuntimeProvider(LegacyPlaywrightRuntime):
             result = service._registration_group_baileys_approval_decision_sync(payload, approval_run_id=approval_run_id)
             if isinstance(result, dict) and result:
                 return result
-        fallback = super().execute_registration_group_approval(
-            service=service,
-            payload=payload,
-            approval_run_id=approval_run_id,
-        )
-        if isinstance(fallback, dict):
-            merged = dict(fallback)
-            merged.setdefault('provider', self.provider_name)
-            merged.setdefault('provider_mode', 'baileys_shadow_fallback')
-            return merged
-        return fallback
+        return {}
 
 
 class DefaultWhatsAppApprovalRuntimeAdapter:
@@ -323,7 +303,7 @@ class DefaultWhatsAppApprovalRuntimeAdapter:
 
     def provider_decision(self, *, account: Dict[str, Any], binding: Dict[str, Any]) -> ProviderDecision:
         mode = self._binding_mode(binding, account)
-        provider_name = 'baileys' if mode in SHADOW_PROVIDER_MODES else 'legacy_playwright'
+        provider_name = 'baileys' if mode in BAILEYS_PROVIDER_MODES else 'legacy_playwright'
         shadow_enabled = mode in SHADOW_PROVIDER_MODES
         advisory_enabled = mode in {'baileys_advisory', 'baileys_authoritative', 'baileys_manual_approve_gray', 'baileys_primary'}
         authoritative_read = mode in AUTHORITATIVE_PROVIDER_MODES or mode == 'baileys_manual_approve_gray'
@@ -335,9 +315,9 @@ class DefaultWhatsAppApprovalRuntimeAdapter:
             'manual_approve': manual_approve_enabled,
             'auto_approve': False,
             'official_group_approval': manual_approve_enabled,
-            'group_member_lookup': shadow_enabled,
-            'group_metadata': shadow_enabled,
-            'assistant_group_runtime': shadow_enabled,
+            'group_member_lookup': provider_name == 'baileys',
+            'group_metadata': provider_name == 'baileys',
+            'assistant_group_runtime': provider_name == 'baileys',
         }
         return ProviderDecision(
             provider_name=provider_name,
@@ -356,15 +336,15 @@ class DefaultWhatsAppApprovalRuntimeAdapter:
             return self.baileys_provider
         return self.legacy_provider
 
-    def full_queue_sync(self, *, service: Any, account: Dict[str, Any], binding: Dict[str, Any], timeout_seconds: float) -> Dict[str, Any]:
+    def full_queue_sync(self, *, service: Any, account: Dict[str, Any], binding: Dict[str, Any], timeout_seconds: float, priority: str = 'P1') -> Dict[str, Any]:
         decision = self.provider_decision(account=account, binding=binding)
         legacy_result: Optional[Dict[str, Any]] = None
         baileys_result: Optional[Dict[str, Any]] = None
 
-        if decision.provider_mode in SHADOW_PROVIDER_MODES:
-            baileys_result = self.baileys_provider.full_queue_sync(service=service, account=account, binding=binding, timeout_seconds=timeout_seconds)
+        if decision.provider_mode in BAILEYS_PROVIDER_MODES:
+            baileys_result = self.baileys_provider.full_queue_sync(service=service, account=account, binding=binding, timeout_seconds=timeout_seconds, priority=priority)
         if decision.provider_mode == 'legacy_only' or decision.provider_mode in SHADOW_PROVIDER_MODES:
-            legacy_result = self.legacy_provider.full_queue_sync(service=service, account=account, binding=binding, timeout_seconds=timeout_seconds)
+            legacy_result = self.legacy_provider.full_queue_sync(service=service, account=account, binding=binding, timeout_seconds=timeout_seconds, priority=priority)
 
         if decision.provider_mode in AUTHORITATIVE_PROVIDER_MODES or decision.provider_mode == 'baileys_manual_approve_gray':
             provider = self.baileys_provider
@@ -403,7 +383,7 @@ class DefaultWhatsAppApprovalRuntimeAdapter:
             )
         else:
             provider = self.legacy_provider
-            result = legacy_result if isinstance(legacy_result, dict) else provider.full_queue_sync(service=service, account=account, binding=binding, timeout_seconds=timeout_seconds)
+            result = legacy_result if isinstance(legacy_result, dict) else provider.full_queue_sync(service=service, account=account, binding=binding, timeout_seconds=timeout_seconds, priority=priority)
 
         if isinstance(result, dict):
             result = {**result, **decision.to_dict(), 'provider': provider.provider_name}
@@ -445,6 +425,7 @@ class DefaultWhatsAppApprovalRuntimeAdapter:
         allow_non_jid_fallback: bool = False,
         attempts: int = 2,
         timeout_seconds: float = 25.0,
+        priority: str = 'P1',
     ) -> Dict[str, Any]:
         account = {
             'provider_mode': runtime_state.get('provider_mode')
@@ -458,7 +439,7 @@ class DefaultWhatsAppApprovalRuntimeAdapter:
         legacy_result: Optional[Dict[str, Any]] = None
         baileys_result: Optional[Dict[str, Any]] = None
 
-        if decision.provider_mode in SHADOW_PROVIDER_MODES:
+        if decision.provider_mode in BAILEYS_PROVIDER_MODES:
             baileys_result = self.baileys_provider.probe_binding_group_state(
                 service=service,
                 responsible_type=responsible_type,
@@ -469,6 +450,7 @@ class DefaultWhatsAppApprovalRuntimeAdapter:
                 allow_non_jid_fallback=allow_non_jid_fallback,
                 attempts=attempts,
                 timeout_seconds=timeout_seconds,
+                priority=priority,
             )
         if decision.provider_mode == 'legacy_only' or decision.provider_mode in SHADOW_PROVIDER_MODES:
             legacy_result = self.legacy_provider.probe_binding_group_state(
@@ -481,6 +463,7 @@ class DefaultWhatsAppApprovalRuntimeAdapter:
                 allow_non_jid_fallback=allow_non_jid_fallback,
                 attempts=attempts,
                 timeout_seconds=timeout_seconds,
+                priority=priority,
             )
 
         if decision.provider_mode in AUTHORITATIVE_PROVIDER_MODES or decision.provider_mode == 'baileys_manual_approve_gray':
@@ -514,6 +497,7 @@ class DefaultWhatsAppApprovalRuntimeAdapter:
                 allow_non_jid_fallback=allow_non_jid_fallback,
                 attempts=attempts,
                 timeout_seconds=timeout_seconds,
+                priority=priority,
             )
 
         if isinstance(result, dict):

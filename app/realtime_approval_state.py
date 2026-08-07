@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import threading
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Deque, Dict, List, Optional, Set
 
-from app.registration_group_truth import build_approval_queue_display, serialize_membership_verifier
+from app.registration_group_truth import build_approval_queue_display, normalize_approval_queue_truth_view, serialize_membership_verifier
 
 
 class RealtimeApprovalStateStore:
@@ -17,6 +18,16 @@ class RealtimeApprovalStateStore:
     patch events to browser subscribers. It also preserves a stronger per-binding verifier
     when a weak lightweight snapshot arrives later.
     """
+
+    SNAPSHOT_METADATA_KEYS = (
+        'notify_robot_options',
+        'area_options',
+        'area_option_source',
+        'customer_service_options',
+        'list_mode',
+        'registration_group_cutover_enabled',
+        'account_set_complete',
+    )
 
     def __init__(self, *, max_events: int = 5000, delivery_target_ms: int = 100) -> None:
         self._snapshot: Dict[str, Any] = {
@@ -30,6 +41,7 @@ class RealtimeApprovalStateStore:
         self._snapshot_version = 0
         self._events: Deque[Dict[str, Any]] = deque(maxlen=max_events)
         self._subscribers: Set[asyncio.Queue] = set()
+        self._event_lock = threading.RLock()
         self.delivery_target_ms = int(delivery_target_ms)
         self._group_revision_by_key: Dict[str, int] = {}
 
@@ -41,15 +53,18 @@ class RealtimeApprovalStateStore:
             marker = int(last_event_id)
         except (TypeError, ValueError):
             marker = 0
-        return [copy.deepcopy(event) for event in self._events if int(event.get('event_id') or 0) > marker]
+        with self._event_lock:
+            return [copy.deepcopy(event) for event in self._events if int(event.get('event_id') or 0) > marker]
 
     def subscribe(self) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=500)
-        self._subscribers.add(queue)
+        with self._event_lock:
+            self._subscribers.add(queue)
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
-        self._subscribers.discard(queue)
+        with self._event_lock:
+            self._subscribers.discard(queue)
 
     def ingest_snapshot(self, payload: Dict[str, Any], *, source: str = 'backend') -> Dict[str, Any]:
         incoming = self._normalize_snapshot(payload, source=source)
@@ -67,7 +82,41 @@ class RealtimeApprovalStateStore:
 
     def _merge_with_previous(self, previous: Dict[str, Any], incoming: Dict[str, Any], *, source: str = 'backend') -> Dict[str, Any]:
         merged = copy.deepcopy(incoming)
+        for key in self.SNAPSHOT_METADATA_KEYS:
+            if key not in merged and key in previous:
+                merged[key] = copy.deepcopy(previous.get(key))
         previous_accounts = {str(row.get('account_key') or '').strip(): row for row in previous.get('rows') or [] if isinstance(row, dict)}
+        incoming_account_keys = {
+            str(row.get('account_key') or '').strip()
+            for row in merged.get('rows') or []
+            if isinstance(row, dict) and str(row.get('account_key') or '').strip()
+        }
+        if self._is_partial_account_snapshot_source(source) and previous_accounts:
+            incoming_accounts = {
+                str(row.get('account_key') or '').strip(): row
+                for row in merged.get('rows') or []
+                if isinstance(row, dict) and str(row.get('account_key') or '').strip()
+            }
+            ordered_rows: List[Dict[str, Any]] = []
+            consumed_keys: Set[str] = set()
+            for previous_row in previous.get('rows') or []:
+                if not isinstance(previous_row, dict):
+                    continue
+                account_key = str(previous_row.get('account_key') or '').strip()
+                incoming_row = incoming_accounts.get(account_key)
+                if incoming_row:
+                    row = copy.deepcopy(previous_row)
+                    row.update(copy.deepcopy(incoming_row))
+                    row = self._merge_partial_group_rows_preserving_order(previous_row, row)
+                    ordered_rows.append(row)
+                    consumed_keys.add(account_key)
+                elif account_key:
+                    ordered_rows.append(copy.deepcopy(previous_row))
+                    consumed_keys.add(account_key)
+            for account_key, incoming_row in incoming_accounts.items():
+                if account_key and account_key not in consumed_keys:
+                    ordered_rows.append(copy.deepcopy(incoming_row))
+            merged['rows'] = ordered_rows
         for row in merged.get('rows') or []:
             if not isinstance(row, dict):
                 continue
@@ -92,13 +141,46 @@ class RealtimeApprovalStateStore:
                 previous_verifier = previous_group.get('membership_verifier') if isinstance(previous_group.get('membership_verifier'), dict) else {}
                 incoming_truth = group.get('approval_queue_truth') if isinstance(group.get('approval_queue_truth'), dict) else {}
                 previous_truth = previous_group.get('approval_queue_truth') if isinstance(previous_group.get('approval_queue_truth'), dict) else {}
+                incoming_zero_pending_weak = self._incoming_zero_pending_is_weak({
+                    'next_approval_pending_count': group.get('next_approval_pending_count'),
+                    'approval_queue_truth': incoming_truth,
+                    'membership_verifier': incoming_verifier,
+                })
 
                 chosen_truth = self._choose_approval_truth(previous_truth, incoming_truth, source=source)
+                chosen_permission_reason = self._approval_truth_permission_reason(chosen_truth)
                 if chosen_truth:
                     group['approval_queue_truth'] = chosen_truth
+                    chosen_pending_count = self._to_int(chosen_truth.get('pending_count'))
+                    if chosen_permission_reason:
+                        # A confirmed permission state is a first-class current truth.
+                        # It must clear the old number instead of letting a partial
+                        # realtime row keep the previous numeric truth on screen.
+                        group['next_approval_pending_count'] = None
+                    elif chosen_pending_count is not None:
+                        group['next_approval_pending_count'] = chosen_pending_count
 
-                preserve_previous_verifier = self._should_preserve_previous_group_probe(previous_group, group, source=source)
-                if preserve_previous_verifier and previous_verifier:
+                preserve_previous_verifier = (
+                    not chosen_permission_reason
+                    and self._should_preserve_previous_group_probe(previous_group, group, source=source)
+                )
+                if chosen_permission_reason:
+                    permission_verifier = copy.deepcopy(incoming_verifier)
+                    permission_verifier['ready'] = False
+                    permission_verifier['status'] = chosen_permission_reason
+                    permission_verifier['is_admin'] = False
+                    permission_verifier['has_admin_permission'] = False
+                    permission_probe = permission_verifier.get('probe') if isinstance(permission_verifier.get('probe'), dict) else {}
+                    permission_probe = copy.deepcopy(permission_probe)
+                    permission_probe['permission_status'] = chosen_permission_reason
+                    if chosen_permission_reason == 'not_group_member':
+                        permission_probe['self_participant_found'] = False
+                    elif chosen_permission_reason == 'not_group_admin':
+                        permission_probe['self_participant_found'] = True
+                        permission_probe['self_is_admin'] = False
+                    permission_verifier['probe'] = permission_probe
+                    group['membership_verifier'] = permission_verifier
+                elif preserve_previous_verifier and previous_verifier:
                     group['membership_verifier'] = copy.deepcopy(previous_verifier)
                     for identity_field in (
                         'group_id',
@@ -118,6 +200,19 @@ class RealtimeApprovalStateStore:
                 else:
                     group['membership_verifier'] = self._merge_membership_verifier(previous_verifier, incoming_verifier)
 
+                previous_pending = self._to_int(previous_group.get('next_approval_pending_count'))
+                incoming_pending = self._to_int(group.get('next_approval_pending_count'))
+                current_truth = group.get('approval_queue_truth') if isinstance(group.get('approval_queue_truth'), dict) else {}
+                if (
+                    previous_pending is not None
+                    and previous_pending > 0
+                    and incoming_pending == 0
+                    and incoming_zero_pending_weak
+                    and not self._truth_has_verified_empty_evidence(current_truth)
+                    and source == 'lightweight_snapshot_refresh'
+                ):
+                    group['next_approval_pending_count'] = previous_group.get('next_approval_pending_count')
+
                 if isinstance(group.get('membership_verifier'), dict):
                     if not str(group['membership_verifier'].get('group_name') or '').strip() and str(group.get('group_name') or '').strip():
                         group['membership_verifier']['group_name'] = str(group.get('group_name') or '').strip()
@@ -127,34 +222,242 @@ class RealtimeApprovalStateStore:
                 self._assign_group_revision(group, previous_group)
         return merged
 
+    def _merge_partial_group_rows_preserving_order(self, previous_row: Dict[str, Any], incoming_row: Dict[str, Any]) -> Dict[str, Any]:
+        previous_groups = previous_row.get('group_binding_runtimes') or previous_row.get('group_link_bindings') or []
+        incoming_groups = incoming_row.get('group_binding_runtimes') or incoming_row.get('group_link_bindings') or []
+        if not isinstance(previous_groups, list) or not previous_groups:
+            return incoming_row
+        if not isinstance(incoming_groups, list) or not incoming_groups:
+            row = copy.deepcopy(incoming_row)
+            target_key = 'group_binding_runtimes' if isinstance(previous_row.get('group_binding_runtimes'), list) else 'group_link_bindings'
+            row[target_key] = copy.deepcopy(previous_groups)
+            return row
+
+        incoming_candidates: Dict[str, Dict[str, Any]] = {}
+        consumed_ids: Set[int] = set()
+        for index, group in enumerate(incoming_groups):
+            if not isinstance(group, dict):
+                continue
+            for key in self._stable_group_candidate_keys_without_index(group):
+                incoming_candidates.setdefault(key, group)
+
+        ordered_groups: List[Dict[str, Any]] = []
+        for index, previous_group in enumerate(previous_groups):
+            if not isinstance(previous_group, dict):
+                continue
+            incoming_group: Dict[str, Any] = {}
+            for key in self._stable_group_candidate_keys_without_index(previous_group):
+                candidate = incoming_candidates.get(key)
+                if candidate and id(candidate) not in consumed_ids:
+                    incoming_group = candidate
+                    break
+            if incoming_group:
+                merged_group = copy.deepcopy(previous_group)
+                merged_group.update(copy.deepcopy(incoming_group))
+                ordered_groups.append(merged_group)
+                consumed_ids.add(id(incoming_group))
+            else:
+                ordered_groups.append(copy.deepcopy(previous_group))
+
+        for group in incoming_groups:
+            if isinstance(group, dict) and id(group) not in consumed_ids:
+                ordered_groups.append(copy.deepcopy(group))
+
+        row = copy.deepcopy(incoming_row)
+        target_key = 'group_binding_runtimes' if isinstance(incoming_row.get('group_binding_runtimes'), list) or isinstance(previous_row.get('group_binding_runtimes'), list) else 'group_link_bindings'
+        row[target_key] = ordered_groups
+        return row
+
+    @staticmethod
+    def _stable_group_candidate_keys_without_index(group: Dict[str, Any]) -> List[str]:
+        probe = (group.get('membership_verifier') or {}).get('probe') if isinstance(group.get('membership_verifier'), dict) else {}
+        keys = [
+            str(group.get('binding_id') or '').strip(),
+            str(group.get('group_id') or '').strip(),
+            str(group.get('runtime_probe_group_id') or '').strip(),
+            str((probe or {}).get('group_id') or '').strip() if isinstance(probe, dict) else '',
+            str(group.get('registration_group') or '').strip(),
+            str(group.get('link') or '').strip(),
+            str(group.get('group_name') or '').strip(),
+        ]
+        return [key for key in keys if key]
+
     def _choose_approval_truth(self, previous_truth: Dict[str, Any], incoming_truth: Dict[str, Any], *, source: str) -> Dict[str, Any]:
-        prev = copy.deepcopy(previous_truth or {})
+        previous = self._finalize_truth(copy.deepcopy(previous_truth or {})) if previous_truth else {}
         inc = copy.deepcopy(incoming_truth or {})
-        if not prev:
-            return self._finalize_truth(inc)
         if not inc:
-            return self._finalize_truth(prev)
+            return previous
+        incoming = self._finalize_truth(inc)
+        if previous and self._incoming_truth_is_older(previous, incoming):
+            return previous
+        if previous and self._should_preserve_previous_truth(previous, incoming, source=source):
+            return previous
+        return incoming
 
-        prev_revision = int(prev.get('store_revision') or 0)
-        inc_revision = int(inc.get('store_revision') or 0)
-        if inc_revision > prev_revision:
-            return self._finalize_truth(inc)
-        if inc_revision < prev_revision:
-            return self._finalize_truth(prev)
+    @staticmethod
+    def _incoming_truth_is_older(previous_truth: Dict[str, Any], incoming_truth: Dict[str, Any]) -> bool:
+        previous_ts = RealtimeApprovalStateStore._approval_truth_timestamp(previous_truth)
+        incoming_ts = RealtimeApprovalStateStore._approval_truth_timestamp(incoming_truth)
+        return bool(previous_ts and incoming_ts and incoming_ts < previous_ts)
 
-        prev_verified_at = str(prev.get('verified_at') or prev.get('source_ts') or '').strip()
-        inc_verified_at = str(inc.get('verified_at') or inc.get('source_ts') or '').strip()
-        if inc_verified_at and prev_verified_at:
-            try:
-                if parse_ts(inc_verified_at) >= parse_ts(prev_verified_at):
-                    return self._finalize_truth(inc)
-                return self._finalize_truth(prev)
-            except Exception:
-                pass
-        return self._finalize_truth(inc)
+    @staticmethod
+    def _approval_truth_timestamp(truth: Dict[str, Any]) -> Optional[datetime]:
+        source = truth if isinstance(truth, dict) else {}
+        current_truth = source.get('current_truth') if isinstance(source.get('current_truth'), dict) else {}
+        payload = current_truth.get('payload') if isinstance(current_truth.get('payload'), dict) else {}
+        for container in (source, current_truth, payload):
+            for key in ('checked_at', 'verified_at', 'updated_at', 'source_ts', 'fetched_at', 'created_at'):
+                parsed = RealtimeApprovalStateStore._parse_iso_datetime(container.get(key) if isinstance(container, dict) else None)
+                if parsed:
+                    return parsed
+        return None
+
+    @staticmethod
+    def _parse_iso_datetime(value: Any) -> Optional[datetime]:
+        text = str(value or '').strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _is_partial_account_snapshot_source(source: str) -> bool:
+        normalized = str(source or '').strip()
+        return normalized in {
+            'manual_full_sync',
+            'manual_approve',
+            'manual_truth_refresh',
+            'manual_probe',
+            'manual_rebuild_identity',
+            'approval_account_update',
+            'approval_binding_delete',
+            'truth_refresh',
+            'full_sync',
+            'probe_refresh',
+            'rebuild_identity',
+            'session_recovery_refresh',
+        }
+
+    @staticmethod
+    def _should_preserve_previous_truth(previous_truth: Dict[str, Any], incoming_truth: Dict[str, Any], *, source: str) -> bool:
+        if RealtimeApprovalStateStore._approval_truth_permission_reason(incoming_truth):
+            return False
+        if str(source or '').strip() in {'manual_truth_refresh', 'manual_full_sync', 'manual_approve', 'official_ready_precise_sync'}:
+            return False
+        previous_status = str(previous_truth.get('truth_status') or previous_truth.get('trust_status') or '').strip().lower()
+        incoming_status = str(incoming_truth.get('truth_status') or incoming_truth.get('trust_status') or '').strip().lower()
+        previous_trusted = previous_status in {'confirmed_empty', 'confirmed_pending', 'trusted_confirmed_empty', 'trusted_confirmed_pending'}
+        incoming_trusted = incoming_status in {'confirmed_empty', 'confirmed_pending', 'trusted_confirmed_empty', 'trusted_confirmed_pending'}
+        if not previous_trusted or incoming_trusted:
+            return False
+        previous_pending_count = RealtimeApprovalStateStore._to_int(previous_truth.get('pending_count'))
+        incoming_pending_count = RealtimeApprovalStateStore._to_int(incoming_truth.get('pending_count'))
+        if (
+            previous_pending_count is not None
+            and previous_pending_count > 0
+            and incoming_pending_count == 0
+            and not RealtimeApprovalStateStore._truth_has_verified_empty_evidence(incoming_truth)
+        ):
+            return True
+        if incoming_pending_count is not None:
+            return False
+        incoming_display = incoming_truth.get('display') if isinstance(incoming_truth.get('display'), dict) else {}
+        incoming_state = str(incoming_display.get('state') or incoming_truth.get('status') or '').strip().upper()
+        incoming_reason = str(incoming_truth.get('confidence_reason') or incoming_truth.get('reason_code') or '').strip().lower()
+        weak_incoming = incoming_state in {'VERIFYING', 'UNKNOWN', ''} or incoming_reason in {
+            'api_pending_ui_not_converged',
+            'probe_pending_ui_not_converged',
+            'awaiting_refresh',
+            'pending_probe_required',
+            'truth_unknown',
+        }
+        return weak_incoming
+
+    @staticmethod
+    def _approval_truth_permission_reason(truth: Dict[str, Any]) -> str:
+        source = truth if isinstance(truth, dict) else {}
+        current_truth = source.get('current_truth') if isinstance(source.get('current_truth'), dict) else {}
+        payload = current_truth.get('payload') if isinstance(current_truth.get('payload'), dict) else {}
+        facts = current_truth.get('facts') if isinstance(current_truth.get('facts'), dict) else {}
+        containers = (source, current_truth, payload, facts)
+        statuses = {
+            str(container.get(key) or '').strip().upper()
+            for container in containers
+            for key in ('truth_status', 'trust_status', 'status')
+        }
+        if 'GROUP_BANNED' in statuses:
+            return 'group_banned'
+        if 'PERMISSION_DENIED' not in statuses:
+            return ''
+        for container in containers:
+            for key in ('reason_code', 'permission_status'):
+                reason = str(container.get(key) or '').strip().lower()
+                if reason in {'not_group_member', 'not_group_admin'}:
+                    return reason
+        return ''
+
+    @staticmethod
+    def _truth_has_verified_empty_evidence(truth: Dict[str, Any]) -> bool:
+        source = truth if isinstance(truth, dict) else {}
+        current_truth = source.get('current_truth') if isinstance(source.get('current_truth'), dict) else {}
+        payload = current_truth.get('payload') if isinstance(current_truth.get('payload'), dict) else {}
+        pending_count = RealtimeApprovalStateStore._to_int(
+            source.get('pending_count')
+            if source.get('pending_count') is not None
+            else current_truth.get('pending_count')
+        )
+        if pending_count != 0:
+            return False
+        statuses = {
+            str(source.get('truth_status') or source.get('trust_status') or source.get('status') or '').strip().lower(),
+            str(current_truth.get('truth_status') or current_truth.get('trust_status') or current_truth.get('status') or '').strip().lower(),
+            str(payload.get('truth_status') or payload.get('trust_status') or payload.get('status') or '').strip().lower(),
+        }
+        if statuses & {'confirmed_empty', 'trusted_confirmed_empty'}:
+            return True
+        display = source.get('display') if isinstance(source.get('display'), dict) else {}
+        return bool(
+            source.get('strong_empty_evidence')
+            or current_truth.get('strong_empty_evidence')
+            or payload.get('strong_empty_evidence')
+            or source.get('zero_pending_verified_by')
+            or current_truth.get('zero_pending_verified_by')
+            or payload.get('zero_pending_verified_by')
+            or (source.get('display_trusted') is True and str(display.get('state') or '').strip().upper() == 'EMPTY')
+        )
+
+    @staticmethod
+    def _incoming_zero_pending_is_weak(group: Dict[str, Any]) -> bool:
+        item = group if isinstance(group, dict) else {}
+        truth = item.get('approval_queue_truth') if isinstance(item.get('approval_queue_truth'), dict) else {}
+        if truth:
+            status = str(truth.get('truth_status') or truth.get('trust_status') or truth.get('status') or '').strip().upper()
+            display = truth.get('display') if isinstance(truth.get('display'), dict) else {}
+            display_state = str(display.get('state') or '').strip().upper()
+            if status in {'TRUTH_UNKNOWN', 'UNKNOWN', 'VERIFYING', 'STALE'} or display_state in {'UNKNOWN', 'VERIFYING', 'STALE', ''}:
+                return True
+        verifier = item.get('membership_verifier') if isinstance(item.get('membership_verifier'), dict) else {}
+        if not verifier:
+            return False
+        probe = verifier.get('probe') if isinstance(verifier.get('probe'), dict) else {}
+        status = str(verifier.get('status') or '').strip()
+        quality = str(probe.get('data_quality') or probe.get('probe_data_quality') or '').strip()
+        probe_present = bool(probe)
+        return bool(
+            verifier.get('ready') is False
+            or status in {'probe_unavailable', 'mapped_live_probe_unavailable', 'unavailable', 'zero_pending_unverified'}
+            or quality in {'unverified_zero', 'unknown', 'unavailable'}
+            or (quality == '' and probe_present and verifier.get('ready') is False)
+            or probe.get('zero_pending_unverified') is True
+        )
 
     def _finalize_truth(self, truth: Dict[str, Any]) -> Dict[str, Any]:
-        result = copy.deepcopy(truth or {})
+        result = normalize_approval_queue_truth_view(copy.deepcopy(truth or {}))
         display = result.get('display') if isinstance(result.get('display'), dict) else {}
         if not display:
             result['display'] = build_approval_queue_display(result)
@@ -192,7 +495,7 @@ class RealtimeApprovalStateStore:
         previous_verifier = previous_group.get('membership_verifier') if isinstance(previous_group.get('membership_verifier'), dict) else {}
         incoming_verifier = incoming_group.get('membership_verifier') if isinstance(incoming_group.get('membership_verifier'), dict) else {}
         previous_status = str(previous_verifier.get('status') or '').strip()
-        if previous_verifier.get('ready') is not True and previous_status not in {'not_group_member', 'not_group_admin', 'zero_pending_unverified'}:
+        if previous_verifier.get('ready') is not True and previous_status not in {'not_group_member', 'not_group_admin', 'group_banned', 'zero_pending_unverified'}:
             return False
         if incoming_verifier.get('ready') is True:
             return False
@@ -209,7 +512,7 @@ class RealtimeApprovalStateStore:
             or incoming_missing_member_count
         )
         strong_previous = (
-            previous_status in {'not_group_member', 'not_group_admin'}
+            previous_status in {'not_group_member', 'not_group_admin', 'group_banned'}
             or previous_has_member_count
             or previous_quality in {'verified_zero', 'live_probe_ready', 'mapped_live_probe_ready', 'review_surface_verified_empty'}
         )
@@ -234,14 +537,21 @@ class RealtimeApprovalStateStore:
             'state_source': source,
             'rows': normalized_rows,
         }
+        if isinstance(payload, dict) and 'account_set_complete' in payload:
+            snapshot['account_set_complete'] = bool(payload.get('account_set_complete'))
+        elif not self._is_partial_account_snapshot_source(source):
+            snapshot['account_set_complete'] = True
         if isinstance(payload, dict):
-            for key in ('notify_robot_options', 'area_options', 'area_option_source', 'customer_service_options', 'list_mode', 'summary'):
+            for key in (*self.SNAPSHOT_METADATA_KEYS, 'summary'):
                 if key in payload:
                     snapshot[key] = copy.deepcopy(payload.get(key))
         return snapshot
 
     def _normalize_account_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         normalized = copy.deepcopy(row)
+        for payload_key in ('session_state', 'runtime_state', 'session', 'runtime'):
+            if isinstance(normalized.get(payload_key), dict):
+                normalized[payload_key] = self._strip_heavy_realtime_payloads(normalized.get(payload_key))
         session_state = normalized.get('session_state') if isinstance(normalized.get('session_state'), dict) else {}
         for field in ('login_state', 'ready', 'authenticated', 'login_verified', 'can_probe', 'login_check_status'):
             if normalized.get(field) is None and field in session_state:
@@ -251,6 +561,17 @@ class RealtimeApprovalStateStore:
             normalized['monitor_runtime_active'] = True
         elif 'monitor_runtime_active' not in normalized and 'active' in runtime_state:
             normalized['monitor_runtime_active'] = bool(runtime_state.get('active'))
+        if self._account_has_explicit_logged_out_signal(normalized):
+            session_state = dict(session_state or {})
+            session_state['login_verified'] = False
+            session_state['authenticated'] = False
+            session_state['ready'] = False
+            session_state['can_probe'] = False
+            normalized['session_state'] = session_state
+            normalized['login_verified'] = False
+            normalized['authenticated'] = False
+            normalized['ready'] = False
+            normalized['can_probe'] = False
         group_rows = normalized.get('group_binding_runtimes') or normalized.get('group_link_bindings') or []
         if isinstance(group_rows, list):
             normalized_groups = []
@@ -268,6 +589,88 @@ class RealtimeApprovalStateStore:
             else:
                 normalized['group_link_bindings'] = normalized_groups
         return normalized
+
+    @classmethod
+    def _strip_heavy_realtime_payloads(cls, value: Any) -> Any:
+        heavy_keys = {
+            'pairingCode',
+            'pairing_code',
+            'qr',
+            'qrAscii',
+            'qrTerminal',
+            'qrText',
+            'qrImageDataUrl',
+            'qr_ascii',
+            'qr_terminal',
+            'qr_text',
+            'qr_image_data_url',
+            'qrImage',
+            'qr_image',
+        }
+        if isinstance(value, dict):
+            return {
+                key: cls._strip_heavy_realtime_payloads(item)
+                for key, item in value.items()
+                if key not in heavy_keys
+            }
+        if isinstance(value, list):
+            return [cls._strip_heavy_realtime_payloads(item) for item in value]
+        return copy.deepcopy(value)
+
+    @staticmethod
+    def _account_has_explicit_logged_out_signal(row: Dict[str, Any]) -> bool:
+        session = row.get('session_state') if isinstance(row.get('session_state'), dict) else {}
+        runtime = row.get('runtime_state') if isinstance(row.get('runtime_state'), dict) else {}
+        if any(value is True for value in (
+            session.get('login_verified'),
+            session.get('can_probe'),
+            session.get('ready'),
+            session.get('authenticated'),
+        )):
+            return False
+        login_status = str(session.get('login_check_status') or row.get('login_check_status') or '').strip()
+        login_state = str(session.get('login_state') or row.get('login_state') or '').strip()
+        runtime_status = str(runtime.get('status') or row.get('runtime_status') or '').strip()
+        verification_status = str(row.get('verification_status') or '').strip()
+        logged_out_statuses = {
+            'account_restricted',
+            'auth_failed',
+            'blocked',
+            'login_failed',
+            'login_unready',
+            'needs_scan',
+            'not_logged_in',
+            'not_started',
+            'qr_expired',
+            'qr_pending',
+            'runtime_unavailable',
+            'runtime_unhealthy',
+            'service_unready',
+            'stopped',
+            'waiting_for_scan',
+        }
+        logged_out_states = {
+            'account_restricted',
+            'auth_failed',
+            'login_failed',
+            'not_logged_in',
+            'not_started',
+            'qr_expired',
+            'session_mismatch',
+            'service_unready',
+            'stopped',
+            'waiting_for_scan_qr_pending',
+            'waiting_for_scan_qr_ready',
+        }
+        if login_status in logged_out_statuses or runtime_status in logged_out_statuses or verification_status in logged_out_statuses:
+            return True
+        if login_state in logged_out_states:
+            return True
+        if session.get('qr_available') is True or session.get('can_show_qr') is True or session.get('qr_stale') is True:
+            return True
+        return session.get('login_verified') is False and any(
+            session.get(field) is False for field in ('authenticated', 'ready', 'can_probe')
+        )
 
     def _diff_snapshots(self, previous: Dict[str, Any], current: Dict[str, Any], *, source: str) -> List[Dict[str, Any]]:
         events: List[Dict[str, Any]] = []
@@ -315,7 +718,18 @@ class RealtimeApprovalStateStore:
         for field in fields:
             if previous.get(field) != current.get(field):
                 patch[field] = current.get(field)
-        for field in ('login_state', 'ready', 'authenticated', 'login_verified', 'can_probe', 'login_check_status'):
+        for field in (
+            'login_state',
+            'ready',
+            'authenticated',
+            'login_verified',
+            'can_probe',
+            'login_check_status',
+            'login_check_message',
+            'qr_available',
+            'can_show_qr',
+            'qr_stale',
+        ):
             if prev_session.get(field) != cur_session.get(field):
                 patch[field] = cur_session.get(field)
         return patch
@@ -364,10 +778,9 @@ class RealtimeApprovalStateStore:
         keys = [
             str(group.get('binding_id') or '').strip(),
             str(group.get('group_id') or '').strip(),
+            str(group.get('runtime_probe_group_id') or '').strip(),
             str((probe or {}).get('group_id') or '').strip() if isinstance(probe, dict) else '',
             str(group.get('registration_group') or '').strip(),
-            str(group.get('link') or '').strip(),
-            str(group.get('group_name') or '').strip(),
             str(index),
         ]
         return [key for key in keys if key]
@@ -402,8 +815,8 @@ class RealtimeApprovalStateStore:
         return (
             str(group.get('binding_id') or '').strip()
             or str(group.get('group_id') or '').strip()
+            or str(group.get('runtime_probe_group_id') or '').strip()
             or str(group.get('registration_group') or '').strip()
-            or str(group.get('link') or '').strip()
             or str(index)
         )
 
@@ -423,10 +836,12 @@ class RealtimeApprovalStateStore:
         }
 
     def _publish(self, event: Dict[str, Any]) -> None:
-        self._events.append(copy.deepcopy(event))
-        self._snapshot['event_id'] = self._event_id
+        with self._event_lock:
+            self._events.append(copy.deepcopy(event))
+            self._snapshot['event_id'] = self._event_id
+            subscribers = tuple(self._subscribers)
         dead: List[asyncio.Queue] = []
-        for queue in list(self._subscribers):
+        for queue in subscribers:
             try:
                 queue.put_nowait(copy.deepcopy(event))
             except asyncio.QueueFull:

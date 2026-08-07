@@ -1,0 +1,98 @@
+{
+  "version": "gle_copy_benchmark_v1_20260803",
+  "checked_at": "2026-08-03",
+  "evidence_policy": {
+    "external": "Public category language and active-presence signals are references only; they are not conversion evidence.",
+    "internal": "Internal metrics are directional at ad-plus-creative grain and do not isolate copy causally unless a controlled copy-only experiment is completed.",
+    "promotion": "A sentence pattern may be promoted only after a controlled GLE experiment reaches the configured install and real-join maturity thresholds."
+  },
+  "markets": {
+    "BR": {
+      "locale": "pt-BR",
+      "sources": [
+        {
+          "source_id": "br_premise_appstore",
+          "brand": "Premise",
+          "url": "https://apps.apple.com/br/app/premise-ganhe-dinheiro/id1390094962",
+          "evidence_type": "market_language_reference",
+          "public_performance_available": false,
+          "pattern_tags": ["concrete_tasks", "free_time", "reward_visibility"]
+        },
+        {
+          "source_id": "br_pinion_product",
+          "brand": "PiniOn",
+          "url": "https://pinion.app/responda-missoes/",
+          "evidence_type": "market_language_reference",
+          "public_performance_available": false,
+          "pattern_tags": ["missions", "simple_steps", "reward_after_completion"]
+        },
+        {
+          "source_id": "br_meseems_product",
+          "brand": "MeSeems",
+          "url": "https://www.meseems.com.br/",
+          "evidence_type": "market_language_reference",
+          "public_performance_available": false,
+          "pattern_tags": ["time_value", "simple_tasks", "points"]
+        }
+      ]
+    },
+    "MX": {
+      "locale": "es-MX",
+      "sources": [
+        {
+          "source_id": "mx_google_opinion_rewards",
+          "brand": "Google Opinion Rewards",
+          "url": "https://play.google.com/store/apps/details?hl=es_MX&id=com.google.android.apps.paidtasks",
+          "evidence_type": "market_language_reference",
+          "public_performance_available": false,
+          "pattern_tags": ["short_tasks", "specific_reward", "mobile_first"]
+        },
+        {
+          "source_id": "mx_surveytime_appstore",
+          "brand": "Surveytime",
+          "url": "https://apps.apple.com/mx/app/surveytime-encuestas-pagadas/id1570420223",
+          "evidence_type": "market_language_reference",
+          "public_performance_available": false,
+          "pattern_tags": ["clear_action", "reward_after_completion", "anywhere"]
+        },
+        {
+          "source_id": "mx_prime_opinion_appstore",
+          "brand": "Prime Opinion",
+          "url": "https://apps.apple.com/mx/app/prime-opinion-encuestas-pagas/id6450182934",
+          "evidence_type": "market_language_reference",
+          "public_performance_available": false,
+          "pattern_tags": ["simple_flow", "reward_options", "time_value"]
+        }
+      ]
+    },
+    "ID": {
+      "locale": "id-ID",
+      "sources": [
+        {
+          "source_id": "id_jakpat_play",
+          "brand": "JAKPAT",
+          "url": "https://play.google.com/store/apps/details?hl=id&id=com.git.jakpat.jajakpendapat",
+          "evidence_type": "market_language_reference",
+          "public_performance_available": false,
+          "pattern_tags": ["local_idiom", "points", "redeemable_rewards"]
+        },
+        {
+          "source_id": "id_survey_panda_play",
+          "brand": "Survey Panda",
+          "url": "https://play.google.com/store/apps/details?hl=id&id=com.dailyapps.surveypanda",
+          "evidence_type": "market_language_reference",
+          "public_performance_available": false,
+          "pattern_tags": ["free_time", "mobile_first", "local_reward_methods"]
+        },
+        {
+          "source_id": "id_taskwin_play",
+          "brand": "TaskWin",
+          "url": "https://play.google.com/store/apps/details?hl=id&id=com.conaksoft.taskwin",
+          "evidence_type": "market_language_reference",
+          "public_performance_available": false,
+          "pattern_tags": ["simple_tasks", "reward_clarity", "anytime"]
+        }
+      ]
+    }
+  }
+}

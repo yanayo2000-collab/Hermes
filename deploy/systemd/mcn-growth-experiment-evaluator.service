@@ -1,0 +1,21 @@
+[Unit]
+Description=MCN Growth Loop D1/D3/D7 experiment evaluator
+After=network-online.target mcn-backend.service mcn-ad-dashboard-daily-backfill.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/mcn-ai-automation
+EnvironmentFile=-/etc/mcn-ai-automation.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/mcn-ai-automation
+Environment=MCN_PROCESS_ROLE=growth-experiment-evaluator
+ExecStart=/opt/mcn-ai-automation/.venv/bin/python scripts/run_growth_experiment_evaluator.py
+Slice=mcn-batch.slice
+Nice=15
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+TimeoutStartSec=10min
+TimeoutStopSec=45s
+KillMode=control-group
+Restart=no

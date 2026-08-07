@@ -10,8 +10,10 @@ LOGIN_STATE_LABELS = {
     'runtime_starting': '运行服务启动中',
     'runtime_recovering': 'WhatsApp登录态恢复中',
     'initializing': 'WhatsApp登录会话初始化中',
+    'login_verifying': '连接已建立，正在验证登录稳定性',
     'waiting_for_scan_qr_ready': '二维码已生成，等待扫码',
     'waiting_for_scan_qr_pending': '二维码生成中，请稍后手动刷新',
+    'qr_expired': '二维码已过期，请重新生成',
     'logged_in': '已登录',
     'login_failed': '登录失败，请手动重置登录',
     'runtime_unhealthy': '运行服务异常，请手动恢复',
@@ -89,6 +91,26 @@ def map_whatsapp_login_state(
     authenticated = _bool(session.get('authenticated'))
     ready = _bool(session.get('ready'))
     qr_ready = _has_qr_payload(session)
+    reconnect_state = _text(
+        session.get('reconnect_state')
+        or session.get('reconnectState')
+        or runtime.get('reconnect_state')
+        or runtime.get('reconnectState')
+    ).lower()
+    auth_failure_text = ' '.join(
+        _text(value).lower()
+        for value in (
+            session.get('last_disconnect_reason'),
+            session.get('last_error'),
+            runtime.get('last_disconnect_reason'),
+            runtime.get('last_error'),
+        )
+        if _text(value)
+    )
+    permanent_auth_failure = bool(
+        reconnect_state == 'stopped'
+        and any(marker in auth_failure_text for marker in ('401', '403', 'loggedout', 'forbidden'))
+    )
     started_age = _age_seconds(runtime.get('started_at'), now=now)
     in_startup_grace = bool(
         started_age is not None
@@ -109,13 +131,19 @@ def map_whatsapp_login_state(
         state = 'account_restricted'
     elif login_check_status == 'session_mismatch':
         state = 'session_mismatch'
+    elif login_check_status in {'auth_failed', 'login_failed'} or runtime_status in {'auth_failed', 'auth_failure'} or permanent_auth_failure:
+        state = 'login_failed'
+    elif runtime_status == 'login_verifying' or login_check_status == 'login_verifying':
+        state = 'login_verifying'
     elif qr_ready:
         state = 'waiting_for_scan_qr_ready'
+    elif login_check_status == 'qr_expired':
+        state = 'qr_expired'
     elif login_check_status in {'waiting_for_scan', 'qr_pending', 'needs_scan'}:
         state = 'waiting_for_scan_qr_pending'
     elif login_check_status in {'runtime_recovering', 'local_auth_recovering'}:
         state = 'runtime_recovering'
-    elif runtime_status in {'initializing', 'pending_runtime', 'auth_failure', 'auth_failed'} or login_check_status in {'pending_runtime', 'auth_failed', 'auto_recovering'}:
+    elif runtime_status in {'initializing', 'pending_runtime'} or login_check_status in {'pending_runtime', 'auto_recovering'}:
         state = 'login_failed' if initializing_expired else 'initializing'
     elif not configured:
         state = 'runtime_stopped'
@@ -133,8 +161,10 @@ def map_whatsapp_login_state(
         'runtime_starting': 'wait_or_refresh',
         'runtime_recovering': 'wait_or_refresh',
         'initializing': 'wait_or_refresh',
+        'login_verifying': 'wait_or_refresh',
         'waiting_for_scan_qr_ready': 'scan_qr',
         'waiting_for_scan_qr_pending': 'refresh_session',
+        'qr_expired': 'manual_reset',
         'logged_in': 'none',
         'login_failed': 'manual_reset',
         'runtime_unhealthy': 'manual_recover',

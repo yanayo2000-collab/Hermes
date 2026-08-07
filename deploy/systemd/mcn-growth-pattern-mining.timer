@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Growth Loop pattern mining daily
+
+[Timer]
+OnCalendar=*-*-* 03:35:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=300
+Unit=mcn-growth-pattern-mining.service
+
+[Install]
+WantedBy=timers.target
