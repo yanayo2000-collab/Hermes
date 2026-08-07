@@ -231,6 +231,16 @@ def _payload(row: Mapping[str, Any]) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _qualified_dimensions_match(
+    row: Mapping[str, Any], payload: Mapping[str, Any], policy: Mapping[str, Any],
+) -> bool:
+    return (
+        str(row.get("country") or "") == str(policy["qualified_country"])
+        and str(row.get("media_source") or "") == str(policy["qualified_media_source"])
+        and str(payload.get("external_app") or "") == str(policy["qualified_external_app"])
+    )
+
+
 def _nonnegative_decimal(value: Any, code: str) -> Decimal:
     if isinstance(value, bool) or value is None:
         raise G005ContractError(code)
@@ -307,6 +317,7 @@ def _collect_observations(
     if len(_days(baseline_start, baseline_end)) != 14:
         raise G005ContractError("G005_BASELINE_WINDOW_INVALID")
     subject = dict(request["subject"])
+    policy = dict(request["policy"])
     account_id = str(subject["ad_account_id"])
     market = str(subject["market"]).upper()
     cells = list(subject["cells"])
@@ -431,7 +442,7 @@ def _collect_observations(
         if str(row.get("data_source") or "").lower() == "tugaofunnel"
         and allocation_start <= str(row["date"]) <= allocation_end
         and (str(row.get("campaign_id") or ""), str(row.get("adset_id") or ""), str(row.get("ad_id") or "")) in by_tuple
-        and _market_matches(row.get("country"), market)
+        and _qualified_dimensions_match(row, _payload(row), policy)
         and _payload(row).get("qualified_join_metric_observed") is True
         and _payload(row).get("qualified_join_source_field") == "guild_join_success_users"
         and _payload(row).get("source_metric_contract") == "tugao_funnel_daily_metrics_api_v1"
@@ -464,9 +475,11 @@ def _collect_observations(
         if not allocation_start <= day <= allocation_end or day < natural_start:
             continue
         identity = (str(row.get("campaign_id") or ""), str(row.get("adset_id") or ""), str(row.get("ad_id") or ""))
-        if identity[0] not in target_campaigns or not _market_matches(row.get("country"), market):
+        if identity[0] not in target_campaigns:
             continue
         payload = _payload(row)
+        if not _qualified_dimensions_match(row, payload, policy):
+            continue
         if payload.get("qualified_join_metric_observed") is not True:
             continue
         if payload.get("qualified_join_source_field") != "guild_join_success_users" or payload.get("source_metric_contract") != "tugao_funnel_daily_metrics_api_v1":
@@ -532,14 +545,17 @@ def _collect_observations(
     baseline_joins = 0
     baseline_eligible_joins = 0
     baseline_evidence = []
+    baseline_observed_grains = set()
     for row in facts:
         day = str(row["date"])
         if not baseline_start <= day <= baseline_end or str(row.get("data_source") or "").lower() != "tugaofunnel" or str(row.get("platform") or "").lower() == "internal":
             continue
         identity = (str(row.get("campaign_id") or ""), str(row.get("adset_id") or ""), str(row.get("ad_id") or ""))
-        if identity[0] not in baseline_campaigns or not _market_matches(row.get("country"), market):
+        if identity[0] not in baseline_campaigns:
             continue
         payload = _payload(row)
+        if not _qualified_dimensions_match(row, payload, policy):
+            continue
         if not (
             payload.get("qualified_join_metric_observed") is True
             and payload.get("qualified_join_source_field") == "guild_join_success_users"
@@ -552,6 +568,11 @@ def _collect_observations(
             continue
         count = _nonnegative_count(row.get("tugao_join_success_users") or 0, "G005_BASELINE_INVALID")
         baseline_eligible_joins += count
+        if all(identity):
+            baseline_observed_grains.add((
+                day, str(row.get("country") or ""), str(row.get("media_source") or ""),
+                *identity, external_app,
+            ))
         if (
             payload.get("qualified_join_exact_attribution") is not True
             or payload.get("qualified_join_attribution_status") != "exact"
@@ -563,14 +584,33 @@ def _collect_observations(
             day, str(row.get("country") or ""), media_source,
             *identity, external_app, count,
         ])
+    baseline_days = set(_days(baseline_start, baseline_end))
+    baseline_expected_grains = {
+        (
+            str(row["date"]), str(policy["qualified_country"]),
+            str(policy["qualified_media_source"]), str(row.get("campaign_id") or ""),
+            str(row.get("adset_id") or ""), str(row.get("ad_id") or ""),
+            str(policy["qualified_external_app"]),
+        )
+        for row in baseline_meta
+        if all(str(row.get(key) or "") for key in ("campaign_id", "adset_id", "ad_id"))
+    }
+    baseline_grain_complete_dates = {
+        day for day in baseline_days
+        if any(grain[0] == day for grain in baseline_expected_grains)
+        and {
+            grain for grain in baseline_expected_grains if grain[0] == day
+        }.issubset(baseline_observed_grains)
+    }
     baseline = {
         "window_start": baseline_start + "T00:00:00+00:00",
         "window_end": baseline_end + "T23:59:59+00:00",
         "complete_days": len(
-            set(_days(baseline_start, baseline_end))
+            baseline_days
             & media_sync
             & tugao_sync
             & {str(row["date"]) for row in baseline_meta}
+            & baseline_grain_complete_dates
         ),
         "total_impressions": baseline_impressions, "qualified_joins": baseline_joins,
         "total_spend_usd": str(baseline_spend),
@@ -583,7 +623,12 @@ def _collect_observations(
             if baseline_impressions else Decimal("0")
         ),
         "source_freshness_hours": str(freshness),
-        "evidence_hash": hash_json({"facts": sorted(baseline_evidence), "data_version": data_version}),
+        "evidence_hash": hash_json({
+            "facts": sorted(baseline_evidence),
+            "expected_grains": sorted(baseline_expected_grains),
+            "observed_grains": sorted(baseline_observed_grains),
+            "data_version": data_version,
+        }),
     }
     baseline["attribution_coverage"] = str(min(
         Decimal(baseline["event_attribution_coverage"]),
@@ -594,7 +639,7 @@ def _collect_observations(
         if str(row.get("data_source") or "").lower() == "tugaofunnel"
         and baseline_start <= str(row["date"]) <= baseline_end
         and str(row.get("campaign_id") or "") in baseline_campaigns
-        and _market_matches(row.get("country"), market)
+        and _qualified_dimensions_match(row, _payload(row), policy)
         and _payload(row).get("qualified_join_metric_observed") is True
         and _payload(row).get("qualified_join_source_field") == "guild_join_success_users"
         and _payload(row).get("source_metric_contract") == "tugao_funnel_daily_metrics_api_v1"
