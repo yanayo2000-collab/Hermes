@@ -532,6 +532,7 @@ def test_backfill_handoff_failure_happens_before_any_store(monkeypatch, tmp_path
         '--retry-delay-seconds', '0',
     ])
     monkeypatch.setattr(module, '_load_env_file', lambda _path: None)
+    monkeypatch.setattr(module, 'assert_managed_batch_runtime', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, '_build_fact_rows_payload', lambda **_kwargs: {
         'snapshot': {}, 'fact_rows': [fact], 'tugao_api_result': {'status': 'ok'},
         'tugao_api_rows': [fact], 'marketing_result': {}, 'marketing_rows': [], 'tugao_daily_rows': [],
@@ -568,6 +569,7 @@ def test_backfill_watermark_missing_returns_75_after_two_stores(monkeypatch, tmp
         '--retry-delay-seconds', '0',
     ])
     monkeypatch.setattr(module, '_load_env_file', lambda _path: None)
+    monkeypatch.setattr(module, 'assert_managed_batch_runtime', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, '_build_fact_rows_payload', lambda **_kwargs: {
         'snapshot': {}, 'fact_rows': [fact], 'tugao_api_result': {'status': 'ok'},
         'tugao_api_rows': [fact], 'marketing_result': {}, 'marketing_rows': [], 'tugao_daily_rows': [],
