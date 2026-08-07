@@ -1,8 +1,8 @@
 """Fail-closed governance contract for GLE phase 1.
 
-This module deliberately has no integration with an API, worker, scheduler, or
-Meta adapter.  It only validates a versioned contract and derives the maximum
-permissions that a future caller may request.
+This module remains a pure contract engine: it validates a versioned contract
+and derives maximum permissions without performing I/O beyond config loading.
+Execution integrations consume its result from separate fail-closed gates.
 """
 
 from __future__ import annotations

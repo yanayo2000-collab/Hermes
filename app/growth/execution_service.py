@@ -7,6 +7,14 @@ from typing import Any, Dict, Optional
 
 from app.growth.common import canonical_json, decode_json, new_id, payload_hash, utc_now
 from app.growth.errors import GrowthNotFound, GrowthStateConflict, GrowthValidationError
+from app.growth.primary_text_only_compiler import (
+    assert_phase1_live_permission,
+    is_primary_text_only_plan,
+    require_human_approver,
+    require_unexpired_approval,
+    verify_action_binding,
+    verify_compiler_receipt,
+)
 from app.growth.schema import ensure_growth_schema
 
 
@@ -46,6 +54,14 @@ class ExecutionTaskService:
             raise GrowthValidationError("action_type_is_required")
         if not str(target_type or "").strip() or not str(target_id or "").strip():
             raise GrowthValidationError("action_target_is_required")
+        candidate_plan = dict(dict(payload or {}).get("plan") or {})
+        if is_primary_text_only_plan(candidate_plan):
+            verify_compiler_receipt(candidate_plan)
+            verify_action_binding(
+                candidate_plan, action_type=action_type, action_scope=normalized_scope,
+                target_type=target_type, target_id=target_id,
+            )
+            assert_phase1_live_permission(candidate_plan, conn=self.conn)
         decision = self.conn.execute(
             "SELECT decision_id FROM growth_decision WHERE decision_id=?",
             (decision_id,),
@@ -134,8 +150,11 @@ class ExecutionTaskService:
         if not str(idempotency_key or "").strip():
             raise GrowthValidationError("idempotency_key_is_required")
         payload = dict(payload or {})
+        normalized_execution_mode = str(payload.get("execution_mode") or "").strip().lower()
+        if normalized_execution_mode:
+            payload["execution_mode"] = normalized_execution_mode
         live_approval = None
-        if str(payload.get("execution_mode") or "").strip().lower() == "live":
+        if normalized_execution_mode == "live":
             from app.growth.approval_service import OperationApprovalService
 
             action = self.get_operation_action(operation_action_id)
@@ -146,6 +165,57 @@ class ExecutionTaskService:
                 raise GrowthStateConflict("approval_action_mismatch")
             if live_approval["plan_hash"] != payload_hash(plan):
                 raise GrowthStateConflict("approved_plan_changed")
+            if is_primary_text_only_plan(plan):
+                allowed_payload_keys = {
+                    "execution_mode", "approval_id", "account_id", "plan",
+                    "experiment_id", "experiment_ids", "launch_id",
+                }
+                if set(payload) - allowed_payload_keys:
+                    raise GrowthStateConflict("gle_primary_text_only_execution_payload_not_allowed")
+                action_plan = dict(action.get("payload_json") or {}).get("plan") or {}
+                if payload_hash(action_plan) != payload_hash(plan):
+                    raise GrowthStateConflict("gle_primary_text_only_action_plan_mismatch")
+                verify_compiler_receipt(plan)
+                verify_action_binding(
+                    plan, action_type=action.get("action_type"),
+                    action_scope=action.get("action_scope"),
+                    target_type=action.get("target_type"), target_id=action.get("target_id"),
+                )
+                require_human_approver(str(live_approval.get("approved_by") or ""))
+                require_unexpired_approval(
+                    live_approval.get("expires_at"), plan_expires_at=plan.get("expires_at"),
+                )
+                if str(payload.get("account_id") or "").removeprefix("act_") != str(
+                    plan.get("target_account_id") or ""
+                ).removeprefix("act_"):
+                    raise GrowthStateConflict("gle_primary_text_only_account_mismatch")
+                if (
+                    str(payload.get("launch_id") or plan.get("launch_id") or "")
+                    != str(plan.get("launch_id") or "")
+                    or str(payload.get("experiment_id") or plan.get("experiment_id") or "")
+                    != str(plan.get("experiment_id") or "")
+                    or list(payload.get("experiment_ids") or plan.get("experiment_ids") or [])
+                    != list(plan.get("experiment_ids") or [])
+                ):
+                    raise GrowthStateConflict("gle_primary_text_only_execution_identity_mismatch")
+                dry_run = self._latest_plan_dry_run(operation_action_id)
+                compiler_receipt = dict(plan.get("compiler_receipt") or {})
+                if (
+                    str(dry_run.get("status") or "") != "DRY_RUN_VERIFIED"
+                    or str(dry_run.get("execution_mode") or "").lower() != "dry_run"
+                    or str(dry_run.get("plan_hash") or "") != payload_hash(plan)
+                    or str(dry_run.get("approval_status") or "") != "APPROVED"
+                    or str(dry_run.get("approval_id") or "")
+                    != str(live_approval.get("approval_id") or "")
+                    or str(dry_run.get("approved_by") or "")
+                    != str(live_approval.get("approved_by") or "")
+                    or str(dry_run.get("compiler_receipt_hash") or "")
+                    != str(compiler_receipt.get("receipt_hash") or "")
+                    or str(dry_run.get("compiler_plan_core_hash") or "")
+                    != str(compiler_receipt.get("plan_core_hash") or "")
+                ):
+                    raise GrowthStateConflict("gle_primary_text_only_matching_dry_run_required")
+                assert_phase1_live_permission(plan, conn=self.conn)
             payload["approval"] = {
                 "approval_id": live_approval["approval_id"],
                 "status": live_approval["status"],
@@ -253,6 +323,87 @@ class ExecutionTaskService:
             self.conn.rollback()
             raise
         return self.get_task(task_id)
+
+    def _latest_plan_dry_run(self, operation_action_id: str) -> Dict[str, Any]:
+        row = self.conn.execute(
+            """SELECT response_json FROM growth_idempotency_record
+            WHERE route_key='ad_experiment.plan_dry_run'
+              AND json_valid(response_json)
+              AND json_extract(response_json,'$.plan_id')=?
+            ORDER BY created_at DESC LIMIT 1""",
+            (str(operation_action_id or ""),),
+        ).fetchone()
+        return dict(decode_json(row["response_json"], {}) if row else {})
+
+    def assert_live_write_authorized(
+        self, operation_action_id: str, payload: Dict[str, Any],
+    ) -> None:
+        """Re-read dynamic GLE gates immediately before each adapter write."""
+
+        if str(payload.get("execution_mode") or "").strip().lower() != "live":
+            return
+        plan = dict(payload.get("plan") or {})
+        if not is_primary_text_only_plan(plan):
+            return
+        action = self.get_operation_action(operation_action_id)
+        action_plan = dict(action.get("payload_json") or {}).get("plan") or {}
+        if payload_hash(action_plan) != payload_hash(plan):
+            raise GrowthStateConflict("gle_primary_text_only_action_plan_mismatch")
+        verify_action_binding(
+            plan, action_type=action.get("action_type"),
+            action_scope=action.get("action_scope"), target_type=action.get("target_type"),
+            target_id=action.get("target_id"),
+        )
+        if str(payload.get("action_type") or "").strip().upper() != str(
+            plan.get("action_type") or ""
+        ).strip().upper():
+            raise GrowthStateConflict("gle_primary_text_only_task_action_mismatch")
+        if str(payload.get("account_id") or "").removeprefix("act_") != str(
+            plan.get("target_account_id") or ""
+        ).removeprefix("act_"):
+            raise GrowthStateConflict("gle_primary_text_only_account_mismatch")
+        approval = dict(payload.get("approval") or {})
+        if str(approval.get("status") or "") != "APPROVED":
+            raise GrowthStateConflict("gle_primary_text_only_approval_mismatch")
+        if not str(approval.get("consumed_at") or "").strip():
+            raise GrowthStateConflict("gle_primary_text_only_approval_not_consumed")
+        require_human_approver(str(approval.get("approved_by") or ""))
+        stored_row = self.conn.execute(
+            """SELECT operation_action_id,plan_hash,status,approved_by,expires_at,consumed_at
+            FROM growth_operation_approval WHERE approval_id=?""",
+            (str(approval.get("approval_id") or ""),),
+        ).fetchone()
+        stored_approval = dict(stored_row or {})
+        if (
+            not stored_approval
+            or stored_approval.get("operation_action_id") != operation_action_id
+            or stored_approval.get("status") != "APPROVED"
+            or stored_approval.get("plan_hash") != payload_hash(plan)
+            or str(stored_approval.get("approved_by") or "")
+            != str(approval.get("approved_by") or "")
+            or not str(stored_approval.get("consumed_at") or "").strip()
+        ):
+            raise GrowthStateConflict("gle_primary_text_only_approval_mismatch")
+        require_unexpired_approval(
+            stored_approval.get("expires_at"), plan_expires_at=plan.get("expires_at"),
+        )
+        dry_run = self._latest_plan_dry_run(operation_action_id)
+        compiler_receipt = dict(plan.get("compiler_receipt") or {})
+        if (
+            str(dry_run.get("status") or "") != "DRY_RUN_VERIFIED"
+            or str(dry_run.get("execution_mode") or "").lower() != "dry_run"
+            or str(dry_run.get("plan_hash") or "") != payload_hash(plan)
+            or str(dry_run.get("approval_status") or "") != "APPROVED"
+            or str(dry_run.get("approval_id") or "")
+            != str(approval.get("approval_id") or "")
+            or str(dry_run.get("approved_by") or "")
+            != str(approval.get("approved_by") or "")
+            or str(dry_run.get("compiler_receipt_hash") or "")
+            != str(compiler_receipt.get("receipt_hash") or "")
+        ):
+            raise GrowthStateConflict("gle_primary_text_only_matching_dry_run_required")
+        verify_compiler_receipt(plan)
+        assert_phase1_live_permission(plan, conn=self.conn)
 
     def claim_next(
         self, worker_id: str, *, execution_mode: str = "",
