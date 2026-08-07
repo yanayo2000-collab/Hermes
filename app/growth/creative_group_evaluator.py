@@ -273,6 +273,22 @@ class CreativeGroupEvaluator:
             self._verified_activation_date(str(item["experiment_id"]), str(item["created_at"]))
             for item in experiments
         ]
+        ad_ids = [str(item.get("source_ad_id") or "") for item in experiments if item.get("source_ad_id")]
+        revision_table = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ad_creative_revision_window'",
+        ).fetchone()
+        if revision_table and ad_ids:
+            placeholders = ",".join("?" for _ in ad_ids)
+            revision_rows = self.conn.execute(
+                f"""
+                SELECT effective_from FROM ad_creative_revision_window
+                WHERE status='CURRENT' AND ad_id IN ({placeholders})
+                """,
+                tuple(ad_ids),
+            ).fetchall()
+            activation_dates.extend(
+                self._as_date(str(row["effective_from"] or "")) for row in revision_rows
+            )
         return max(activation_dates) + timedelta(days=1)
 
     def _verified_activation_date(self, experiment_id: str, fallback: str) -> date:

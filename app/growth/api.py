@@ -1553,7 +1553,7 @@ def create_ad_experiment_router(
             placeholders = ",".join("?" for _ in ad_ids)
             performance_rows = conn.execute(
                 f"""
-                SELECT report_date_london,ad_id,spend,impressions,clicks,installs,
+                SELECT report_date_london,ad_id,asset_id,creative_id,spend,impressions,clicks,installs,
                        tugao_real_bind_count,data_quality_status,attribution_level
                 FROM ad_creative_performance_daily
                 WHERE ad_id IN ({placeholders})
@@ -1666,6 +1666,23 @@ def create_ad_experiment_router(
 
         performance_rows, duplicate_performance_rows = deduplicate_ad_daily_rows(performance_rows)
 
+        revision_rows: List[Dict[str, Any]] = []
+        revision_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ad_creative_revision_window'",
+        ).fetchone()
+        if revision_table and ad_ids:
+            placeholders = ",".join("?" for _ in ad_ids)
+            revision_rows = [dict(row) for row in conn.execute(
+                f"""
+                SELECT revision_id,experiment_id,ad_id,creative_id,image_id,effective_from,
+                       effective_to,replacement_boundary_date,status,source
+                FROM ad_creative_revision_window
+                WHERE ad_id IN ({placeholders})
+                ORDER BY ad_id,effective_from,revision_id
+                """,
+                tuple(ad_ids),
+            ).fetchall()]
+
         def aggregate_performance(metric_rows: List[Any]) -> Dict[str, Any]:
             spend = sum(float(item["spend"] or 0) for item in metric_rows)
             impressions = sum(float(item["impressions"] or 0) for item in metric_rows)
@@ -1690,12 +1707,90 @@ def create_ad_experiment_router(
                 "attribution_levels": sorted({str(item["attribution_level"] or "") for item in metric_rows if item["attribution_level"]}),
             }
 
+        revisions_by_ad: Dict[str, List[Dict[str, Any]]] = {}
+        for revision in revision_rows:
+            revisions_by_ad.setdefault(str(revision["ad_id"] or ""), []).append(revision)
+
+        def creative_revision_performance(ad_id: str, metric_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+            revisions = revisions_by_ad.get(str(ad_id or ""), [])
+            if not revisions:
+                return {
+                    "available": False,
+                    "has_replacement": False,
+                    "current_material_label": "当前素材表现",
+                    "historical_material_label": "历史素材表现",
+                    "mixed_dates": [],
+                    "excluded_mixed_day_count": 0,
+                    "current_material": aggregate_performance([]),
+                    "historical_materials": [],
+                }
+            boundary_dates = {
+                str(item.get("replacement_boundary_date") or "")
+                for item in revisions if str(item.get("replacement_boundary_date") or "")
+            }
+            mixed_rows = [item for item in metric_rows if str(item.get("report_date_london") or "") in boundary_dates]
+            eligible_rows = [item for item in metric_rows if item not in mixed_rows]
+            rows_by_revision: Dict[str, List[Dict[str, Any]]] = {
+                str(item["revision_id"]): [] for item in revisions
+            }
+            unassigned_dates: set[str] = set()
+            for item in eligible_rows:
+                report_date = str(item.get("report_date_london") or "")
+                matched = next((
+                    revision for revision in revisions
+                    if str(revision.get("effective_from") or "")[:10] <= report_date
+                    and (
+                        not str(revision.get("effective_to") or "")
+                        or report_date < str(revision.get("effective_to") or "")[:10]
+                    )
+                ), None)
+                if matched:
+                    rows_by_revision[str(matched["revision_id"])].append(item)
+                elif report_date:
+                    unassigned_dates.add(report_date)
+            current = next((item for item in reversed(revisions) if item.get("status") == "CURRENT"), revisions[-1])
+
+            def serialize_revision(revision: Dict[str, Any]) -> Dict[str, Any]:
+                return {
+                    "revision_id": str(revision.get("revision_id") or ""),
+                    "creative_id": str(revision.get("creative_id") or ""),
+                    "image_id": str(revision.get("image_id") or ""),
+                    "effective_from": str(revision.get("effective_from") or ""),
+                    "effective_to": str(revision.get("effective_to") or ""),
+                    "performance": aggregate_performance(
+                        rows_by_revision.get(str(revision.get("revision_id") or ""), []),
+                    ),
+                }
+
+            current_payload = serialize_revision(current)
+            historical = [serialize_revision(item) for item in revisions if item is not current]
+            return {
+                "available": bool(revisions),
+                "has_replacement": len(revisions) > 1,
+                "current_material_label": "当前素材表现",
+                "historical_material_label": "历史素材表现",
+                "current_revision_id": str(current.get("revision_id") or ""),
+                "evaluation_reset_at": str(current.get("effective_from") or "") if len(revisions) > 1 else "",
+                "mixed_dates": sorted(boundary_dates & {
+                    str(item.get("report_date_london") or "") for item in mixed_rows
+                }),
+                "excluded_mixed_day_count": len({
+                    str(item.get("report_date_london") or "") for item in mixed_rows
+                }),
+                "unassigned_dates": sorted(unassigned_dates),
+                "comparison_rule": "REPLACEMENT_DAY_EXCLUDED_CURRENT_REVISION_ONLY",
+                "current_material": current_payload,
+                "historical_materials": historical,
+            }
+
         performance_by_ad: Dict[str, List[Dict[str, Any]]] = {}
         for metric_row in performance_rows:
             performance_by_ad.setdefault(str(metric_row["ad_id"] or ""), []).append(metric_row)
         for experiment in experiments:
-            experiment["performance"] = aggregate_performance(
-                performance_by_ad.get(str(experiment["ad_id"] or ""), []),
+            ad_performance_rows = performance_by_ad.get(str(experiment["ad_id"] or ""), [])
+            experiment["performance"] = aggregate_performance(ad_performance_rows)
+            experiment["creative_performance_isolation"] = creative_revision_performance(
+                str(experiment["ad_id"] or ""), ad_performance_rows,
             )
 
         delivery_performance = aggregate_performance(performance_rows)
@@ -1724,6 +1819,18 @@ def create_ad_experiment_router(
             "freshness_mode": "T_PLUS_1_DAILY",
             "is_realtime": False,
             "delivery_status_is_realtime": True,
+            "creative_replacement_isolation": {
+                "enabled": bool(revision_rows),
+                "has_replacements": any(len(items) > 1 for items in revisions_by_ad.values()),
+                "mixed_dates": sorted({
+                    str(item.get("replacement_boundary_date") or "")
+                    for item in revision_rows
+                    if str(item.get("replacement_boundary_date") or "")
+                }),
+                "current_material_label": "当前素材表现",
+                "historical_material_label": "历史素材表现",
+                "comparison_rule": "REPLACEMENT_DAY_EXCLUDED_CURRENT_REVISION_ONLY",
+            },
         })
         maturity_rule = decode_json(rows[0]["maturity_rule_json"], {})
         minimum_installs = int(maturity_rule.get("minimum_installs") or 100)
