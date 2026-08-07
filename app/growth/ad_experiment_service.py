@@ -16,6 +16,10 @@ from app.growth.meta_sdk_contract import META_SDK_CONTRACT_VERSION
 from app.growth.delivery_guardrails import new_account_delivery_guardrails
 from app.growth.errors import GrowthNotFound, GrowthStateConflict, GrowthValidationError
 from app.growth.execution_service import ExecutionTaskService
+from app.growth.primary_text_only_compiler import (
+    assert_phase1_live_permission,
+    attach_compiler_receipt,
+)
 from app.growth.schema import ensure_growth_schema
 
 
@@ -497,6 +501,7 @@ class AdExperimentService:
         baseline_experiment_id = ""
         frozen_image = self._approved_image_by_id(frozen_creative_id) if randomized_test else None
         frozen_copy_signature = ""
+        frozen_copy_direction = ""
         copy_signatures = set()
         for index, requested in enumerate(cells_request, start=1):
             experiment_id = str(requested.get("experiment_id") or "")
@@ -519,6 +524,10 @@ class AdExperimentService:
                 hypothesis_creative_id = str(dict(hypothesis.get("frozen_creative") or {}).get("image_id") or "").strip()
                 if hypothesis_creative_id != frozen_creative_id:
                     raise GrowthValidationError("copy_experiment_frozen_creative_identity_mismatch")
+                direction_signature = canonical_json(direction)
+                if frozen_copy_direction and direction_signature != frozen_copy_direction:
+                    raise GrowthValidationError("copy_experiment_creative_direction_must_be_identical")
+                frozen_copy_direction = direction_signature
             targeting = strict_meta_targeting(country, strategy_key)
             assert_strict_targeting(targeting, country, strategy_key)
             image = frozen_image or self._approved_launch_image(normalized_launch_id, experiment_id)
@@ -662,6 +671,8 @@ class AdExperimentService:
             "plan_version": plan_versions[test_variable],
             "launch_id": normalized_launch_id, "experiment_id": baseline_experiment_id,
             "experiment_ids": [str(item["experiment_id"]) for item in experiments],
+            "experiment_type": "COPY_ONLY" if test_variable == "copy_variant" else "",
+            "unique_variable": "PRIMARY_TEXT" if test_variable == "copy_variant" else "",
             "action_type": "CREATE_PAUSED_AD", "target_account_id": account_id,
             "target_object_type": "LAUNCH", "target_object_id": normalized_launch_id,
             "campaign": {"name": campaign_name, "objective": "OUTCOME_APP_PROMOTION", "buying_type": "AUCTION", "special_ad_categories": [], "status": "PAUSED"},
@@ -702,7 +713,7 @@ class AdExperimentService:
             "delivery_guardrails": expected_guardrails,
             "max_write_requests": ((4 + 2 * len(compiled_cells)) if test_variable == "audience_strategy" else (2 + 4 * len(compiled_cells) if test_variable == "copy_variant" else 1 + 4 * len(compiled_cells))),
             "execution_policy": {
-                "live_creation_allowed": test_variable != "audience_strategy" or audience_live_ready,
+                "live_creation_allowed": not randomized_test or audience_live_ready,
                 "blocked_reason": audience_blocked_reason,
                 "required_readback": ["study_id", "cell_ids", "adset_ids", "ads", "strict_targeting"],
             },
@@ -711,6 +722,14 @@ class AdExperimentService:
         }
         if recovery_evidence:
             plan["recovery"] = {**recovery_evidence, "source_account_id": next(iter(account_ids)), "target_account_id": account_id, "strategy": "NEW_IMMUTABLE_PLAN"}
+        if test_variable == "copy_variant":
+            if recovery_evidence:
+                raise GrowthValidationError("gle_primary_text_only_recovery_plan_not_allowed")
+            if not expires_at:
+                plan["expires_at"] = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+            plan = attach_compiler_receipt(plan)
+            assert_phase1_live_permission(plan, conn=self.conn)
+            expires_at = str(plan["expires_at"])
         action = ExecutionTaskService(self.conn).create_operation_action(
             decision_id=str(decision["decision_id"]), episode_id=str(decision["episode_id"] or ""),
             action_type="CREATE_PAUSED_AD", action_scope="EXPERIMENT",

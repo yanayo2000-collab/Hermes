@@ -278,6 +278,24 @@ class MetaExecutionWorker:
                     meta_object_ids=object_ids, error_code="continuation_verification_uncertain",
                     error_message=str(verification.get("error") or verified),
                 )
+            try:
+                self.tasks.assert_live_write_authorized(task["operation_action_id"], payload)
+            except Exception as exc:
+                self.tasks.record_receipt(
+                    task_id, step_name=step, step_status="FAILED",
+                    step_result={
+                        "write_performed": False,
+                        "reason": "gle_primary_text_only_write_blocked",
+                        "detail": str(exc),
+                    },
+                    meta_object_ids=object_ids,
+                )
+                return self.tasks.transition(
+                    task_id, "MANUAL_REVIEW", worker_id=self.worker_id,
+                    current_step=step, meta_object_ids=object_ids,
+                    error_code="gle_primary_text_only_write_blocked",
+                    error_message=str(exc),
+                )
             result = self._execute_step(task_id, step, payload, object_ids)
             status = str(result.get("status") or "UNKNOWN").upper()
             object_ids.update(dict(result.get("meta_object_ids") or {}))

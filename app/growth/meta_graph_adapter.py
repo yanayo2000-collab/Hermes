@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
+import hashlib
 import json
 import re
 from typing import Any, Dict, FrozenSet, Optional
@@ -13,6 +15,7 @@ from app.growth.audience_strategy import assert_strict_targeting
 from app.growth.common import payload_hash
 from app.growth.meta_readback import MetaCopyOnlyReadback
 from app.growth.meta_sdk_contract import relevant_meta_error_evidence
+from app.growth.primary_text_only_compiler import MAX_APPROVED_ASSET_BYTES
 
 
 @dataclass(frozen=True)
@@ -142,7 +145,14 @@ class MetaGraphExecutionAdapter:
         base_step, cell_key, step_payload = self._step_context(normalized_step, plan)
         prefix = f"{cell_key.lower()}_" if cell_key else ""
         if base_step == "IMAGE_UPLOAD":
-            result = self._upload_image(account_id, step_payload)
+            plan_cell = next((
+                dict(item) for item in list(plan.get("cells") or [])
+                if str(dict(item).get("cell_key") or "").strip().upper() == cell_key
+            ), {})
+            result = self._upload_image(
+                account_id, step_payload,
+                expected_sha256=str(plan_cell.get("asset_sha256") or "").strip().lower(),
+            )
             return {"status": "SUCCESS", "meta_object_ids": {f"{prefix}image_hash": result["image_hash"]}}
         if base_step == "CAMPAIGN_CREATE":
             step_payload.setdefault("is_adset_budget_sharing_enabled", False)
@@ -583,7 +593,9 @@ class MetaGraphExecutionAdapter:
         if change > float(self.policy.max_budget_change_percent):
             raise GrowthValidationError("meta_budget_change_limit_exceeded")
 
-    def _upload_image(self, account_id: str, step_payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _upload_image(
+        self, account_id: str, step_payload: Dict[str, Any], *, expected_sha256: str = "",
+    ) -> Dict[str, Any]:
         image_path = Path(str(step_payload.get("image_path") or "")).expanduser().resolve()
         if not image_path.is_file():
             raise GrowthValidationError("meta_image_file_not_found")
@@ -591,13 +603,26 @@ class MetaGraphExecutionAdapter:
             root = Path(self.policy.image_root).expanduser().resolve()
             if root not in image_path.parents:
                 raise GrowthValidationError("meta_image_path_not_allowed")
-        with image_path.open("rb") as handle:
-            response = self.session.post(
-                self._url(f"act_{account_id}/adimages"),
-                data={"access_token": self.access_token},
-                files={"filename": (image_path.name, handle)},
-                timeout=self.timeout_seconds,
-            )
+        try:
+            if image_path.stat().st_size > MAX_APPROVED_ASSET_BYTES:
+                raise GrowthValidationError("meta_image_asset_too_large")
+            with image_path.open("rb") as handle:
+                image_bytes = handle.read(MAX_APPROVED_ASSET_BYTES + 1)
+        except OSError as exc:
+            raise GrowthValidationError("meta_image_file_not_found") from exc
+        if len(image_bytes) > MAX_APPROVED_ASSET_BYTES:
+            raise GrowthValidationError("meta_image_asset_too_large")
+        if expected_sha256 and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise GrowthValidationError("meta_image_asset_sha256_invalid")
+        actual_sha256 = hashlib.sha256(image_bytes).hexdigest()
+        if expected_sha256 and actual_sha256 != expected_sha256:
+            raise GrowthValidationError("meta_image_asset_sha256_mismatch")
+        response = self.session.post(
+            self._url(f"act_{account_id}/adimages"),
+            data={"access_token": self.access_token},
+            files={"filename": (image_path.name, BytesIO(image_bytes))},
+            timeout=self.timeout_seconds,
+        )
         body = self._response_json(response)
         images = dict(body.get("images") or {})
         first = next(iter(images.values()), {})

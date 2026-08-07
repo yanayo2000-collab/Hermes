@@ -16,6 +16,7 @@ from app.growth.ad_experiment_service import AdExperimentService, EXPERIMENT_TRA
 from app.growth.approval_service import OperationApprovalService
 from app.growth.common import canonical_json, decode_json, payload_hash, utc_now
 from app.growth.execution_service import ExecutionTaskService
+from app.growth.primary_text_only_compiler import is_primary_text_only_plan
 
 
 _COPY = {
@@ -733,6 +734,12 @@ class NewAccountLaunchAutopilot:
         plan_id = str(plan_result["plan_id"])
         detail = self.experiments.plan_detail(plan_id)
         approval = dict(detail.get("approval") or {})
+        if is_primary_text_only_plan(detail.get("plan")):
+            return {
+                "launch_id": launch_id,
+                "status": "WAITING_HUMAN_APPROVAL",
+                "plan_id": plan_id,
+            }
         if str(approval.get("status") or "") == "PROPOSED":
             approval = OperationApprovalService(self.conn).transition(
                 str(approval["approval_id"]), "APPROVED", actor="growth-autopilot",

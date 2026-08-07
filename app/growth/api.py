@@ -57,6 +57,11 @@ def _enabled(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _operator_principal(user: Dict[str, Any]) -> str:
+    principal = str(user.get("user_id") or user.get("username") or "").strip()
+    return f"operator:{principal}" if principal else ""
+
+
 def _read_meta_delivery_status(
     *, session: Any, access_token: str, graph_root: str,
     experiments: List[Dict[str, Any]],
@@ -1043,7 +1048,7 @@ def create_growth_router(
             with db.connect() as conn:
                 result = OperationApprovalService(conn).propose(
                     operation_action_id, body.plan_json,
-                    proposed_by=str(user.get("user_id") or user.get("username") or ""),
+                    proposed_by=_operator_principal(user),
                     idempotency_key=idempotency_key,
                     expires_at=body.expires_at,
                 )
@@ -1179,7 +1184,7 @@ def create_ad_experiment_router(
         return dict(require_admin(request) or {})
 
     def actor(user: Dict[str, Any]) -> str:
-        return str(user.get("user_id") or user.get("username") or "")
+        return _operator_principal(user)
 
     def execute(fn: Callable[[], Any]) -> Any:
         try:
@@ -2117,15 +2122,19 @@ def create_ad_experiment_router(
             raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "meta_page_id_must_be_numeric"})
         audience = _resolve_new_account_audience(country=country, gender=None, language=None, age_min=None, age_max=None)
         variants_input = [item.model_dump() for item in body.copy_variants]
-        signatures = {
+        primary_texts = {
+            str(item.get("primary_text") or "").strip() for item in variants_input
+        }
+        invariant_copy = {
             canonical_json({
-                "primary_text": str(item.get("primary_text") or "").strip(),
                 "headline": str(item.get("headline") or "").strip(),
                 "description": str(item.get("description") or "").strip(),
             }) for item in variants_input
         }
-        if len(variants_input) != 2 or len(signatures) != 2:
-            raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "copy_experiment_requires_two_distinct_versions"})
+        if len(variants_input) != 2 or len(primary_texts) != 2:
+            raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "copy_experiment_requires_two_distinct_primary_texts"})
+        if len(invariant_copy) != 1:
+            raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "copy_experiment_only_primary_text_may_differ"})
         if any(not all((str(item.get("primary_text") or "").strip(), str(item.get("headline") or "").strip(), str(item.get("hypothesis") or "").strip())) for item in variants_input):
             raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "copy_experiment_copy_and_hypothesis_required"})
         naming_date = str(body.naming_date or "").strip() or datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -2157,9 +2166,8 @@ def create_ad_experiment_router(
                     )
                     recommendation_id = f"{launch_id}_v{index}"
                     creative_direction = {
-                        "key": "copy_variant", "code": f"CV{index}",
-                        "title": "文案基准" if index == 1 else "文案挑战",
-                        "summary": str(copy_item["hypothesis"]),
+                        "key": "copy_variant", "code": "CV",
+                        "title": "主文案变量", "summary": "仅测试 primary_text",
                     }
                     decision_context = {
                         "platform": "meta", "business_goal": "acquisition", "test_variable": "copy_variant",
@@ -3833,7 +3841,7 @@ def _build_dry_run_receipt(
         }
         for step in [*planned_steps, "VERIFY", "RECEIPT"]
     ]
-    return {
+    result = {
         "plan_id": plan_id,
         "status": "DRY_RUN_VERIFIED",
         "execution_mode": mode,
@@ -3841,9 +3849,33 @@ def _build_dry_run_receipt(
         "meta_writes_performed": False,
         "plan_hash": payload_hash(plan),
         "approval_status": approval.get("status") or "PROPOSED",
+        "approval_id": approval.get("approval_id") or "",
+        "approved_by": approval.get("approved_by") or "",
         "verified_at": verified_at,
         "receipts": receipts,
     }
+    from app.growth.primary_text_only_compiler import (
+        is_primary_text_only_plan,
+        verify_compiler_receipt,
+    )
+    if is_primary_text_only_plan(plan):
+        from app.growth.primary_text_only_compiler import require_human_approver
+        from app.growth.primary_text_only_compiler import require_unexpired_approval
+        from app.growth.errors import GrowthStateConflict
+
+        if str(approval.get("status") or "") != "APPROVED":
+            raise GrowthStateConflict("gle_primary_text_only_approval_required_before_dry_run")
+        require_human_approver(str(approval.get("approved_by") or ""))
+        require_unexpired_approval(
+            approval.get("expires_at"), plan_expires_at=plan.get("expires_at"),
+        )
+        compiler_receipt = verify_compiler_receipt(plan)
+        result.update({
+            "compiler_receipt_hash": compiler_receipt["receipt_hash"],
+            "compiler_plan_core_hash": compiler_receipt["plan_core_hash"],
+            "compiler_status": compiler_receipt["status"],
+        })
+    return result
 
 
 def _latest_dry_run_receipt(conn: sqlite3.Connection, plan_id: str) -> Dict[str, Any]:
@@ -5323,7 +5355,7 @@ def _transition_operation_approval(
     with db.connect() as conn:
         return OperationApprovalService(conn).transition(
             approval_id, body.status,
-            actor=str(user.get("user_id") or user.get("username") or ""),
+            actor=_operator_principal(user),
         )
 
 
