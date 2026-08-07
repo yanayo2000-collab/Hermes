@@ -34,6 +34,8 @@ AD_DASHBOARD_FACT_COLUMNS = (
     'guild_joins',
     'promotion_guild_joins',
     'organic_guild_joins',
+    'tugao_join_success_users',
+    'tugao_join_success_no_wa_users',
     'meta_guild_joins',
     'af_guild_joins',
     'purchases',
@@ -42,6 +44,13 @@ AD_DASHBOARD_FACT_COLUMNS = (
     'link_clicks',
     'impressions',
     'reach',
+)
+
+QUALIFIED_JOIN_SOURCE_FIELD = 'guild_join_success_users'
+QUALIFIED_JOIN_METRIC_CONTRACT = 'tugao_funnel_daily_metrics_api_v1'
+QUALIFIED_JOIN_FACT_COLUMNS = (
+    'tugao_join_success_users',
+    'tugao_join_success_no_wa_users',
 )
 
 AD_DASHBOARD_TARGET_APP_LINKY_META_ACCOUNTS = {
@@ -84,6 +93,39 @@ def _empty_ad_metrics() -> Dict[str, float]:
 def _add_ad_metrics(target: Dict[str, float], row: Dict[str, Any]) -> None:
     for key in AD_DASHBOARD_FACT_COLUMNS:
         target[key] = float(target.get(key) or 0.0) + float((row or {}).get(key) or 0.0)
+
+
+def _qualified_join_row_metadata(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    observed = (row or {}).get('qualified_join_metric_observed')
+    if observed is not True:
+        return None
+    if str((row or {}).get('data_source') or '').strip().lower() != 'tugaofunnel':
+        raise ValueError('qualified_join_source_must_be_tugaofunnel')
+    if str((row or {}).get('qualified_join_source_field') or '').strip() != QUALIFIED_JOIN_SOURCE_FIELD:
+        raise ValueError('qualified_join_source_field_mismatch')
+    if str((row or {}).get('source_metric_contract') or '').strip() != QUALIFIED_JOIN_METRIC_CONTRACT:
+        raise ValueError('qualified_join_metric_contract_mismatch')
+    counts: Dict[str, int] = {}
+    for key in QUALIFIED_JOIN_FACT_COLUMNS:
+        value = (row or {}).get(key)
+        if isinstance(value, bool):
+            raise ValueError(f'qualified_join_invalid_count:{key}')
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f'qualified_join_invalid_count:{key}') from None
+        if number < 0 or not number.is_integer() or number == float('inf') or number != number:
+            raise ValueError(f'qualified_join_invalid_count:{key}')
+        counts[key] = int(number)
+    identity = tuple(str((row or {}).get(key) or '').strip() for key in (
+        'campaign_id', 'adset_id', 'ad_id', 'external_app',
+    ))
+    exact_ready = all(identity)
+    return {
+        'identity': identity,
+        'exact_ready': exact_ready,
+        'counts': counts,
+    }
 
 
 def _ad_missing_account_label() -> str:
@@ -184,7 +226,7 @@ def _normalize_ad_fact_account_value(row: Dict[str, Any]) -> str:
 
 
 def _ad_fact_grain_key(row: Dict[str, Any]) -> Tuple[str, ...]:
-    return (
+    base = (
         str((row or {}).get('date') or '').strip(),
         str((row or {}).get('data_source') or '').strip() or 'Unknown',
         str((row or {}).get('platform') or '').strip() or 'Unknown',
@@ -197,6 +239,22 @@ def _ad_fact_grain_key(row: Dict[str, Any]) -> Tuple[str, ...]:
         str((row or {}).get('ad') or '').strip(),
         str((row or {}).get('source_type') or '').strip(),
     )
+    if (
+        (row or {}).get('qualified_join_metric_observed') is True
+        and str((row or {}).get('data_source') or '').strip().lower() == 'tugaofunnel'
+    ):
+        return (
+            'tugao-qualified-v1',
+            str((row or {}).get('date') or '').strip(),
+            str((row or {}).get('data_source') or '').strip() or 'TugaoFunnel',
+            str((row or {}).get('country') or '').strip() or 'Unknown',
+            str((row or {}).get('media_source') or '').strip(),
+            str((row or {}).get('campaign_id') or '').strip(),
+            str((row or {}).get('adset_id') or '').strip(),
+            str((row or {}).get('ad_id') or '').strip(),
+            str((row or {}).get('external_app') or '').strip(),
+        )
+    return base
 
 
 def _ad_fact_row_id(row: Dict[str, Any]) -> str:
@@ -252,6 +310,12 @@ def _ad_enrich_unknown_countries(rows: List[Dict[str, Any]]) -> List[Dict[str, A
     for row in rows or []:
         if not isinstance(row, dict):
             continue
+        if (
+            row.get('qualified_join_metric_observed') is True
+            and str(row.get('data_source') or '').strip().lower() == 'tugaofunnel'
+        ):
+            enriched.append(row)
+            continue
         if str(row.get('country_attribution_status') or '').strip() in {
             'unresolved_waiting_meta_delivery_country',
             'meta_delivery_country_ambiguous',
@@ -277,26 +341,29 @@ def _ad_materialize_fact_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
     buckets: Dict[Tuple[str, ...], Dict[str, Any]] = {}
     prepared_rows = [_ad_prepare_country_dimension(row) for row in (rows or []) if isinstance(row, dict)]
     for row in _ad_enrich_unknown_countries(prepared_rows):
+        qualified_metadata = _qualified_join_row_metadata(row)
         key = _ad_fact_grain_key(row)
         bucket = buckets.setdefault(key, {
-            'date': key[0],
-            'data_source': key[1],
-            'platform': key[2],
-            'app_id': key[3],
-            'appsflyer_app_id': key[4],
+            'date': str(row.get('date') or '').strip(),
+            'data_source': str(row.get('data_source') or '').strip() or 'Unknown',
+            'platform': str(row.get('platform') or '').strip() or 'Unknown',
+            'app_id': _normalize_ad_fact_account_value(row),
+            'appsflyer_app_id': str(row.get('appsflyer_app_id') or '').strip(),
             'target_app': _ad_dashboard_row_target_app(row),
             'account_id': row.get('account_id') or row.get('ad_account_id') or '',
             'account_name': row.get('account_name') or row.get('app_id') or '',
             'ad_account_id': row.get('ad_account_id') or row.get('account_id') or '',
             'external_app': row.get('external_app') or '',
-            'country': key[5],
-            'media_source': key[6],
-            'campaign': key[7],
-            'ad_group': key[8],
-            'ad': key[9],
-            'source_type': key[10],
+            'country': str(row.get('country') or '').strip() or 'Unknown',
+            'media_source': str(row.get('media_source') or '').strip(),
+            'campaign': str(row.get('campaign') or '').strip() or '未命名',
+            'ad_group': str(row.get('ad_group') or '').strip(),
+            'ad': str(row.get('ad') or '').strip(),
+            'source_type': str(row.get('source_type') or '').strip(),
             **_empty_ad_metrics(),
             'row_count': 0,
+            '_qualified_join_identities': set(),
+            '_qualified_join_input_rows': 0,
         })
         row_target_app = _ad_dashboard_row_target_app(row)
         if bucket.get('target_app') not in {'linky', 'timo'} and row_target_app in {'linky', 'timo'}:
@@ -324,6 +391,8 @@ def _ad_materialize_fact_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
             'adset_id',
             'ad_id',
             'ad_name',
+            'qualified_join_source_field',
+            'source_metric_contract',
         ):
             value = row.get(metadata_key)
             if value in (None, ''):
@@ -332,9 +401,38 @@ def _ad_materialize_fact_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 bucket[metadata_key] = value
             elif metadata_key in {'campaign_id', 'adset_id', 'ad_id'} and str(bucket[metadata_key]) != str(value):
                 bucket[metadata_key] = ''
+        if qualified_metadata is not None:
+            bucket['_qualified_join_input_rows'] += 1
+            bucket['_qualified_join_identities'].add(qualified_metadata['identity'])
         bucket['row_count'] = int(bucket.get('row_count') or 0) + 1
         _add_ad_metrics(bucket, row)
     materialized = list(buckets.values())
+    for bucket in materialized:
+        identities = set(bucket.pop('_qualified_join_identities', set()))
+        qualified_rows = int(bucket.pop('_qualified_join_input_rows', 0) or 0)
+        if qualified_rows:
+            all_rows_observed = qualified_rows == int(bucket.get('row_count') or 0)
+            exact_ready = (
+                all_rows_observed
+                and qualified_rows == 1
+                and len(identities) == 1
+                and all(next(iter(identities)))
+            )
+            bucket['qualified_join_metric_observed'] = all_rows_observed
+            bucket['qualified_join_exact_attribution'] = exact_ready
+            if exact_ready:
+                status = 'exact'
+            elif not all_rows_observed:
+                status = 'mixed_observation'
+            elif qualified_rows > 1 and len(identities) == 1:
+                status = 'duplicate_exact_tuple'
+            else:
+                status = 'identity_conflict_or_missing'
+            bucket['qualified_join_attribution_status'] = status
+            if not exact_ready:
+                bucket['campaign_id'] = ''
+                bucket['adset_id'] = ''
+                bucket['ad_id'] = ''
     materialized.sort(key=lambda item: (
         str(item.get('date') or ''),
         str(item.get('data_source') or ''),
@@ -576,6 +674,7 @@ def replace_ad_dashboard_fact_rows_for_dates(
     start_date: date,
     end_date: date,
     synced_at: Optional[str] = None,
+    tugao_funnel_required: bool = False,
 ) -> int:
     """Merge refreshed facts without erasing accounts absent from this fetch.
 
@@ -584,7 +683,26 @@ def replace_ad_dashboard_fact_rows_for_dates(
     day/week/month aggregation after its rows have been stored.
     """
     ensure_ad_dashboard_fact_tables(conn)
-    return upsert_ad_dashboard_fact_rows(conn, rows, synced_at=synced_at)
+    authoritative_rows = _ad_materialize_fact_rows(rows) if tugao_funnel_required else rows
+    if tugao_funnel_required:
+        completeness = ad_dashboard_fact_rows_completeness(
+            authoritative_rows,
+            start_date=start_date,
+            end_date=end_date,
+            appsflyer_required=False,
+            tugao_funnel_required=True,
+        )
+        if not completeness.get('complete'):
+            raise ValueError(
+                'tugao_qualified_join_replace_window_incomplete:'
+                + str(completeness.get('error_message') or 'unknown')
+            )
+        conn.execute(
+            "DELETE FROM ad_dashboard_fact_rows "
+            "WHERE lower(data_source)='tugaofunnel' AND date BETWEEN ? AND ?",
+            (start_date.isoformat(), end_date.isoformat()),
+        )
+    return upsert_ad_dashboard_fact_rows(conn, authoritative_rows, synced_at=synced_at)
 
 
 def mark_ad_dashboard_sync_state(
@@ -623,7 +741,19 @@ def ad_dashboard_fact_rows_completeness(
     start_date: date,
     end_date: date,
     appsflyer_required: bool = True,
+    tugao_funnel_required: bool = False,
 ) -> Dict[str, Any]:
+    if tugao_funnel_required:
+        tugao_rows = [
+            row for row in (rows or [])
+            if str((row or {}).get('data_source') or '').strip().lower() == 'tugaofunnel'
+        ]
+        if (
+            tugao_rows
+            and all((row or {}).get('qualified_join_metric_observed') is True for row in tugao_rows)
+            and not any('qualified_join_attribution_status' in (row or {}) for row in tugao_rows)
+        ):
+            rows = _ad_materialize_fact_rows(rows)
     expected_dates: List[str] = []
     cursor = start_date
     while cursor <= end_date:
@@ -638,6 +768,8 @@ def ad_dashboard_fact_rows_completeness(
     missing_appsflyer: List[Dict[str, str]] = []
     unresolved_meta_country: List[Dict[str, str]] = []
     missing_meta_lineage: List[Dict[str, str]] = []
+    missing_tugao_funnel: List[str] = []
+    invalid_qualified_join: List[Dict[str, str]] = []
     for day in expected_dates:
         for row in rows_by_date.get(day) or []:
             if str((row or {}).get('data_source') or '').strip().lower() != 'meta':
@@ -664,6 +796,60 @@ def ad_dashboard_fact_rows_completeness(
             if not any(float((row or {}).get(key) or 0.0) for key in ('cost', 'impressions', 'clicks', 'link_clicks')):
                 continue
             unresolved_meta_country.append({'date': day, 'account_id': str((row or {}).get('account_id') or (row or {}).get('ad_account_id') or ''), 'campaign': str((row or {}).get('campaign') or '')})
+    if tugao_funnel_required:
+        seen_qualified_identities: set[Tuple[str, ...]] = set()
+        for day in expected_dates:
+            tugao_rows = [
+                row for row in rows_by_date.get(day) or []
+                if str((row or {}).get('data_source') or '').strip().lower() == 'tugaofunnel'
+            ]
+            if not tugao_rows:
+                missing_tugao_funnel.append(day)
+                continue
+            for row in tugao_rows:
+                marker = (row or {}).get('qualified_join_metric_observed')
+                if marker is not True:
+                    reason = (
+                        'qualified_join_observation_marker_invalid'
+                        if 'qualified_join_metric_observed' in (row or {})
+                        else 'qualified_join_not_observed'
+                    )
+                    invalid_qualified_join.append({'date': day, 'reason': reason})
+                    continue
+                try:
+                    metadata = _qualified_join_row_metadata(row)
+                except ValueError as exc:
+                    invalid_qualified_join.append({'date': day, 'reason': str(exc)})
+                    continue
+                if metadata is None:
+                    invalid_qualified_join.append({'date': day, 'reason': 'qualified_join_not_observed'})
+                    continue
+                platform = str((row or {}).get('platform') or '').strip().lower()
+                if platform != 'internal' and not metadata['exact_ready']:
+                    status = str((row or {}).get('qualified_join_attribution_status') or '').strip()
+                    reason = (
+                        'qualified_join_exact_identity_missing'
+                        if status == 'identity_conflict_or_missing'
+                        else 'qualified_join_materialized_exact_state_invalid'
+                    )
+                    invalid_qualified_join.append({'date': day, 'reason': reason})
+                    continue
+                if platform != 'internal' and (
+                    (row or {}).get('qualified_join_exact_attribution') is not True
+                    or str((row or {}).get('qualified_join_attribution_status') or '').strip() != 'exact'
+                ):
+                    invalid_qualified_join.append({'date': day, 'reason': 'qualified_join_materialized_exact_state_invalid'})
+                    continue
+                identity = (
+                    day,
+                    str((row or {}).get('country') or '').strip(),
+                    str((row or {}).get('media_source') or '').strip(),
+                    *metadata['identity'],
+                )
+                if identity in seen_qualified_identities:
+                    invalid_qualified_join.append({'date': day, 'reason': 'qualified_join_exact_identity_duplicate'})
+                    continue
+                seen_qualified_identities.add(identity)
     if appsflyer_required:
         media_sources = {'meta', 'google', 'tiktok'}
         for day in expected_dates:
@@ -688,7 +874,14 @@ def ad_dashboard_fact_rows_completeness(
                 missing_appsflyer.append({'date': day, 'platform': platform})
     # Preserve the current production fail-closed contract: a missing date is
     # incomplete even when AppsFlyer coverage for the remaining dates is fine.
-    complete = not missing_dates and not missing_appsflyer and not unresolved_meta_country and not missing_meta_lineage
+    complete = (
+        not missing_dates
+        and not missing_appsflyer
+        and not unresolved_meta_country
+        and not missing_meta_lineage
+        and not missing_tugao_funnel
+        and not invalid_qualified_join
+    )
     reason_parts: List[str] = []
     if missing_dates:
         reason_parts.append('missing_dates=' + ','.join(missing_dates[:5]))
@@ -704,12 +897,19 @@ def ad_dashboard_fact_rows_completeness(
             for item in missing_meta_lineage[:5]
         )
         reason_parts.append('missing_meta_lineage=' + sample)
+    if missing_tugao_funnel:
+        reason_parts.append('missing_tugao_funnel=' + ','.join(missing_tugao_funnel[:5]))
+    if invalid_qualified_join:
+        sample = ','.join(f"{item['date']}:{item['reason']}" for item in invalid_qualified_join[:5])
+        reason_parts.append('invalid_qualified_join=' + sample)
     return {
         'complete': complete,
         'missing_dates': missing_dates,
         'missing_appsflyer': missing_appsflyer,
         'unresolved_meta_country': unresolved_meta_country,
         'missing_meta_lineage': missing_meta_lineage,
+        'missing_tugao_funnel': missing_tugao_funnel,
+        'invalid_qualified_join': invalid_qualified_join,
         'status': 'ok' if complete else 'partial',
         'error_message': '; '.join(reason_parts),
     }

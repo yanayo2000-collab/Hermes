@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.ad_dashboard_repository import (
+    _ad_fact_row_id,
+    _ad_materialize_fact_rows,
     ad_dashboard_fact_rows_completeness,
     mark_ad_dashboard_sync_state,
     replace_ad_dashboard_fact_rows_for_dates,
@@ -28,6 +30,73 @@ DEFAULT_WRITER_URL = 'http://127.0.0.1:8765'
 
 class SQLiteWriteQueueError(RuntimeError):
     pass
+
+
+def _qualified_join_write_readback(
+    conn: sqlite3.Connection,
+    rows: list[Dict[str, Any]],
+    *,
+    start_date: Any,
+    end_date: Any,
+) -> Dict[str, Any]:
+    expected_rows = [
+        row for row in _ad_materialize_fact_rows(rows)
+        if row.get('qualified_join_metric_observed') is True
+    ]
+    expected = {_ad_fact_row_id(row): row for row in expected_rows}
+    stored: Dict[str, Dict[str, Any]] = {}
+    for raw in conn.execute(
+        "SELECT row_id,platform,country,media_source,campaign_id,adset_id,ad_id,tugao_join_success_users,"
+        "tugao_join_success_no_wa_users,payload_json "
+        "FROM ad_dashboard_fact_rows WHERE lower(data_source)='tugaofunnel' "
+        "AND date BETWEEN ? AND ?",
+        (start_date.isoformat(), end_date.isoformat()),
+    ).fetchall():
+        item = dict(raw)
+        try:
+            payload = json.loads(str(item.get('payload_json') or '{}'))
+        except (TypeError, ValueError):
+            payload = {}
+        item['payload'] = payload if isinstance(payload, dict) else {}
+        stored[str(item.get('row_id') or '')] = item
+    if set(stored) != set(expected):
+        raise SQLiteWriteQueueError('qualified_join_write_readback_row_set_mismatch')
+    for row_id, source in expected.items():
+        target = stored[row_id]
+        payload = target['payload']
+        if payload.get('qualified_join_metric_observed') is not True:
+            raise SQLiteWriteQueueError('qualified_join_write_readback_observation_missing')
+        if str(payload.get('qualified_join_source_field') or '') != 'guild_join_success_users':
+            raise SQLiteWriteQueueError('qualified_join_write_readback_source_field_mismatch')
+        if str(payload.get('source_metric_contract') or '') != 'tugao_funnel_daily_metrics_api_v1':
+            raise SQLiteWriteQueueError('qualified_join_write_readback_contract_mismatch')
+        is_internal = str(target.get('platform') or '').strip().lower() == 'internal'
+        if not is_internal and payload.get('qualified_join_exact_attribution') is not True:
+            raise SQLiteWriteQueueError('qualified_join_write_readback_exact_attribution_missing')
+        if not is_internal and str(payload.get('qualified_join_attribution_status') or '') != 'exact':
+            raise SQLiteWriteQueueError('qualified_join_write_readback_attribution_status_mismatch')
+        for key in ('campaign_id', 'adset_id', 'ad_id'):
+            if str(target.get(key) or '') != str(source.get(key) or ''):
+                raise SQLiteWriteQueueError('qualified_join_write_readback_identity_mismatch')
+        for key in ('country', 'media_source'):
+            if str(target.get(key) or '') != str(source.get(key) or ''):
+                raise SQLiteWriteQueueError('qualified_join_write_readback_dimension_mismatch')
+        if str(payload.get('external_app') or '') != str(source.get('external_app') or ''):
+            raise SQLiteWriteQueueError('qualified_join_write_readback_dimension_mismatch')
+        for key in ('tugao_join_success_users', 'tugao_join_success_no_wa_users'):
+            if float(target.get(key) or 0.0) != float(source.get(key) or 0.0):
+                raise SQLiteWriteQueueError('qualified_join_write_readback_metric_mismatch')
+    return {
+        'stored_rows': len(stored),
+        'success_users': int(sum(float(row.get('tugao_join_success_users') or 0.0) for row in expected_rows)),
+        'success_no_wa_users': int(sum(float(row.get('tugao_join_success_no_wa_users') or 0.0) for row in expected_rows)),
+        'exact_attribution_rows': sum(
+            1 for row in stored.values()
+            if str(row.get('platform') or '').strip().lower() != 'internal'
+            and row['payload'].get('qualified_join_exact_attribution') is True
+            and str(row['payload'].get('qualified_join_attribution_status') or '') == 'exact'
+        ),
+    }
 
 
 def db_writer_enabled() -> bool:
@@ -142,7 +211,18 @@ def _apply_ad_dashboard_schema_ensure(*, db_path: str) -> Dict[str, Any]:
                 str(item[1])
                 for item in conn.execute('PRAGMA table_info(ad_dashboard_fact_rows)').fetchall()
             }
-            required = {'account_id', 'account_name', 'campaign_id', 'adset_id', 'ad_id'}
+            lineage_columns = {
+                'account_id',
+                'account_name',
+                'campaign_id',
+                'adset_id',
+                'ad_id',
+            }
+            qualified_join_columns = {
+                'tugao_join_success_users',
+                'tugao_join_success_no_wa_users',
+            }
+            required = lineage_columns | qualified_join_columns
             missing = sorted(required - columns)
             if missing:
                 raise SQLiteWriteQueueError(
@@ -157,7 +237,9 @@ def _apply_ad_dashboard_schema_ensure(*, db_path: str) -> Dict[str, Any]:
     return {
         'ok': True,
         'type': 'ad_dashboard_schema_ensure',
-        'lineage_columns': sorted(required),
+        'lineage_columns': sorted(lineage_columns),
+        'qualified_join_columns': sorted(qualified_join_columns),
+        'required_columns': sorted(required),
         'source': 'mcn-db-writer',
     }
 
@@ -172,6 +254,7 @@ def _apply_ad_dashboard_fact_replace(*, db_path: str, job: Dict[str, Any]) -> Di
     appsflyer_required = job.get('appsflyer_required')
     if appsflyer_required is not None:
         appsflyer_required = bool(appsflyer_required)
+    tugao_funnel_required = bool(job.get('tugao_funnel_required'))
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     with acquire_sqlite_job_lock('sqlite-writer', metadata={'stage': 'ad_dashboard_fact_replace', 'job_type': 'ad_dashboard_fact_replace'}):
         conn = _connect(db_path)
@@ -183,12 +266,24 @@ def _apply_ad_dashboard_fact_replace(*, db_path: str, job: Dict[str, Any]) -> Di
                 start_date=start_date,
                 end_date=end_date,
                 synced_at=synced_at,
+                tugao_funnel_required=tugao_funnel_required,
             )
             completeness = ad_dashboard_fact_rows_completeness(
-                rows,
+                _ad_materialize_fact_rows(rows) if tugao_funnel_required else rows,
                 start_date=start_date,
                 end_date=end_date,
                 appsflyer_required=appsflyer_required,
+                tugao_funnel_required=tugao_funnel_required,
+            )
+            qualified_join_readback = (
+                _qualified_join_write_readback(
+                    conn,
+                    rows,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                if tugao_funnel_required
+                else {'stored_rows': 0, 'success_users': 0, 'success_no_wa_users': 0, 'exact_attribution_rows': 0}
             )
             mark_ad_dashboard_sync_state(
                 conn,
@@ -206,12 +301,20 @@ def _apply_ad_dashboard_fact_replace(*, db_path: str, job: Dict[str, Any]) -> Di
     return {
         'ok': True,
         'type': 'ad_dashboard_fact_replace',
-        'write_mode': 'immutable_history_merge',
+        'write_mode': (
+            'authoritative_tugao_bounded_replace'
+            if tugao_funnel_required
+            else 'immutable_history_merge'
+        ),
         'stored_rows': stored_count,
         'date_start': start_date.isoformat(),
         'date_end': end_date.isoformat(),
         'sync_status': str(completeness.get('status') or 'partial'),
         'sync_error_message': str(completeness.get('error_message') or ''),
+        'input_observed_qualified_join_rows': sum(
+            1 for row in rows if (row or {}).get('qualified_join_metric_observed') is True
+        ),
+        'qualified_join_readback': qualified_join_readback,
         'source': 'mcn-db-writer',
     }
 
@@ -251,8 +354,39 @@ def _apply_ad_dashboard_fact_restore_window(*, db_path: str, job: Dict[str, Any]
                 str(item[1])
                 for item in conn.execute('PRAGMA table_info(ad_dashboard_fact_rows)').fetchall()
             ]
-            if not columns or any(any(column not in row for column in columns) for row in rows):
+            compatible_additive_columns = {
+                'tugao_join_success_users',
+                'tugao_join_success_no_wa_users',
+            }
+            required_preimage_columns = set(columns) - compatible_additive_columns
+            if not columns or any(any(column not in row for column in required_preimage_columns) for row in rows):
                 raise SQLiteWriteQueueError('ad_dashboard_fact_restore_window_schema_mismatch')
+            for row in rows:
+                missing_additive = compatible_additive_columns - set(row)
+                if not missing_additive:
+                    continue
+                try:
+                    payload = json.loads(str(row.get('payload_json') or '{}'))
+                except (TypeError, ValueError):
+                    raise SQLiteWriteQueueError('ad_dashboard_fact_restore_window_schema_mismatch') from None
+                payload = payload if isinstance(payload, dict) else {}
+                if any(key in payload for key in (
+                    'qualified_join_metric_observed',
+                    'qualified_join_exact_attribution',
+                    'qualified_join_attribution_status',
+                    'qualified_join_source_field',
+                )):
+                    raise SQLiteWriteQueueError('ad_dashboard_fact_restore_window_schema_mismatch')
+            restored_payloads = [
+                {
+                    **row,
+                    **{
+                        column: row.get(column, 0.0)
+                        for column in compatible_additive_columns
+                    },
+                }
+                for row in rows
+            ]
             placeholders = ','.join('?' for _ in columns)
             insert_sql = (
                 f"INSERT INTO ad_dashboard_fact_rows ({','.join(columns)}) "
@@ -270,7 +404,7 @@ def _apply_ad_dashboard_fact_restore_window(*, db_path: str, job: Dict[str, Any]
             )
             conn.executemany(
                 insert_sql,
-                [[row[column] for column in columns] for row in rows],
+                [[row[column] for column in columns] for row in restored_payloads],
             )
             restored_rows = int(conn.execute(
                 'SELECT COUNT(*) FROM ad_dashboard_fact_rows WHERE date BETWEEN ? AND ?',
