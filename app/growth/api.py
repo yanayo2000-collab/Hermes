@@ -1436,6 +1436,7 @@ def create_ad_experiment_router(
             creative_direction = dict(hypothesis.get("creative_direction") or variant.get("creative_direction") or {})
             strategy = dict(hypothesis.get("audience_strategy") or variant.get("audience_strategy") or {})
             frozen_creative = dict(hypothesis.get("frozen_creative") or variant.get("frozen_creative") or {})
+            copy_variant = dict(hypothesis.get("copy_variant") or variant.get("copy_variant") or {})
             meta_names = dict(hypothesis.get("meta_names") or variant.get("meta_names") or {})
             experiments.append({
                 "experiment_id": str(row["experiment_id"]),
@@ -1456,6 +1457,7 @@ def create_ad_experiment_router(
                 "creative_direction": creative_direction,
                 "audience_strategy": strategy,
                 "frozen_creative": frozen_creative,
+                "copy_variant": copy_variant,
                 "role": str(hypothesis.get("role") or variant.get("role") or ""),
                 "test_variable": str(hypothesis.get("test_variable") or variant.get("test_variable") or "creative_direction"),
                 "meta_names": meta_names,

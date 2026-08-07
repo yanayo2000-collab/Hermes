@@ -9592,7 +9592,7 @@ loadImDiagnostics().catch(()=>{});
 loadDashboard().catch(showLoadError);
 </script>
 <script src="/static/ops/growth-decision.js?v=20260805-system-managed-v2"></script>
-<script src="/static/ops/growth-workspace.js?v=20260806-meta-rejected-status-v1"></script>
+<script src="/static/ops/growth-workspace.js?v=20260806-copy-reload-v1"></script>
 </body>
 </html>
 """
