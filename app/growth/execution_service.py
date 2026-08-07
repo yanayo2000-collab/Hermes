@@ -186,6 +186,28 @@ class ExecutionTaskService:
                 result = self._serialize_task(existing)
                 self.conn.commit()
                 return result
+            action = self.get_operation_action(operation_action_id)
+            launch_id = str(payload.get("launch_id") or dict(payload.get("plan") or {}).get("launch_id") or "").strip()
+            claim_launch = bool(
+                str(payload.get("execution_mode") or "").strip().lower() == "live"
+                and str(action.get("action_type") or "").upper() == "CREATE_PAUSED_AD"
+                and launch_id
+            )
+            if claim_launch:
+                claimed = self.conn.execute(
+                    "SELECT operation_action_id,execution_task_id FROM growth_execution_resource_claim WHERE resource_type='NEW_ACCOUNT_LAUNCH' AND resource_id=?",
+                    (launch_id,),
+                ).fetchone()
+                if claimed:
+                    if str(claimed["operation_action_id"]) != operation_action_id:
+                        raise GrowthStateConflict("launch_already_has_live_creation")
+                    existing_task = self.conn.execute(
+                        "SELECT * FROM meta_execution_task WHERE execution_task_id=?",
+                        (str(claimed["execution_task_id"]),),
+                    ).fetchone()
+                    if existing_task:
+                        self.conn.commit()
+                        return self._serialize_task(existing_task)
             if live_approval is not None:
                 payload["approval"] = OperationApprovalService(self.conn).approved_payload(
                     str(live_approval["approval_id"]), operation_action_id,
@@ -195,7 +217,6 @@ class ExecutionTaskService:
                     "operation_action_id": operation_action_id,
                     "payload": payload,
                 })
-            self.get_operation_action(operation_action_id)
             cursor = self.conn.execute(
                 """
                 UPDATE growth_operation_action SET status='QUEUED', updated_at=?
@@ -214,6 +235,13 @@ class ExecutionTaskService:
                 """,
                 (task_id, operation_action_id, idempotency_key, digest, canonical_json(payload), now, now),
             )
+            if claim_launch:
+                self.conn.execute(
+                    """INSERT INTO growth_execution_resource_claim
+                    (resource_type,resource_id,operation_action_id,execution_task_id,created_at)
+                    VALUES ('NEW_ACCOUNT_LAUNCH',?,?,?,?)""",
+                    (launch_id, operation_action_id, task_id, now),
+                )
             self._record_action_transition(
                 operation_action_id, "CREATED", "QUEUED", "",
             )

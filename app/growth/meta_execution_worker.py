@@ -187,6 +187,7 @@ class MetaExecutionWorker:
         verified_steps: set[str] = set()
         if continuation:
             plan = dict(payload.get("plan") or {})
+            continuation_action_type = str(payload.get("action_type") or "").strip().upper()
             continuation_steps = tuple(str(item or "").upper() for item in continuation.get("completed_steps") or ())
             continuation_reused_steps = tuple(
                 str(item or "").upper() for item in continuation.get("reused_steps") or ()
@@ -197,6 +198,14 @@ class MetaExecutionWorker:
             planned_steps = execution_steps_for(str(payload.get("action_type") or ""), payload)
             verification_only = continuation.get("verification_only") is True
             continuation_ids = dict(continuation.get("meta_object_ids") or {})
+            continuation_identity_valid = bool(
+                str(continuation_ids.get("campaign_id") or "").strip()
+            )
+            if continuation_action_type == "REPLACE_CREATIVE":
+                continuation_identity_valid = bool(
+                    str(continuation_ids.get("image_hash") or "").strip()
+                    and str(continuation_ids.get("creative_id") or "").strip()
+                )
             reused_steps_valid = all(
                 step in planned_steps
                 and step.endswith("_ADSET_CREATE")
@@ -209,7 +218,7 @@ class MetaExecutionWorker:
                 or continuation_steps != planned_steps[:len(continuation_steps)]
                 or len(continuation_steps) > len(planned_steps)
                 or (len(continuation_steps) == len(planned_steps) and not verification_only)
-                or not str(continuation_ids.get("campaign_id") or "").strip()
+                or not continuation_identity_valid
                 or len(set(continuation_reused_steps)) != len(continuation_reused_steps)
                 or bool(set(continuation_steps).intersection(continuation_reused_steps))
                 or not reused_steps_valid

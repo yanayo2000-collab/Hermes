@@ -126,6 +126,9 @@ def run(args: argparse.Namespace) -> int:
                 autopilot.advance_ready_launches(
                     limit=20, allow_live=args.mode == "live",
                 )
+                autopilot.advance_approved_replacements(
+                    limit=20, allow_live=args.mode == "live",
+                )
                 tasks.move_expired_to_reconciliation(stale_after_seconds=args.stale_after_seconds)
                 tasks.recover_rate_limited_activation_tasks(actor=args.worker_id)
                 reconciled = worker.reconcile_once()

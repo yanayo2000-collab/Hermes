@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Sequence
 
+from app.streamer_app_fan import ensure_streamer_app_fan_table
+
 
 STREAMER_UID_NAMESPACE = uuid.UUID('3e15e8bd-286a-4a1b-b0f0-ef74176a71e9')
 LINKY_FOUNDATION_EXCLUDED_GUILDS = frozenset({'Nova'})
@@ -236,6 +238,7 @@ def ensure_streamer_foundation_tables(conn: sqlite3.Connection) -> None:
             ON streamer_ingestion_run_scopes(status, updated_at DESC);
         """
     )
+    ensure_streamer_app_fan_table(conn)
 
 
 def ensure_streamer_foundation_views(conn: sqlite3.Connection) -> None:
