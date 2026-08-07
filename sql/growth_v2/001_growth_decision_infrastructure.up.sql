@@ -1,10 +1,5 @@
-from __future__ import annotations
-
-import sqlite3
-import time
-
-
-GROWTH_SCHEMA_SQL = """
+-- Growth Loop Engine v2 canonical executable UP migration.
+-- Kept byte-equivalent to GROWTH_SCHEMA_SQL in app/growth/schema.py by tests.
 CREATE TABLE IF NOT EXISTS growth_context_snapshot (
     context_snapshot_id TEXT PRIMARY KEY,
     app_id TEXT NOT NULL,
@@ -208,23 +203,6 @@ CREATE TABLE IF NOT EXISTS ad_experiment_events (
     FOREIGN KEY (experiment_id) REFERENCES ad_experiment(experiment_id)
 );
 
-CREATE TABLE IF NOT EXISTS ad_meta_review_state (
-    experiment_id TEXT PRIMARY KEY,
-    ad_id TEXT NOT NULL,
-    configured_status TEXT NOT NULL DEFAULT '',
-    effective_status TEXT NOT NULL DEFAULT '',
-    review_feedback_json TEXT NOT NULL DEFAULT '{}',
-    remediation_status TEXT NOT NULL DEFAULT 'NONE' CHECK (remediation_status IN (
-        'NONE','DETECTED','GENERATING','PLAN_READY','SUBMITTED','RESOLVED','FAILED'
-    )),
-    replacement_image_id TEXT NOT NULL DEFAULT '',
-    replacement_plan_id TEXT NOT NULL DEFAULT '',
-    detected_at TEXT NOT NULL DEFAULT '',
-    last_checked_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY (experiment_id) REFERENCES ad_experiment(experiment_id)
-);
-
 CREATE TABLE IF NOT EXISTS ad_creative_revision_window (
     revision_id TEXT PRIMARY KEY,
     experiment_id TEXT NOT NULL DEFAULT '',
@@ -240,8 +218,6 @@ CREATE TABLE IF NOT EXISTS ad_creative_revision_window (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_ad_meta_review_due
-    ON ad_meta_review_state(last_checked_at,effective_status);
 
 CREATE TABLE IF NOT EXISTS ad_experiment_evaluation (
     evaluation_id TEXT PRIMARY KEY,
@@ -302,14 +278,10 @@ CREATE TABLE IF NOT EXISTS growth_autonomy_policy (
     )),
     allowed_action_types_json TEXT NOT NULL DEFAULT '[]',
     max_daily_budget_usd REAL NOT NULL DEFAULT 0 CHECK (max_daily_budget_usd >= 0),
-    max_budget_change_pct REAL NOT NULL DEFAULT 0 CHECK (
-        max_budget_change_pct >= 0 AND max_budget_change_pct <= 100
-    ),
+    max_budget_change_pct REAL NOT NULL DEFAULT 0 CHECK (max_budget_change_pct >= 0 AND max_budget_change_pct <= 100),
     minimum_installs INTEGER NOT NULL DEFAULT 100 CHECK (minimum_installs >= 0),
     minimum_real_joins INTEGER NOT NULL DEFAULT 10 CHECK (minimum_real_joins >= 0),
-    require_real_join_attribution INTEGER NOT NULL DEFAULT 1 CHECK (
-        require_real_join_attribution IN (0,1)
-    ),
+    require_real_join_attribution INTEGER NOT NULL DEFAULT 1 CHECK (require_real_join_attribution IN (0,1)),
     status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','SUSPENDED')),
     reason TEXT NOT NULL DEFAULT '',
     updated_by TEXT NOT NULL DEFAULT '',
@@ -329,9 +301,7 @@ CREATE TABLE IF NOT EXISTS growth_next_action (
     summary TEXT NOT NULL,
     evidence_json TEXT NOT NULL DEFAULT '{}',
     policy_snapshot_json TEXT NOT NULL DEFAULT '{}',
-    status TEXT NOT NULL CHECK (status IN (
-        'READY','APPROVAL_REQUIRED','BLOCKED','COMPLETED','DISMISSED'
-    )),
+    status TEXT NOT NULL CHECK (status IN ('READY','APPROVAL_REQUIRED','BLOCKED','COMPLETED','DISMISSED')),
     block_reason TEXT NOT NULL DEFAULT '',
     meta_write_allowed INTEGER NOT NULL DEFAULT 0 CHECK (meta_write_allowed IN (0,1)),
     created_at TEXT NOT NULL,
@@ -430,23 +400,6 @@ CREATE TABLE IF NOT EXISTS ad_creative_generation (
     UNIQUE (launch_id, source_group_evaluation_id)
 );
 
-CREATE TABLE IF NOT EXISTS ad_creative_reference_knowledge (
-    reference_id TEXT PRIMARY KEY,
-    ad_id TEXT NOT NULL UNIQUE,
-    account_id TEXT NOT NULL,
-    campaign_id TEXT NOT NULL DEFAULT '',
-    adset_id TEXT NOT NULL DEFAULT '',
-    creative_id TEXT NOT NULL DEFAULT '',
-    direction_key TEXT NOT NULL DEFAULT '',
-    direction_source TEXT NOT NULL DEFAULT 'unmapped',
-    source_origin TEXT NOT NULL,
-    access_status TEXT NOT NULL,
-    original_prompt_available INTEGER NOT NULL DEFAULT 0,
-    snapshot_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS growth_simulation (
     simulation_id TEXT PRIMARY KEY,
     context_snapshot_id TEXT NOT NULL,
@@ -468,17 +421,6 @@ CREATE TABLE IF NOT EXISTS growth_idempotency_record (
     response_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY (route_key, idempotency_key)
-);
-
-CREATE TABLE IF NOT EXISTS growth_execution_resource_claim (
-    resource_type TEXT NOT NULL,
-    resource_id TEXT NOT NULL,
-    operation_action_id TEXT NOT NULL UNIQUE,
-    execution_task_id TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (resource_type, resource_id),
-    FOREIGN KEY (operation_action_id) REFERENCES growth_operation_action(operation_action_id),
-    FOREIGN KEY (execution_task_id) REFERENCES meta_execution_task(execution_task_id)
 );
 
 CREATE TABLE IF NOT EXISTS growth_state_transition (
@@ -550,8 +492,6 @@ CREATE INDEX IF NOT EXISTS idx_creative_group_history_launch
     ON ad_creative_group_evaluation_history(launch_id, archived_at);
 CREATE INDEX IF NOT EXISTS idx_creative_generation_status
     ON ad_creative_generation(status, created_at);
-CREATE INDEX IF NOT EXISTS idx_ad_creative_reference_access
-    ON ad_creative_reference_knowledge(access_status, account_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_growth_transition_entity ON growth_state_transition(entity_type, entity_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_new_account_launch_archive_due
     ON ad_new_account_launch_archive(status, archived_at);
@@ -613,133 +553,8 @@ BEFORE UPDATE OF status ON meta_execution_task
 WHEN NEW.status <> OLD.status AND NOT (
     (OLD.status='QUEUED' AND NEW.status IN ('RUNNING','MANUAL_REVIEW')) OR
     (OLD.status='RUNNING' AND NEW.status IN ('VERIFYING','MANUAL_REVIEW')) OR
-    (OLD.status='VERIFYING' AND NEW.status IN ('QUEUED','SUCCESS','MANUAL_REVIEW')) OR
-    (OLD.status='MANUAL_REVIEW' AND NEW.status='VERIFYING')
+    (OLD.status='VERIFYING' AND NEW.status IN ('SUCCESS','MANUAL_REVIEW'))
 )
 BEGIN
     SELECT RAISE(ABORT, 'illegal_meta_execution_task_transition');
 END;
-"""
-
-
-GROWTH_SCHEMA_DOWN_SQL = """
-DROP TRIGGER IF EXISTS trg_strategy_knowledge_entries_no_insert;
-DROP TRIGGER IF EXISTS trg_strategy_knowledge_entries_no_update;
-DROP TRIGGER IF EXISTS trg_strategy_knowledge_entries_no_delete;
-DROP TRIGGER IF EXISTS trg_meta_execution_task_legal_transition;
-DROP TRIGGER IF EXISTS trg_growth_knowledge_legal_transition;
-DROP TRIGGER IF EXISTS trg_growth_episode_legal_transition;
-DROP TRIGGER IF EXISTS trg_growth_episode_completion_requires_evidence_update;
-DROP TRIGGER IF EXISTS trg_growth_episode_completion_requires_evidence_insert;
-DROP TRIGGER IF EXISTS trg_growth_context_snapshot_no_delete;
-DROP TRIGGER IF EXISTS trg_growth_context_snapshot_no_update;
-DROP TABLE IF EXISTS ad_new_account_launch_purge_audit;
-DROP TABLE IF EXISTS ad_new_account_launch_archive;
-DROP TABLE IF EXISTS growth_state_transition;
-DROP TABLE IF EXISTS growth_idempotency_record;
-DROP TABLE IF EXISTS growth_execution_resource_claim;
-DROP TABLE IF EXISTS growth_simulation;
-DROP TABLE IF EXISTS ad_creative_generation;
-DROP TABLE IF EXISTS ad_creative_group_evaluation_history;
-DROP TABLE IF EXISTS ad_creative_group_evaluation;
-DROP TABLE IF EXISTS ad_audience_generation;
-DROP TABLE IF EXISTS ad_audience_preflight;
-DROP TABLE IF EXISTS ad_audience_pair_evaluation;
-DROP TABLE IF EXISTS growth_strategy_recommendation;
-DROP TABLE IF EXISTS growth_next_action;
-DROP TABLE IF EXISTS growth_autonomy_policy;
-DROP TABLE IF EXISTS growth_strategy_knowledge;
-DROP TABLE IF EXISTS ad_experiment_evaluation;
-DROP TABLE IF EXISTS ad_creative_revision_window;
-DROP TABLE IF EXISTS ad_experiment_events;
-DROP TABLE IF EXISTS ad_experiment;
-DROP TABLE IF EXISTS growth_operation_approval;
-DROP TABLE IF EXISTS meta_execution_task_receipt;
-DROP TABLE IF EXISTS meta_execution_task;
-DROP TABLE IF EXISTS growth_operation_action;
-DROP TABLE IF EXISTS growth_decision_episode;
-DROP TABLE IF EXISTS growth_decision;
-DROP TABLE IF EXISTS experiment_context_snapshots;
-DROP TABLE IF EXISTS growth_context_snapshot;
-"""
-
-
-def ensure_growth_schema(conn: sqlite3.Connection) -> None:
-    # Recreate this trigger so existing databases gain bounded GET-only
-    # reconciliation without requiring a table migration.
-    for attempt in range(3):
-        try:
-            conn.execute("DROP TRIGGER IF EXISTS trg_meta_execution_task_legal_transition")
-            conn.executescript(GROWTH_SCHEMA_SQL)
-            break
-        except sqlite3.OperationalError as exc:
-            if "database schema has changed" not in str(exc).lower() or attempt == 2:
-                raise
-            conn.rollback()
-            time.sleep(0.05 * (attempt + 1))
-    approval_columns = {
-        str(row[1]) for row in conn.execute("PRAGMA table_info(growth_operation_approval)").fetchall()
-    }
-    if "expires_at" not in approval_columns:
-        conn.execute("ALTER TABLE growth_operation_approval ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''")
-    if "consumed_at" not in approval_columns:
-        conn.execute("ALTER TABLE growth_operation_approval ADD COLUMN consumed_at TEXT NOT NULL DEFAULT ''")
-    adoption_table = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='creative_adoption_records'"
-    ).fetchone()
-    revision_count = conn.execute("SELECT COUNT(*) FROM ad_creative_revision_window").fetchone()[0]
-    if adoption_table and not revision_count:
-        rows = conn.execute(
-            """
-            SELECT adoption_id,experiment_id,image_id,ad_id,creative_id,adopted_at
-            FROM creative_adoption_records
-            WHERE ad_id<>'' AND creative_id<>''
-              AND binding_status='confirmed'
-              AND status IN ('USED_IN_AD','PENDING_CLEANUP')
-            ORDER BY ad_id,adopted_at,adoption_id
-            """
-        ).fetchall()
-        by_ad: dict[str, list[tuple[object, ...]]] = {}
-        for row in rows:
-            bucket = by_ad.setdefault(str(row[3]), [])
-            if bucket and str(bucket[-1][4]) == str(row[4]):
-                continue
-            bucket.append(row)
-        for ad_id, revisions in by_ad.items():
-            for index, row in enumerate(revisions):
-                next_at = str(revisions[index + 1][5] or "") if index + 1 < len(revisions) else ""
-                adopted_at = str(row[5] or "")
-                adoption_id = str(row[0] or "")
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO ad_creative_revision_window
-                    (revision_id,experiment_id,ad_id,creative_id,image_id,adoption_id,
-                     effective_from,effective_to,replacement_boundary_date,status,source,created_at,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        f"crv_{adoption_id}", str(row[1] or ""), ad_id,
-                        str(row[4] or ""), str(row[2] or ""), adoption_id,
-                        adopted_at, next_at, adopted_at[:10] if index else "",
-                        "HISTORICAL" if next_at else "CURRENT", "HISTORY_COMPAT",
-                        adopted_at, adopted_at,
-                    ),
-                )
-    conn.execute(
-        """INSERT OR IGNORE INTO growth_execution_resource_claim
-        (resource_type,resource_id,operation_action_id,execution_task_id,created_at)
-        SELECT 'NEW_ACCOUNT_LAUNCH',json_extract(a.payload_json,'$.launch_id'),
-               a.operation_action_id,t.execution_task_id,datetime('now')
-        FROM growth_operation_action a
-        JOIN meta_execution_task t ON t.operation_action_id=a.operation_action_id
-        WHERE a.action_type='CREATE_PAUSED_AD' AND t.status='SUCCESS'
-          AND COALESCE(json_extract(a.payload_json,'$.launch_id'),'')<>''
-          AND COALESCE(json_extract(t.meta_object_ids_json,'$.campaign_id'),'')<>''
-          AND EXISTS (
-              SELECT 1 FROM ad_experiment e
-              WHERE e.source_report_id=json_extract(a.payload_json,'$.launch_id')
-                AND e.source_campaign_id=json_extract(t.meta_object_ids_json,'$.campaign_id')
-          )
-        ORDER BY t.updated_at DESC,t.execution_task_id DESC"""
-    )
-    conn.commit()

@@ -928,6 +928,104 @@ class ExecutionTaskService:
                     (utc_now(), experiment_id),
                 )
 
+    def _record_creative_revision_window(
+        self, *, experiment_id: str, ad_id: str, creative_id: str, image_id: str,
+        adoption_id: str, is_replacement: bool,
+    ) -> None:
+        """Persist a verified creative binding as an effective-dated metric window."""
+        if not all(str(value or "").strip() for value in (ad_id, creative_id, adoption_id)):
+            raise GrowthStateConflict("creative_revision_binding_incomplete")
+        existing = self.conn.execute(
+            "SELECT revision_id,creative_id FROM ad_creative_revision_window WHERE ad_id=? AND status='CURRENT'",
+            (ad_id,),
+        ).fetchone()
+        if not existing and is_replacement:
+            prior = self.conn.execute(
+                """
+                SELECT adoption_id,experiment_id,image_id,creative_id,adopted_at
+                FROM creative_adoption_records
+                WHERE ad_id=? AND creative_id<>? AND creative_id<>'' AND binding_status='confirmed'
+                ORDER BY adopted_at DESC,adoption_id DESC LIMIT 1
+                """,
+                (ad_id, creative_id),
+            ).fetchone()
+            if prior:
+                prior_adoption_id = str(prior["adoption_id"] or "")
+                self.conn.execute(
+                    """
+                    INSERT OR IGNORE INTO ad_creative_revision_window
+                    (revision_id,experiment_id,ad_id,creative_id,image_id,adoption_id,effective_from,
+                     effective_to,replacement_boundary_date,status,source,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,'','','CURRENT','HISTORY_COMPAT',?,?)
+                    """,
+                    (
+                        f"crv_{prior_adoption_id}", str(prior["experiment_id"] or experiment_id),
+                        ad_id, str(prior["creative_id"] or ""), str(prior["image_id"] or ""),
+                        prior_adoption_id, str(prior["adopted_at"] or ""),
+                        str(prior["adopted_at"] or ""), str(prior["adopted_at"] or ""),
+                    ),
+                )
+                existing = self.conn.execute(
+                    "SELECT revision_id,creative_id FROM ad_creative_revision_window WHERE ad_id=? AND status='CURRENT'",
+                    (ad_id,),
+                ).fetchone()
+        if existing and str(existing["creative_id"] or "") == creative_id:
+            return
+        now = utc_now()
+        boundary_date = now[:10] if existing or is_replacement else ""
+        if is_replacement:
+            launch = self.conn.execute(
+                "SELECT source_report_id FROM ad_experiment WHERE experiment_id=?",
+                (experiment_id,),
+            ).fetchone()
+            launch_id = str(launch["source_report_id"] or "") if launch else ""
+            if launch_id:
+                evaluations = self.conn.execute(
+                    "SELECT * FROM ad_creative_group_evaluation WHERE launch_id=?",
+                    (launch_id,),
+                ).fetchall()
+                for evaluation in evaluations:
+                    snapshot = {key: evaluation[key] for key in evaluation.keys()}
+                    history_id = f"cgeh_{payload_hash({'evaluation_id': snapshot['group_evaluation_id'], 'adoption_id': adoption_id})[:24]}"
+                    self.conn.execute(
+                        """
+                        INSERT OR IGNORE INTO ad_creative_group_evaluation_history
+                        (history_id,group_evaluation_id,launch_id,checkpoint,snapshot_json,archived_reason,archived_at)
+                        VALUES (?,?,?,?,?,'CREATIVE_REPLACED',?)
+                        """,
+                        (
+                            history_id, str(snapshot["group_evaluation_id"]), launch_id,
+                            str(snapshot["checkpoint"]), canonical_json(snapshot), now,
+                        ),
+                    )
+                if evaluations:
+                    self.conn.execute(
+                        "DELETE FROM ad_creative_group_evaluation WHERE launch_id=?",
+                        (launch_id,),
+                    )
+        if existing:
+            self.conn.execute(
+                """
+                UPDATE ad_creative_revision_window
+                SET effective_to=?,replacement_boundary_date=?,status='HISTORICAL',updated_at=?
+                WHERE revision_id=? AND status='CURRENT'
+                """,
+                (now, boundary_date, now, str(existing["revision_id"])),
+            )
+        self.conn.execute(
+            """
+            INSERT INTO ad_creative_revision_window
+            (revision_id,experiment_id,ad_id,creative_id,image_id,adoption_id,effective_from,
+             effective_to,replacement_boundary_date,status,source,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,'',?,'CURRENT','VERIFIED_META_RECEIPT',?,?)
+            ON CONFLICT(adoption_id) DO NOTHING
+            """,
+            (
+                f"crv_{adoption_id}", experiment_id, ad_id, creative_id, image_id,
+                adoption_id, now, boundary_date, now, now,
+            ),
+        )
+
     def _bind_experiment_meta_objects(
         self, operation_action_id: str, object_ids: Dict[str, Any], *, require_complete: bool = False,
     ) -> None:
@@ -1025,7 +1123,7 @@ class ExecutionTaskService:
                             replacement_creative_id=str(values.get("source_creative_id") or ""),
                             commit=False,
                         )
-                    mark_generated_image_adopted(
+                    adoption = mark_generated_image_adopted(
                         self.conn,
                         image_id=image_id,
                         ad_id=ad_id,
@@ -1048,6 +1146,14 @@ class ExecutionTaskService:
                         },
                         notes="bound from verified Meta creation result",
                         commit=False,
+                    )
+                    self._record_creative_revision_window(
+                        experiment_id=experiment_id,
+                        ad_id=ad_id,
+                        creative_id=str(values.get("source_creative_id") or ""),
+                        image_id=image_id,
+                        adoption_id=str(adoption.get("adoption_id") or ""),
+                        is_replacement=action_type == "REPLACE_CREATIVE",
                     )
             if cells and str(plan.get("test_variable") or "").lower() in {"audience_strategy", "copy_variant"}:
                 row = self.conn.execute(
