@@ -298,6 +298,8 @@ SCHEMA_MIGRATIONS: dict[str, dict[str, tuple[str, ...]]] = {
                 guild_joins REAL NOT NULL DEFAULT 0,
                 promotion_guild_joins REAL NOT NULL DEFAULT 0,
                 organic_guild_joins REAL NOT NULL DEFAULT 0,
+                tugao_join_success_users REAL NOT NULL DEFAULT 0,
+                tugao_join_success_no_wa_users REAL NOT NULL DEFAULT 0,
                 meta_guild_joins REAL NOT NULL DEFAULT 0,
                 af_guild_joins REAL NOT NULL DEFAULT 0,
                 purchases REAL NOT NULL DEFAULT 0,
@@ -326,6 +328,12 @@ SCHEMA_MIGRATIONS: dict[str, dict[str, tuple[str, ...]]] = {
             "CREATE INDEX IF NOT EXISTS idx_ad_dashboard_fact_date_platform ON ad_dashboard_fact_rows(date, platform)",
             "CREATE INDEX IF NOT EXISTS idx_ad_dashboard_fact_dims ON ad_dashboard_fact_rows(platform, country, app_id, campaign, ad_group, ad)",
             "CREATE INDEX IF NOT EXISTS idx_ad_dashboard_sync_date ON ad_dashboard_sync_state(date, status)",
+        ),
+    },
+    'ad_dashboard_tugao_qualified_join_v1': {
+        'alter': (
+            "ALTER TABLE ad_dashboard_fact_rows ADD COLUMN tugao_join_success_users REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE ad_dashboard_fact_rows ADD COLUMN tugao_join_success_no_wa_users REAL NOT NULL DEFAULT 0",
         ),
     },
     'whatsapp_approval_accounts_runtime': {
