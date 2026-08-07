@@ -624,6 +624,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--g004-manifest", type=Path, required=True)
     result.add_argument("--g004-receipt", type=Path, required=True)
     result.add_argument("--g004-evidence", type=Path, required=True)
+    result.add_argument("--g004a-manifest", type=Path, required=True)
+    result.add_argument("--g004a-receipt", type=Path, required=True)
+    result.add_argument("--g004a-evidence", type=Path, required=True)
     result.add_argument("--g001-input", type=Path, required=True)
     result.add_argument("--g001-report", type=Path, required=True)
     result.add_argument("--database", type=Path, required=True)
@@ -672,6 +675,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             "capability_manifest": _read_json(args.g004_manifest),
             "capability_receipt": _read_json(args.g004_receipt),
             "capability_evidence": _read_json(args.g004_evidence),
+            "audience_manifest": _read_json(args.g004a_manifest),
+            "audience_receipt": _read_json(args.g004a_receipt),
+            "audience_evidence": _read_json(args.g004a_evidence),
             "attribution_input_contract": _read_json(args.g001_input),
             "attribution_report": _read_json(args.g001_report),
             "allocation_observation": allocation, "qualified_join_observation": qualified,

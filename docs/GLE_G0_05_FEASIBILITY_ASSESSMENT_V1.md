@@ -6,6 +6,15 @@ G0-05 compiles immutable Gate 0 evidence into an unsigned feasibility
 candidate. It does not call Meta, mutate SQLite, update the E00 governance
 configuration, create or activate an experiment, or issue a Gate receipt.
 
+G0-05 also requires the committed G0-04A audience-risk manifest, receipt, and
+evidence tuple. It revalidates their hashes and expiry and binds the exact
+Account/market/Study/Campaign/Cell/AdSet/Ad subject, immutable source snapshot,
+and G0-04 receipt. This v1 fragment can prove identical targeting configuration
+and exact `SPLIT_TEST` topology, but not an observed intersection or auction
+isolation. The audience check therefore remains UNKNOWN with explicit blockers.
+The three artifact inputs are mandatory; missing, malformed, stale, or borrowed
+inputs abort without publishing a candidate.
+
 The candidate always carries `gate0_result_ceiling=QUASI_ONLY`,
 `attestation_status=PENDING`, and `not_gate_receipt=true`. A later, separately
 authorized trust boundary may bind the sole-owner attestation to the exact
@@ -51,21 +60,22 @@ cannot masquerade as natural canary traffic.
 The CLI consumes:
 
 1. the committed G0-04 manifest, receipt, and evidence bundle;
-2. the G0-01 input contract and immutable report;
-3. an exact-hash SQLite checkpoint opened with `mode=ro&immutable=1` and
+2. the committed G0-04A audience-risk manifest, receipt, and evidence bundle;
+3. the G0-01 input contract and immutable report;
+4. an exact-hash SQLite checkpoint opened with `mode=ro&immutable=1` and
    `PRAGMA query_only=ON`;
-4. the frozen policy, exact subject, and E00 governance contract.
+5. the frozen policy, exact subject, and E00 governance contract.
 
 The same checkpoint is also the authority for the two
 `experiment_id -> Study Cell -> Campaign/AdSet/Ad` bindings. G0-01 IDs are not
 trusted merely because the request and report agree with each other.
 
 Study integrity is derived from the verified G0-04 receipt, not accepted as a
-caller assertion. G0-04 v1 does not provide a subject-bound audience overlap
-or internal-auction receipt, so this version always emits
-`AUDIENCE_OVERLAP_UNKNOWN` and `INTERNAL_AUCTION_CONTAMINATION_UNKNOWN`.
-Those dimensions require a new immutable evidence producer before they can
-ever pass.
+caller assertion. Audience risk is derived only from the separately committed
+G0-04A fragment. G0-05 requires its exact G0-04 hash, immutable snapshot,
+subject, checks, GET-only journal proof, parent-bounded expiry, and assessment
+clock. Caller-provided PASS labels or self-consistent artifacts for another
+Cell/AdSet subject cannot upgrade the check and are rejected or remain UNKNOWN.
 
 Meta allocation is read only from exact account, market, campaign, AdSet, and
 Ad facts. Tugao rows intentionally have no authoritative account ID, so they
@@ -111,8 +121,8 @@ diagnostic only and must never stand in for qualified-event coverage.
 
 The script exclusively creates a canonical candidate and then a committed
 manifest containing its file SHA and body hash. Existing outputs are never
-overwritten. Rollback for this PR is deletion of the new code, script, tests,
-and document; it has no database, Meta, governance, or production rollback.
+overwritten. Rollback for this PR is reverting its eight-file code/test/doc
+change package; it has no database, Meta, governance, or production rollback.
 
 Production snapshot collection, G0-02B deployment/migration, historical
 backfill, natural-event acceptance, attestation, Gate receipt finalization,
