@@ -71,10 +71,13 @@ def _subject() -> dict:
 
 def _policy(*, golden: bool = False) -> dict:
     return {
-        "policy_version": "gle-g0-05-mx-policy-v1",
+        "policy_version": "gle-g0-05-mx-policy-v2",
         "qualification_version": "tugaofunnel-guild-join-success-v1",
         "source_contract": "tugao_funnel_daily_metrics_api_v1",
         "source_metric": "guild_join_success_users",
+        "qualified_country": "Mexico",
+        "qualified_media_source": "Meta",
+        "qualified_external_app": "TUGAO",
         "minimum_attribution_coverage": 0.8,
         "maximum_allocation_deviation": 0.1,
         "minimum_total_impressions": 1000,
@@ -90,7 +93,7 @@ def _policy(*, golden: bool = False) -> dict:
         "maximum_test_budget_usd": 20,
         "maximum_daily_budget_usd": 2,
         "expected_daily_spend_usd": 1.428571,
-        "estimator_version": "gle-two-sample-poisson-rate-obf-v1",
+        "estimator_version": "gle-two-sample-poisson-log-rate-ratio-fixed-endpoint-v1",
         "golden_vectors_approved": golden,
         "governance_model": "SOLE_OWNER",
         "sole_owner": "Chauncey",
@@ -396,8 +399,73 @@ def test_golden_vectors_unapproved_blocks_power_without_declaring_study_not_feas
     candidate = assess_gate0(_bundle(), now=NOW)
     assert candidate["power_assessment"]["feasible"] is False
     assert "POWER_GOLDEN_VECTORS_UNAPPROVED" in candidate["blocking_reasons"]
+    assert "OBF_BOUNDARY_UNFROZEN" in candidate["blocking_reasons"]
+    assert candidate["checks"]["power"]["status"] == "UNKNOWN"
+    assert candidate["power_assessment"]["obf_boundary_status"] == "UNFROZEN"
+    assert candidate["power_assessment"]["fixed_endpoint_diagnostic"]["target_information"].startswith(
+        "114.024535562432",
+    )
+    assert candidate["technical_candidate_result"] == "QUASI_ONLY"
+
+
+def test_fixed_endpoint_contract_is_versioned_and_old_v1_cannot_be_reinterpreted():
+    candidate = assess_gate0(_bundle(), now=NOW)
+    assert candidate["schema_version"] == "gle-g0-05-gate0-candidate-v2"
+    assert candidate["engine_version"] == "gle-g0-05-feasibility-engine-v2"
+    raw = _bundle()
+    raw["schema_version"] = "gle-g0-05-assessment-input-v1"
+    with pytest.raises(G005ContractError, match="G005_INPUT_SCHEMA_INVALID"):
+        assess_gate0(raw, now=NOW)
+    raw = _bundle()
+    raw["policy"]["policy_version"] = "gle-g0-05-mx-policy-v1"
+    with pytest.raises(G005ContractError, match="G005_POLICY_VERSION_MISMATCH"):
+        assess_gate0(raw, now=NOW)
+    for field, value in (
+        ("qualified_country", "MX"),
+        ("qualified_media_source", "facebook"),
+        ("qualified_external_app", "OTHER"),
+    ):
+        raw = _bundle()
+        raw["policy"][field] = value
+        with pytest.raises(G005ContractError, match="G005_POLICY_VERSION_MISMATCH"):
+            assess_gate0(raw, now=NOW)
+
+
+def test_complete_baseline_computes_fixed_endpoint_diagnostic_without_promoting_gate():
+    raw = _bundle()
+    raw["baseline_observation"]["window_start"] = "2026-07-25T00:00:00+00:00"
+    raw["attribution_input_contract"]["window_start"] = "2026-07-25T00:00:00+00:00"
+    raw["attribution_report"]["input_contract_hash"] = hash_json(raw["attribution_input_contract"])
+    raw["attribution_report"].pop("report_hash")
+    raw["attribution_report"]["report_hash"] = hash_json(raw["attribution_report"])
+    candidate = assess_gate0(raw, now=NOW)
+    diagnostic = candidate["power_assessment"]["fixed_endpoint_diagnostic"]
+    assert diagnostic["fixed_endpoint_status"] == "PASS"
+    assert diagnostic["feasible"] is True
+    assert Decimal(diagnostic["expected_days_to_maturity"]) < 14
+    assert candidate["power_assessment"]["target_information"] == diagnostic["target_information"]
+    assert candidate["power_assessment"]["expected_days_to_maturity"] == diagnostic["expected_days_to_maturity"]
     assert candidate["checks"]["power"]["status"] == "UNKNOWN"
     assert candidate["technical_candidate_result"] == "QUASI_ONLY"
+
+
+def test_complete_low_rate_fixed_endpoint_failure_is_not_laundered_as_unknown():
+    raw = _bundle()
+    raw["baseline_observation"].update({
+        "window_start": "2026-07-25T00:00:00+00:00",
+        "qualified_joins": 45,
+        "total_spend_usd": 20,
+    })
+    raw["attribution_input_contract"]["window_start"] = "2026-07-25T00:00:00+00:00"
+    raw["attribution_report"]["input_contract_hash"] = hash_json(raw["attribution_input_contract"])
+    raw["attribution_report"].pop("report_hash")
+    raw["attribution_report"]["report_hash"] = hash_json(raw["attribution_report"])
+    candidate = assess_gate0(raw, now=NOW)
+    assert candidate["checks"]["power"]["status"] == "FAIL"
+    assert candidate["technical_candidate_result"] == "NOT_FEASIBLE"
+    assert {"EXPECTED_MATURITY_EXCEEDS_LIMIT", "EXPECTED_SPEND_EXCEEDS_BUDGET"}.issubset(
+        candidate["blocking_reasons"],
+    )
 
 
 def test_allowlist_and_audience_unknown_are_explicit_blockers():
@@ -654,7 +722,7 @@ def _snapshot(path) -> str:
         "qualified_join_attribution_status": "exact",
         "qualified_join_source_field": "guild_join_success_users",
         "source_metric_contract": "tugao_funnel_daily_metrics_api_v1",
-        "external_app": "tugao-mx",
+        "external_app": "TUGAO",
     })
     for index in (1, 2):
         conn.execute(
@@ -672,7 +740,7 @@ def _snapshot(path) -> str:
             )
             conn.execute(
                 "INSERT INTO ad_dashboard_fact_rows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (day, "TugaoFunnel", "Meta", "", "Mexico", "facebook", "campaign-1",
+                (day, "TugaoFunnel", "Meta", "", "Mexico", "Meta", "campaign-1",
                  f"adset-{index}", f"ad-{index}", 0, 0, 2, payload, "2026-08-07T09:00:00+00:00"),
             )
         conn.execute("INSERT INTO ad_dashboard_sync_state VALUES('all',?,'ok')", (day,))
@@ -708,6 +776,7 @@ def test_snapshot_collector_derives_metrics_from_exact_rows_and_never_legacy_tot
     assert sum(row["qualified_joins"] for row in qualified["cells"]) == 12
     assert baseline["total_impressions"] == 2800
     assert baseline["qualified_joins"] == 56
+    assert baseline["complete_days"] == 14
     assert {item["experiment_id"] for item in experiment_binding["bindings"]} == {
         "experiment-1", "experiment-2",
     }
@@ -778,6 +847,73 @@ def test_missing_exact_cell_day_is_incomplete_not_zero(tmp_path):
     )
     assert allocation["pagination_complete"] is False
     assert qualified["complete"] is False
+
+
+def test_missing_baseline_qualified_grain_makes_power_baseline_incomplete(tmp_path):
+    database = tmp_path / "snapshot.db"
+    _snapshot(database)
+    conn = sqlite3.connect(database)
+    conn.execute(
+        "DELETE FROM ad_dashboard_fact_rows "
+        "WHERE data_source='TugaoFunnel' AND date='2026-07-20' AND ad_id='ad-2'",
+    )
+    conn.commit()
+    conn.close()
+    digest = hashlib.sha256(database.read_bytes()).hexdigest()
+    _, _, baseline, _ = _collect_observations(
+        database,
+        {
+            "data_cutoff_at": "2026-08-07T10:00:00+00:00",
+            "natural_evidence_not_before_date": "2026-07-29",
+            "subject": _subject(), "policy": _policy(),
+            "windows": {
+                "allocation_start": "2026-07-29", "allocation_end": "2026-07-31",
+                "baseline_start": "2026-07-18", "baseline_end": "2026-07-31",
+            },
+        },
+        digest,
+    )
+    assert baseline["complete_days"] == 13
+
+
+def test_wrong_source_dimensions_cannot_replace_missing_baseline_grain(tmp_path):
+    database = tmp_path / "snapshot.db"
+    _snapshot(database)
+    conn = sqlite3.connect(database)
+    row = conn.execute(
+        "SELECT * FROM ad_dashboard_fact_rows "
+        "WHERE data_source='TugaoFunnel' AND date='2026-07-20' AND ad_id='ad-2'",
+    ).fetchone()
+    conn.execute(
+        "DELETE FROM ad_dashboard_fact_rows "
+        "WHERE data_source='TugaoFunnel' AND date='2026-07-20' AND ad_id='ad-2'",
+    )
+    values = list(row)
+    values[5] = "WrongNetwork"
+    payload = json.loads(values[12])
+    payload["external_app"] = "WRONG"
+    values[12] = json.dumps(payload)
+    conn.execute(
+        "INSERT INTO ad_dashboard_fact_rows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        values,
+    )
+    conn.commit()
+    conn.close()
+    digest = hashlib.sha256(database.read_bytes()).hexdigest()
+    _, _, baseline, _ = _collect_observations(
+        database,
+        {
+            "data_cutoff_at": "2026-08-07T10:00:00+00:00",
+            "natural_evidence_not_before_date": "2026-07-29",
+            "subject": _subject(), "policy": _policy(),
+            "windows": {
+                "allocation_start": "2026-07-29", "allocation_end": "2026-07-31",
+                "baseline_start": "2026-07-18", "baseline_end": "2026-07-31",
+            },
+        },
+        digest,
+    )
+    assert baseline["complete_days"] == 13
 
 
 def test_nonfinite_or_fractional_source_metrics_fail_closed(tmp_path):

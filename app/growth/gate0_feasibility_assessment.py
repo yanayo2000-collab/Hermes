@@ -13,14 +13,22 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from app.growth.common import canonical_json
+from app.growth.gate0_power_estimator import (
+    ALTERNATIVE as POWER_ALTERNATIVE,
+    APPROXIMATION as POWER_APPROXIMATION,
+    ESTIMAND as POWER_ESTIMAND,
+    ESTIMATOR_VERSION,
+    INPUT_VERSION as POWER_INPUT_VERSION,
+    OFFSET as POWER_OFFSET,
+    assess_fixed_endpoint_power,
+)
 from app.growth.phase1_governance import validate_contract as validate_governance_contract
 
 
-INPUT_VERSION = "gle-g0-05-assessment-input-v1"
-ENGINE_VERSION = "gle-g0-05-feasibility-engine-v1"
-CANDIDATE_VERSION = "gle-g0-05-gate0-candidate-v1"
-POLICY_VERSION = "gle-g0-05-mx-policy-v1"
-ESTIMATOR_VERSION = "gle-two-sample-poisson-rate-obf-v1"
+INPUT_VERSION = "gle-g0-05-assessment-input-v2"
+ENGINE_VERSION = "gle-g0-05-feasibility-engine-v2"
+CANDIDATE_VERSION = "gle-g0-05-gate0-candidate-v2"
+POLICY_VERSION = "gle-g0-05-mx-policy-v2"
 QUALIFICATION_VERSION = "tugaofunnel-guild-join-success-v1"
 SOURCE_CONTRACT = "tugao_funnel_daily_metrics_api_v1"
 SOURCE_METRIC = "guild_join_success_users"
@@ -481,6 +489,7 @@ def _validate_experiment_binding(
 def _normalize_policy(raw: Any) -> Dict[str, Any]:
     keys = (
         "policy_version", "qualification_version", "source_contract", "source_metric",
+        "qualified_country", "qualified_media_source", "qualified_external_app",
         "minimum_attribution_coverage", "maximum_allocation_deviation",
         "minimum_total_impressions", "minimum_total_spend_usd", "minimum_complete_days",
         "reporting_settlement_hours", "source_freshness_hours", "baseline_window_days",
@@ -494,6 +503,9 @@ def _normalize_policy(raw: Any) -> Dict[str, Any]:
         "qualification_version": QUALIFICATION_VERSION,
         "source_contract": SOURCE_CONTRACT,
         "source_metric": SOURCE_METRIC,
+        "qualified_country": "Mexico",
+        "qualified_media_source": "Meta",
+        "qualified_external_app": "TUGAO",
         "estimator_version": ESTIMATOR_VERSION,
         "governance_model": "SOLE_OWNER",
         "sole_owner": "Chauncey",
@@ -813,6 +825,8 @@ def _power_assessment(raw: Any, policy: Mapping[str, Any], subject: Mapping[str,
     end = _utc(data["window_end"], "G005_BASELINE_INVALID")
     if start >= end:
         raise G005ContractError("G005_BASELINE_INVALID")
+    if not _SHA_RE.fullmatch(str(data["evidence_hash"] or "")):
+        raise G005ContractError("G005_BASELINE_INVALID")
     days = _integer(data["complete_days"], "G005_BASELINE_INVALID", minimum=1)
     impressions = _integer(data["total_impressions"], "G005_BASELINE_INVALID")
     events = _integer(data["qualified_joins"], "G005_BASELINE_INVALID")
@@ -835,25 +849,44 @@ def _power_assessment(raw: Any, policy: Mapping[str, Any], subject: Mapping[str,
         reasons.append("ATTRIBUTION_COVERAGE_BELOW_THRESHOLD")
     if freshness > Decimal(str(policy["source_freshness_hours"])):
         reasons.append("SOURCE_STALE")
-    golden_approved = policy["golden_vectors_approved"] is True
-    if not golden_approved:
-        reasons.append("POWER_GOLDEN_VECTORS_UNAPPROVED")
-    baseline_rate = Decimal(events) / Decimal(impressions) if impressions else None
-    daily_impressions = Decimal(impressions) / Decimal(days) if impressions else None
-    daily_events = baseline_rate * daily_impressions if baseline_rate is not None else None
-    # The frozen v1 policy explicitly says Data has not approved the golden
-    # vectors. Do not expose a fixed-horizon approximation as the named OBF
-    # estimator. A later version must add the approved deterministic vectors.
-    target_information = None
-    expected_days = None
-    expected_spend = None
-    reasons.append("TARGET_INFORMATION_UNCOMPUTABLE")
+    baseline_rate = Decimal(events) / spend if spend else None
+    daily_events = (
+        baseline_rate * Decimal(str(policy["expected_daily_spend_usd"]))
+        if baseline_rate is not None else None
+    )
+    evidence_reasons = sorted(set(reasons))
+    diagnostic = assess_fixed_endpoint_power({
+        "schema_version": POWER_INPUT_VERSION,
+        "estimator_version": ESTIMATOR_VERSION,
+        "estimand": POWER_ESTIMAND,
+        "offset": POWER_OFFSET,
+        "alternative": POWER_ALTERNATIVE,
+        "approximation": POWER_APPROXIMATION,
+        "control_allocation": "0.5",
+        "treatment_allocation": "0.5",
+        "alpha_two_sided": str(policy["alpha_two_sided"]),
+        "desired_power": str(policy["desired_power"]),
+        "mde_relative": str(policy["mde_relative"]),
+        "baseline_qualified_joins": events,
+        "baseline_spend_usd": str(spend),
+        "evidence_status": "READY" if not evidence_reasons else "INCOMPLETE",
+        "incomplete_reasons": evidence_reasons,
+        "expected_daily_spend_usd": str(policy["expected_daily_spend_usd"]),
+        "maximum_test_days": int(policy["maximum_test_days"]),
+        "maximum_test_budget_usd": str(policy["maximum_test_budget_usd"]),
+    })
+    reasons = list(diagnostic["reason_codes"])
+    # Fixed-endpoint information is a necessary lower-bound diagnostic, not an
+    # O'Brien-Fleming contract. A trusted FAIL may reject feasibility; a PASS
+    # cannot promote Gate 0 until Gate 1's look schedule is frozen.
+    reasons.extend(("OBF_BOUNDARY_UNFROZEN", "POWER_GOLDEN_VECTORS_UNAPPROVED"))
+    fixed_status = diagnostic["fixed_endpoint_status"]
     return {
         "power_assessment_id": "g005_power_" + hash_json({"subject": subject, "baseline": data, "policy": policy})[:24],
         "objective_contract_id": QUALIFICATION_VERSION,
         "ad_account_id": subject["ad_account_id"], "market": subject["market"],
-        "status": "PASS" if not reasons else "UNKNOWN",
-        "feasible": not reasons,
+        "status": "FAIL" if fixed_status == "FAIL" else "UNKNOWN",
+        "feasible": False,
         "failure_reasons": sorted(set(reasons)), "estimator_version": ESTIMATOR_VERSION,
         "baseline_window": {"start_at": data["window_start"], "end_at": data["window_end"]},
         "baseline_event_rate": str(baseline_rate) if baseline_rate is not None else None,
@@ -865,11 +898,13 @@ def _power_assessment(raw: Any, policy: Mapping[str, Any], subject: Mapping[str,
         "alpha_two_sided": str(policy["alpha_two_sided"]),
         "desired_power": str(policy["desired_power"]),
         "mde_relative": str(policy["mde_relative"]),
-        "target_information": str(target_information) if target_information is not None else None,
-        "expected_days_to_maturity": expected_days,
-        "expected_total_spend_usd": str(expected_spend) if expected_spend is not None else None,
+        "target_information": diagnostic["target_information"],
+        "expected_days_to_maturity": diagnostic["expected_days_to_maturity"],
+        "expected_total_spend_usd": diagnostic["expected_total_spend_usd"],
         "max_allowed_days": int(policy["maximum_test_days"]),
         "max_test_budget_usd": str(policy["maximum_test_budget_usd"]),
+        "fixed_endpoint_diagnostic": diagnostic,
+        "obf_boundary_status": "UNFROZEN",
         "evidence_hash": data["evidence_hash"], "observed_total_spend_usd": str(spend),
     }
 
@@ -1028,5 +1063,5 @@ def assess_gate0(raw: Mapping[str, Any], *, now: Optional[datetime] = None) -> D
 
 
 def exit_code_for_candidate(candidate: Mapping[str, Any]) -> int:
-    # G0-05 v1 only publishes an unsigned candidate; never signal Gate PASS.
+    # G0-05 only publishes an unsigned candidate; never signal Gate PASS.
     return 2
