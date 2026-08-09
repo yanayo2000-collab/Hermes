@@ -71,13 +71,13 @@ def _subject() -> dict:
 
 def _policy(*, golden: bool = False) -> dict:
     return {
-        "policy_version": "gle-g0-05-mx-policy-v2",
+        "policy_version": "gle-g0-05-mx-policy-v3",
         "qualification_version": "tugaofunnel-guild-join-success-v1",
         "source_contract": "tugao_funnel_daily_metrics_api_v1",
         "source_metric": "guild_join_success_users",
         "qualified_country": "Mexico",
-        "qualified_media_source": "Meta",
-        "qualified_external_app": "TUGAO",
+        "qualified_media_source": "Facebook Ads",
+        "qualified_external_app": "Linky",
         "minimum_attribution_coverage": 0.8,
         "maximum_allocation_deviation": 0.1,
         "minimum_total_impressions": 1000,
@@ -408,22 +408,23 @@ def test_golden_vectors_unapproved_blocks_power_without_declaring_study_not_feas
     assert candidate["technical_candidate_result"] == "QUASI_ONLY"
 
 
-def test_fixed_endpoint_contract_is_versioned_and_old_v1_cannot_be_reinterpreted():
+def test_physical_dimension_contract_is_versioned_and_old_policies_cannot_be_reinterpreted():
     candidate = assess_gate0(_bundle(), now=NOW)
-    assert candidate["schema_version"] == "gle-g0-05-gate0-candidate-v2"
-    assert candidate["engine_version"] == "gle-g0-05-feasibility-engine-v2"
+    assert candidate["schema_version"] == "gle-g0-05-gate0-candidate-v3"
+    assert candidate["engine_version"] == "gle-g0-05-feasibility-engine-v3"
     raw = _bundle()
-    raw["schema_version"] = "gle-g0-05-assessment-input-v1"
+    raw["schema_version"] = "gle-g0-05-assessment-input-v2"
     with pytest.raises(G005ContractError, match="G005_INPUT_SCHEMA_INVALID"):
         assess_gate0(raw, now=NOW)
-    raw = _bundle()
-    raw["policy"]["policy_version"] = "gle-g0-05-mx-policy-v1"
-    with pytest.raises(G005ContractError, match="G005_POLICY_VERSION_MISMATCH"):
-        assess_gate0(raw, now=NOW)
+    for version in ("gle-g0-05-mx-policy-v1", "gle-g0-05-mx-policy-v2"):
+        raw = _bundle()
+        raw["policy"]["policy_version"] = version
+        with pytest.raises(G005ContractError, match="G005_POLICY_VERSION_MISMATCH"):
+            assess_gate0(raw, now=NOW)
     for field, value in (
         ("qualified_country", "MX"),
-        ("qualified_media_source", "facebook"),
-        ("qualified_external_app", "OTHER"),
+        ("qualified_media_source", "Meta"),
+        ("qualified_external_app", "TUGAO"),
     ):
         raw = _bundle()
         raw["policy"][field] = value
@@ -722,7 +723,7 @@ def _snapshot(path) -> str:
         "qualified_join_attribution_status": "exact",
         "qualified_join_source_field": "guild_join_success_users",
         "source_metric_contract": "tugao_funnel_daily_metrics_api_v1",
-        "external_app": "TUGAO",
+        "external_app": "Linky",
     })
     for index in (1, 2):
         conn.execute(
@@ -740,7 +741,7 @@ def _snapshot(path) -> str:
             )
             conn.execute(
                 "INSERT INTO ad_dashboard_fact_rows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (day, "TugaoFunnel", "Meta", "", "Mexico", "Meta", "campaign-1",
+                (day, "TugaoFunnel", "Meta", "", "Mexico", "Facebook Ads", "campaign-1",
                  f"adset-{index}", f"ad-{index}", 0, 0, 2, payload, "2026-08-07T09:00:00+00:00"),
             )
         conn.execute("INSERT INTO ad_dashboard_sync_state VALUES('all',?,'ok')", (day,))
@@ -849,6 +850,61 @@ def test_missing_exact_cell_day_is_incomplete_not_zero(tmp_path):
     assert qualified["complete"] is False
 
 
+def test_meta_delivery_cannot_replace_missing_physical_tugao_cell_day(tmp_path):
+    database = tmp_path / "snapshot.db"
+    _snapshot(database)
+    conn = sqlite3.connect(database)
+    conn.execute(
+        "DELETE FROM ad_dashboard_fact_rows "
+        "WHERE data_source='TugaoFunnel' AND date='2026-07-30' AND ad_id='ad-2'",
+    )
+    conn.commit()
+    conn.close()
+    digest = hashlib.sha256(database.read_bytes()).hexdigest()
+    allocation, qualified, _, _ = _collect_observations(
+        database,
+        {
+            "data_cutoff_at": "2026-08-07T10:00:00+00:00",
+            "natural_evidence_not_before_date": "2026-07-29",
+            "subject": _subject(), "policy": _policy(),
+            "windows": {
+                "allocation_start": "2026-07-29", "allocation_end": "2026-07-31",
+                "baseline_start": "2026-07-18", "baseline_end": "2026-07-31",
+            },
+        },
+        digest,
+    )
+    assert allocation["pagination_complete"] is True
+    assert qualified["complete"] is False
+
+
+def test_wrong_platform_cannot_replace_missing_physical_tugao_cell_day(tmp_path):
+    database = tmp_path / "snapshot.db"
+    _snapshot(database)
+    conn = sqlite3.connect(database)
+    conn.execute(
+        "UPDATE ad_dashboard_fact_rows SET platform='TikTok' "
+        "WHERE data_source='TugaoFunnel' AND date='2026-07-30' AND ad_id='ad-2'",
+    )
+    conn.commit()
+    conn.close()
+    digest = hashlib.sha256(database.read_bytes()).hexdigest()
+    _, qualified, _, _ = _collect_observations(
+        database,
+        {
+            "data_cutoff_at": "2026-08-07T10:00:00+00:00",
+            "natural_evidence_not_before_date": "2026-07-29",
+            "subject": _subject(), "policy": _policy(),
+            "windows": {
+                "allocation_start": "2026-07-29", "allocation_end": "2026-07-31",
+                "baseline_start": "2026-07-18", "baseline_end": "2026-07-31",
+            },
+        },
+        digest,
+    )
+    assert qualified["complete"] is False
+
+
 def test_missing_baseline_qualified_grain_makes_power_baseline_incomplete(tmp_path):
     database = tmp_path / "snapshot.db"
     _snapshot(database)
@@ -896,6 +952,73 @@ def test_wrong_source_dimensions_cannot_replace_missing_baseline_grain(tmp_path)
     conn.execute(
         "INSERT INTO ad_dashboard_fact_rows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         values,
+    )
+    conn.commit()
+    conn.close()
+    digest = hashlib.sha256(database.read_bytes()).hexdigest()
+    _, _, baseline, _ = _collect_observations(
+        database,
+        {
+            "data_cutoff_at": "2026-08-07T10:00:00+00:00",
+            "natural_evidence_not_before_date": "2026-07-29",
+            "subject": _subject(), "policy": _policy(),
+            "windows": {
+                "allocation_start": "2026-07-29", "allocation_end": "2026-07-31",
+                "baseline_start": "2026-07-18", "baseline_end": "2026-07-31",
+            },
+        },
+        digest,
+    )
+    assert baseline["complete_days"] == 13
+
+
+def test_old_logical_labels_cannot_replace_physical_source_dimensions(tmp_path):
+    database = tmp_path / "snapshot.db"
+    _snapshot(database)
+    conn = sqlite3.connect(database)
+    row = conn.execute(
+        "SELECT * FROM ad_dashboard_fact_rows "
+        "WHERE data_source='TugaoFunnel' AND date='2026-07-20' AND ad_id='ad-2'",
+    ).fetchone()
+    conn.execute(
+        "DELETE FROM ad_dashboard_fact_rows "
+        "WHERE data_source='TugaoFunnel' AND date='2026-07-20' AND ad_id='ad-2'",
+    )
+    values = list(row)
+    values[5] = "Meta"
+    payload = json.loads(values[12])
+    payload["external_app"] = "TUGAO"
+    values[12] = json.dumps(payload)
+    conn.execute(
+        "INSERT INTO ad_dashboard_fact_rows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        values,
+    )
+    conn.commit()
+    conn.close()
+    digest = hashlib.sha256(database.read_bytes()).hexdigest()
+    _, _, baseline, _ = _collect_observations(
+        database,
+        {
+            "data_cutoff_at": "2026-08-07T10:00:00+00:00",
+            "natural_evidence_not_before_date": "2026-07-29",
+            "subject": _subject(), "policy": _policy(),
+            "windows": {
+                "allocation_start": "2026-07-29", "allocation_end": "2026-07-31",
+                "baseline_start": "2026-07-18", "baseline_end": "2026-07-31",
+            },
+        },
+        digest,
+    )
+    assert baseline["complete_days"] == 13
+
+
+def test_wrong_platform_cannot_replace_missing_baseline_grain(tmp_path):
+    database = tmp_path / "snapshot.db"
+    _snapshot(database)
+    conn = sqlite3.connect(database)
+    conn.execute(
+        "UPDATE ad_dashboard_fact_rows SET platform='TikTok' "
+        "WHERE data_source='TugaoFunnel' AND date='2026-07-20' AND ad_id='ad-2'",
     )
     conn.commit()
     conn.close()

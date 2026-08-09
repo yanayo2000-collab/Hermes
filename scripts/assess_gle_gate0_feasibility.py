@@ -235,7 +235,8 @@ def _qualified_dimensions_match(
     row: Mapping[str, Any], payload: Mapping[str, Any], policy: Mapping[str, Any],
 ) -> bool:
     return (
-        str(row.get("country") or "") == str(policy["qualified_country"])
+        str(row.get("platform") or "") == "Meta"
+        and str(row.get("country") or "") == str(policy["qualified_country"])
         and str(row.get("media_source") or "") == str(policy["qualified_media_source"])
         and str(payload.get("external_app") or "") == str(policy["qualified_external_app"])
     )
