@@ -9710,7 +9710,13 @@ def test_whatsapp_approval_account_runtime_can_stop_dedicated_worker():
         assert killed[0][0] == 54321
 
 
-def test_whatsapp_approval_account_runtime_stop_kills_orphan_browser_for_auth_path():
+def test_whatsapp_approval_account_runtime_stop_kills_orphan_browser_for_auth_path(tmp_path, monkeypatch):
+    from app import main_service_approval as approval_module
+
+    runtime_dir = tmp_path / 'whatsapp_approval_worker_runtimes'
+    runtime_dir.mkdir()
+    monkeypatch.setattr(approval_module, 'WHATSAPP_APPROVAL_WORKER_RUNTIME_DIR', runtime_dir)
+
     client = make_client({
         'LARK_APP_ID': 'cli_test_app',
         'LARK_DEFAULT_APP_NAME': 'Linky',
@@ -9736,9 +9742,8 @@ def test_whatsapp_approval_account_runtime_stop_kills_orphan_browser_for_auth_pa
     })
     assert saved.status_code == 200
 
-    auth_path = '/Users/chauncey/work/mcn-ai-automation/webjs-approval-worker/.wwebjs_auth_accounts/wa-admin-orphan'
-    meta_path = Path('/Users/chauncey/work/mcn-ai-automation/data/whatsapp_approval_worker_runtimes/wa-admin-orphan.json')
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_path = str(tmp_path / 'auth' / 'wa-admin-orphan')
+    meta_path = runtime_dir / 'wa-admin-orphan.json'
     meta_path.write_text(json.dumps({
         'account_key': 'wa-admin-orphan',
         'pid': 61001,

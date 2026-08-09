@@ -5,6 +5,8 @@ import signal
 import subprocess
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_get_protected_pid_set_includes_descendants():
     from scripts.webjs_temp_cleanup import get_protected_pid_set
@@ -281,7 +283,7 @@ def test_cli_dry_run_outputs_targets_json(tmp_path):
             '--min-age-hours',
             '1',
         ],
-        cwd='/Users/chauncey/work/mcn-ai-automation',
+        cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         check=True,
