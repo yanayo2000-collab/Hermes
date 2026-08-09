@@ -16,13 +16,19 @@ from app.growth.canonical_evaluation_contracts import canonical_hash, canonical_
 from app.growth.canonical_evaluation_projection import LegacyProjectionError, project_legacy_evaluation
 
 
-REQUEST_VERSION = "gle-g1-02a-asof-audit-request-v1"
-BUNDLE_VERSION = "gle-g1-02a-asof-audit-bundle-v1"
-GENERATOR_VERSION = "gle-g1-02a-asof-audit-engine-v1"
-QUERY_CONTRACT_VERSION = "gle-g1-02a-fixed-seven-table-query-v1"
+REQUEST_VERSION = "gle-g1-02a-asof-audit-request-v2"
+BUNDLE_VERSION = "gle-g1-02a-asof-audit-bundle-v2"
+MANIFEST_VERSION = "gle-g1-02a-asof-audit-manifest-v2"
+GENERATOR_VERSION = "gle-g1-02a-asof-audit-engine-v2"
+QUERY_CONTRACT_VERSION = "gle-g1-02a-fixed-seven-table-query-v2"
 TOKEN_VERSION = "gle-g1-02a-technical-id-token-v1"
 MAX_ROWS_PER_TABLE = 50_000
 MAX_TOTAL_CANONICAL_BYTES = 64 * 1024 * 1024
+MAX_REPORT_PAYLOAD_BYTES = 8 * 1024 * 1024
+MAX_TOTAL_REPORT_SOURCE_BYTES = 512 * 1024 * 1024
+REPORT_PAYLOAD_COMMITMENT_ALGORITHM = "SHA256_UTF8_TEXT_V1"
+REPORT_SOURCE_ROW_COMMITMENT_ALGORITHM = "CANONICAL_SAFE_FIELDS_PLUS_PAYLOAD_COMMITMENT_V1"
+DEFAULT_SOURCE_ROW_COMMITMENT_ALGORITHM = "CANONICAL_SELECTED_SOURCE_ROW_V1"
 AUDIT_SCOPE = "AVAILABLE_CURRENT_AND_ARCHIVED_GLE_LEGACY"
 ALLOWED_EVALUATION_EVENT_TYPES = frozenset({"PERFORMANCE_EVALUATED"})
 LEGACY_CHECKPOINT_ROLES = {"D1": "SAFETY_CHECK", "D3": "TREND_ONLY", "D7": "BINDING_EFFECT_DECISION"}
@@ -148,6 +154,11 @@ def open_readonly_snapshot(database_path: str | os.PathLike[str]) -> sqlite3.Con
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA query_only=ON")
     conn.execute("PRAGMA trusted_schema=OFF")
+    conn.create_function(
+        "gle_sha256_text", 1,
+        lambda value: hashlib.sha256(str(value or "").encode("utf-8")).hexdigest(),
+        deterministic=True,
+    )
     if int(conn.execute("PRAGMA query_only").fetchone()[0]) != 1:
         conn.close()
         _fail("G102_QUERY_ONLY_NOT_ENFORCED")
@@ -186,17 +197,26 @@ def build_audit(conn: sqlite3.Connection, request: Mapping[str, Any], *, source_
         if len(schema_rows) > 1000:
             _fail("G102_SOURCE_BOUND_EXCEEDED:schema")
         available = {str(row["name"]) for row in schema_rows}
+        schema_columns_by_table: dict[str, list[str]] = {}
         for descriptor in TABLES:
             if descriptor["table"] not in available:
                 _fail(f"G102_REQUIRED_TABLE_MISSING:{descriptor['table']}")
-            actual_columns = [str(row[1]) for row in conn.execute(f"PRAGMA table_info({descriptor['table']})")]
+            table_info = list(conn.execute(f"PRAGMA table_info({descriptor['table']})"))
+            actual_columns = [str(row[1]) for row in table_info]
             missing = sorted(set(descriptor["columns"]) - set(actual_columns))
             if missing:
                 _fail(f"G102_REQUIRED_COLUMN_MISSING:{descriptor['table']}:{','.join(missing)}")
+            primary_key_columns = [
+                str(row[1]) for row in sorted(table_info, key=lambda row: int(row[5])) if int(row[5]) > 0
+            ]
+            if primary_key_columns != [descriptor["pk"]]:
+                _fail(f"G102_PRIMARY_KEY_MISMATCH:{descriptor['table']}")
+            schema_columns_by_table[descriptor["table"]] = actual_columns
         schema_fingerprint = canonical_hash([{"name": row["name"], "sql": row["sql"]} for row in schema_rows])
         data_version_before = int(conn.execute("PRAGMA data_version").fetchone()[0])
         for descriptor in TABLES:
-            rows, post_cutoff, invalid_timestamps, physical_count, read_bytes = _read_table(
+            actual_columns = schema_columns_by_table[descriptor["table"]]
+            rows, post_cutoff, invalid_timestamps, physical_count, read_bytes, large_field_summary = _read_table(
                 conn, descriptor, request["data_cutoff_at"]
             )
             total_bytes += read_bytes
@@ -228,7 +248,11 @@ def build_audit(conn: sqlite3.Connection, request: Mapping[str, Any], *, source_
             manifest = {
                 "table": descriptor["table"], "semantic_class": descriptor["class"],
                 "primary_key": descriptor["pk"], "semantic_time_field": descriptor["semantic_at"],
-                "selected_columns": list(descriptor["columns"]), "schema_columns": actual_columns,
+                "source_columns": list(descriptor["columns"]),
+                "materialized_columns": _materialized_columns(descriptor),
+                "source_row_commitment_algorithm": _source_row_commitment_algorithm(descriptor),
+                "large_field_summary": large_field_summary,
+                "schema_columns": actual_columns,
                 "query_contract_hash": canonical_hash(query_contract),
                 "schema_hash": canonical_hash(actual_columns), "physical_count": physical_count,
                 "captured_count": len(rows), "post_cutoff_count": post_cutoff,
@@ -358,8 +382,14 @@ def validate_audit_bundle(value: Mapping[str, Any]) -> dict[str, Any]:
             _fail("G102_TABLE_COUNT_MISMATCH")
         if item["semantic_class"] != descriptor["class"] or item["primary_key"] != descriptor["pk"]:
             _fail("G102_TABLE_DESCRIPTOR_MISMATCH")
-        if item["semantic_time_field"] != descriptor["semantic_at"] or item["selected_columns"] != list(descriptor["columns"]):
+        if (
+            item["semantic_time_field"] != descriptor["semantic_at"]
+            or item["source_columns"] != list(descriptor["columns"])
+            or item["materialized_columns"] != _materialized_columns(descriptor)
+            or item["source_row_commitment_algorithm"] != _source_row_commitment_algorithm(descriptor)
+        ):
             _fail("G102_TABLE_DESCRIPTOR_MISMATCH")
+        _validate_large_field_summary(item, descriptor)
         if item["schema_hash"] != canonical_hash(item["schema_columns"]):
             _fail("G102_TABLE_SCHEMA_HASH_MISMATCH")
         if item["query_contract_hash"] != canonical_hash(_query_contract(descriptor, request["data_cutoff_at"])):
@@ -433,7 +463,7 @@ def write_audit_bundle(bundle: Mapping[str, Any], output_dir: str | os.PathLike[
             (temporary / name).write_bytes(payload)
             files[name] = {"sha256": hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload)}
         manifest = {
-            "schema_version": "gle-g1-02a-asof-audit-manifest-v1", "audit_id": bundle["request"]["audit_id"],
+            "schema_version": MANIFEST_VERSION, "audit_id": bundle["request"]["audit_id"],
             "data_cutoff_at": bundle["request"]["data_cutoff_at"], "bundle_hash": bundle["bundle_hash"],
             "source_snapshot_hash": bundle["source_snapshot"]["source_snapshot_hash"],
             "request": bundle["request"], "source_snapshot": bundle["source_snapshot"],
@@ -480,13 +510,56 @@ def _validate_request(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def _read_table(
     conn: sqlite3.Connection, descriptor: Mapping[str, Any], cutoff: str
-) -> tuple[list[tuple[sqlite3.Row, str]], int, int, int, int]:
+) -> tuple[list[tuple[sqlite3.Row, str]], int, int, int, int, dict[str, Any] | None]:
     columns = ",".join(descriptor["columns"])
     table = descriptor["table"]
     pk = descriptor["pk"]
     cutoff_at = descriptor["cutoff_at"]
+    parameters: tuple[Any, ...] = (MAX_ROWS_PER_TABLE + 1,)
+    large_field_summary: dict[str, Any] | None = None
+    if table == "ad_daily_report":
+        source_count = 0
+        total_source_bytes = 0
+        maximum_source_row_bytes = 0
+        preflight_rows = conn.execute(
+            "SELECT typeof(payload_json), length(CAST(payload_json AS BLOB)) "
+            "FROM ad_daily_report ORDER BY report_id LIMIT ?",
+            (MAX_ROWS_PER_TABLE + 1,),
+        )
+        for storage_class, source_row_bytes in preflight_rows:
+            source_count += 1
+            if source_count > MAX_ROWS_PER_TABLE:
+                _fail(f"G102_SOURCE_BOUND_EXCEEDED:{table}")
+            if storage_class != "text" or type(source_row_bytes) is not int or source_row_bytes < 0:
+                _fail(f"G102_SOURCE_BOUND_EXCEEDED:{table}:payload_storage")
+            if source_row_bytes > MAX_REPORT_PAYLOAD_BYTES:
+                _fail(f"G102_SOURCE_BOUND_EXCEEDED:{table}:payload")
+            total_source_bytes += source_row_bytes
+            maximum_source_row_bytes = max(maximum_source_row_bytes, source_row_bytes)
+            if total_source_bytes > MAX_TOTAL_REPORT_SOURCE_BYTES:
+                _fail(f"G102_SOURCE_BOUND_EXCEEDED:{table}:total_payload")
+        large_field_summary = {
+            "source_field": "payload_json",
+            "source_row_count": source_count,
+            "total_source_bytes": total_source_bytes,
+            "maximum_source_row_bytes": maximum_source_row_bytes,
+            "maximum_allowed_total_source_bytes": MAX_TOTAL_REPORT_SOURCE_BYTES,
+            "maximum_allowed_source_row_bytes": MAX_REPORT_PAYLOAD_BYTES,
+            "required_storage_class": "text",
+            "payload_commitment_algorithm": REPORT_PAYLOAD_COMMITMENT_ALGORITHM,
+            "source_row_commitment_algorithm": REPORT_SOURCE_ROW_COMMITMENT_ALGORITHM,
+        }
+        safe_columns = ",".join(item for item in descriptor["columns"] if item != "payload_json")
+        columns = (
+            f"{safe_columns},"
+            "CASE WHEN typeof(payload_json) = 'text' AND length(CAST(payload_json AS BLOB)) <= ? "
+            "THEN gle_sha256_text(payload_json) ELSE NULL END AS payload_sha256,"
+            "length(CAST(payload_json AS BLOB)) AS payload_size_bytes,"
+            "typeof(payload_json) AS payload_storage_class"
+        )
+        parameters = (MAX_REPORT_PAYLOAD_BYTES, MAX_ROWS_PER_TABLE + 1)
     rows = list(conn.execute(
-        f"SELECT {columns} FROM {table} ORDER BY {pk} LIMIT ?", (MAX_ROWS_PER_TABLE + 1,)
+        f"SELECT {columns} FROM {table} ORDER BY {pk} LIMIT ?", parameters
     ))
     if len(rows) > MAX_ROWS_PER_TABLE:
         _fail(f"G102_SOURCE_BOUND_EXCEEDED:{table}")
@@ -496,6 +569,16 @@ def _read_table(
     invalid = 0
     read_bytes = 0
     for row in rows:
+        if table == "ad_daily_report":
+            payload_size = row["payload_size_bytes"]
+            payload_sha = row["payload_sha256"]
+            if (
+                row["payload_storage_class"] != "text"
+                or type(payload_size) is not int or payload_size < 0
+                or payload_size > MAX_REPORT_PAYLOAD_BYTES
+                or not isinstance(payload_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", payload_sha)
+            ):
+                _fail(f"G102_SOURCE_BOUND_EXCEEDED:{table}:payload")
         read_bytes += len(canonical_json(dict(row)).encode("utf-8"))
         if read_bytes > MAX_TOTAL_CANONICAL_BYTES:
             _fail(f"G102_SOURCE_BOUND_EXCEEDED:{table}:bytes")
@@ -509,7 +592,7 @@ def _read_table(
             captured.append((row, "AT_OR_BEFORE_CUTOFF"))
         else:
             post += 1
-    return captured, post, invalid, len(rows), read_bytes
+    return captured, post, invalid, len(rows), read_bytes, large_field_summary
 
 
 def _project_row(
@@ -547,11 +630,16 @@ def _project_row(
         if not projection["experiment_id"]:
             reason_codes.append("EVENT_EXPERIMENT_ID_MISSING")
     elif table == "ad_daily_report":
+        payload_hash = str(raw.get("payload_sha256") or "")
+        try:
+            validate_sha256(payload_hash, code="G102_REPORT_PAYLOAD_COMMITMENT_INVALID")
+        except ValueError as exc:
+            raise HistoricalAsOfAuditError(str(exc)) from exc
         projection = {
             "report_date": str(raw.get("report_date") or ""), "data_mode": str(raw.get("data_mode") or ""),
             "snapshot_version": str(raw.get("snapshot_version") or ""), "rule_version": str(raw.get("rule_version") or ""),
             "window_start_utc": str(raw.get("window_start_utc") or ""), "window_end_utc": str(raw.get("window_end_utc") or ""),
-            "payload_hash": hashlib.sha256(str(raw.get("payload_json") or "").encode()).hexdigest(),
+            "payload_hash": payload_hash,
         }
         reason_codes.append("REPLACEABLE_REPORT_PREIMAGE_UNAVAILABLE")
     elif table == "ad_creative_group_evaluation_history":
@@ -684,14 +772,49 @@ def _structural_gap_code(descriptor: Mapping[str, Any]) -> str:
     }[descriptor["class"]]
 
 
+def _materialized_columns(descriptor: Mapping[str, Any]) -> list[str]:
+    if descriptor["table"] != "ad_daily_report":
+        return list(descriptor["columns"])
+    return [
+        *(item for item in descriptor["columns"] if item != "payload_json"),
+        "payload_sha256", "payload_size_bytes", "payload_storage_class",
+    ]
+
+
+def _source_row_commitment_algorithm(descriptor: Mapping[str, Any]) -> str:
+    return (
+        REPORT_SOURCE_ROW_COMMITMENT_ALGORITHM
+        if descriptor["table"] == "ad_daily_report"
+        else DEFAULT_SOURCE_ROW_COMMITMENT_ALGORITHM
+    )
+
+
 def _query_contract(descriptor: Mapping[str, Any], cutoff: str) -> dict[str, Any]:
-    return {
-        "table": descriptor["table"], "columns": list(descriptor["columns"]),
+    contract = {
+        "table": descriptor["table"],
+        "source_columns": list(descriptor["columns"]),
+        "materialized_columns": _materialized_columns(descriptor),
+        "source_row_commitment_algorithm": _source_row_commitment_algorithm(descriptor),
         "pk": descriptor["pk"], "semantic_at": descriptor["semantic_at"],
         "cutoff_at": descriptor["cutoff_at"], "cutoff": cutoff,
         "ordering": [descriptor["pk"]], "limit": MAX_ROWS_PER_TABLE + 1,
         "timestamp_classification": "PYTHON_UTC_INSTANT_V1",
     }
+    if descriptor["table"] == "ad_daily_report":
+        contract["large_field_commitment"] = {
+            "source_field": "payload_json",
+            "algorithm": REPORT_PAYLOAD_COMMITMENT_ALGORITHM,
+            "size_algorithm": "SQLITE_CAST_BLOB_LENGTH_V1",
+            "preflight_algorithm": "ORDERED_LAZY_TYPE_LENGTH_ACCUMULATION_BEFORE_HASH_V1",
+            "preflight_observed_fields": [
+                "source_row_count", "total_source_bytes", "maximum_source_row_bytes",
+            ],
+            "maximum_source_row_bytes": MAX_REPORT_PAYLOAD_BYTES,
+            "maximum_total_source_bytes": MAX_TOTAL_REPORT_SOURCE_BYTES,
+            "required_storage_class": "text",
+            "materialized_fields": ["payload_sha256", "payload_size_bytes", "payload_storage_class"],
+        }
+    return contract
 
 
 def _authoritative_asof_hash(
@@ -704,6 +827,7 @@ def _authoritative_asof_hash(
                 "table": item["table"], "query_contract_hash": item["query_contract_hash"],
                 "schema_hash": item["schema_hash"], "captured_count": item["captured_count"],
                 "invalid_timestamp_count": item["invalid_timestamp_count"],
+                "source_row_commitment_algorithm": item["source_row_commitment_algorithm"],
                 "row_chain_hash": item["row_chain_hash"],
                 "projection_chain_hash": item["projection_chain_hash"],
             }
@@ -791,7 +915,8 @@ def _validate_record(item: Any) -> None:
 
 def _validate_table_manifest_shape(item: Any) -> None:
     expected = {
-        "table", "semantic_class", "primary_key", "semantic_time_field", "selected_columns",
+        "table", "semantic_class", "primary_key", "semantic_time_field", "source_columns",
+        "materialized_columns", "source_row_commitment_algorithm", "large_field_summary",
         "schema_columns", "query_contract_hash", "schema_hash", "physical_count", "captured_count",
         "post_cutoff_count", "invalid_timestamp_count", "first_key", "last_key", "row_chain_hash",
         "projection_chain_hash", "table_manifest_hash",
@@ -803,6 +928,39 @@ def _validate_table_manifest_shape(item: Any) -> None:
     for field in ("physical_count", "captured_count", "post_cutoff_count", "invalid_timestamp_count"):
         if type(item[field]) is not int or item[field] < 0:
             _fail("G102_TABLE_COUNT_INVALID")
+
+
+def _validate_large_field_summary(item: Mapping[str, Any], descriptor: Mapping[str, Any]) -> None:
+    summary = item["large_field_summary"]
+    if descriptor["table"] != "ad_daily_report":
+        if summary is not None:
+            _fail("G102_LARGE_FIELD_SUMMARY_INVALID")
+        return
+    expected = {
+        "source_field", "source_row_count", "total_source_bytes", "maximum_source_row_bytes",
+        "maximum_allowed_total_source_bytes", "maximum_allowed_source_row_bytes",
+        "required_storage_class", "payload_commitment_algorithm", "source_row_commitment_algorithm",
+    }
+    if not isinstance(summary, Mapping) or set(summary) != expected:
+        _fail("G102_LARGE_FIELD_SUMMARY_INVALID")
+    for field in (
+        "source_row_count", "total_source_bytes", "maximum_source_row_bytes",
+        "maximum_allowed_total_source_bytes", "maximum_allowed_source_row_bytes",
+    ):
+        if type(summary[field]) is not int or summary[field] < 0:
+            _fail("G102_LARGE_FIELD_SUMMARY_INVALID")
+    if (
+        summary["source_field"] != "payload_json"
+        or summary["source_row_count"] != item["physical_count"]
+        or summary["total_source_bytes"] > summary["maximum_allowed_total_source_bytes"]
+        or summary["maximum_source_row_bytes"] > summary["maximum_allowed_source_row_bytes"]
+        or summary["maximum_allowed_total_source_bytes"] != MAX_TOTAL_REPORT_SOURCE_BYTES
+        or summary["maximum_allowed_source_row_bytes"] != MAX_REPORT_PAYLOAD_BYTES
+        or summary["required_storage_class"] != "text"
+        or summary["payload_commitment_algorithm"] != REPORT_PAYLOAD_COMMITMENT_ALGORITHM
+        or summary["source_row_commitment_algorithm"] != REPORT_SOURCE_ROW_COMMITMENT_ALGORITHM
+    ):
+        _fail("G102_LARGE_FIELD_SUMMARY_INVALID")
 
 
 def _validate_gap_shape(item: Any) -> None:

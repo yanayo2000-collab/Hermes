@@ -17,6 +17,7 @@ from app.growth.canonical_evaluation_contracts import (
     validate_utc,
 )
 from app.growth.historical_lineage_candidates import (
+    CANDIDATE_MANIFEST_VERSION,
     CANDIDATE_VERSION,
     ENGINE_VERSION as CANDIDATE_ENGINE_VERSION,
     HistoricalLineageCandidateError,
@@ -33,7 +34,6 @@ FRAGMENT_VERSION = "gle-g1-02b2-lineage-authority-fragment-v1"
 REGISTRY_VERSION = "gle-g1-02b2-trusted-key-registry-v1"
 CONTRACT_VERSION = "gle-g1-02b2-immutable-lineage-authority-v1"
 ARTIFACT_MANIFEST_VERSION = "gle-g1-02b2-lineage-authority-artifact-manifest-v1"
-CANDIDATE_MANIFEST_VERSION = "gle-g1-02b-lineage-candidate-manifest-v1"
 EXACT_CANDIDATE_FILES = frozenset({
     "manifest.json", "lineage_candidates.ndjson", "components.ndjson", "coverage.json",
 })

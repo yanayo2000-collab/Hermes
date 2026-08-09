@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from app.growth.canonical_evaluation_contracts import canonical_hash
+from app.growth.canonical_evaluation_contracts import canonical_hash, canonical_json
 from app.growth.historical_asof_audit import build_audit, make_request, open_readonly_snapshot, write_audit_bundle
 from app.growth.historical_lineage_candidates import (
     HistoricalLineageCandidateError,
@@ -125,6 +125,19 @@ def _candidate(tmp_path: Path) -> tuple[dict, Path, str]:
         derivation_id="derive-1", derived_at="2026-08-07T02:00:00Z",
     )
     return candidate, audit, expected
+
+
+def test_consumer_rejects_superseded_v1_audit_manifest(tmp_path: Path) -> None:
+    audit, _expected = _audit_dir(tmp_path)
+    manifest_path = audit / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = "gle-g1-02a-asof-audit-manifest-v1"
+    manifest["manifest_hash"] = canonical_hash({
+        key: value for key, value in manifest.items() if key != "manifest_hash"
+    })
+    manifest_path.write_text(canonical_json(manifest) + "\n")
+    with pytest.raises(HistoricalLineageCandidateError, match="G102B_MANIFEST_SCHEMA_INVALID"):
+        load_validated_audit_directory(audit, expected_manifest_sha256=_sha(manifest_path))
 
 
 def _refresh_coverage_and_hash(candidate: dict) -> None:

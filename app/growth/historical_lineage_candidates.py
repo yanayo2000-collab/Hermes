@@ -12,12 +12,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from app.growth.canonical_evaluation_contracts import canonical_hash, canonical_json, validate_sha256, validate_utc
-from app.growth.historical_asof_audit import BUNDLE_VERSION, TABLES, validate_audit_bundle
+from app.growth.historical_asof_audit import BUNDLE_VERSION, MANIFEST_VERSION, TABLES, validate_audit_bundle
 
 
-MANIFEST_VERSION = "gle-g1-02a-asof-audit-manifest-v1"
-CANDIDATE_VERSION = "gle-g1-02b-lineage-candidate-bundle-v1"
-ENGINE_VERSION = "gle-g1-02b-lineage-candidate-engine-v1"
+CANDIDATE_VERSION = "gle-g1-02b-lineage-candidate-bundle-v2"
+ENGINE_VERSION = "gle-g1-02b-lineage-candidate-engine-v2"
+CANDIDATE_MANIFEST_VERSION = "gle-g1-02b-lineage-candidate-manifest-v2"
 EXACT_INPUT_FILES = frozenset({"manifest.json", "records.ndjson", "gaps.ndjson", "coverage.json"})
 MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_NDJSON_ROWS = 100_000
@@ -537,7 +537,7 @@ def write_lineage_candidate_bundle(
             (temporary / name).write_bytes(payload)
             files[name] = {"sha256": hashlib.sha256(payload).hexdigest(), "size_bytes": len(payload)}
         manifest = {
-            "schema_version": "gle-g1-02b-lineage-candidate-manifest-v1",
+            "schema_version": CANDIDATE_MANIFEST_VERSION,
             "derivation_id": bundle["derivation_id"], "derived_at": bundle["derived_at"],
             "candidate_hash": bundle["candidate_hash"], "input_binding": bundle["input_binding"],
             "split_registry": bundle["split_registry"], "coverage": bundle["coverage"],
