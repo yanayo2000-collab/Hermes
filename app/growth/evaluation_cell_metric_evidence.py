@@ -23,6 +23,12 @@ from app.growth.gate0_feasibility_assessment import (
     hash_json,
 )
 from app.growth.common import canonical_json
+from app.growth.sqlite_readonly_identity import (
+    HeldSQLiteSourceIdentity,
+    SQLiteSourceIdentityError,
+    hold_sqlite_source_identity,
+    revalidate_sqlite_source_identity,
+)
 
 
 MAX_SOURCE_BYTES = 30 * 1024 * 1024 * 1024
@@ -689,17 +695,18 @@ def collect_gate0_observations(
     uri = f"file:{quote(sqlite_path, safe='/')}?mode=ro&immutable=1"
     conn = sqlite3.connect(uri, uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
+    connection_identity: HeldSQLiteSourceIdentity | None = None
     try:
         conn.execute("PRAGMA query_only=ON")
         if strict_metric_evidence:
-            database_list = conn.execute("PRAGMA database_list").fetchall()
-            if (
-                int(conn.execute("PRAGMA query_only").fetchone()[0]) != 1
-                or len(database_list) != 1
-                or str(database_list[0][1]) != "main"
-                or str(database_list[0][2]) != sqlite_path
-            ):
+            if source_fd is None or int(conn.execute("PRAGMA query_only").fetchone()[0]) != 1:
                 raise G005ContractError("G104B2_SOURCE_CONNECTION_INVALID")
+            try:
+                connection_identity = hold_sqlite_source_identity(
+                    source_fd, sqlite_path, conn.execute("PRAGMA database_list").fetchall(),
+                )
+            except SQLiteSourceIdentityError as exc:
+                raise G005ContractError("G104B2_SOURCE_CONNECTION_INVALID") from exc
         _required_columns(conn, "ad_dashboard_fact_rows", {
             "date", "data_source", "platform", "account_id", "country", "campaign_id",
             "media_source", "adset_id", "ad_id", "impressions", "cost", "tugao_join_success_users",
@@ -734,7 +741,18 @@ def collect_gate0_observations(
         tugao_sync = _sync_ok_dates(conn, lower, upper, "tugao_funnel")
         experiment_rows = _materialize_experiment_rows(conn, experiment_ids)
         data_version = int(conn.execute("PRAGMA data_version").fetchone()[0])
+        if strict_metric_evidence:
+            if source_fd is None or connection_identity is None:
+                raise G005ContractError("G104B2_SOURCE_CONNECTION_INVALID")
+            try:
+                revalidate_sqlite_source_identity(
+                    conn, source_fd, sqlite_path, connection_identity,
+                )
+            except SQLiteSourceIdentityError as exc:
+                raise G005ContractError("G104B2_SOURCE_CONNECTION_INVALID") from exc
     finally:
+        if connection_identity is not None:
+            connection_identity.close()
         conn.close()
     if source_fd is None:
         after = _source_state(db_path)
@@ -1103,11 +1121,12 @@ def _external_json_document(raw: bytes) -> dict[str, Any]:
 def _require_sidecars_absent(path: Path, parent_fd: int) -> None:
     for suffix in ("-wal", "-journal", "-shm"):
         try:
-            value = os.stat(path.name + suffix, dir_fd=parent_fd, follow_symlinks=False)
+            os.stat(path.name + suffix, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
             continue
-        if value.st_size:
-            raise G005ContractError("G005_SOURCE_SIDECAR_PRESENT:" + suffix)
+        except OSError as exc:
+            raise G005ContractError("G005_SOURCE_SIDECAR_PRESENT:" + suffix) from exc
+        raise G005ContractError("G005_SOURCE_SIDECAR_PRESENT:" + suffix)
 
 
 def derive_cell_metric_evidence(
