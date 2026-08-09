@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from app.growth.canonical_evaluation_contracts import canonical_hash
+from app.growth.canonical_evaluation_contracts import canonical_hash, canonical_json
 from app.growth.historical_asof_audit import (
     build_audit,
     make_request,
@@ -164,6 +164,24 @@ def _public_key(private_key: Path) -> str:
         text=True,
     )
     return result.stdout
+
+
+def test_authority_rejects_superseded_v1_candidate_manifest(tmp_path: Path) -> None:
+    source = _source_artifacts(tmp_path / "source")
+    manifest_path = source["candidate_dir"] / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["schema_version"] = "gle-g1-02b-lineage-candidate-manifest-v1"
+    manifest["manifest_hash"] = canonical_hash({
+        key: value for key, value in manifest.items() if key != "manifest_hash"
+    })
+    manifest_path.write_text(canonical_json(manifest) + "\n")
+    with pytest.raises(ImmutableLineageAuthorityError, match="G102B2_CANDIDATE_MANIFEST_INVALID"):
+        load_validated_candidate_directory(
+            source["candidate_dir"],
+            expected_candidate_manifest_sha256=_sha(manifest_path),
+            audit_dir=source["audit_dir"],
+            expected_audit_manifest_sha256=source["audit_sha"],
+        )
 
 
 def _sign(private_key: Path, message: bytes) -> str:

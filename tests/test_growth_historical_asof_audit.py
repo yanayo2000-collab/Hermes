@@ -114,6 +114,13 @@ def test_capture_is_readonly_deterministic_cutoff_bounded_and_gap_explicit(tmp_p
     assert first["coverage"]["legacy_evaluations_by_table"]["ad_experiment_evaluation"] == {
         "captured": 1, "post_cutoff": 1, "invalid_timestamp": 0,
     }
+    manifests = {item["table"]: item for item in first["table_manifests"]}
+    assert manifests["ad_daily_report"]["schema_columns"] == [
+        "report_id", "report_date", "data_mode", "snapshot_version", "rule_version",
+        "window_start_utc", "window_end_utc", "generated_at_utc", "payload_json",
+    ]
+    assert manifests["ad_experiment"]["schema_columns"][0] == "experiment_id"
+    assert manifests["ad_experiment"]["schema_columns"] != manifests["ad_daily_report"]["schema_columns"]
     assert {item["code"] for item in first["gaps"]} >= {
         "LEGACY_INPUT_SNAPSHOT_MISSING", "EPISODE_ID_MISSING", "LINEAGE_UNRESOLVED",
         "OBJECTIVE_INCOMPATIBLE", "MUTABLE_CURRENT_STATE_NO_PREIMAGE",
@@ -132,6 +139,8 @@ def test_artifacts_are_content_addressed_and_refuse_overwrite(tmp_path: Path) ->
     output = tmp_path / "audit"
     manifest = write_audit_bundle(bundle, output)
     assert set(path.name for path in output.iterdir()) == {"manifest.json", "records.ndjson", "gaps.ndjson", "coverage.json"}
+    assert manifest["schema_version"] == historical.MANIFEST_VERSION == "gle-g1-02a-asof-audit-manifest-v2"
+    assert manifest["request"]["schema_version"] == "gle-g1-02a-asof-audit-request-v2"
     assert manifest["files"]["records.ndjson"]["sha256"] == _sha(output / "records.ndjson")
     with pytest.raises(HistoricalAsOfAuditError, match="G102_OUTPUT_EXISTS"):
         write_audit_bundle(bundle, output)
@@ -148,6 +157,21 @@ def test_missing_table_and_hash_tamper_fail_closed(tmp_path: Path) -> None:
     bundle["records"][0]["source_row_hash"] = "0" * 64
     with pytest.raises(HistoricalAsOfAuditError, match="G102_RECORD_HASH_MISMATCH"):
         validate_audit_bundle(bundle)
+
+
+def test_declared_primary_key_is_required_for_bounded_ordering(tmp_path: Path) -> None:
+    database = tmp_path / "source.db"; _fixture(database)
+    conn = sqlite3.connect(database)
+    conn.execute("ALTER TABLE ad_daily_report RENAME TO old_ad_daily_report")
+    conn.execute(
+        "CREATE TABLE ad_daily_report AS SELECT * FROM old_ad_daily_report"
+    )
+    conn.execute("DROP TABLE old_ad_daily_report")
+    conn.commit(); conn.close()
+    readonly = open_readonly_snapshot(database)
+    with pytest.raises(HistoricalAsOfAuditError, match="G102_PRIMARY_KEY_MISMATCH:ad_daily_report"):
+        build_audit(readonly, _request(), source_path=database)
+    readonly.close()
 
 
 def test_post_cutoff_event_and_report_never_enter_records(tmp_path: Path) -> None:
@@ -361,6 +385,125 @@ def test_legacy_payloads_are_hashed_not_exported(tmp_path: Path) -> None:
     readonly = open_readonly_snapshot(database); bundle = build_audit(readonly, _request(), source_path=database); readonly.close()
     serialized = json.dumps(bundle, sort_keys=True)
     assert secret not in serialized and "launch-secret" not in serialized
+
+
+def test_report_payload_is_bounded_committed_without_aggregate_materialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "source.db"; _fixture(database)
+    payload = '{"large":"' + ("x" * 65_536) + '"}'
+    conn = sqlite3.connect(database)
+    conn.execute("UPDATE ad_daily_report SET payload_json=? WHERE report_id='report-1'", (payload,))
+    conn.commit(); conn.close()
+    monkeypatch.setattr(historical, "MAX_TOTAL_CANONICAL_BYTES", 16 * 1024)
+    readonly = open_readonly_snapshot(database)
+    bundle = build_audit(readonly, _request(), source_path=database)
+    readonly.close()
+    report = next(item for item in bundle["records"] if item["source_table"] == "ad_daily_report")
+    assert report["projection"]["payload_hash"] == hashlib.sha256(payload.encode()).hexdigest()
+    assert payload not in json.dumps(bundle, sort_keys=True)
+    assert bundle["request"]["query_contract_version"].endswith("-v2")
+    manifest = next(item for item in bundle["table_manifests"] if item["table"] == "ad_daily_report")
+    assert "payload_json" in manifest["source_columns"]
+    assert "payload_json" not in manifest["materialized_columns"]
+    assert manifest["materialized_columns"][-3:] == [
+        "payload_sha256", "payload_size_bytes", "payload_storage_class",
+    ]
+    assert manifest["large_field_summary"] == {
+        "source_field": "payload_json",
+        "source_row_count": 1,
+        "total_source_bytes": len(payload.encode()),
+        "maximum_source_row_bytes": len(payload.encode()),
+        "maximum_allowed_total_source_bytes": historical.MAX_TOTAL_REPORT_SOURCE_BYTES,
+        "maximum_allowed_source_row_bytes": historical.MAX_REPORT_PAYLOAD_BYTES,
+        "required_storage_class": "text",
+        "payload_commitment_algorithm": historical.REPORT_PAYLOAD_COMMITMENT_ALGORITHM,
+        "source_row_commitment_algorithm": historical.REPORT_SOURCE_ROW_COMMITMENT_ALGORITHM,
+    }
+
+
+def test_total_report_payload_bound_fails_before_hash_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "source.db"; _fixture(database)
+    payload = "x" * 64
+    conn = sqlite3.connect(database)
+    conn.execute("UPDATE ad_daily_report SET payload_json=? WHERE report_id='report-1'", (payload,))
+    conn.commit(); conn.close()
+    monkeypatch.setattr(historical, "MAX_TOTAL_REPORT_SOURCE_BYTES", 32)
+    readonly = open_readonly_snapshot(database)
+    hash_calls = 0
+
+    def _count_hash(value: object) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return hashlib.sha256(str(value).encode()).hexdigest()
+
+    readonly.create_function("gle_sha256_text", 1, _count_hash, deterministic=True)
+    with pytest.raises(
+        HistoricalAsOfAuditError,
+        match="G102_SOURCE_BOUND_EXCEEDED:ad_daily_report:total_payload",
+    ):
+        build_audit(readonly, _request(), source_path=database)
+    readonly.close()
+    assert hash_calls == 0
+
+
+def test_report_row_bound_fails_before_hash_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "source.db"; _fixture(database)
+    conn = sqlite3.connect(database)
+    conn.executemany(
+        "INSERT INTO ad_daily_report VALUES (?,?,?,?,?,?,?,?,?)",
+        [
+            ("report-2", "2026-08-06", "real", "v", "v", "", "", "2026-08-06T01:00:00Z", "{}"),
+            ("report-3", "2026-08-07", "real", "v", "v", "", "", "2026-08-07T01:00:00Z", "{}"),
+        ],
+    )
+    conn.commit(); conn.close()
+    monkeypatch.setattr(historical, "MAX_ROWS_PER_TABLE", 2)
+    readonly = open_readonly_snapshot(database)
+    hash_calls = 0
+
+    def _count_hash(value: object) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return hashlib.sha256(str(value).encode()).hexdigest()
+
+    readonly.create_function("gle_sha256_text", 1, _count_hash, deterministic=True)
+    with pytest.raises(HistoricalAsOfAuditError, match="G102_SOURCE_BOUND_EXCEEDED:ad_daily_report"):
+        build_audit(readonly, _request(), source_path=database)
+    readonly.close()
+    assert hash_calls == 0
+
+
+def test_single_report_payload_limit_remains_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "source.db"; _fixture(database)
+    conn = sqlite3.connect(database)
+    conn.execute("UPDATE ad_daily_report SET payload_json=? WHERE report_id='report-1'", ("x" * 64,))
+    conn.commit(); conn.close()
+    monkeypatch.setattr(historical, "MAX_REPORT_PAYLOAD_BYTES", 32)
+    readonly = open_readonly_snapshot(database)
+    with pytest.raises(HistoricalAsOfAuditError, match="G102_SOURCE_BOUND_EXCEEDED:ad_daily_report:payload"):
+        build_audit(readonly, _request(), source_path=database)
+    readonly.close()
+
+
+@pytest.mark.parametrize("payload", [None, sqlite3.Binary(b"{}")])
+def test_report_payload_requires_text_storage(
+    tmp_path: Path, payload: object,
+) -> None:
+    database = tmp_path / "source.db"; _fixture(database)
+    conn = sqlite3.connect(database)
+    conn.execute("UPDATE ad_daily_report SET payload_json=? WHERE report_id='report-1'", (payload,))
+    conn.commit(); conn.close()
+    readonly = open_readonly_snapshot(database)
+    with pytest.raises(HistoricalAsOfAuditError, match="G102_SOURCE_BOUND_EXCEEDED:ad_daily_report:payload"):
+        build_audit(readonly, _request(), source_path=database)
+    readonly.close()
 
 
 def test_archived_history_and_current_maturing_context_are_explicitly_non_asof(tmp_path: Path) -> None:
