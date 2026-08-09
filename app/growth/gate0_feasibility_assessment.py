@@ -25,10 +25,10 @@ from app.growth.gate0_power_estimator import (
 from app.growth.phase1_governance import validate_contract as validate_governance_contract
 
 
-INPUT_VERSION = "gle-g0-05-assessment-input-v2"
-ENGINE_VERSION = "gle-g0-05-feasibility-engine-v2"
-CANDIDATE_VERSION = "gle-g0-05-gate0-candidate-v2"
-POLICY_VERSION = "gle-g0-05-mx-policy-v2"
+INPUT_VERSION = "gle-g0-05-assessment-input-v3"
+ENGINE_VERSION = "gle-g0-05-feasibility-engine-v3"
+CANDIDATE_VERSION = "gle-g0-05-gate0-candidate-v3"
+POLICY_VERSION = "gle-g0-05-mx-policy-v3"
 QUALIFICATION_VERSION = "tugaofunnel-guild-join-success-v1"
 SOURCE_CONTRACT = "tugao_funnel_daily_metrics_api_v1"
 SOURCE_METRIC = "guild_join_success_users"
@@ -504,8 +504,11 @@ def _normalize_policy(raw: Any) -> Dict[str, Any]:
         "source_contract": SOURCE_CONTRACT,
         "source_metric": SOURCE_METRIC,
         "qualified_country": "Mexico",
-        "qualified_media_source": "Meta",
-        "qualified_external_app": "TUGAO",
+        # These are the exact TimeTrade response values persisted in
+        # ad_dashboard_fact_rows.  They are physical source dimensions, not
+        # the normalized platform name or the producer/service name.
+        "qualified_media_source": "Facebook Ads",
+        "qualified_external_app": "Linky",
         "estimator_version": ESTIMATOR_VERSION,
         "governance_model": "SOLE_OWNER",
         "sole_owner": "Chauncey",
