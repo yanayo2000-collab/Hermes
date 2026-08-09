@@ -21,6 +21,12 @@ from urllib.parse import quote
 
 from app.growth.common import canonical_json, payload_hash
 from app.growth.meta_execution_worker import execution_steps_for, is_delivery_status_step
+from app.growth.sqlite_readonly_identity import (
+    HeldSQLiteSourceIdentity,
+    SQLiteSourceIdentityError,
+    hold_sqlite_source_identity,
+    revalidate_sqlite_source_identity,
+)
 
 
 REQUEST_VERSION = "gle-e04-s04-01b3-mutation-provenance-request-v1"
@@ -739,11 +745,12 @@ def _derive_gle_chain(
 def _require_sidecars_absent(path: Path, parent_fd: int) -> None:
     for suffix in ("-wal", "-journal", "-shm"):
         try:
-            value = os.stat(path.name + suffix, dir_fd=parent_fd, follow_symlinks=False)
+            os.stat(path.name + suffix, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
             continue
-        if value.st_size:
-            raise MutationProvenanceError("G104B3_SOURCE_SIDECAR_PRESENT:" + suffix)
+        except OSError as exc:
+            raise MutationProvenanceError("G104B3_SOURCE_SIDECAR_PRESENT:" + suffix) from exc
+        raise MutationProvenanceError("G104B3_SOURCE_SIDECAR_PRESENT:" + suffix)
 
 
 def _load_source(
@@ -753,16 +760,17 @@ def _load_source(
     uri = f"file:{quote(sqlite_path, safe='/')}?mode=ro&immutable=1"
     conn = sqlite3.connect(uri, uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
+    connection_identity: HeldSQLiteSourceIdentity | None = None
     try:
         conn.execute("PRAGMA query_only=ON")
-        database_list = conn.execute("PRAGMA database_list").fetchall()
-        if (
-            int(conn.execute("PRAGMA query_only").fetchone()[0]) != 1
-            or len(database_list) != 1
-            or str(database_list[0][1]) != "main"
-            or str(database_list[0][2]) != sqlite_path
-        ):
+        if int(conn.execute("PRAGMA query_only").fetchone()[0]) != 1:
             raise MutationProvenanceError("G104B3_SOURCE_CONNECTION_INVALID")
+        try:
+            connection_identity = hold_sqlite_source_identity(
+                source_fd, sqlite_path, conn.execute("PRAGMA database_list").fetchall(),
+            )
+        except SQLiteSourceIdentityError as exc:
+            raise MutationProvenanceError("G104B3_SOURCE_CONNECTION_INVALID") from exc
         schemas = (
             ("growth_operation_action", _ACTION_FIELDS, "operation_action_id"),
             ("growth_operation_approval", _APPROVAL_FIELDS, "approval_id"),
@@ -827,8 +835,16 @@ def _load_source(
         _consume_materialization_budget(materialized_bytes, event_bytes)
         retained = _materialize_rows(conn, table="ad_experiment_events", fields=_EVENT_FIELDS,
                                      where=event_where, params=event_params, order="created_at, event_id")
+        try:
+            revalidate_sqlite_source_identity(
+                conn, source_fd, sqlite_path, connection_identity,
+            )
+        except SQLiteSourceIdentityError as exc:
+            raise MutationProvenanceError("G104B3_SOURCE_CONNECTION_INVALID") from exc
         return actions, approvals, tasks, receipts, retained
     finally:
+        if connection_identity is not None:
+            connection_identity.close()
         conn.close()
 
 
