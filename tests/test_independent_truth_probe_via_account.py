@@ -6,7 +6,7 @@ import importlib.util
 
 import pytest
 
-MODULE_PATH = Path('/Users/chauncey/work/mcn-ai-automation/scripts/independent_truth_probe_via_account.py')
+MODULE_PATH = Path(__file__).resolve().parents[1] / 'scripts' / 'independent_truth_probe_via_account.py'
 spec = importlib.util.spec_from_file_location('independent_truth_probe_via_account', MODULE_PATH)
 probe = importlib.util.module_from_spec(spec)
 assert spec and spec.loader

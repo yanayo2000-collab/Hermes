@@ -4,6 +4,8 @@ import json
 import subprocess
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_parse_vm_stat_output_extracts_core_fields():
     from scripts.memory_pressure_relief import parse_vm_stat_output
@@ -200,7 +202,7 @@ Pages stored in compressor:             602715.
             '--compressor-mb-threshold',
             '512',
         ],
-        cwd='/Users/chauncey/work/mcn-ai-automation',
+        cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         check=True,
