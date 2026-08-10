@@ -229,7 +229,11 @@ def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -
     assert "focusGleAdInDashboard" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "setPlatformCollapsed('Meta',false,{manual:true})" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "loadDashboard({preserveDailyReport:true,skipDailyReport:true})" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "/api/ops/ad-data-dashboard/experiments?limit=200" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "/api/ops/ad-data-dashboard/experiments?limit=200" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "gleBoundExperimentIds" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "Promise.allSettled(experimentIds.map" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "/api/ops/ad-data-dashboard/experiments/${encodeURIComponent(experimentId)}" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "normalizeGleTaskDetail" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "currentGleTaskByExperiment" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "data-gle-open-task" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "openGleExperimentTask" in AD_DATA_DASHBOARD_PAGE_HTML
