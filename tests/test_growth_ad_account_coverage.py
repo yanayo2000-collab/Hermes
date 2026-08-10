@@ -213,7 +213,10 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert 'id="adGleCoverageFilters"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "在投待数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "定位经营数据" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "打开广告任务" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'id="adGleTaskWorkbenchMount"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "覆盖广告任务工作台" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "在上方查看任务" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'id="adOpenGleRecommendations"' not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "关键归因数据未收齐" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "不声称因果赢家" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "覆盖区本身不写 Meta" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -237,7 +240,8 @@ def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -
     assert "currentGleTaskByExperiment" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "data-gle-open-task" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "openGleExperimentTask" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "openGleTaskHome" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "syncGleCoverageTaskScope" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "setCoverageScope(experimentIds,tasks)" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "需你处理" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "AI 处理中" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "观察中" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -258,10 +262,15 @@ def test_dashboard_coverage_opens_the_existing_governed_task_flow() -> None:
     ).read_text(encoding="utf-8")
 
     assert "openTasks:openLaunchWorkspace" in workspace_js
+    assert "setCoverageScope" in workspace_js
+    assert "coverageScope:new Set()" in workspace_js
+    assert "scopedExperiments()" in workspace_js
+    assert "growth-layer growth-layer-embedded" in workspace_js
+    assert "(embeddedMount || document.body).appendChild(panel)" in workspace_js
+    assert "if (!embeddedMount)" in workspace_js
     assert "openExperiment(id)" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "taskView:'pending'" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "覆盖区不直接写 Meta" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "复核计划并明确确认" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "覆盖区本身不写 Meta" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "既有计划、明确确认与回读流程" in AD_DATA_DASHBOARD_PAGE_HTML
 
 
 def test_readonly_api_returns_the_exact_five_account_scope(tmp_path: Path) -> None:

@@ -19,7 +19,7 @@
   const LAUNCH_PROGRESS_STORAGE_KEY = 'growth-new-account-launch-progress-v2';
   const LEGACY_LAUNCH_PROGRESS_STORAGE_KEY = 'growth-new-account-launch-progress-v1';
   const LAUNCH_ORDERS_CACHE_KEY = 'growth-launch-orders-cache-v1';
-  const state = {experiments:[],activeExperiment:'',workBucket:'action_required',taskSearch:'',detail:null,postKeys:{},createStep:1,createSource:'recommendation',workspaceReturn:null};
+  const state = {experiments:[],activeExperiment:'',workBucket:'action_required',taskSearch:'',detail:null,postKeys:{},createStep:1,createSource:'recommendation',workspaceReturn:null,coverageScope:new Set()};
 
   function esc(value) {
     return String(value == null ? '' : value).replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
@@ -91,19 +91,22 @@
     const recommendationPanel = document.getElementById('adDailyRecommendationPanel');
     if (!recommendationPanel || document.getElementById('growthWorkspacePanel')) return;
     installStyles();
-    const actions = recommendationPanel.querySelector('.ad-report-actions') || recommendationPanel.querySelector('.ad-panel-head');
-    const entry = document.createElement('button');
-    entry.type = 'button';
-    entry.id = 'growthWorkspaceEntry';
-    entry.className = 'growth-entry';
-    entry.innerHTML = '广告任务 <span id="growthWorkspaceCount" aria-label="待处理任务">0</span><span id="growthLaunchProgressBadge" hidden></span>';
-    entry.addEventListener('click', () => openLaunchWorkspace({taskView:'orders'}));
-    actions.appendChild(entry);
+    const embeddedMount = document.getElementById('adGleTaskWorkbenchMount');
+    if (!embeddedMount) {
+      const actions = recommendationPanel.querySelector('.ad-report-actions') || recommendationPanel.querySelector('.ad-panel-head');
+      const entry = document.createElement('button');
+      entry.type = 'button';
+      entry.id = 'growthWorkspaceEntry';
+      entry.className = 'growth-entry';
+      entry.innerHTML = '广告任务 <span id="growthWorkspaceCount" aria-label="待处理任务">0</span><span id="growthLaunchProgressBadge" hidden></span>';
+      entry.addEventListener('click', () => openLaunchWorkspace({taskView:'orders'}));
+      actions.appendChild(entry);
+    }
 
     const panel = document.createElement('section');
     panel.id = 'growthWorkspacePanel';
-    panel.className = 'growth-layer';
-    panel.hidden = true;
+    panel.className = embeddedMount ? 'growth-layer growth-layer-embedded' : 'growth-layer';
+    panel.hidden = !embeddedMount;
     panel.innerHTML = `
       <div class="growth-backdrop" data-growth-close aria-hidden="true"></div>
       <aside class="growth-drawer" role="dialog" aria-modal="true" aria-label="广告任务详情">
@@ -114,7 +117,7 @@
         <main id="growthDetail" class="growth-detail"><div class="growth-empty"><div><b>正在读取实验</b></div></div></main>
       </aside>
       <section id="growthModal" class="growth-modal-layer" hidden></section>`;
-    document.body.appendChild(panel);
+    (embeddedMount || document.body).appendChild(panel);
     const launchPanel = document.createElement('section');
     launchPanel.id = 'growthLaunchPanel';
     launchPanel.className = 'growth-launch-layer';
@@ -134,12 +137,18 @@
     panel.querySelector('#growthAuditAll').addEventListener('click', () => { state.workBucket='all';state.activeExperiment='';renderQueueTabs();renderExperimentQueue(); });
     panel.querySelector('#growthTaskSearch').addEventListener('input', event => { state.taskSearch=event.target.value.trim();state.activeExperiment='';renderExperimentQueue(); });
     window.addEventListener('creative-pro-workbench-updated', event => syncLaunchProgress(event.detail || {}));
+    window.addEventListener('gle-coverage-scope-updated', event => setCoverageScope(event.detail?.experimentIds || []).catch(error => console.error('growth_coverage_scope_failed', error)));
     document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;const launch=document.getElementById('growthLaunchPanel');if(launch&&!launch.hidden){closeLaunchWorkspace();return;}const workspace=document.getElementById('growthWorkspacePanel');if(workspace&&!workspace.hidden)closeWorkspace();});
     restoreLaunchProgress();
     restoreLaunchOrdersCache();
     updateLaunchProgressBadge();
     loadLaunchOrders({badgeOnly:true});
     loadUnifiedTaskIndex();
+    if (embeddedMount) {
+      let initialIds=[];
+      try { initialIds = JSON.parse(embeddedMount.dataset.experimentIds || '[]'); } catch (_) { initialIds=[]; }
+      if (Array.isArray(initialIds) && (initialIds.length || embeddedMount.dataset.scopeReady === '1')) setCoverageScope(initialIds).catch(error => console.error('growth_coverage_initial_scope_failed', error));
+    }
   }
 
   function installStyles() {
@@ -250,6 +259,21 @@
       @media(max-width:560px){.growth-target-summary{grid-template-columns:1fr}.growth-target-detail{grid-template-columns:72px minmax(0,1fr) auto;gap:8px}.growth-page-repair-identity label{grid-template-columns:1fr;gap:4px}.growth-target-modal .growth-modal-foot{align-items:stretch;flex-direction:column-reverse;padding:12px 20px}.growth-target-modal .growth-modal-foot button{width:100%}}
     `;
     document.head.appendChild(integratedShell);
+    const embeddedShell = document.createElement('style');
+    embeddedShell.textContent = `
+      .growth-layer-embedded{position:relative;inset:auto;z-index:1;height:520px;min-height:420px;overflow:hidden;border:1px solid #dfe5ee;border-radius:8px;background:#fff}
+      .growth-layer-embedded[hidden]{display:none}.growth-layer-embedded .growth-backdrop{display:none}
+      .growth-layer-embedded .growth-drawer{position:relative;inset:auto;width:100%;height:100%;border:0;box-shadow:none}
+      .growth-layer-embedded .growth-drawer-head{min-height:58px;padding:0 16px;grid-template-columns:36px minmax(0,1fr) 0}
+      .growth-layer-embedded .growth-drawer-head>.growth-icon-button{display:none!important}
+      .growth-layer-embedded .growth-queue-tabs{padding:6px 16px 0}
+      .growth-layer-embedded .growth-workbar{min-height:54px;padding:8px 16px}
+      .growth-layer-embedded .growth-detail{padding:18px 20px 22px}
+      .growth-layer-embedded .growth-empty{min-height:210px}
+      .growth-layer-embedded .growth-modal-layer{position:absolute}
+      @media(max-width:720px){.growth-layer-embedded{height:600px}.growth-layer-embedded .growth-detail{padding:14px 12px 18px}}
+    `;
+    document.head.appendChild(embeddedShell);
   }
 
   function setWorkspaceReturn(target) {
@@ -258,18 +282,65 @@
     if (back) back.hidden = !state.workspaceReturn;
   }
 
+  function isEmbeddedWorkspace() {
+    return document.getElementById('growthWorkspacePanel')?.classList.contains('growth-layer-embedded') === true;
+  }
+
+  function scopedExperiments() {
+    if (!isEmbeddedWorkspace()) return state.experiments;
+    return state.experiments.filter(item => state.coverageScope.has(String(item.experiment_id || '')));
+  }
+
+  function preferredCoverageBucket(items) {
+    const buckets = items.map(item => String((item.workflow || {}).bucket || 'action_required'));
+    return ['action_required', 'exception', 'system_work', 'observing', 'completed'].find(bucket => buckets.includes(bucket)) || 'action_required';
+  }
+
+  async function setCoverageScope(experimentIds, seedItems=[]) {
+    state.coverageScope = new Set((Array.isArray(experimentIds) ? experimentIds : []).map(value => String(value || '').trim()).filter(Boolean));
+    state.activeExperiment = state.coverageScope.has(state.activeExperiment) ? state.activeExperiment : '';
+    const mount = document.getElementById('adGleTaskWorkbenchMount');
+    if (mount) mount.dataset.experimentIds = JSON.stringify([...state.coverageScope]);
+    const normalizedSeeds=(Array.isArray(seedItems)?seedItems:[]).filter(item=>state.coverageScope.has(String(item?.experiment_id||'')));
+    if(normalizedSeeds.length===state.coverageScope.size){
+      state.experiments=normalizedSeeds;
+      const items=scopedExperiments();
+      state.workBucket=preferredCoverageBucket(items);
+      renderQueueTabs();
+      renderExperimentQueue();
+      return;
+    }
+    await loadList({silent:false, coverageScope:true});
+    const items = scopedExperiments();
+    if (!state.activeExperiment && !items.some(item => String((item.workflow || {}).bucket || 'action_required') === state.workBucket)) {
+      state.workBucket = preferredCoverageBucket(items);
+      renderQueueTabs();
+      renderExperimentQueue();
+    }
+  }
+
   function openWorkspace(experimentId, options={}) {
     const panel = document.getElementById('growthWorkspacePanel');
     if (options.resetReturn) setWorkspaceReturn(null);
     if (options.returnTarget) setWorkspaceReturn(options.returnTarget);
     panel.hidden = false;
-    document.body.style.overflow = 'hidden';
+    if (!isEmbeddedWorkspace()) document.body.style.overflow = 'hidden';
     loadList({select:experimentId});
+    if (isEmbeddedWorkspace()) panel.scrollIntoView({behavior:'smooth',block:'start'});
   }
 
   function backWorkspace() {
     const target = state.workspaceReturn;
     if (!target) return;
+    if (target.kind === 'embeddedQueue') {
+      state.activeExperiment = '';
+      state.detail = null;
+      setWorkspaceReturn(null);
+      renderQueueTabs();
+      renderExperimentQueue();
+      document.getElementById('growthWorkspacePanel')?.scrollIntoView({behavior:'smooth',block:'start'});
+      return;
+    }
     if (target.kind === 'taskHome') {
       closeWorkspace({preserveBodyLock:true});
       openLaunchWorkspace({taskView:String(target.taskView||'action_required')});
@@ -287,6 +358,15 @@
 
   function closeWorkspace(options={}) {
     const panel = document.getElementById('growthWorkspacePanel');
+    if (isEmbeddedWorkspace()) {
+      state.activeExperiment = '';
+      state.detail = null;
+      closeModal();
+      setWorkspaceReturn(null);
+      renderQueueTabs();
+      renderExperimentQueue();
+      return;
+    }
     panel.hidden = true;
     closeModal();
     setWorkspaceReturn(null);
@@ -1440,14 +1520,16 @@
     const detail = document.getElementById('growthDetail');
     if (detail && !options?.silent) detail.innerHTML = '<div class="growth-empty"><div><b>正在读取实验</b></div></div>';
     try {
-      const payload = await api('/api/ops/ad-data-dashboard/experiments?limit=200');
+      const payload = isEmbeddedWorkspace()
+        ? {items:await Promise.all([...state.coverageScope].map(async id=>{const item=await api(`/api/ops/ad-data-dashboard/experiments/${encodeURIComponent(id)}`);return {...(item.experiment||{}),workflow:item.workflow||item.experiment?.workflow||{}};}))}
+        : await api('/api/ops/ad-data-dashboard/experiments?limit=200');
       state.experiments = payload.items || [];
       const count = document.getElementById('growthWorkspaceCount');
       if (count) count.textContent = String(state.experiments.filter(item=>String((item.workflow||{}).bucket||'action_required')==='action_required').length);
-      const selectedItem=options?.select?state.experiments.find(item=>item.experiment_id===options.select):null;
+      const selectedItem=options?.select?scopedExperiments().find(item=>item.experiment_id===options.select):null;
       if(selectedItem)state.workBucket=String((selectedItem.workflow||{}).bucket||'action_required');
       renderQueueTabs();
-      const desired = options?.select || (state.experiments.some(item=>item.experiment_id===state.activeExperiment)?state.activeExperiment:'');
+      const desired = selectedItem?.experiment_id || (scopedExperiments().some(item=>item.experiment_id===state.activeExperiment)?state.activeExperiment:'');
       if (desired) await openAdExperiment(desired);
       else renderExperimentQueue();
     } catch (error) {
@@ -1457,7 +1539,8 @@
 
   function filteredExperiments() {
     const query=state.taskSearch.toLowerCase();
-    const bucketed=state.workBucket==='all'?state.experiments:state.experiments.filter(item=>String((item.workflow||{}).bucket||'action_required')===state.workBucket);
+    const scoped=scopedExperiments();
+    const bucketed=state.workBucket==='all'?scoped:scoped.filter(item=>String((item.workflow||{}).bucket||'action_required')===state.workBucket);
     return bucketed.filter(item=>!query||`${experimentTitle(item)} ${(item.workflow||{}).current_action||''} ${item.country||''} ${statusLabel(item.state)}`.toLowerCase().includes(query)).sort((left,right)=>taskPriority(left)-taskPriority(right)||String(right.updated_at||'').localeCompare(String(left.updated_at||'')));
   }
 
@@ -1473,7 +1556,7 @@
 
   function renderQueueTabs() {
     const counts={action_required:0,system_work:0,observing:0,exception:0,completed:0};
-    state.experiments.forEach(item=>{const key=String((item.workflow||{}).bucket||'action_required');counts[key]=(counts[key]||0)+1;});
+    scopedExperiments().forEach(item=>{const key=String((item.workflow||{}).bucket||'action_required');counts[key]=(counts[key]||0)+1;});
     document.querySelectorAll('[data-growth-bucket]').forEach(button=>{const key=button.dataset.growthBucket||'action_required';button.classList.toggle('is-active',key===state.workBucket);const badge=button.querySelector('span');if(badge)badge.textContent=String(counts[key]||0);});
     const audit=document.getElementById('growthAuditAll');if(audit)audit.classList.toggle('is-active',state.workBucket==='all');
   }
@@ -1494,8 +1577,8 @@
     node.innerHTML=`<section class="growth-queue-head"><div><h2>${esc(config[0])}</h2><p>${esc(config[1])}</p></div>${items.length>visible.length?`<span class="growth-queue-limit">显示最近 ${visible.length} 条 · 可搜索</span>`:''}</section><div class="growth-task-list">${taskGroupsHtml(visible)}</div>`;
     node.querySelectorAll('[data-growth-task]').forEach(button=>button.addEventListener('click',()=>openAdExperiment(button.dataset.growthTask)));
     node.querySelectorAll('[data-growth-order-incident-plan]').forEach(button=>button.addEventListener('click',()=>openLaunchBatchWorkflow(String(button.dataset.growthOrderIncidentPlan||''))));
-    const drawerTitle=document.getElementById('growthDrawerTitle');if(drawerTitle)drawerTitle.textContent='广告优化待办';
-    const drawerContext=document.getElementById('growthDrawerContext');if(drawerContext)drawerContext.textContent='系统分析广告表现，你只处理需要确认的事项';
+    const drawerTitle=document.getElementById('growthDrawerTitle');if(drawerTitle)drawerTitle.textContent=isEmbeddedWorkspace()?'覆盖广告任务':'广告优化待办';
+    const drawerContext=document.getElementById('growthDrawerContext');if(drawerContext)drawerContext.textContent=isEmbeddedWorkspace()?'只显示与上方广告覆盖精确绑定的任务':'系统分析广告表现，你只处理需要确认的事项';
   }
 
   function taskGroupsHtml(items) {
@@ -1588,6 +1671,7 @@
 
   async function openAdExperiment(id) {
     state.activeExperiment = id;
+    if(isEmbeddedWorkspace()&&!state.workspaceReturn)setWorkspaceReturn({kind:'embeddedQueue'});
     const node = document.getElementById('growthDetail');
     const previous=state.detail?.experiment?.experiment_id===id?state.detail:null;
     if(!previous)node.innerHTML = '<div class="growth-empty"><div><b>正在读取广告任务</b></div></div>';
@@ -2325,5 +2409,5 @@
   async function openExperiment(id) { openWorkspace(id); }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install); else install();
-  window.GrowthWorkspace = {openEpisode,openKnowledge,openExperiment,openAdExperiment,acceptRecommendation,refresh:loadList,open:openWorkspace,openTasks:openLaunchWorkspace};
+  window.GrowthWorkspace = {openEpisode,openKnowledge,openExperiment,openAdExperiment,acceptRecommendation,refresh:loadList,open:openWorkspace,openTasks:openLaunchWorkspace,setCoverageScope};
 })();
