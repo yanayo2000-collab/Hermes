@@ -107,7 +107,14 @@
     panel.id = 'growthWorkspacePanel';
     panel.className = embeddedMount ? 'growth-layer growth-layer-embedded' : 'growth-layer';
     panel.hidden = !embeddedMount;
-    panel.innerHTML = `
+    panel.innerHTML = embeddedMount ? `
+      <aside class="growth-drawer" role="region" aria-label="覆盖广告关联任务">
+        <header class="growth-drawer-head growth-embedded-head"><button type="button" class="growth-back-button growth-nav-back" data-growth-back aria-label="返回关联任务" hidden>←</button><div><span id="growthDrawerTitle">关联任务</span><small id="growthDrawerContext">只显示与覆盖广告精确绑定的任务</small></div><button type="button" class="growth-embedded-refresh" id="growthRefresh">刷新</button></header>
+        <nav class="growth-queue-tabs" aria-label="关联任务分类"><button type="button" class="is-active" data-growth-bucket="action_required">待确认 <span>0</span></button><button type="button" data-growth-bucket="system_work">AI 处理中 <span>0</span></button><button type="button" data-growth-bucket="exception">异常 <span>0</span></button><button type="button" data-growth-bucket="observing">观察中 <span>0</span></button></nav>
+        <div id="growthToolbarStatus" class="growth-notice" hidden></div>
+        <main id="growthDetail" class="growth-detail"><div class="growth-empty"><div><b>正在读取关联任务</b><span>任务会自动按当前覆盖范围筛选</span></div></div></main>
+      </aside>
+      <section id="growthModal" class="growth-modal-layer" hidden></section>` : `
       <div class="growth-backdrop" data-growth-close aria-hidden="true"></div>
       <aside class="growth-drawer" role="dialog" aria-modal="true" aria-label="广告任务详情">
         <header class="growth-drawer-head"><button type="button" class="growth-back-button growth-nav-back" data-growth-back aria-label="返回上一步" hidden>←</button><div><span id="growthDrawerTitle">广告任务</span><small id="growthDrawerContext">查看任务详情与下一步</small></div><button type="button" class="growth-icon-button" data-growth-close aria-label="关闭">×</button></header>
@@ -117,7 +124,8 @@
         <main id="growthDetail" class="growth-detail"><div class="growth-empty"><div><b>正在读取实验</b></div></div></main>
       </aside>
       <section id="growthModal" class="growth-modal-layer" hidden></section>`;
-    (embeddedMount || document.body).appendChild(panel);
+    if (embeddedMount) embeddedMount.replaceChildren(panel);
+    else document.body.appendChild(panel);
     const launchPanel = document.createElement('section');
     launchPanel.id = 'growthLaunchPanel';
     launchPanel.className = 'growth-launch-layer';
@@ -130,12 +138,12 @@
       openLaunchActivationConfirmation(button);
     });
     panel.querySelectorAll('[data-growth-close]').forEach(button => button.addEventListener('click', closeWorkspace));
-    panel.querySelector('[data-growth-back]').addEventListener('click', backWorkspace);
-    panel.querySelector('#growthRefresh').addEventListener('click', loadList);
+    panel.querySelector('[data-growth-back]')?.addEventListener('click', backWorkspace);
+    panel.querySelector('#growthRefresh')?.addEventListener('click', loadList);
     panel.querySelector('#growthCreateExperiment')?.addEventListener('click', openCreateFlow);
     panel.querySelectorAll('[data-growth-bucket]').forEach(button => button.addEventListener('click', () => { state.workBucket=button.dataset.growthBucket||'action_required';state.activeExperiment='';renderQueueTabs();renderExperimentQueue(); }));
-    panel.querySelector('#growthAuditAll').addEventListener('click', () => { state.workBucket='all';state.activeExperiment='';renderQueueTabs();renderExperimentQueue(); });
-    panel.querySelector('#growthTaskSearch').addEventListener('input', event => { state.taskSearch=event.target.value.trim();state.activeExperiment='';renderExperimentQueue(); });
+    panel.querySelector('#growthAuditAll')?.addEventListener('click', () => { state.workBucket='all';state.activeExperiment='';renderQueueTabs();renderExperimentQueue(); });
+    panel.querySelector('#growthTaskSearch')?.addEventListener('input', event => { state.taskSearch=event.target.value.trim();state.activeExperiment='';renderExperimentQueue(); });
     window.addEventListener('creative-pro-workbench-updated', event => syncLaunchProgress(event.detail || {}));
     window.addEventListener('gle-coverage-scope-updated', event => setCoverageScope(event.detail?.experimentIds || []).catch(error => console.error('growth_coverage_scope_failed', error)));
     document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;const launch=document.getElementById('growthLaunchPanel');if(launch&&!launch.hidden){closeLaunchWorkspace();return;}const workspace=document.getElementById('growthWorkspacePanel');if(workspace&&!workspace.hidden)closeWorkspace();});
@@ -261,17 +269,46 @@
     document.head.appendChild(integratedShell);
     const embeddedShell = document.createElement('style');
     embeddedShell.textContent = `
-      .growth-layer-embedded{position:relative;inset:auto;z-index:1;height:520px;min-height:420px;overflow:hidden;border:1px solid #dfe5ee;border-radius:8px;background:#fff}
+      .growth-layer-embedded{position:relative;inset:auto;z-index:1;height:auto;min-height:0;overflow:hidden;border:1px solid #dfe5ee;border-radius:10px;background:#fff}
       .growth-layer-embedded[hidden]{display:none}.growth-layer-embedded .growth-backdrop{display:none}
       .growth-layer-embedded .growth-drawer{position:relative;inset:auto;width:100%;height:100%;border:0;box-shadow:none}
-      .growth-layer-embedded .growth-drawer-head{min-height:58px;padding:0 16px;grid-template-columns:36px minmax(0,1fr) 0}
+      .growth-layer-embedded .growth-drawer-head{min-height:58px;padding:0 14px;background:#fbfcfe}
+      #growthWorkspacePanel.growth-layer-embedded:not(.is-detail-open) .growth-embedded-head{grid-template-columns:minmax(0,1fr) auto}
+      #growthWorkspacePanel.growth-layer-embedded:not(.is-detail-open) .growth-embedded-head>.growth-nav-back[hidden]{display:none!important}
+      #growthWorkspacePanel.growth-layer-embedded:not(.is-detail-open) .growth-embedded-head>div{grid-column:1!important}
+      #growthWorkspacePanel.growth-layer-embedded:not(.is-detail-open) .growth-embedded-refresh{grid-column:2!important}
+      #growthWorkspacePanel.growth-layer-embedded.is-detail-open .growth-embedded-head{grid-template-columns:32px minmax(0,1fr)}
+      #growthWorkspacePanel.growth-layer-embedded.is-detail-open .growth-embedded-head>div{grid-column:2!important}
+      #growthWorkspacePanel.growth-layer-embedded.is-detail-open .growth-embedded-refresh{display:none!important}
       .growth-layer-embedded .growth-drawer-head>.growth-icon-button{display:none!important}
-      .growth-layer-embedded .growth-queue-tabs{padding:6px 16px 0}
-      .growth-layer-embedded .growth-workbar{min-height:54px;padding:8px 16px}
-      .growth-layer-embedded .growth-detail{padding:18px 20px 22px}
-      .growth-layer-embedded .growth-empty{min-height:210px}
+      #growthWorkspacePanel .growth-embedded-refresh{min-height:32px!important;padding:0 10px!important;border-color:#d7deea!important;background:#fff!important;color:#475467!important;font-size:11px!important}
+      #growthWorkspacePanel .growth-embedded-refresh:hover{border-color:#98a2b3!important;background:#f8fafc!important}
+      .growth-layer-embedded .growth-queue-tabs{grid-template-columns:repeat(4,max-content);gap:5px;overflow:auto;padding:8px 10px;border-bottom:1px solid var(--line);background:#fff}
+      #growthWorkspacePanel.growth-layer-embedded .growth-queue-tabs button{min-height:30px!important;padding:0 9px!important;border:1px solid transparent!important;border-radius:999px!important;background:#f4f6f9!important;color:#667085!important;font-size:11px!important}
+      #growthWorkspacePanel.growth-layer-embedded .growth-queue-tabs button.is-active{border-color:#cad6ee!important;background:#eef3ff!important;color:#315fd8!important}
+      .growth-layer-embedded .growth-queue-tabs span{min-width:16px;height:16px;margin-left:3px;padding:0 4px;background:#fff;font-size:9px}
+      .growth-layer-embedded .growth-detail{flex:0 0 auto;overflow:visible;padding:12px}
+      .growth-layer-embedded .growth-empty{min-height:156px;padding:18px}
+      .growth-layer-embedded .growth-queue-head{align-items:center;margin:0 0 10px;padding:0 2px}
+      .growth-layer-embedded .growth-queue-head h2{margin:0 0 2px;font-size:14px}
+      .growth-layer-embedded .growth-queue-head p{font-size:11px;line-height:1.4}
+      .growth-layer-embedded .growth-task-list{gap:8px}
+      .growth-layer-embedded .growth-task-group{border-radius:8px}
+      .growth-layer-embedded .growth-task-group>header{padding:9px 10px}
+      .growth-layer-embedded .growth-task-group>header b{font-size:12px}
+      .growth-layer-embedded .growth-task-group-row{min-height:52px!important;padding:0 10px!important;grid-template-columns:minmax(0,1fr) 15px;gap:7px}
+      .growth-layer-embedded .growth-task-group-row>span{display:none}
+      .growth-layer-embedded .growth-task-group-copy strong{font-size:12px}
+      .growth-layer-embedded .growth-task-group-copy small{font-size:10px}
+      .growth-layer-embedded .growth-task-card{min-height:68px!important;padding:11px 12px!important;gap:10px}
+      .growth-layer-embedded .growth-task-card strong{font-size:12px}
+      .growth-layer-embedded .growth-task-card p{font-size:11px}
+      .growth-layer-embedded .growth-task-meta{margin-top:5px}
+      .growth-layer-embedded .growth-task-next{max-width:110px;font-size:10px}
+      .growth-layer-embedded.is-detail-open{min-height:560px}
+      .growth-layer-embedded.is-detail-open .growth-detail{flex:1 1 auto;overflow:auto;padding:20px 22px 24px}
       .growth-layer-embedded .growth-modal-layer{position:absolute}
-      @media(max-width:720px){.growth-layer-embedded{height:600px}.growth-layer-embedded .growth-detail{padding:14px 12px 18px}}
+      @media(max-width:720px){.growth-layer-embedded .growth-queue-tabs{grid-template-columns:repeat(4,max-content)}.growth-layer-embedded.is-detail-open{min-height:620px}.growth-layer-embedded.is-detail-open .growth-detail{padding:14px 12px 18px}}
     `;
     document.head.appendChild(embeddedShell);
   }
@@ -1577,8 +1614,8 @@
     node.innerHTML=`<section class="growth-queue-head"><div><h2>${esc(config[0])}</h2><p>${esc(config[1])}</p></div>${items.length>visible.length?`<span class="growth-queue-limit">显示最近 ${visible.length} 条 · 可搜索</span>`:''}</section><div class="growth-task-list">${taskGroupsHtml(visible)}</div>`;
     node.querySelectorAll('[data-growth-task]').forEach(button=>button.addEventListener('click',()=>openAdExperiment(button.dataset.growthTask)));
     node.querySelectorAll('[data-growth-order-incident-plan]').forEach(button=>button.addEventListener('click',()=>openLaunchBatchWorkflow(String(button.dataset.growthOrderIncidentPlan||''))));
-    const drawerTitle=document.getElementById('growthDrawerTitle');if(drawerTitle)drawerTitle.textContent=isEmbeddedWorkspace()?'覆盖广告任务':'广告优化待办';
-    const drawerContext=document.getElementById('growthDrawerContext');if(drawerContext)drawerContext.textContent=isEmbeddedWorkspace()?'只显示与上方广告覆盖精确绑定的任务':'系统分析广告表现，你只处理需要确认的事项';
+    const drawerTitle=document.getElementById('growthDrawerTitle');if(drawerTitle)drawerTitle.textContent=isEmbeddedWorkspace()?'关联任务':'广告优化待办';
+    const drawerContext=document.getElementById('growthDrawerContext');if(drawerContext)drawerContext.textContent=isEmbeddedWorkspace()?`${scopedExperiments().length} 项与覆盖广告精确绑定 · 点击查看判断依据和下一步`:'系统分析广告表现，你只处理需要确认的事项';
   }
 
   function taskGroupsHtml(items) {
@@ -1619,6 +1656,10 @@
   function setWorkspaceDetailMode(active) {
     document.querySelector('#growthWorkspacePanel .growth-queue-tabs')?.toggleAttribute('hidden',Boolean(active));
     document.querySelector('#growthWorkspacePanel .growth-workbar')?.toggleAttribute('hidden',Boolean(active));
+    const panel=document.getElementById('growthWorkspacePanel');
+    if(panel&&isEmbeddedWorkspace())panel.classList.toggle('is-detail-open',Boolean(active));
+    const mount=document.getElementById('adGleTaskWorkbenchMount');
+    if(mount)mount.closest('.ad-gle-operations-grid')?.classList.toggle('is-task-detail',Boolean(active));
   }
 
   function experimentTitle(experiment) {

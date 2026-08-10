@@ -214,8 +214,10 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert "在投待数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "定位经营数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleTaskWorkbenchMount"' in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "覆盖广告任务工作台" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "在上方查看任务" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'class="ad-gle-operations-grid"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "覆盖广告任务工作台" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "查看关联任务" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "核对 ${activeWaiting} 条在投广告的精确数据归属" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adOpenGleRecommendations"' not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "关键归因数据未收齐" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "不声称因果赢家" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -247,6 +249,8 @@ def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -
     assert "观察中" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-filterbar button:focus-visible" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-panel{padding:16px}" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert ".ad-gle-operations-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(340px,.65fr)" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert ".ad-gle-operations-grid.is-task-detail .ad-gle-coverage-main{display:none}" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-account-table-head{min-height:36px" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-chip{display:inline-flex;align-items:center;min-height:24px" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-account-open,.ad-gle-row-action{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:34px" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -266,7 +270,16 @@ def test_dashboard_coverage_opens_the_existing_governed_task_flow() -> None:
     assert "coverageScope:new Set()" in workspace_js
     assert "scopedExperiments()" in workspace_js
     assert "growth-layer growth-layer-embedded" in workspace_js
-    assert "(embeddedMount || document.body).appendChild(panel)" in workspace_js
+    assert 'role="region" aria-label="覆盖广告关联任务"' in workspace_js
+    assert "growth-embedded-refresh" in workspace_js
+    assert "growth-layer-embedded.is-detail-open" in workspace_js
+    assert "classList.toggle('is-task-detail',Boolean(active))" in workspace_js
+    assert 'id="growthTaskSearch"' not in workspace_js[
+        workspace_js.index("panel.innerHTML = embeddedMount ?"):
+        workspace_js.index(" : `\n      <div class=\"growth-backdrop\"")
+    ]
+    assert "if (embeddedMount) embeddedMount.replaceChildren(panel);" in workspace_js
+    assert "else document.body.appendChild(panel);" in workspace_js
     assert "if (!embeddedMount)" in workspace_js
     assert "openExperiment(id)" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "覆盖区本身不写 Meta" in AD_DATA_DASHBOARD_PAGE_HTML
