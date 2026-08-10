@@ -2325,5 +2325,5 @@
   async function openExperiment(id) { openWorkspace(id); }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install); else install();
-  window.GrowthWorkspace = {openEpisode,openKnowledge,openExperiment,openAdExperiment,acceptRecommendation,refresh:loadList,open:openWorkspace};
+  window.GrowthWorkspace = {openEpisode,openKnowledge,openExperiment,openAdExperiment,acceptRecommendation,refresh:loadList,open:openWorkspace,openTasks:openLaunchWorkspace};
 })();

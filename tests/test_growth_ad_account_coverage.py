@@ -212,11 +212,11 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert 'id="adGleCoverageReadiness"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleCoverageFilters"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "在投待数据" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "定位 Meta 明细" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "查看经营建议" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "关键归因数据还没收齐" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "暂时不能判断哪项调整真正带来了效果" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "不会自动停投、扩量或修改 Meta 广告" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "定位经营数据" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "打开广告任务" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "关键归因数据未收齐" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "不声称因果赢家" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "覆盖区本身不写 Meta" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "Gate0=QUASI_ONLY" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "Gate1=NOT_READY" not in AD_DATA_DASHBOARD_PAGE_HTML
 
@@ -229,6 +229,14 @@ def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -
     assert "focusGleAdInDashboard" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "setPlatformCollapsed('Meta',false,{manual:true})" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "loadDashboard({preserveDailyReport:true,skipDailyReport:true})" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "/api/ops/ad-data-dashboard/experiments?limit=200" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "currentGleTaskByExperiment" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "data-gle-open-task" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "openGleExperimentTask" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "openGleTaskHome" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "需你处理" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "AI 处理中" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "观察中" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-filterbar button:focus-visible" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-panel{padding:16px}" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-account-table-head{min-height:36px" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -238,6 +246,18 @@ def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -
         AD_DATA_DASHBOARD_PAGE_HTML.index('id="adGleCoveragePanel"'):
         AD_DATA_DASHBOARD_PAGE_HTML.index('id="adDailyRecommendationPanel"')
     ]
+
+
+def test_dashboard_coverage_opens_the_existing_governed_task_flow() -> None:
+    workspace_js = (
+        Path(__file__).resolve().parents[1] / "app/static/ops/growth-workspace.js"
+    ).read_text(encoding="utf-8")
+
+    assert "openTasks:openLaunchWorkspace" in workspace_js
+    assert "openExperiment(id)" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "taskView:'pending'" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "覆盖区不直接写 Meta" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "复核计划并明确确认" in AD_DATA_DASHBOARD_PAGE_HTML
 
 
 def test_readonly_api_returns_the_exact_five_account_scope(tmp_path: Path) -> None:
