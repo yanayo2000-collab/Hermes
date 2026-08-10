@@ -165,10 +165,11 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert "在投待数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "定位 Meta 明细" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看经营建议" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "Gate0=QUASI_ONLY" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "Gate1=NOT_READY" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "不会自动写 Meta" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "不生成因果赢家" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "关键归因数据还没收齐" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "暂时不能判断哪项调整真正带来了效果" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "不会自动停投、扩量或修改 Meta 广告" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "Gate0=QUASI_ONLY" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "Gate1=NOT_READY" not in AD_DATA_DASHBOARD_PAGE_HTML
 
 
 def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -> None:
