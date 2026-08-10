@@ -8304,22 +8304,70 @@ AD_DATA_DASHBOARD_PAGE_HTML = """
     .ad-reco-card{border:1px solid #edf1f5;border-radius:8px;background:#fafbfc;padding:10px;min-height:64px}
     .ad-reco-card strong{display:block;margin-top:5px;color:#101828;font-size:19px;line-height:1}
     .ad-reco-card span{color:#667085;font-size:12px;font-weight:720}
-    .ad-gle-coverage-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px;margin-top:10px}
-    .ad-gle-account{border:1px solid #e6ebf2;border-radius:9px;background:#fff;overflow:hidden}
-    .ad-gle-account summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;cursor:pointer;list-style:none}
+    .ad-gle-panel{padding:16px}
+    .ad-gle-panel-head{align-items:flex-start;margin-bottom:12px}
+    .ad-gle-title-line{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+    .ad-gle-readonly{display:inline-flex;align-items:center;min-height:24px;padding:3px 8px;border:1px solid var(--ad-line);border-radius:999px;background:var(--ad-soft);color:#475467;font-size:11px;font-weight:780}
+    .ad-gle-summary{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));overflow:hidden;margin-bottom:12px;border:1px solid var(--ad-line);border-radius:8px;background:var(--ad-surface)}
+    .ad-gle-metric{min-width:0;padding:10px 12px}
+    .ad-gle-metric+.ad-gle-metric{border-left:1px solid #edf0f4}
+    .ad-gle-metric span{display:block;color:var(--ad-muted);font-size:12px;font-weight:720}
+    .ad-gle-metric strong{display:block;margin-top:4px;color:#17233d;font-size:20px;line-height:1.1;font-variant-numeric:tabular-nums}
+    .ad-gle-metric.is-safe strong{color:#067647}
+    .ad-gle-metric.is-warning strong{color:#b54708}
+    .ad-gle-readiness{display:grid;grid-template-columns:minmax(210px,.7fr) minmax(260px,1.3fr) auto;align-items:center;gap:16px;margin-bottom:12px;padding:11px 12px;border:1px solid var(--ad-line);border-radius:8px;background:var(--ad-surface-2)}
+    .ad-gle-readiness-copy{display:grid;gap:3px}
+    .ad-gle-readiness-copy small{color:var(--ad-muted);font-size:11px;font-weight:720}
+    .ad-gle-readiness-copy strong{color:var(--ad-text);font-size:15px;line-height:1.3}
+    .ad-gle-readiness-track{height:8px;overflow:hidden;border-radius:999px;background:#f4d7a5}
+    .ad-gle-readiness-track i{display:block;height:100%;border-radius:inherit;background:#17a673}
+    .ad-gle-readiness-detail{margin-top:5px;color:var(--ad-muted);font-size:12px;line-height:1.45}
+    .ad-gle-state-badge{display:inline-flex;align-items:center;min-height:28px;padding:4px 9px;border:1px solid #fed7aa;border-radius:8px;background:var(--ad-amber-soft);color:#92400e;font-size:12px;font-weight:780;white-space:nowrap}
+    .ad-gle-filterbar{display:flex;align-items:center;gap:6px;margin-bottom:10px;overflow:auto;padding-bottom:2px}
+    .ad-gle-filterbar button{flex:0 0 auto;min-height:34px;padding:7px 10px;border:1px solid var(--ad-line-strong);border-radius:8px;background:#fff;color:#475467;font-size:12px;font-weight:760;cursor:pointer}
+    .ad-gle-filterbar button:hover{border-color:#98a2b3;background:#f8fafc}
+    .ad-gle-filterbar button[aria-pressed="true"]{border-color:#17233d;background:#17233d;color:#fff}
+    .ad-gle-filterbar button.is-warning:not([aria-pressed="true"]){border-color:#f3c78f;background:#fff9f0;color:#9a5b00}
+    .ad-gle-filterbar button:focus-visible,.ad-gle-account summary:focus-visible,.ad-gle-row-action:focus-visible,.ad-gle-account-open:focus-visible{outline:3px solid rgba(37,99,235,.22);outline-offset:2px}
+    .ad-gle-coverage-grid{overflow:hidden;border:1px solid var(--ad-line);border-radius:8px;background:#fff}
+    .ad-gle-account-table-head,.ad-gle-account summary{display:grid;grid-template-columns:minmax(220px,1.35fr) 90px 120px minmax(145px,.8fr) 100px;gap:12px;align-items:center}
+    .ad-gle-account-table-head{min-height:36px;padding:0 12px;border-bottom:1px solid #e9edf3;background:#f8fafc;color:var(--ad-muted);font-size:11px;font-weight:820}
+    .ad-gle-account{background:#fff}
+    .ad-gle-account+.ad-gle-account{border-top:1px solid #edf0f4}
+    .ad-gle-account summary{min-height:64px;padding:10px 12px;cursor:pointer;list-style:none}
     .ad-gle-account summary::-webkit-details-marker{display:none}
+    .ad-gle-account summary:hover{background:#fbfcfe}
+    .ad-gle-account[open] summary{background:#f8fafc}
     .ad-gle-account-name{display:grid;gap:2px;min-width:0}
-    .ad-gle-account-name b{font-size:13px;color:#101828;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .ad-gle-account-name span{font-size:11px;color:#667085}
-    .ad-gle-account-counts{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
-    .ad-gle-chip{display:inline-flex;align-items:center;min-height:22px;padding:2px 7px;border-radius:999px;background:#eef4ff;color:#344054;font-size:10px;font-weight:820;white-space:nowrap}
+    .ad-gle-account-name b{color:var(--ad-text);font-size:13px;line-height:1.35;white-space:normal;text-wrap:balance}
+    .ad-gle-account-name span{color:var(--ad-muted);font-size:11px;overflow-wrap:anywhere}
+    .ad-gle-account-stat{display:grid;gap:2px;min-width:0}
+    .ad-gle-account-stat small{color:var(--ad-muted);font-size:11px;font-weight:720}
+    .ad-gle-account-stat strong{color:#344054;font-size:13px;font-variant-numeric:tabular-nums}
+    .ad-gle-account-stat.is-warning strong{color:#b54708}
+    .ad-gle-account-expand{display:flex;align-items:center;justify-content:flex-end;gap:6px;color:#344054;font-size:12px;font-weight:780;white-space:nowrap}
+    .ad-gle-account-expand i{font-style:normal;transition:transform .16s ease}
+    .ad-gle-account[open] .ad-gle-account-expand i{transform:rotate(180deg)}
+    .ad-gle-account-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 12px;border-top:1px solid #e9edf3;border-bottom:1px solid #e9edf3;background:#fbfcfe;color:var(--ad-muted);font-size:12px}
+    .ad-gle-account-open,.ad-gle-row-action{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:34px;padding:7px 10px;border:1px solid var(--ad-line-strong);border-radius:8px;background:#fff;color:#344054;font-size:12px;font-weight:760;cursor:pointer;white-space:nowrap}
+    .ad-gle-account-open:hover,.ad-gle-row-action:hover{border-color:#98a2b3;background:#f8fafc}
+    .ad-gle-chip{display:inline-flex;align-items:center;min-height:24px;padding:3px 8px;border:1px solid var(--ad-line);border-radius:999px;background:var(--ad-soft);color:#344054;font-size:12px;font-weight:720;white-space:nowrap}
     .ad-gle-chip.is-warning{background:#fff4e5;color:#9a5b00}
     .ad-gle-chip.is-safe{background:#ecfdf3;color:#027a48}
-    .ad-gle-ad-list{max-height:320px;overflow:auto;border-top:1px solid #edf2f7}
-    .ad-gle-ad-row{display:grid;grid-template-columns:minmax(160px,1.6fr) minmax(105px,.8fr) minmax(130px,1fr);gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid #f0f2f5;font-size:11px;color:#475467}
+    .ad-gle-ad-list{max-height:360px;overflow:auto}
+    .ad-gle-ad-row{display:grid;grid-template-columns:minmax(190px,1.45fr) minmax(110px,.72fr) minmax(130px,.85fr) minmax(150px,.7fr);gap:10px;align-items:center;min-height:64px;padding:9px 12px;border-bottom:1px solid #f0f2f5;font-size:12px;color:#475467}
     .ad-gle-ad-row:last-child{border-bottom:0}
-    .ad-gle-ad-row b{display:block;color:#101828;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .ad-gle-boundary{margin-top:10px;padding:9px 11px;border-radius:8px;background:#f8fafc;border:1px solid #e2e8f0;color:#475467;font-size:12px;line-height:1.5}
+    .ad-gle-ad-row b{display:block;color:var(--ad-text);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .ad-gle-ad-row small{display:block;margin-top:3px;color:var(--ad-muted);font-size:11px;overflow-wrap:anywhere}
+    .ad-gle-next{display:grid;justify-items:start;gap:3px;color:#475467;font-size:12px}
+    .ad-gle-next.is-waiting{color:#9a5b00;font-weight:760}
+    .ad-gle-empty{padding:22px 14px;color:var(--ad-muted);font-size:12px;text-align:center}
+    .ad-gle-boundary{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:10px;padding:11px 13px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc}
+    .ad-gle-boundary div{display:grid;gap:3px;min-width:0}
+    .ad-gle-boundary strong{color:#344054;font-size:12px}
+    .ad-gle-boundary span{color:var(--ad-muted);font-size:12px;line-height:1.5}
+    @media(max-width:980px){.ad-gle-summary{grid-template-columns:repeat(3,minmax(0,1fr))}.ad-gle-metric:nth-child(4){border-left:0}.ad-gle-metric:nth-child(n+4){border-top:1px solid #edf0f4}.ad-gle-readiness{grid-template-columns:1fr}.ad-gle-state-badge{justify-self:start}.ad-gle-account-table-head,.ad-gle-account summary{grid-template-columns:minmax(190px,1.25fr) 80px 110px minmax(130px,.8fr) 92px}}
+    @media(max-width:720px){.ad-gle-panel-head{display:grid}.ad-gle-panel-head .ad-report-actions{justify-content:flex-start}.ad-gle-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ad-gle-metric:nth-child(3){border-left:0}.ad-gle-metric:nth-child(n+3){border-top:1px solid #edf0f4}.ad-gle-metric:nth-child(4){border-left:1px solid #edf0f4}.ad-gle-account-table-head{display:none}.ad-gle-account summary{grid-template-columns:1fr 1fr;gap:8px 12px;padding:12px}.ad-gle-account-name,.ad-gle-account-expand{grid-column:1/-1}.ad-gle-account-expand{justify-content:flex-start}.ad-gle-account-toolbar{align-items:flex-start;flex-direction:column}.ad-gle-ad-row{grid-template-columns:1fr 1fr}.ad-gle-ad-row>div:first-child,.ad-gle-next{grid-column:1/-1}.ad-gle-boundary{grid-template-columns:1fr}}
     /* detail table contract marker: padding:9px 10px */
     .ad-reco-table-wrap{overflow:auto;border:1px solid var(--ad-line);border-radius:8px;background:#fff}
     .ad-reco-table{width:100%;min-width:820px;border-collapse:separate;border-spacing:0;table-layout:fixed}
@@ -8729,14 +8777,16 @@ AD_DATA_DASHBOARD_PAGE_HTML = """
         <div class="ad-detail-table" id="tiktokDetailTable"></div>
       </article>
     </section>
-    <section class="ad-panel" id="adGleCoveragePanel">
-      <div class="ad-panel-head">
-        <div><h2>GLE 全广告覆盖</h2><span class="ad-filter-summary" id="adGleCoverageMeta">5 个指定广告账户 · 只读监测</span></div>
-        <div class="ad-report-actions"><button type="button" id="adRefreshGleCoverage">重新核对</button></div>
+    <section class="ad-panel ad-gle-panel" id="adGleCoveragePanel">
+      <div class="ad-panel-head ad-gle-panel-head">
+        <div><div class="ad-gle-title-line"><h2>GLE 全广告经营覆盖</h2><span class="ad-gle-readonly">只读</span></div><span class="ad-filter-summary" id="adGleCoverageMeta" aria-live="polite">先看数据就绪度，再下钻账户与广告</span></div>
+        <div class="ad-report-actions"><button type="button" id="adOpenGleRecommendations">查看经营建议</button><button class="primary" type="button" id="adRefreshGleCoverage">刷新覆盖状态</button></div>
       </div>
-      <div class="ad-reco-summary" id="adGleCoverageSummary"></div>
+      <div class="ad-gle-summary" id="adGleCoverageSummary"></div>
+      <div class="ad-gle-readiness" id="adGleCoverageReadiness" aria-live="polite"></div>
+      <div class="ad-gle-filterbar" id="adGleCoverageFilters" role="group" aria-label="筛选 GLE 广告状态"></div>
       <div class="ad-gle-coverage-grid" id="adGleCoverageAccounts"></div>
-      <div class="ad-gle-boundary" id="adGleCoverageBoundary">GLE 覆盖不等于因果实验或自动调广告：单广告进入经营观察，只有绑定精确实验组的广告进入多 Cell 实验视图；Gate 保持 QUASI_ONLY / NOT_READY。</div>
+      <div class="ad-gle-boundary" id="adGleCoverageBoundary"><div><strong>现在能做</strong><span>盘点全广告、识别数据就绪度、下钻经营表现、区分单广告观察与多 Cell 绑定。</span></div><div><strong>还不能做</strong><span>不能据此生成因果赢家，也不会自动停投、扩量或写入 Meta。</span></div></div>
     </section>
     <section class="ad-panel" id="adDailyRecommendationPanel">
       <div class="ad-panel-head">
@@ -9413,40 +9463,53 @@ function attachCreativeSourceToRecommendation(row,assetIndex){const source=creat
 function recoPreviewCell(row,assetIndex){const rowSrc=String(row&&row.creative_preview_url||'').trim();if(rowSrc){const title=String(row&&row.creative_preview_title||row&&row.object_name||row&&row.ad||'素材预览');return `<div class="ad-reco-preview-cell">${creativePreviewImageHtml(rowSrc,title)}</div>`;}const asset=recoPreviewAsset(row,assetIndex);const src=syncedAssetPreviewUrl(asset);if(!src)return '<div class="ad-reco-preview-cell"><span class="ad-reco-preview-empty" title="当前未匹配到可访问的 Meta 素材">暂无预览</span></div>';const title=syncedAssetTitle(asset);return `<div class="ad-reco-preview-cell">${creativePreviewImageHtml(src,title)}</div>`;}
 let currentDailyReport=null;
 let currentGleAdCoverage=null;
-function gleCoverageMetric(label,value,detail=''){return `<article class="ad-reco-card" title="${esc(detail)}"><span>${esc(label)}</span><strong>${esc(String(value))}</strong></article>`;}
+let currentGleCoverageFilter='all';
+function gleCoverageMetric(label,value,detail='',tone=''){return `<article class="ad-gle-metric${tone?` ${tone}`:''}" title="${esc(detail)}"><span>${esc(label)}</span><strong>${esc(String(value))}</strong></article>`;}
 function gleCoverageModeLabel(item){return String(item&&item.coverage_mode||'')==='MULTI_CELL_EXPERIMENT'?'多 Cell 实验':'单广告观察';}
-function gleCoverageStatusLabel(item){if(String(item&&item.monitoring_status||'')==='METRIC_OBSERVATION_AVAILABLE')return'已接入事实';return'等待数据';}
+function gleCoverageStatusLabel(item){if(String(item&&item.monitoring_status||'')==='METRIC_OBSERVATION_AVAILABLE')return'经营数据可读';return'等待数据同步';}
+function gleCoverageItemMatches(item,filter){const active=String(item&&item.effective_status||'')==='ACTIVE';const ready=String(item&&item.monitoring_status||'')==='METRIC_OBSERVATION_AVAILABLE';const multi=String(item&&item.coverage_mode||'')==='MULTI_CELL_EXPERIMENT';if(filter==='active_waiting')return active&&!ready;if(filter==='active_ready')return active&&ready;if(filter==='multi')return multi;if(filter==='single')return!multi;return true;}
+function gleCoverageAllItems(payload){return (payload&&Array.isArray(payload.accounts)?payload.accounts:[]).flatMap(account=>Array.isArray(account.items)?account.items:[]);}
+function gleCoverageFilterDefinitions(payload){const items=gleCoverageAllItems(payload);const count=filter=>items.filter(item=>gleCoverageItemMatches(item,filter)).length;return [['all','全部广告',items.length],['active_waiting','在投待数据',count('active_waiting')],['active_ready','在投可读',count('active_ready')],['multi','多 Cell',count('multi')],['single','单广告观察',count('single')]];}
+function renderGleCoverageFilters(payload){const node=document.getElementById('adGleCoverageFilters');if(!node)return;node.innerHTML=gleCoverageFilterDefinitions(payload).map(([key,label,count])=>`<button type="button" data-gle-coverage-filter="${esc(key)}" aria-pressed="${key===currentGleCoverageFilter?'true':'false'}" class="${key==='active_waiting'?'is-warning':''}">${esc(label)} · ${esc(count)}</button>`).join('');node.querySelectorAll('[data-gle-coverage-filter]').forEach(button=>button.addEventListener('click',()=>{currentGleCoverageFilter=button.getAttribute('data-gle-coverage-filter')||'all';renderGleAdCoverage(currentGleAdCoverage);}));}
+async function focusGleAdInDashboard(accountName,adName,button){const original=button&&button.textContent||'';try{if(button){button.disabled=true;button.textContent='定位中…';}setMultiOptions('metaAccountFilter',rowsForDropdown('metaAccountFilter'),accountName?[accountName]:[]);setMultiOptions('metaAdFilter',rowsForDropdown('metaAdFilter'),adName?[adName]:[]);setPlatformCollapsed('Meta',false,{manual:true});await loadDashboard({preserveDailyReport:true,skipDailyReport:true});document.querySelector('[data-platform="Meta"]')?.scrollIntoView({behavior:'smooth',block:'start'});}finally{if(button){button.disabled=false;button.textContent=original;}}}
 function renderGleAdCoverage(payload){
   currentGleAdCoverage=payload||null;
   const summary=payload&&payload.summary||{};
   const accounts=payload&&Array.isArray(payload.accounts)?payload.accounts:[];
   const meta=document.getElementById('adGleCoverageMeta');
   const summaryNode=document.getElementById('adGleCoverageSummary');
+  const readinessNode=document.getElementById('adGleCoverageReadiness');
   const accountsNode=document.getElementById('adGleCoverageAccounts');
   const boundary=document.getElementById('adGleCoverageBoundary');
-  if(meta)meta.textContent=accounts.length?`${summary.account_count||accounts.length} 账户 · ${summary.ads_total||0} 条 Meta 广告 · 数据截止 ${payload.fact_window&&payload.fact_window.cutoff_date||'-'}`:'GLE 覆盖待核对';
+  const activeTotal=Number(summary.effective_active_ads||0);
+  const activeReady=Number(summary.active_ads_with_metric_observation||0);
+  const activeWaiting=Math.max(0,activeTotal-activeReady);
+  const readyPercent=activeTotal?Math.round((activeReady/activeTotal)*100):0;
+  if(meta)meta.textContent=accounts.length?`${summary.account_count||accounts.length} 个账户 · ${summary.ads_total||0} 条 Meta 广告 · 数据截至 ${payload.fact_window&&payload.fact_window.cutoff_date||'-'}`:'GLE 覆盖待核对';
   if(summaryNode)summaryNode.innerHTML=accounts.length?[
-    gleCoverageMetric('已纳入 GLE',`${summary.covered_ads||0} / ${summary.ads_total||0}`,'当前 Meta 返回的全部广告对象都进入只读 GLE roster'),
-    gleCoverageMetric('在投广告',`${summary.covered_active_ads||0} / ${summary.effective_active_ads||0}`,'effective_status=ACTIVE 的广告全部纳入'),
-    gleCoverageMetric('近31日有事实',summary.ads_with_metric_observation||0,'在同账户本地事实表中有稳定 ad_id 记录'),
-    gleCoverageMetric('多 Cell 成员',summary.multi_cell_experiment_ads||0,'仅表示精确 Meta 对象组绑定，不表示当前自然窗口 lineage 已验证'),
-    gleCoverageMetric('单广告观察',summary.single_ad_observation_ads||0,'有经营观察，不生成多 Cell 因果结论'),
-    gleCoverageMetric('Gate','QUASI_ONLY','Gate1 仍为 NOT_READY，不允许因 Gate 自动写 Meta')
+    gleCoverageMetric('广告覆盖',`${summary.covered_ads||0} / ${summary.ads_total||0}`,'当前 Meta 返回的全部广告对象都进入只读 GLE roster','is-safe'),
+    gleCoverageMetric('在投数据就绪',`${activeReady} / ${activeTotal}`,'在投且近 31 日有稳定 ad_id 事实，可下钻经营表现',activeReady?'is-safe':''),
+    gleCoverageMetric('在投待数据',activeWaiting,'尚缺当前窗口事实，只能保持观察','is-warning'),
+    gleCoverageMetric('多 Cell 绑定',summary.multi_cell_experiment_ads||0,'仅表示精确 Meta 对象组绑定，不表示当前自然窗口 lineage 已验证'),
+    gleCoverageMetric('单广告观察',summary.single_ad_observation_ads||0,'提供经营观察，不生成多 Cell 因果结论')
   ].join(''):'<div class="ad-insight">GLE 覆盖账户待核对。</div>';
-  if(accountsNode)accountsNode.innerHTML=accounts.map(account=>{
-    const items=Array.isArray(account.items)?account.items:[];
+  if(readinessNode)readinessNode.innerHTML=accounts.length?`<div class="ad-gle-readiness-copy"><small>当前最重要的工作</small><strong>${activeWaiting?`先处理 ${activeWaiting} 条在投待数据广告`:'全部在投广告已有经营数据'}</strong></div><div><div class="ad-gle-readiness-track" role="progressbar" aria-label="在投广告数据就绪率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${readyPercent}"><i style="width:${readyPercent}%"></i></div><div class="ad-gle-readiness-detail">${activeReady} 条可下钻经营表现 · ${activeWaiting} 条缺同窗指标 · 就绪率 ${readyPercent}%</div></div><span class="ad-gle-state-badge">经营观察 · 非因果</span>`:'';
+  renderGleCoverageFilters(payload);
+  const visibleAccounts=accounts.map(account=>{const items=Array.isArray(account.items)?account.items:[];return{account,items:items.filter(item=>gleCoverageItemMatches(item,currentGleCoverageFilter))};}).filter(entry=>entry.items.length).sort((a,b)=>{const waitingA=Math.max(0,Number(a.account.effective_active_ads||0)-Number(a.account.active_ads_with_metric_observation||0));const waitingB=Math.max(0,Number(b.account.effective_active_ads||0)-Number(b.account.active_ads_with_metric_observation||0));return waitingB-waitingA||String(a.account.account_name||'').localeCompare(String(b.account.account_name||''));});
+  if(accountsNode)accountsNode.innerHTML=visibleAccounts.length?`<div class="ad-gle-account-table-head"><span>广告账户</span><span>覆盖</span><span>在投数据</span><span>覆盖模式</span><span>下钻</span></div>${visibleAccounts.map(({account,items})=>{
     const missingActive=Math.max(0,Number(account.effective_active_ads||0)-Number(account.active_ads_with_metric_observation||0));
-    const rows=items.map(item=>`<div class="ad-gle-ad-row"><div title="${esc(item.ad_name||item.ad_id||'')}"><b>${esc(item.ad_name||`广告 ${item.ad_id||'-'}`)}</b><span>${esc(item.ad_id||'-')}</span></div><div><span class="ad-gle-chip ${item.coverage_mode==='MULTI_CELL_EXPERIMENT'?'is-safe':''}">${esc(gleCoverageModeLabel(item))}</span><br>${esc(item.effective_status||'-')}</div><div><span class="ad-gle-chip ${item.monitoring_status==='METRIC_OBSERVATION_AVAILABLE'?'is-safe':'is-warning'}">${esc(gleCoverageStatusLabel(item))}</span><br>Gate ${esc(item.gate0_status||'QUASI_ONLY')}</div></div>`).join('');
-    return `<details class="ad-gle-account"><summary><span class="ad-gle-account-name"><b>${esc(account.account_name||account.account_id||'-')}</b><span>${esc(account.market||'-')} · ${esc(account.account_id||'-')}</span></span><span class="ad-gle-account-counts"><span class="ad-gle-chip is-safe">覆盖 ${esc(account.covered_ads||0)}/${esc(account.ads_total||0)}</span><span class="ad-gle-chip">在投 ${esc(account.effective_active_ads||0)}</span>${missingActive?`<span class="ad-gle-chip is-warning">在投待数据 ${esc(missingActive)}</span>`:''}</span></summary><div class="ad-gle-ad-list">${rows||'<div class="ad-insight">当前账户无 Meta 广告对象。</div>'}</div></details>`;
-  }).join('');
-  if(boundary)boundary.textContent='全部广告已纳入只读 GLE roster。单广告仅做经营观察；多 Cell 标记仅证明 Meta 对象组绑定。当前自然窗口 exact Cell lineage 仍为 MISSING，Gate0=QUASI_ONLY，Gate1=NOT_READY，GLE 不会因此自动写 Meta。';
+    const rows=items.map(item=>{const ready=String(item.monitoring_status||'')==='METRIC_OBSERVATION_AVAILABLE';return `<div class="ad-gle-ad-row"><div title="${esc(item.ad_name||item.ad_id||'')}"><b>${esc(item.ad_name||`广告 ${item.ad_id||'-'}`)}</b><small>${esc(item.ad_id||'-')} · ${esc(item.effective_status||'-')}</small></div><div><span class="ad-gle-chip ${item.coverage_mode==='MULTI_CELL_EXPERIMENT'?'is-safe':''}">${esc(gleCoverageModeLabel(item))}</span></div><div><span class="ad-gle-chip ${ready?'is-safe':'is-warning'}">${esc(gleCoverageStatusLabel(item))}</span><small>${ready?'可用于经营判断':'缺失值保持为空'}</small></div><div class="ad-gle-next ${ready?'':'is-waiting'}">${ready?`<button type="button" class="ad-gle-row-action" data-gle-open-account="${esc(account.account_name||'')}" data-gle-open-ad="${esc(item.ad_name||item.ad_id||'')}">定位 Meta 明细 <span aria-hidden="true">→</span></button>`:'等待同步，不建议据此调投放'}</div></div>`;}).join('');
+    return `<details class="ad-gle-account"><summary><span class="ad-gle-account-name"><b>${esc(account.account_name||account.account_id||'-')}</b><span>${esc(account.market||'-')} · ${esc(account.account_id||'-')}</span></span><span class="ad-gle-account-stat"><small>覆盖</small><strong>${esc(account.covered_ads||0)}/${esc(account.ads_total||0)}</strong></span><span class="ad-gle-account-stat ${missingActive?'is-warning':''}"><small>在投数据</small><strong>${esc(account.active_ads_with_metric_observation||0)}/${esc(account.effective_active_ads||0)}</strong></span><span class="ad-gle-account-stat"><small>模式</small><strong>${esc(account.multi_cell_experiment_ads||0)} 实验 · ${esc(account.single_ad_observation_ads||0)} 观察</strong></span><span class="ad-gle-account-expand">查看 ${esc(items.length)} 条 <i aria-hidden="true">⌄</i></span></summary><div class="ad-gle-account-toolbar"><span>当前筛选显示 ${esc(items.length)} 条；账户内有 ${esc(missingActive)} 条在投待数据。</span><button type="button" class="ad-gle-account-open" data-gle-open-account="${esc(account.account_name||'')}">在 Meta 明细查看账户 <span aria-hidden="true">→</span></button></div><div class="ad-gle-ad-list">${rows||'<div class="ad-insight">当前筛选下没有广告对象。</div>'}</div></details>`;
+  }).join('')}`:`<div class="ad-gle-empty">当前筛选下没有广告。可以切换上方状态继续查看。</div>`;
+  accountsNode?.querySelectorAll('[data-gle-open-account]').forEach(button=>button.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();focusGleAdInDashboard(button.getAttribute('data-gle-open-account')||'',button.getAttribute('data-gle-open-ad')||'',button).catch(showLoadError);}));
+  if(boundary)boundary.innerHTML='<div><strong>现在能做</strong><span>盘点全部广告、识别数据就绪度、下钻经营表现、区分单广告观察与多 Cell 对象绑定。</span></div><div><strong>还不能做</strong><span>自然窗口 exact Cell lineage 仍缺失；Gate0=QUASI_ONLY、Gate1=NOT_READY，不生成因果赢家，也不会自动写 Meta。</span></div>';
 }
 async function loadGleAdCoverage(){
   const button=document.getElementById('adRefreshGleCoverage');
   const meta=document.getElementById('adGleCoverageMeta');
-  try{if(button)button.disabled=true;if(meta)meta.textContent='正在只读核对 5 个广告账户…';const payload=await loadJson('/api/ops/ad-data-dashboard/gle-ad-coverage');renderGleAdCoverage(payload);}
+  try{if(button){button.disabled=true;button.textContent='正在刷新…';}if(meta)meta.textContent='正在只读核对 5 个广告账户…';const payload=await loadJson('/api/ops/ad-data-dashboard/gle-ad-coverage');renderGleAdCoverage(payload);}
   catch(error){if(meta)meta.textContent=`GLE 覆盖核对失败 · ${error&&error.message||'未知错误'}`;if(!currentGleAdCoverage){const node=document.getElementById('adGleCoverageAccounts');if(node)node.innerHTML='<div class="ad-insight">Meta 只读 roster 或本地事实暂不可用；未产生伪覆盖结论。</div>';}}
-  finally{if(button)button.disabled=false;}
+  finally{if(button){button.disabled=false;button.textContent='刷新覆盖状态';}}
 }
 let currentDailyRecoFilter='pending';
 let dailyRecoExpanded=false;
@@ -9631,6 +9694,7 @@ setupTrendDateInput('adTrendDateTo','to');
 document.getElementById('adApplyFilters')?.addEventListener('click',()=>loadDashboard().catch(showLoadError));
 document.getElementById('adRefreshDailyReport').addEventListener('click',()=>loadDailyReport({force:true}).catch(showLoadError));
 document.getElementById('adRefreshGleCoverage')?.addEventListener('click',()=>loadGleAdCoverage());
+document.getElementById('adOpenGleRecommendations')?.addEventListener('click',()=>document.getElementById('adDailyRecommendationPanel')?.scrollIntoView({behavior:'smooth',block:'start'}));
 document.getElementById('adRunImScriptResearch')?.addEventListener('click',()=>runImScriptResearch().catch(showLoadError));
 document.getElementById('adResetFilters')?.addEventListener('click',resetFilters);
 document.getElementById('adImDiagnosticsRegion')?.addEventListener('change',()=>{imDiagnosticsRegion=currentImDiagnosticsRegion();loadImDiagnostics().catch(showLoadError);});

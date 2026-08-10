@@ -159,10 +159,35 @@ def test_meta_roster_rejects_cross_account_identity() -> None:
 def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -> None:
     assert 'id="adGleCoveragePanel"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "/api/ops/ad-data-dashboard/gle-ad-coverage" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "全部广告已纳入只读 GLE roster" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "GLE 全广告经营覆盖" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'id="adGleCoverageReadiness"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'id="adGleCoverageFilters"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "在投待数据" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "定位 Meta 明细" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "查看经营建议" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "Gate0=QUASI_ONLY" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "Gate1=NOT_READY" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "GLE 不会因此自动写 Meta" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "不会自动写 Meta" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "不生成因果赢家" in AD_DATA_DASHBOARD_PAGE_HTML
+
+
+def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -> None:
+    assert 'role="group" aria-label="筛选 GLE 广告状态"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'data-gle-coverage-filter="${esc(key)}"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'aria-pressed="${key===currentGleCoverageFilter' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "gleCoverageItemMatches" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "focusGleAdInDashboard" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "setPlatformCollapsed('Meta',false,{manual:true})" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "loadDashboard({preserveDailyReport:true,skipDailyReport:true})" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert ".ad-gle-filterbar button:focus-visible" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert ".ad-gle-panel{padding:16px}" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert ".ad-gle-account-table-head{min-height:36px" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert ".ad-gle-chip{display:inline-flex;align-items:center;min-height:24px" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert ".ad-gle-account-open,.ad-gle-row-action{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:34px" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "meta_write_allowed_by_gate" not in AD_DATA_DASHBOARD_PAGE_HTML[
+        AD_DATA_DASHBOARD_PAGE_HTML.index('id="adGleCoveragePanel"'):
+        AD_DATA_DASHBOARD_PAGE_HTML.index('id="adDailyRecommendationPanel"')
+    ]
 
 
 def test_readonly_api_returns_the_exact_five_account_scope(tmp_path: Path) -> None:
