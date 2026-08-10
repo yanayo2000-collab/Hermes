@@ -942,6 +942,7 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             '/api/ops/ad-data-dashboard/daily-report/export.xlsx',
             '/api/ops/ad-data-dashboard/creative-insights',
             '/api/ops/ad-data-dashboard/creative-provider-status',
+            '/api/ops/ad-data-dashboard/gle-ad-coverage',
             '/api/ops/ad-data-dashboard/meta-accounts',
             '/api/ops/ad-data-dashboard/meta-rate-limit',
             '/api/ops/ad-data-dashboard/creative-images',
