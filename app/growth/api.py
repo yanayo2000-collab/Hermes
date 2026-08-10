@@ -33,10 +33,11 @@ from app.growth.creative_naming import compact_launch_ad_name
 from app.growth.decision_service import DecisionService
 from app.growth.delivery_guardrails import new_account_delivery_guardrails
 from app.growth.episode_service import EpisodeService
-from app.growth.errors import GrowthError, GrowthValidationError
+from app.growth.errors import GrowthError, GrowthNotFound, GrowthValidationError
 from app.growth.execution_service import ExecutionTaskService
 from app.growth.meta_graph_adapter import configured_regional_regulation_identities
 from app.growth.knowledge_service import KnowledgeService
+from app.growth.historical_cell_lineage_projection import historical_cell_lineage_projection
 from app.growth.new_account_launch_retention import (
     ensure_new_account_launch_retention_tables,
     launch_retention_status,
@@ -52,6 +53,145 @@ from app.growth.new_account_launch_meta_delete import (
 from app.growth.pattern_mining_service import PatternMiningService
 from app.growth.read_service import GrowthReadService
 from app.growth.similar_episode_service import SimilarEpisodeService
+
+
+_GLE_GOVERNANCE_BLOCKERS = (
+    ("MISSING_EXACT_CELL_LINEAGE", "canonical_lineage", "HIGH", "GATE0,GATE1", "取得 2026-08-11/13 自然窗口的同 cutoff AppsFlyer 原始导出；历史 exact lineage 不替代自然窗口"),
+    ("B2A_MISSING", "canonical_lineage", "HIGH", "GATE0", "补齐 B2A 的权威来源与稳定谱系"),
+    ("B2B_BLOCKED", "canonical_lineage", "HIGH", "GATE0", "解除 B2B 来源阻断并保留不可变证据"),
+    ("SOURCE_CONTENT_AUTHORITY_NOT_VERIFIED", "source", "HIGH", "GATE0,GATE1", "冻结来源内容、cutoff 与外部证明"),
+    ("PROGRAM_ROOT_NOT_ENROLLED", "authority", "MEDIUM", "GATE_PROMOTION", "仅在需要自动提升 Gate 时登记唯一 Owner root"),
+    ("OBJECTIVE_SPEC_AUTHORITY_MISSING", "authority", "HIGH", "GATE0", "冻结 ObjectiveContract 与 ExperimentSpec 版本和 hash"),
+    ("ACTUAL_ALLOCATION_EVIDENCE_INCOMPLETE", "allocation", "HIGH", "GATE0", "取得真实分流与 allocation readback"),
+    ("AUDIENCE_OVERLAP_UNKNOWN", "allocation", "HIGH", "GATE0", "完成受众重叠只读核验"),
+    ("INTERNAL_AUCTION_CONTAMINATION_UNKNOWN", "contamination", "HIGH", "GATE0", "证明 Cell 间无内部竞价污染"),
+    ("OBF_BOUNDARY_UNFROZEN", "power", "HIGH", "GATE0", "冻结 OBF 边界、截止时间与预算"),
+    ("POWER_GOLDEN_VECTORS_UNAPPROVED", "power", "HIGH", "GATE0,GATE1", "审批 Power 与 Golden 参数向量"),
+    ("EVALUATION_ENGINE_V2_NOT_IMPLEMENTED", "evaluation", "HIGH", "GATE1", "实现并验证 Evaluation Engine 2.0"),
+    ("POLICY_ENGINE_NOT_IMPLEMENTED", "decision", "HIGH", "GATE1", "实现冻结的 Decision Policy"),
+    ("SHADOW_NOT_IMPLEMENTED", "shadow", "HIGH", "GATE2", "实现只读 Shadow 比较与写入防火墙证明"),
+    ("REPLAY_NOT_ELIGIBLE", "replay", "HIGH", "GATE1", "满足冻结 Snapshot 与 lineage 分区条件"),
+    ("GATE_RECEIPT_MISSING", "receipt", "HIGH", "GATE_PROMOTION", "生成独立不可变 Gate Receipt；执行 Receipt 不可替代"),
+)
+
+
+def _gle_governance_status_projection(
+    *, account_id: str = "", experiment_id: str = "",
+) -> Dict[str, Any]:
+    """Return a GET-only projection without live Meta or AppsFlyer calls."""
+    normalized_account = str(account_id or "").strip().removeprefix("act_")
+    normalized_experiment = str(experiment_id or "").strip()
+    historical = historical_cell_lineage_projection(
+        account_id=normalized_account,
+        experiment_id=normalized_experiment,
+    )
+    blockers = [
+        {
+            "code": code, "domain": domain, "claim_level": "GOVERNANCE",
+            "severity": severity, "blocks": blocks.split(","),
+            "required_evidence": required_evidence,
+            "operator_action": required_evidence, "evidence_refs": [],
+        }
+        for code, domain, severity, blocks, required_evidence in _GLE_GOVERNANCE_BLOCKERS
+    ]
+    reason_codes = [item[0] for item in _GLE_GOVERNANCE_BLOCKERS]
+    return {
+        "schema_version": "gle-governance-status-v1",
+        "subject": {
+            "account_id": normalized_account or None,
+            "experiment_id": normalized_experiment or None,
+        },
+        "gate0": {
+            "status": "QUASI_ONLY", "ceiling": "QUASI_ONLY",
+            "result_effect": "UNCHANGED", "attestation_status": "NOT_AVAILABLE",
+            "checks": [], "blocking_reasons": reason_codes,
+            "data_cutoff_at": None, "evidence_ref": [], "not_gate_receipt": True,
+        },
+        "gate1": {
+            "status": "NOT_READY", "result_effect": "NONE",
+            "blocking_reasons": [
+                "MISSING_EXACT_CELL_LINEAGE", "EVALUATION_ENGINE_V2_NOT_IMPLEMENTED",
+                "POLICY_ENGINE_NOT_IMPLEMENTED", "REPLAY_NOT_ELIGIBLE", "GATE_RECEIPT_MISSING",
+            ],
+        },
+        "power": {
+            "status": "NOT_AVAILABLE", "fixed_endpoint_status": "NOT_AVAILABLE",
+            "feasible": None, "information_fraction": None,
+            "obf_boundary_status": "UNFROZEN",
+            "reason_codes": ["OBF_BOUNDARY_UNFROZEN", "POWER_GOLDEN_VECTORS_UNAPPROVED"],
+            "evidence_ref": [],
+        },
+        "canonical_lineage": {
+            "status": "MISSING_EXACT_CELL_LINEAGE",
+            "status_scope": "CURRENT_NATURAL_WINDOW",
+            "natural_window_status": "PENDING_NATURAL_WINDOW",
+            "historical_status": (
+                historical["status"] if historical else "NOT_APPLICABLE_TO_SUBJECT"
+            ),
+            "historical_evidence": historical,
+            "denominator": None, "component_candidates": [],
+            "unresolved": ["current_window_installs", "invalid_users", "duplicate_rate"],
+            "b2a_status": "B2A_MISSING", "b2b_status": "B2B_BLOCKED",
+            "dev_count": None, "validation_count": None, "evidence_ref": [],
+        },
+        "source_readiness": {
+            "status": "NOT_AVAILABLE",
+            "trust_status": "SOURCE_CONTENT_AUTHORITY_NOT_VERIFIED",
+            "missing_fields": ["natural_window_appsflyer_export", "invalid_users", "duplicate_rate"],
+            "reason_codes": ["SOURCE_CONTENT_AUTHORITY_NOT_VERIFIED", "MISSING_EXACT_CELL_LINEAGE"],
+            "snapshot_effect": "NONE", "partition_effect": "NONE",
+            "holdout_status": "LOCKED_NOT_ASSIGNED", "replay_eligible": False,
+            "golden_eligible": False, "gate1_effect": "NONE",
+        },
+        "shadow": {
+            "status": "NOT_AVAILABLE", "effective_mode": "DISABLED",
+            "allowed_actions": [], "effect": "NONE",
+            "reason_codes": ["SHADOW_NOT_IMPLEMENTED"],
+            "policy_triggered_meta_write_count": None,
+        },
+        "gate_receipt": {
+            "status": "NOT_AVAILABLE", "receipt_ref": None,
+            "reason_code": "GATE_RECEIPT_MISSING",
+        },
+        "blockers": blockers,
+        "ceilings": {
+            "objective_effect": "NONE", "spec_effect": "NONE",
+            "source_effect": "NONE", "snapshot_effect": "NONE",
+            "partition_effect": "NONE", "replay_effect": "NONE",
+            "golden_effect": "NONE", "gate_effect": "UNCHANGED",
+            "causal_claim": False, "meta_write_allowed_by_gate": False,
+        },
+        "safety": {
+            "causal_claim": False, "simulation_is_shadow": False,
+            "execution_receipt_is_gate_receipt": False,
+            "missing_values_render_as_zero": False,
+            "uncertain_execution_auto_retry": False,
+        },
+    }
+
+
+def _gle_workflow_assurance(account_id: str = "", experiment_id: str = "") -> Dict[str, Any]:
+    status = _gle_governance_status_projection(
+        account_id=account_id, experiment_id=experiment_id,
+    )
+    historical = status["canonical_lineage"]["historical_evidence"]
+    return {
+        "schema_version": status["schema_version"],
+        "gate_status": status["gate0"]["status"],
+        "gate1_status": status["gate1"]["status"],
+        "causal_claim": False,
+        "exact_cell_lineage_status": status["canonical_lineage"]["status"],
+        "natural_lineage_status": status["canonical_lineage"]["natural_window_status"],
+        "historical_lineage": historical,
+        "historical_decision": historical["decision"] if historical else None,
+        "power_assessment_status": status["power"]["status"],
+        "offline_validation_status": status["gate1"]["status"],
+        "holdout_status": status["source_readiness"]["holdout_status"],
+        "shadow_policy_write_enabled": False,
+        "lineage_transfer_status": "NOT_READY",
+        "blocking_reason_codes": [item["code"] for item in status["blockers"]],
+        "meta_write_allowed_by_gate": False,
+    }
 
 
 def _enabled(value: Any) -> bool:
@@ -1151,6 +1291,17 @@ def create_growth_router(
     def get_autonomy_capabilities(account_id: str, request: Request) -> Dict[str, Any]:
         operator(request)
         return execute(lambda: _get_autonomy_capabilities(db, account_id))
+
+    @router.get("/governance-status")
+    def get_governance_status(
+        request: Request,
+        account_id: str = Query(""),
+        experiment_id: str = Query(""),
+    ) -> Dict[str, Any]:
+        operator(request)
+        return execute(lambda: _get_gle_governance_status(
+            db, account_id=account_id, experiment_id=experiment_id,
+        ))
 
     @router.post("/next-actions/sync")
     def sync_next_actions(request: Request, account_id: str = Query("")) -> Dict[str, Any]:
@@ -5503,6 +5654,10 @@ def _ad_experiment_workflow(
         "next_checkpoint": next_checkpoint,
         "completed_checkpoints": sorted(completed, key=lambda item: required.index(item) if item in required else 99),
         "blockers": blockers,
+        "gle_assurance": _gle_workflow_assurance(
+            str(experiment.get("account_id") or ""),
+            str(experiment.get("experiment_id") or ""),
+        ),
     }
 
 
@@ -5549,6 +5704,32 @@ def _get_episode_detail(db: Any, episode_id: str) -> Dict[str, Any]:
 def _get_experiment_detail(db: Any, experiment_id: str) -> Dict[str, Any]:
     with db.connect() as conn:
         return GrowthReadService(conn).get_experiment_detail(experiment_id)
+
+
+def _get_gle_governance_status(
+    db: Any, *, account_id: str = "", experiment_id: str = "",
+) -> Dict[str, Any]:
+    """Resolve a local subject, then return the read-only projection."""
+    normalized_account = str(account_id or "").strip().removeprefix("act_")
+    normalized_experiment = str(experiment_id or "").strip()
+    if normalized_experiment:
+        with db.connect() as conn:
+            try:
+                row = conn.execute(
+                    "SELECT experiment_id,account_id FROM ad_experiment WHERE experiment_id=?",
+                    (normalized_experiment,),
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                raise GrowthNotFound("experiment_not_found") from exc
+        if not row:
+            raise GrowthNotFound("experiment_not_found")
+        resolved_account = str(row["account_id"] or "").strip().removeprefix("act_")
+        if normalized_account and resolved_account and normalized_account != resolved_account:
+            raise GrowthValidationError("governance_subject_account_mismatch")
+        normalized_account = resolved_account or normalized_account
+    return _gle_governance_status_projection(
+        account_id=normalized_account, experiment_id=normalized_experiment,
+    )
 
 
 def _list_knowledge(db: Any, *, status: str, limit: int) -> Dict[str, Any]:
