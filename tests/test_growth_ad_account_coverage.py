@@ -156,6 +156,55 @@ def test_meta_roster_rejects_cross_account_identity() -> None:
         )
 
 
+def test_fact_binding_ignores_blank_source_identity_but_rejects_missing_or_conflicting_identity() -> None:
+    account = GLE_AD_ACCOUNT_SCOPE_V1[0]
+    exact_with_blank = _live_ad(account, "10")
+    blank_only = _live_ad(account, "11")
+    conflicting = _live_ad(account, "12")
+    conn = _database()
+    conn.executemany(
+        "INSERT INTO ad_dashboard_fact_rows VALUES (?,?,?)",
+        [
+            (exact_with_blank["id"], "2026-08-09", f"act_{account['account_id']}"),
+            (exact_with_blank["id"], "2026-08-09", ""),
+            (blank_only["id"], "2026-08-09", ""),
+            (conflicting["id"], "2026-08-09", account["account_id"]),
+            (conflicting["id"], "2026-08-09", GLE_AD_ACCOUNT_SCOPE_V1[1]["account_id"]),
+        ],
+    )
+    conn.commit()
+
+    result = build_gle_ad_account_coverage(
+        conn,
+        [
+            {
+                "account_id": item["account_id"],
+                "account_name": account["account_name"],
+                "market": account["market"],
+                "ad_id": item["id"],
+                "ad_name": item["name"],
+                "campaign_id": item["campaign_id"],
+                "adset_id": item["adset_id"],
+                "configured_status": item["status"],
+                "effective_status": item["effective_status"],
+                "created_time": item["created_time"],
+                "updated_time": item["updated_time"],
+            }
+            for item in (exact_with_blank, blank_only, conflicting)
+        ],
+    )
+
+    items = {
+        item["ad_id"]: item
+        for current_account in result["accounts"]
+        for item in current_account["items"]
+    }
+    assert items[exact_with_blank["id"]]["monitoring_status"] == "METRIC_OBSERVATION_AVAILABLE"
+    assert items[blank_only["id"]]["monitoring_status"] == "WAITING_FOR_DASHBOARD_FACTS"
+    assert items[conflicting["id"]]["monitoring_status"] == "WAITING_FOR_DASHBOARD_FACTS"
+    assert result["summary"]["active_ads_with_metric_observation"] == 1
+
+
 def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -> None:
     assert 'id="adGleCoveragePanel"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "/api/ops/ad-data-dashboard/gle-ad-coverage" in AD_DATA_DASHBOARD_PAGE_HTML
