@@ -42,6 +42,9 @@ def test_exact_subject_gets_historical_direction_without_gate_promotion(
     assert result["status"] == "HISTORICAL_EXACT_CELL_LINEAGE_AVAILABLE"
     assert result["decision"] == "DIRECTIONAL_C2_BETTER_STATISTICALLY_INCONCLUSIVE"
     assert result["decision_strength"] == "DIRECTIONAL_ONLY"
+    assert result["preferred_cell"] == "C2"
+    assert result["summary_zh"] == "历史样本：C2 方向更优，但统计不充分"
+    assert result["natural_window_settlement_dates"] == ["2026-08-11", "2026-08-13"]
     assert result["subject"]["requested_cell_key"] == cell_key
     assert result["subject"]["requested_role"] == role
     assert result["sample"] == {"impressions": 1298, "clicks": 32, "installs": 11}

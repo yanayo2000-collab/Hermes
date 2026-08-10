@@ -157,6 +157,9 @@ def historical_cell_lineage_projection(
         "status": "HISTORICAL_EXACT_CELL_LINEAGE_AVAILABLE",
         "decision": "DIRECTIONAL_C2_BETTER_STATISTICALLY_INCONCLUSIVE",
         "decision_strength": "DIRECTIONAL_ONLY",
+        "preferred_cell": "C2",
+        "summary_zh": "历史样本：C2 方向更优，但统计不充分",
+        "natural_window_settlement_dates": ["2026-08-11", "2026-08-13"],
         "subject": {
             "account_id": _ACCOUNT_ID,
             "study_id": _STUDY_ID,
