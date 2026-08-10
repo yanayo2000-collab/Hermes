@@ -13,6 +13,11 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Re
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.ad_daily_report import ensure_ad_daily_report_tables
+from app.growth.ad_account_coverage import (
+    AdAccountCoverageError,
+    build_gle_ad_account_coverage,
+    fetch_scoped_meta_ads,
+)
 from app.growth.adaptive_agent_service import AdaptiveGrowthAgentService
 from app.growth.ad_experiment_evaluator import AdExperimentEvaluator
 from app.growth.ad_experiment_service import AdExperimentService
@@ -1508,6 +1513,26 @@ def create_ad_experiment_router(
             "historical_ad_count": int(counts.get(normalized_page) or 0),
             "verification": "account_ad_history_and_live_page_readback",
         }
+
+    @router.get("/gle-ad-coverage")
+    def get_gle_ad_coverage(request: Request) -> Dict[str, Any]:
+        """Cover every current ad in the five operator-selected accounts, read-only."""
+        operator(request)
+        try:
+            live_ads = fetch_scoped_meta_ads(
+                meta_session,
+                access_token=meta_access_token,
+                graph_root=meta_graph_root,
+            )
+            return _with_connection(
+                db,
+                lambda conn: build_gle_ad_account_coverage(conn, live_ads),
+            )
+        except AdAccountCoverageError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "GLE_AD_COVERAGE_UNAVAILABLE", "message": str(exc)},
+            ) from exc
 
     @router.get("/autonomy/{account_id}")
     def dashboard_autonomy(account_id: str, request: Request) -> Dict[str, Any]:
