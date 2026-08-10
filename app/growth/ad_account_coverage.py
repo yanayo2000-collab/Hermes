@@ -176,8 +176,9 @@ def _load_fact_observations(
     window_start = cutoff_date - timedelta(days=FACT_WINDOW_DAYS - 1)
     sql = f"""
         SELECT ad_id, MIN(date) AS first_date, MAX(date) AS latest_date,
-               COUNT(*) AS fact_row_count, MIN(account_id) AS min_account_id,
-               MAX(account_id) AS max_account_id
+               COUNT(*) AS fact_row_count,
+               MIN(NULLIF(TRIM(account_id), '')) AS min_account_id,
+               MAX(NULLIF(TRIM(account_id), '')) AS max_account_id
         FROM ad_dashboard_fact_rows
         WHERE date BETWEEN ? AND ?
           AND ad_id IN ({_placeholders(ad_ids)})
@@ -294,8 +295,10 @@ def build_gle_ad_account_coverage(
         for item in account_ads:
             ad_id = str(item["ad_id"])
             fact = facts.get(ad_id)
-            fact_account = str((fact or {}).get("min_account_id") or "").removeprefix("act_")
-            fact_account_max = str((fact or {}).get("max_account_id") or "").removeprefix("act_")
+            fact_account = str((fact or {}).get("min_account_id") or "").strip().removeprefix("act_")
+            fact_account_max = (
+                str((fact or {}).get("max_account_id") or "").strip().removeprefix("act_")
+            )
             fact_bound = bool(
                 fact and fact_account == item["account_id"] and fact_account_max == item["account_id"]
             )
