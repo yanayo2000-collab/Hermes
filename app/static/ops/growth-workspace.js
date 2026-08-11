@@ -138,7 +138,11 @@
       openLaunchActivationConfirmation(button);
     });
     panel.querySelectorAll('[data-growth-close]').forEach(button => button.addEventListener('click', closeWorkspace));
-    panel.querySelector('[data-growth-back]')?.addEventListener('click', backWorkspace);
+    panel.querySelector('[data-growth-back]')?.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      backWorkspace();
+    });
     panel.querySelector('#growthRefresh')?.addEventListener('click', loadList);
     panel.querySelector('#growthCreateExperiment')?.addEventListener('click', openCreateFlow);
     panel.querySelectorAll('[data-growth-bucket]').forEach(button => button.addEventListener('click', () => { state.workBucket=button.dataset.growthBucket||'action_required';state.activeExperiment='';renderQueueTabs();renderExperimentQueue(); }));
@@ -384,6 +388,10 @@
   }
 
   function backWorkspace() {
+    if (isEmbeddedWorkspace()) {
+      showEmbeddedQueue();
+      return;
+    }
     const target = state.workspaceReturn;
     if (!target) return;
     if (target.kind === 'embeddedQueue') {
@@ -1723,7 +1731,7 @@
 
   async function openAdExperiment(id) {
     state.activeExperiment = id;
-    if(isEmbeddedWorkspace()&&!state.workspaceReturn)setWorkspaceReturn({kind:'embeddedQueue'});
+    if(isEmbeddedWorkspace())setWorkspaceReturn({kind:'embeddedQueue'});
     const node = document.getElementById('growthDetail');
     const previous=state.detail?.experiment?.experiment_id===id?state.detail:null;
     if(!previous)node.innerHTML = '<div class="growth-empty"><div><b>正在读取广告任务</b></div></div>';
