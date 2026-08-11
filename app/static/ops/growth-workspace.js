@@ -1814,21 +1814,25 @@
     const evaluations = (payload.performance || {}).items || [];
     const lineage = payload.growth_lineage || {};
     const workflow = payload.workflow || {};
+    const immediateAssessment = workflow.immediate_assessment || payload.latest_closed_loop?.immediate_assessment || {};
     const latest = evaluations[evaluations.length - 1] || null;
     const passiveObservation = workflow.passive_observation === true;
     const completedCheckpoints = workflow.completed_checkpoints || [];
     const stage = passiveObservation
       ? (workflow.bucket==='action_required'?6:workflow.bucket==='exception'?5:completedCheckpoints.includes('D7')?4:completedCheckpoints.includes('D3')?3:completedCheckpoints.includes('D1')?2:1)
       : stageFor(experiment, evaluations);
-    const phase = workflow.bucket==='system_work'
+    let phase = workflow.bucket==='system_work'
       ? {title:'AI 自动处理中',hint:workflow.current_action||'系统正在按订单参数继续创建'}
       : phaseCopy(experiment, evaluations, stage);
+    if(immediateAssessment.status==='NO_INTERVENTION_SUPPORTED')phase={title:'当前建议：继续观察',hint:immediateAssessment.summary||'历史数据未达到新增干预阈值'};
+    if(immediateAssessment.status==='INTERVENTION_REVIEW_SUPPORTED')phase={title:'发现需要复核的干预候选',hint:immediateAssessment.summary||'历史数据触发护栏，需先生成方案并确认'};
     const maturity = Math.max(0,Math.min(100,Number(workflow.maturity_pct||0)));
     const latestPlanEvent = [...timeline].reverse().find(item => item.event_type === 'PLAN_PROPOSED') || {};
     const planId = String((latestPlanEvent.evidence_json || {}).plan_id || workflow.plan_id || '');
     const approval = planApproval(payload, planId);
     const rows = metricRows(latest);
-    const preDelivery = !passiveObservation && !latest;
+    const immediateReady=['NO_INTERVENTION_SUPPORTED','INTERVENTION_REVIEW_SUPPORTED'].includes(String(immediateAssessment.status||''));
+    const preDelivery = !passiveObservation && !latest && !immediateReady;
     const needsAction=workflow.bucket==='action_required'||workflow.bucket==='exception';
     const nextCheckpoint=workflow.next_checkpoint||(!latest?'D1':'');
     const creationIncident=workflow.bucket==='exception'&&(String(experiment.state||'')==='CREATION_PARTIAL_FAILURE'||(String(experiment.state||'')==='DATA_INCOMPLETE'&&String(workflow.plan_action_type||'')==='CREATE_PAUSED_AD'));
@@ -1846,6 +1850,7 @@
       ${metaRejected?`<section class="growth-status-panel growth-status-rejected"><small>Meta 审核结果</small><h3>素材已被拒，原广告不会继续配送</h3><p>${esc(rejectionReason)}</p><div class="growth-status-next">${esc(workflow.current_action||'AI 正在生成合规替代素材')}。原素材和拒审证据会保留；替代素材通过安全检查后才会生成送审 Plan。</div></section>`:''}
       ${preDelivery?preDeliveryStatusHtml(experiment,stage,latest,planId,approval,lineage,workflow,phase):`
         <section class="growth-phase"><small>${needsAction?'需要处理':'当前状态'}</small><h3>${esc(phase.title)}</h3><p>${esc(needsAction?(workflow.current_action||phase.hint):`无需处理${nextCheckpoint?` · 系统将在 ${nextCheckpoint} 自动回读`:''}`)}</p></section>
+        ${immediateAssessmentHtml(immediateAssessment)}
         <section class="growth-section"><h3>${latest?'广告表现':'投放数据'}</h3>${latest?`<table class="growth-metric-table"><thead><tr><th>指标</th><th>投放前</th><th>${esc(latest.checkpoint)}</th><th>变化</th><th>变化率</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${row.label}</td><td>${row.before}</td><td>${row.current}</td><td class="${row.good?'growth-good':''}">${row.delta}</td><td class="${row.good?'growth-good':''}">${row.rate}</td></tr>`).join('')}</tbody></table>`:observationSnapshotHtml(workflow)}</section>
         <section class="growth-section"><h3>观察进度</h3><div class="growth-progress"><i style="width:${maturity}%"></i></div><div class="growth-progress-copy"><span>${completedCheckpoints.length?`${esc(completedCheckpoints.join('、'))} 已回读`:'等待首轮数据'}</span><b>${maturity}%</b><span>${workflow.evidence_mature?'可以形成结论':`${esc(nextCheckpoint||'下一检查点')} 自动更新`}</span></div></section>
         <div class="growth-actions">${primaryActionHtml(experiment,stage,latest,planId,approval,lineage,workflow)}</div>
@@ -1857,6 +1862,14 @@
     document.getElementById('growthReloadOrderIncident')?.addEventListener('click',()=>openAdExperiment(experiment.experiment_id));
     document.getElementById('growthReconcileDeliveryIncident')?.addEventListener('click',event=>reconcileDeliveryIncident(experiment,event.currentTarget));
     if(experiment.account_id&&!creationIncident)loadAutonomyPanel(experiment,payload);
+  }
+
+  function immediateAssessmentHtml(assessment) {
+    if(!assessment||!assessment.status||assessment.status==='DATA_NOT_READY')return '';
+    const window=assessment.source_window||{},count=Number(window.observed_day_count||0),candidateCount=(assessment.action_candidates||[]).length;
+    const title=assessment.status==='NO_INTERVENTION_SUPPORTED'?'现在不用再停广告':assessment.status==='INTERVENTION_REVIEW_SUPPORTED'?`发现 ${candidateCount} 条暂停候选`:'历史证据需要复核';
+    const timing=count?`${esc(window.start||'-')} 至 ${esc(window.end||'-')} · ${count} 个共同完整日`:'暂停前历史窗口';
+    return `<section class="growth-section growth-immediate-assessment"><h3>立即经营判断</h3><div class="growth-review-card"><b>${esc(title)}</b><span>${esc(assessment.summary||'')}</span><small>${timing}</small><small>这不是暂停后的效果评价；D1 / D3 / D7 仍会继续回读真实结果。</small></div></section>`;
   }
 
   function deliveryIncidentCause(workflow) {
@@ -1918,9 +1931,12 @@
         api(`/api/ops/ad-data-dashboard/next-actions?account_id=${encodeURIComponent(account)}&limit=100`),
       ]);
       const actions=(queue.items||[]).filter(item=>String(item.experiment_id||'')===String(experiment.experiment_id||'')||(launch&&String(item.launch_id||'')===launch));
+      const immediate=payload.latest_closed_loop?.immediate_assessment||payload.workflow?.immediate_assessment||{};
       const level=String(catalog.policy?.level||'L0_OBSERVE'),levelText={L0_OBSERVE:'只观察',L1_RECOMMEND:'生成建议',L2_PAUSED_CREATE:'可创建暂停态对象',L3_BOUNDED_LIVE:'边界内执行'}[level]||level;
       const rows=actions.slice(0,3).map(item=>`<div class="growth-delivery-row"><span><b>${esc(AUTONOMY_ACTION_LABELS[item.action_type]||item.action_type)}</b><small>${esc(item.summary||'')}</small></span><strong>${esc(item.status==='BLOCKED'?(item.block_reason||'暂不可执行'):(item.status==='APPROVAL_REQUIRED'?'等待确认':'已就绪'))}</strong></div>`).join('');
-      node.innerHTML=`<h3>AI 下一步</h3><div class="growth-review-card"><b>${actions.length?esc(AUTONOMY_ACTION_LABELS[actions[0].action_type]||actions[0].action_type):'等待下一检查点'}</b><span>账户放权：${esc(levelText)}。素材、方案、演练和暂停态创建由 AI 自动完成；只有启用投放、扩量和预算调整等可能产生花费的动作需要确认。</span>${rows||'<span>系统将在 D1 / D3 / D7 自动读取数据并生成下一步。</span>'}</div><div class="growth-autonomy-actions"><button type="button" id="growthCreateNextTest">创建下一轮</button><button type="button" id="growthShowCapabilities">增加组 / 扩量 / 换素材 / 文案实验</button></div>`;
+      const immediateTitle=immediate.status==='NO_INTERVENTION_SUPPORTED'?'继续观察，暂不干预':immediate.status==='INTERVENTION_REVIEW_SUPPORTED'?'复核暂停候选':'等待下一检查点';
+      const immediateCopy=immediate.summary?`<span>${esc(immediate.summary)}</span>`:'<span>系统将在 D1 / D3 / D7 自动读取数据并生成下一步。</span>';
+      node.innerHTML=`<h3>AI 下一步</h3><div class="growth-review-card"><b>${actions.length?esc(AUTONOMY_ACTION_LABELS[actions[0].action_type]||actions[0].action_type):esc(immediateTitle)}</b><span>账户放权：${esc(levelText)}。只有可能产生花费或修改投放的动作才需要你确认。</span>${rows||immediateCopy}</div><div class="growth-autonomy-actions"><button type="button" id="growthCreateNextTest">创建下一轮</button><button type="button" id="growthShowCapabilities">增加组 / 扩量 / 换素材 / 文案实验</button></div>`;
       document.getElementById('growthCreateNextTest')?.addEventListener('click',()=>{closeWorkspace();openLaunchWorkspace({startCreate:true});});
       document.getElementById('growthShowCapabilities')?.addEventListener('click',()=>openCapabilityCatalog(catalog,experiment,payload));
     }catch(error){node.innerHTML=`<h3>AI 下一步</h3><div class="growth-error">${esc(readableError(error))}</div>`;}

@@ -4204,6 +4204,28 @@ def create_ad_experiment_router(
                     "causal_claim": False,
                     "meta_writes_performed": False,
                 }
+            cycles = AdExperimentCycleService(conn).list_for_experiment(experiment_id)
+            if cycles["items"]:
+                immediate = dict(
+                    AdExperimentCycleEvaluator(conn).detail(
+                        cycles["items"][-1]["cycle_id"],
+                    ).get("immediate_assessment") or {}
+                )
+                if immediate.get("status") in {
+                    "NO_INTERVENTION_SUPPORTED", "INTERVENTION_REVIEW_SUPPORTED",
+                }:
+                    return {
+                        "experiment": experiment,
+                        "latest_evaluation": {},
+                        "recommended_action": immediate["recommended_action"],
+                        "requires_approval": False,
+                        "requires_operator_review": bool(
+                            immediate.get("operator_review_required")
+                        ),
+                        "immediate_assessment": immediate,
+                        "causal_claim": False,
+                        "meta_writes_performed": False,
+                    }
             evaluations = AdExperimentEvaluator(conn).list(experiment_id)["items"]
             latest = evaluations[-1] if evaluations else {}
             status = str(latest.get("evaluation_status") or "PENDING")
@@ -5355,15 +5377,27 @@ def _ad_experiment_detail(conn: sqlite3.Connection, experiment_id: str) -> Dict[
         lineage = {}
     performance = AdExperimentEvaluator(conn).list(experiment_id)
     timeline = service.timeline(experiment_id)
+    cycles = AdExperimentCycleService(conn).list_for_experiment(experiment_id)
+    latest_closed_loop = (
+        AdExperimentCycleEvaluator(conn).detail(cycles["items"][-1]["cycle_id"])
+        if cycles["items"] else {}
+    )
+    workflow = _ad_experiment_workflow(
+        conn, experiment, lineage=lineage, performance=performance,
+    )
+    if latest_closed_loop:
+        workflow["immediate_assessment"] = dict(
+            latest_closed_loop.get("immediate_assessment") or {}
+        )
     return {
         "experiment": experiment,
         "approved_creative": service.latest_approved_creative(experiment_id),
         "timeline": timeline,
         "performance": performance,
         "growth_lineage": lineage,
-        "workflow": _ad_experiment_workflow(
-            conn, experiment, lineage=lineage, performance=performance,
-        ),
+        "cycles": cycles,
+        "latest_closed_loop": latest_closed_loop,
+        "workflow": workflow,
     }
 
 

@@ -126,55 +126,220 @@ class AdExperimentCycleEvaluator:
                ORDER BY created_at,cycle_plan_id""",
             (str(cycle_id),),
         ).fetchall()
+        cycle = self._cycle(row)
         return {
-            "cycle": self._cycle(row),
+            "cycle": cycle,
             "evaluations": [self._evaluation(item) for item in evaluations],
             "plans": [self._plan(item) for item in plans],
+            "immediate_assessment": self._immediate_assessment(cycle),
             "causal_claim": False,
             "meta_writes_performed": False,
         }
+
+    def _immediate_assessment(self, cycle: Dict[str, Any]) -> Dict[str, Any]:
+        """Give an immediate operating answer without faking a post-action checkpoint.
+
+        This projection uses only complete local delivery days strictly before the
+        action's local calendar date.  It never inserts an evaluation or a plan;
+        D1/D3/D7 remain the only post-action checkpoints.
+        """
+        base = {
+            "schema_version": "gle-cycle-immediate-operating-assessment-v1",
+            "cycle_id": str(cycle["cycle_id"]),
+            "evidence_timing": "PRE_ACTION_SETTLED_HISTORY",
+            "history_is_post_action": False,
+            "metric_source": "ad_creative_performance_daily",
+            "metric_date_field": "report_date_london",
+            "metric_content_authority": "LOCAL_OPERATIONAL_FACTS_NOT_GATE_AUTHORITY",
+            "creates_cycle_evaluation": False,
+            "creates_next_plan": False,
+            "causal_claim": False,
+            "meta_write_allowed": False,
+        }
+        if not self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ad_creative_performance_daily'",
+        ).fetchone():
+            return self._assessment_result(
+                base,
+                status="DATA_NOT_READY",
+                recommended_action="WAIT_FOR_DATA",
+                summary="历史投放事实表尚未就绪，不能提前判断",
+                reason="performance_table_not_ready",
+            )
+        columns = {
+            str(row[1]) for row in self.conn.execute(
+                "PRAGMA table_info(ad_creative_performance_daily)",
+            ).fetchall()
+        }
+        if not {"report_date_london", "ad_id"}.issubset(columns):
+            return self._assessment_result(
+                base,
+                status="BLOCKED",
+                recommended_action="REVIEW_EVIDENCE",
+                summary="历史投放事实表缺少精确日期或广告 ID，已停止提前判断",
+                reason="cycle_metric_source_schema_invalid",
+            )
+        try:
+            _, _, remaining = self._validated_remaining_cells(cycle)
+            opened_at = datetime.fromisoformat(str(cycle["window_opened_at"]))
+            if opened_at.tzinfo is None:
+                raise ValueError("cycle_window_opened_at_timezone_required")
+            opened_local_date = opened_at.astimezone(
+                ZoneInfo(REPORTING_TIMEZONE),
+            ).date()
+            first_complete_date = date.fromisoformat(str(cycle["first_complete_date"]))
+        except (GrowthStateConflict, GrowthValidationError, ValueError) as exc:
+            return self._assessment_result(
+                base,
+                status="BLOCKED",
+                recommended_action="REVIEW_EVIDENCE",
+                summary="周期身份或时间边界无法安全重验，已停止提前判断",
+                reason=str(exc),
+            )
+        cutoff = min(
+            opened_local_date - timedelta(days=1),
+            first_complete_date - timedelta(days=1),
+        )
+        common_dates = self._common_fact_dates(remaining, cutoff=cutoff, limit=7)
+        if not common_dates:
+            return self._assessment_result(
+                base,
+                status="DATA_NOT_READY",
+                recommended_action="WAIT_FOR_DATA",
+                summary="暂停前没有可供全部剩余广告共同比较的完整日期",
+                reason="pre_action_common_window_not_ready",
+                source_cutoff=cutoff.isoformat(),
+            )
+
+        metrics: Dict[str, Dict[str, Any]] = {}
+        candidates: List[Dict[str, Any]] = []
+        for item in remaining:
+            experiment_id = str(item["experiment_id"])
+            aggregate = self._aggregate_daily(
+                str(item["ad_id"]), common_dates[0], common_dates[-1],
+            )
+            if (
+                list(aggregate.get("source_dates") or [])
+                != [value.isoformat() for value in common_dates]
+                or not bool(aggregate.get("quality_pass"))
+            ):
+                return self._assessment_result(
+                    base,
+                    status="DATA_NOT_READY",
+                    recommended_action="WAIT_FOR_DATA",
+                    summary="暂停前历史日期或数据质量未形成共同可比窗口",
+                    reason=f"pre_action_metric_window_incomplete:{experiment_id}",
+                    source_cutoff=cutoff.isoformat(),
+                )
+            core = self._core_metrics(aggregate)
+            core["observed_dates"] = [value.isoformat() for value in common_dates]
+            metrics[experiment_id] = core
+            rules = dict(item.get("delivery_guardrails") or {})
+            if payload_hash(rules) != str(item.get("delivery_guardrails_hash") or ""):
+                return self._assessment_result(
+                    base,
+                    status="BLOCKED",
+                    recommended_action="REVIEW_EVIDENCE",
+                    summary="冻结的投放护栏校验失败，已停止提前判断",
+                    reason="cycle_delivery_guardrails_hash_invalid",
+                    source_cutoff=cutoff.isoformat(),
+                )
+            breaches = self._exact_ctr_breaches(core, rules)
+            if breaches:
+                candidates.append({
+                    "action_type": "PAUSE_AD",
+                    "experiment_id": experiment_id,
+                    "ad_id": str(item["ad_id"]),
+                    "breaches": breaches,
+                    "delivery_guardrails_hash": str(item["delivery_guardrails_hash"]),
+                })
+        candidates.sort(key=lambda item: (item["experiment_id"], item["ad_id"]))
+        window = {
+            "start": common_dates[0].isoformat(),
+            "end": common_dates[-1].isoformat(),
+            "observed_day_count": len(common_dates),
+        }
+        if candidates:
+            return self._assessment_result(
+                base,
+                status="INTERVENTION_REVIEW_SUPPORTED",
+                recommended_action="REVIEW_PAUSE_CANDIDATE",
+                summary=(
+                    f"历史数据发现 {len(candidates)} 条广告达到暂停护栏；"
+                    "需先生成不可变方案并确认，当前没有执行 Meta 操作"
+                ),
+                source_cutoff=cutoff.isoformat(),
+                source_window=window,
+                metrics_by_experiment=metrics,
+                action_candidates=candidates,
+                operator_review_required=True,
+            )
+        return self._assessment_result(
+            base,
+            status="NO_INTERVENTION_SUPPORTED",
+            recommended_action="OBSERVE",
+            summary=(
+                f"已读取暂停前 {len(common_dates)} 个共同完整日；"
+                "剩余广告均未达到暂停护栏，当前继续观察、无需确认"
+            ),
+            source_cutoff=cutoff.isoformat(),
+            source_window=window,
+            metrics_by_experiment=metrics,
+            action_candidates=[],
+            operator_review_required=False,
+        )
+
+    @staticmethod
+    def _assessment_result(
+        base: Dict[str, Any], *, status: str, recommended_action: str,
+        summary: str, **extra: Any,
+    ) -> Dict[str, Any]:
+        result = {
+            **base,
+            "status": status,
+            "recommended_action": recommended_action,
+            "summary": summary,
+            "source_window": {},
+            "metrics_by_experiment": {},
+            "action_candidates": [],
+            "operator_review_required": False,
+            "reason": "",
+            **extra,
+        }
+        result["assessment_hash"] = payload_hash(result)
+        return result
+
+    def _common_fact_dates(
+        self, cells: List[Dict[str, Any]], *, cutoff: date, limit: int,
+    ) -> List[date]:
+        common: set[date] | None = None
+        for item in cells:
+            rows = self.conn.execute(
+                """SELECT DISTINCT report_date_london
+                   FROM ad_creative_performance_daily
+                   WHERE ad_id=? AND report_date_london<=?
+                   ORDER BY report_date_london DESC LIMIT 32""",
+                (str(item["ad_id"]), cutoff.isoformat()),
+            ).fetchall()
+            current: set[date] = set()
+            for row in rows:
+                try:
+                    value = date.fromisoformat(str(row["report_date_london"] or ""))
+                except ValueError:
+                    continue
+                if value <= cutoff:
+                    current.add(value)
+            common = current if common is None else common & current
+            if not common:
+                return []
+        return sorted(common or set())[-max(1, min(int(limit or 7), 7)):]
 
     def _record_checkpoint(
         self, cycle: Dict[str, Any], *, checkpoint: str, boundary: date,
         window_end: date, required_days: int,
     ) -> Dict[str, Any]:
-        subject = dict(cycle["evaluation_subject"] or {})
-        if payload_hash(subject) != str(cycle["evaluation_subject_hash"]):
-            raise GrowthStateConflict("cycle_evaluation_subject_hash_invalid")
-        if (
-            subject.get("schema_version") != "gle-evaluation-cycle-subject-v1"
-            or subject.get("metric_source") != "ad_creative_performance_daily"
-            or subject.get("metric_date_field") != "report_date_london"
-            or subject.get("causal_claim") is not False
-            or subject.get("meta_write_allowed") is not False
-        ):
-            raise GrowthStateConflict("cycle_evaluation_subject_invalid")
-        target_experiment_id = str(subject.get("target_experiment_id") or "")
+        subject, _, remaining = self._validated_remaining_cells(cycle)
         target_ad_id = str(subject.get("target_ad_id") or "")
-        raw_cells = subject.get("cells")
-        if not isinstance(raw_cells, list):
-            raise GrowthStateConflict("cycle_evaluation_cells_invalid")
-        cells = [dict(item or {}) for item in raw_cells]
-        if not cells or len(cells) > 4:
-            raise GrowthStateConflict("cycle_evaluation_cells_invalid")
-        experiment_ids = [str(item.get("experiment_id") or "") for item in cells]
-        ad_ids = [str(item.get("ad_id") or "") for item in cells]
-        if (
-            any(not item for item in experiment_ids + ad_ids)
-            or len(set(experiment_ids)) != len(experiment_ids)
-            or len(set(ad_ids)) != len(ad_ids)
-            or target_experiment_id not in experiment_ids
-            or target_ad_id not in ad_ids
-        ):
-            raise GrowthStateConflict("cycle_evaluation_cell_identity_invalid")
-        self._validate_current_bindings(subject, cells)
-        remaining = [
-            item for item in cells
-            if str(item.get("experiment_id") or "") != target_experiment_id
-            and str(item.get("ad_id") or "") != target_ad_id
-        ]
-        if not remaining:
-            raise GrowthValidationError("cycle_has_no_remaining_ad_for_evaluation")
 
         metrics: Dict[str, Dict[str, Any]] = {}
         candidates: List[Dict[str, Any]] = []
@@ -263,6 +428,48 @@ class AdExperimentCycleEvaluator:
             "SELECT * FROM ad_experiment_cycle_evaluation WHERE cycle_evaluation_id=?",
             (evaluation_id,),
         ).fetchone())
+
+    def _validated_remaining_cells(
+        self, cycle: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        subject = dict(cycle["evaluation_subject"] or {})
+        if payload_hash(subject) != str(cycle["evaluation_subject_hash"]):
+            raise GrowthStateConflict("cycle_evaluation_subject_hash_invalid")
+        if (
+            subject.get("schema_version") != "gle-evaluation-cycle-subject-v1"
+            or subject.get("metric_source") != "ad_creative_performance_daily"
+            or subject.get("metric_date_field") != "report_date_london"
+            or subject.get("causal_claim") is not False
+            or subject.get("meta_write_allowed") is not False
+        ):
+            raise GrowthStateConflict("cycle_evaluation_subject_invalid")
+        target_experiment_id = str(subject.get("target_experiment_id") or "")
+        target_ad_id = str(subject.get("target_ad_id") or "")
+        raw_cells = subject.get("cells")
+        if not isinstance(raw_cells, list):
+            raise GrowthStateConflict("cycle_evaluation_cells_invalid")
+        cells = [dict(item or {}) for item in raw_cells]
+        if not cells or len(cells) > 4:
+            raise GrowthStateConflict("cycle_evaluation_cells_invalid")
+        experiment_ids = [str(item.get("experiment_id") or "") for item in cells]
+        ad_ids = [str(item.get("ad_id") or "") for item in cells]
+        if (
+            any(not item for item in experiment_ids + ad_ids)
+            or len(set(experiment_ids)) != len(experiment_ids)
+            or len(set(ad_ids)) != len(ad_ids)
+            or target_experiment_id not in experiment_ids
+            or target_ad_id not in ad_ids
+        ):
+            raise GrowthStateConflict("cycle_evaluation_cell_identity_invalid")
+        self._validate_current_bindings(subject, cells)
+        remaining = [
+            item for item in cells
+            if str(item.get("experiment_id") or "") != target_experiment_id
+            and str(item.get("ad_id") or "") != target_ad_id
+        ]
+        if not remaining:
+            raise GrowthValidationError("cycle_has_no_remaining_ad_for_evaluation")
+        return subject, cells, remaining
 
     @staticmethod
     def _exact_ctr_breaches(
@@ -550,6 +757,7 @@ class AdExperimentCycleEvaluator:
             "source_row_count": len(rows),
             "duplicate_projection_rows_collapsed": len(rows) - len(canonical_days),
             "source_quality_statuses": sorted(quality_statuses),
+            "source_dates": sorted(by_date),
             "source_fact_hash": payload_hash({
                 "metric_source": "ad_creative_performance_daily",
                 "ad_id": ad_id,

@@ -347,6 +347,91 @@ def test_d1_cycle_creates_immutable_observe_plan_without_meta_write() -> None:
         )
 
 
+def test_cycle_detail_uses_pre_action_history_for_immediate_observe_answer() -> None:
+    conn = _db()
+    _insert_pause_chain(conn, terminal=True, include_siblings=True)
+    cycle = AdExperimentCycleService(conn).reconcile_verified_action(
+        "action-1", actor="growth-experiment-evaluator",
+    )
+    _performance_table(conn)
+    for day in range(5, 11):
+        _metric(
+            conn, f"2026-08-{day:02d}", "ad-2",
+            spend=0.50, impressions=200, clicks=6, installs=0, joins=0,
+        )
+        _metric(
+            conn, f"2026-08-{day:02d}", "ad-3",
+            spend=0.40, impressions=150, clicks=3, installs=0, joins=0,
+        )
+    conn.commit()
+    before = {
+        "evaluations": conn.execute(
+            "SELECT COUNT(*) FROM ad_experiment_cycle_evaluation",
+        ).fetchone()[0],
+        "plans": conn.execute(
+            "SELECT COUNT(*) FROM ad_experiment_cycle_next_plan",
+        ).fetchone()[0],
+        "actions": conn.execute("SELECT COUNT(*) FROM growth_operation_action").fetchone()[0],
+    }
+
+    detail = AdExperimentCycleEvaluator(conn).detail(cycle["cycle_id"])
+    assessment = detail["immediate_assessment"]
+
+    assert assessment["status"] == "NO_INTERVENTION_SUPPORTED"
+    assert assessment["recommended_action"] == "OBSERVE"
+    assert assessment["source_window"] == {
+        "start": "2026-08-05", "end": "2026-08-10", "observed_day_count": 6,
+    }
+    assert assessment["history_is_post_action"] is False
+    assert assessment["creates_cycle_evaluation"] is False
+    assert assessment["creates_next_plan"] is False
+    assert assessment["causal_claim"] is False
+    assert assessment["meta_write_allowed"] is False
+    assert assessment["action_candidates"] == []
+    assert set(assessment["metrics_by_experiment"]) == {"experiment-2", "experiment-3"}
+    assert before == {
+        "evaluations": conn.execute(
+            "SELECT COUNT(*) FROM ad_experiment_cycle_evaluation",
+        ).fetchone()[0],
+        "plans": conn.execute(
+            "SELECT COUNT(*) FROM ad_experiment_cycle_next_plan",
+        ).fetchone()[0],
+        "actions": conn.execute("SELECT COUNT(*) FROM growth_operation_action").fetchone()[0],
+    }
+
+
+def test_pre_action_history_can_flag_review_but_never_create_an_operation() -> None:
+    conn = _db()
+    _insert_pause_chain(conn, terminal=True, include_siblings=True)
+    cycle = AdExperimentCycleService(conn).reconcile_verified_action(
+        "action-1", actor="growth-experiment-evaluator",
+    )
+    _performance_table(conn)
+    for day in range(5, 11):
+        _metric(
+            conn, f"2026-08-{day:02d}", "ad-2",
+            spend=0.50, impressions=150, clicks=0, installs=0, joins=0,
+        )
+        _metric(
+            conn, f"2026-08-{day:02d}", "ad-3",
+            spend=0.40, impressions=150, clicks=5, installs=0, joins=0,
+        )
+    conn.commit()
+
+    assessment = AdExperimentCycleEvaluator(conn).detail(
+        cycle["cycle_id"],
+    )["immediate_assessment"]
+
+    assert assessment["status"] == "INTERVENTION_REVIEW_SUPPORTED"
+    assert assessment["recommended_action"] == "REVIEW_PAUSE_CANDIDATE"
+    assert assessment["operator_review_required"] is True
+    assert assessment["action_candidates"][0]["ad_id"] == "ad-2"
+    assert assessment["creates_next_plan"] is False
+    assert assessment["meta_write_allowed"] is False
+    assert conn.execute("SELECT COUNT(*) FROM growth_operation_action").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM ad_experiment_cycle_next_plan").fetchone()[0] == 0
+
+
 def test_legacy_launch_freezes_compat_guardrails_without_claiming_authority() -> None:
     conn = _db()
     _insert_pause_chain(conn, terminal=True, include_siblings=True)
