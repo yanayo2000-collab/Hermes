@@ -8,6 +8,7 @@ import sqlite3
 
 from app.growth.ad_experiment_evaluator import AdExperimentEvaluator
 from app.growth.ad_experiment_cycle_service import AdExperimentCycleService
+from app.growth.ad_experiment_cycle_evaluator import AdExperimentCycleEvaluator
 from app.growth.audience_experiment_evaluator import AudienceExperimentEvaluator
 from app.growth.autonomy_service import GrowthAutonomyService
 from app.growth.creative_group_evaluator import CreativeGroupEvaluator
@@ -31,6 +32,9 @@ def main() -> int:
         cycles = AdExperimentCycleService(conn).reconcile_pending(
             actor="growth-experiment-evaluator",
         )
+        cycle_evaluations = AdExperimentCycleEvaluator(conn).evaluate_due(
+            as_of_date=args.as_of_date,
+        )
         result = AdExperimentEvaluator(conn).evaluate_due(as_of_date=args.as_of_date)
         creative_result = CreativeGroupEvaluator(conn).evaluate_due(as_of_date=args.as_of_date)
         audience_result = AudienceExperimentEvaluator(conn).evaluate_due(as_of_date=args.as_of_date)
@@ -42,6 +46,7 @@ def main() -> int:
         )
         print(json.dumps(
             {"ok": True, **result, "cycles": cycles,
+             "cycle_evaluations": cycle_evaluations,
              "creative_experiments": creative_result,
              "audience_experiments": audience_result,
              "next_actions": next_actions,

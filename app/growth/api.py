@@ -21,6 +21,7 @@ from app.growth.ad_account_coverage import (
 from app.growth.adaptive_agent_service import AdaptiveGrowthAgentService
 from app.growth.ad_experiment_evaluator import AdExperimentEvaluator
 from app.growth.ad_experiment_cycle_service import AdExperimentCycleService
+from app.growth.ad_experiment_cycle_evaluator import AdExperimentCycleEvaluator
 from app.growth.ad_experiment_service import AdExperimentService
 from app.growth.audience_strategy import (
     AUDIENCE_DELIVERY_ESTIMATE_SNAPSHOT,
@@ -4128,6 +4129,18 @@ def create_ad_experiment_router(
             db, lambda conn: AdExperimentCycleService(conn).list_for_experiment(experiment_id),
         ))
 
+    @router.get("/experiments/{experiment_id}/cycles/{cycle_id}")
+    def get_experiment_cycle_detail(
+        experiment_id: str, cycle_id: str, request: Request,
+    ) -> Dict[str, Any]:
+        operator(request)
+        def action(conn: sqlite3.Connection) -> Dict[str, Any]:
+            detail = AdExperimentCycleEvaluator(conn).detail(cycle_id)
+            if str(detail["cycle"].get("experiment_id") or "") != str(experiment_id):
+                raise GrowthNotFound("ad_experiment_cycle_not_found")
+            return detail
+        return execute(lambda: _with_connection(db, action))
+
     @router.post("/new-account-launches/{launch_id}/audience-checkpoints", status_code=201)
     def evaluate_audience_pair(
         launch_id: str, body: AudiencePairEvaluationRequest, request: Request,
@@ -4173,6 +4186,24 @@ def create_ad_experiment_router(
         operator(request)
         def action(conn: sqlite3.Connection) -> Dict[str, Any]:
             experiment = AdExperimentService(conn).get(experiment_id)
+            cycle_plan = conn.execute(
+                """SELECT p.*,c.cycle_id FROM ad_experiment_cycle_next_plan p
+                   JOIN ad_experiment_cycle c ON c.cycle_id=p.cycle_id
+                   WHERE c.experiment_id=? AND p.status IN ('READY','AWAITING_CONFIRMATION','BLOCKED')
+                   ORDER BY p.created_at DESC,p.cycle_plan_id DESC LIMIT 1""",
+                (experiment_id,),
+            ).fetchone()
+            if cycle_plan:
+                serialized = AdExperimentCycleEvaluator._plan(cycle_plan)
+                return {
+                    "experiment": experiment,
+                    "latest_evaluation": {},
+                    "recommended_action": serialized["action_type"],
+                    "requires_approval": serialized["requires_confirmation"],
+                    "closed_loop_plan": serialized,
+                    "causal_claim": False,
+                    "meta_writes_performed": False,
+                }
             evaluations = AdExperimentEvaluator(conn).list(experiment_id)["items"]
             latest = evaluations[-1] if evaluations else {}
             status = str(latest.get("evaluation_status") or "PENDING")
@@ -4181,18 +4212,28 @@ def create_ad_experiment_router(
                 "NEUTRAL": "OBSERVE", "INSUFFICIENT_SAMPLE": "OBSERVE",
                 "DATA_INCOMPLETE": "CHECK_DATA", "MIXED_CHANGE": "CREATE_PAUSED_AD",
             }.get(status, "OBSERVE")
-            return {"experiment": experiment, "latest_evaluation": latest, "recommended_action": next_action, "causal_claim": False, "requires_approval": next_action not in {"OBSERVE", "CHECK_DATA"}}
+            return {"experiment": experiment, "latest_evaluation": latest, "recommended_action": next_action, "causal_claim": False, "requires_approval": next_action not in {"OBSERVE", "CHECK_DATA"}, "meta_writes_performed": False}
         return execute(lambda: _with_connection(db, action))
 
     @router.get("/experiments/{experiment_id}/adjustment-review")
     def adjustment_review(experiment_id: str, request: Request) -> Dict[str, Any]:
         operator(request)
-        return execute(lambda: _with_connection(db, lambda conn: {
-            "experiment": AdExperimentService(conn).get(experiment_id),
-            "performance": AdExperimentEvaluator(conn).list(experiment_id),
-            "cycles": AdExperimentCycleService(conn).list_for_experiment(experiment_id),
-            "timeline": AdExperimentService(conn).timeline(experiment_id),
-        }))
+        def action(conn: sqlite3.Connection) -> Dict[str, Any]:
+            cycles = AdExperimentCycleService(conn).list_for_experiment(experiment_id)
+            latest_cycle = (
+                AdExperimentCycleEvaluator(conn).detail(cycles["items"][-1]["cycle_id"])
+                if cycles["items"] else {}
+            )
+            return {
+                "experiment": AdExperimentService(conn).get(experiment_id),
+                "performance": AdExperimentEvaluator(conn).list(experiment_id),
+                "cycles": cycles,
+                "latest_closed_loop": latest_cycle,
+                "timeline": AdExperimentService(conn).timeline(experiment_id),
+                "causal_claim": False,
+                "meta_writes_performed": False,
+            }
+        return execute(lambda: _with_connection(db, action))
 
     return router
 

@@ -5,8 +5,11 @@ import sqlite3
 import pytest
 
 from app.growth.ad_experiment_cycle_service import AdExperimentCycleService
+from app.growth.ad_experiment_cycle_evaluator import AdExperimentCycleEvaluator
 from app.growth.ad_experiment_evaluator import AdExperimentEvaluator
+from app.growth.ad_experiment_service import AdExperimentService
 from app.growth.common import canonical_json, payload_hash
+from app.growth.delivery_guardrails import new_account_delivery_guardrails
 from app.growth.errors import GrowthStateConflict
 from app.growth.execution_service import ExecutionTaskService
 from app.growth.schema import ensure_growth_schema
@@ -24,6 +27,7 @@ def _db() -> sqlite3.Connection:
 
 def _insert_pause_chain(
     conn: sqlite3.Connection, *, terminal: bool = False, readback_status: str = "PAUSED",
+    include_siblings: bool = False,
 ) -> None:
     plan = {
         "schema_version": "gle-ad-experiment-plan-v1",
@@ -43,11 +47,49 @@ def _insert_pause_chain(
     }
     conn.execute(
         """INSERT INTO ad_experiment
-        (experiment_id,experiment_code,target_app,account_id,source_ad_id,
-         experiment_type,state,created_at,updated_at)
-        VALUES ('experiment-1','EXP-1','Tugao','2282907019174017','ad-1',
-                'PAUSE_TEST','ADJUSTING',?,?)""",
-        ("2026-08-11T07:00:00+00:00", "2026-08-11T08:00:00+00:00"),
+        (experiment_id,experiment_code,target_app,account_id,source_report_id,
+         source_campaign_id,source_ad_id,experiment_type,state,control_definition_json,
+         stop_rule_json,created_at,updated_at)
+        VALUES ('experiment-1','EXP-1','Tugao','2282907019174017',?,?,?,
+                'PAUSE_TEST','ADJUSTING',?,?,?,?)""",
+        (
+            "launch-1" if include_siblings else "", "campaign-1", "ad-1",
+            canonical_json({"role": "BASELINE"}),
+            canonical_json({"delivery_guardrails": new_account_delivery_guardrails()}),
+            "2026-08-11T07:00:00+00:00", "2026-08-11T08:00:00+00:00",
+        ),
+    )
+    if include_siblings:
+        for index in (2, 3):
+            conn.execute(
+                """INSERT INTO ad_experiment
+                (experiment_id,experiment_code,target_app,account_id,source_report_id,
+                 source_campaign_id,source_ad_id,experiment_type,state,
+                 control_definition_json,stop_rule_json,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,'NEW_AD_TEST','MATURING',?,?,?,?)""",
+                (
+                    f"experiment-{index}", f"EXP-{index}", "Tugao",
+                    "2282907019174017", "launch-1", "campaign-1", f"ad-{index}",
+                    canonical_json({"role": "CHALLENGER"}),
+                    canonical_json({
+                        "delivery_guardrails": new_account_delivery_guardrails(),
+                    }),
+                    "2026-08-11T07:00:00+00:00", "2026-08-11T08:00:00+00:00",
+                ),
+            )
+    conn.execute(
+        """INSERT INTO growth_context_snapshot
+        (context_snapshot_id,app_id,snapshot_hash,created_at)
+        VALUES ('context-1','Tugao','context-hash-1','2026-08-11T07:00:00+00:00')""",
+    )
+    conn.execute(
+        """INSERT INTO growth_decision
+        (decision_id,recommendation_id,context_snapshot_id,selected_action,
+         rejected_actions_json,decision_reason_json,confidence,status,target_type,
+         target_id,idempotency_key,request_hash,decided_by,created_at,updated_at)
+        VALUES ('decision-1','recommendation-1','context-1','PAUSE_AD','[]','{}',
+                0.8,'BOUND','AD','ad-1','decision-key','decision-hash','operator',
+                '2026-08-11T07:00:00+00:00','2026-08-11T07:00:00+00:00')""",
     )
     conn.execute(
         """INSERT INTO growth_operation_action
@@ -119,6 +161,33 @@ def _insert_pause_chain(
     conn.commit()
 
 
+def _performance_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE ad_creative_performance_daily (
+        report_date_london TEXT NOT NULL,asset_id TEXT NOT NULL,ad_id TEXT NOT NULL,
+        spend REAL NOT NULL,impressions REAL NOT NULL,clicks REAL NOT NULL,
+        installs REAL NOT NULL,tugao_real_bind_count REAL NOT NULL,
+        data_quality_status TEXT NOT NULL,
+        PRIMARY KEY(report_date_london,asset_id,ad_id))""",
+    )
+
+
+def _metric(
+    conn: sqlite3.Connection, report_date: str, ad_id: str, *, spend: float,
+    impressions: int, clicks: int, installs: int, joins: int, asset_id: str = "",
+) -> None:
+    conn.execute(
+        """INSERT INTO ad_creative_performance_daily
+        (report_date_london,asset_id,ad_id,spend,impressions,clicks,installs,
+         tugao_real_bind_count,data_quality_status)
+        VALUES (?,?,?,?,?,?,?,?, 'PASS')""",
+        (
+            report_date, asset_id or f"asset-{ad_id}", ad_id, spend, impressions, clicks,
+            installs, joins,
+        ),
+    )
+
+
 def test_verified_pause_opens_one_evidence_bound_cycle(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _db()
     _insert_pause_chain(conn)
@@ -146,6 +215,21 @@ def test_verified_pause_opens_one_evidence_bound_cycle(monkeypatch: pytest.Monke
     )
     assert same["cycle_id"] == cycle["cycle_id"]
     assert conn.execute("SELECT COUNT(*) FROM ad_experiment_cycle").fetchone()[0] == 1
+
+
+def test_verified_pause_backfill_opens_cycle_from_already_paused_state() -> None:
+    conn = _db()
+    _insert_pause_chain(conn, terminal=True, include_siblings=True)
+    conn.execute("UPDATE ad_experiment SET state='PAUSED' WHERE experiment_id='experiment-1'")
+    conn.commit()
+
+    cycle = AdExperimentCycleService(conn).reconcile_verified_action(
+        "action-1", actor="growth-experiment-evaluator",
+    )
+
+    assert cycle["state"] == "WAITING_EVIDENCE"
+    assert AdExperimentService(conn).get("experiment-1")["state"] == "EVALUATING_ADJUSTMENT"
+    assert cycle["first_complete_date"] == "2026-08-12"
     assert conn.execute(
         "SELECT COUNT(*) FROM ad_experiment_events WHERE event_type='EVALUATION_WINDOW_OPENED'",
     ).fetchone()[0] == 1
@@ -225,3 +309,198 @@ def test_legacy_evaluator_never_reuses_original_window_for_cycle() -> None:
 
     assert result["count"] == 0
     assert conn.execute("SELECT COUNT(*) FROM ad_experiment_evaluation").fetchone()[0] == 0
+
+
+def test_d1_cycle_creates_immutable_observe_plan_without_meta_write() -> None:
+    conn = _db()
+    _insert_pause_chain(conn, terminal=True, include_siblings=True)
+    cycle = AdExperimentCycleService(conn).reconcile_verified_action(
+        "action-1", actor="growth-experiment-evaluator",
+    )
+    _performance_table(conn)
+    _metric(conn, "2026-08-12", "ad-2", spend=0.20, impressions=100, clicks=4, installs=1, joins=0)
+    _metric(conn, "2026-08-12", "ad-3", spend=0.25, impressions=120, clicks=5, installs=1, joins=0)
+    conn.commit()
+
+    not_due = AdExperimentCycleEvaluator(conn).evaluate_due(as_of_date="2026-08-11")
+    result = AdExperimentCycleEvaluator(conn).evaluate_due(as_of_date="2026-08-12")
+    repeat = AdExperimentCycleEvaluator(conn).evaluate_due(as_of_date="2026-08-12")
+    detail = AdExperimentCycleEvaluator(conn).detail(cycle["cycle_id"])
+
+    assert not_due["count"] == 0
+    assert result["count"] == 1
+    assert repeat["count"] == 0
+    assert detail["cycle"]["state"] == "EVALUATING"
+    assert detail["evaluations"][0]["evaluation_status"] == "OBSERVE"
+    assert set(detail["evaluations"][0]["metrics_by_experiment"]) == {
+        "experiment-2", "experiment-3",
+    }
+    assert detail["plans"][0]["action_type"] == "OBSERVE"
+    assert detail["plans"][0]["status"] == "READY"
+    assert detail["plans"][0]["requires_confirmation"] is False
+    assert detail["plans"][0]["meta_write_allowed"] is False
+    assert conn.execute("SELECT COUNT(*) FROM growth_operation_action").fetchone()[0] == 1
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "UPDATE ad_experiment_cycle_next_plan SET causal_claim=1 WHERE cycle_id=?",
+            (cycle["cycle_id"],),
+        )
+
+
+def test_legacy_launch_freezes_compat_guardrails_without_claiming_authority() -> None:
+    conn = _db()
+    _insert_pause_chain(conn, terminal=True, include_siblings=True)
+    conn.execute("UPDATE ad_experiment SET stop_rule_json='{}'")
+    conn.commit()
+
+    cycle = AdExperimentCycleService(conn).reconcile_verified_action(
+        "action-1", actor="growth-experiment-evaluator",
+    )
+
+    assert len(cycle["evaluation_subject"]["cells"]) == 3
+    for cell in cycle["evaluation_subject"]["cells"]:
+        assert cell["delivery_guardrails"]["version"] == "mx_cold_start_stop_v1"
+        assert cell["delivery_guardrails_source"] == (
+            "LEGACY_NEW_ACCOUNT_POLICY_COMPAT_MX_COLD_START_STOP_V1"
+        )
+
+
+def test_cycle_dedupes_asset_projection_and_never_treats_installs_as_zero() -> None:
+    conn = _db()
+    _insert_pause_chain(conn, terminal=True, include_siblings=True)
+    cycle = AdExperimentCycleService(conn).reconcile_verified_action(
+        "action-1", actor="growth-experiment-evaluator",
+    )
+    _performance_table(conn)
+    for day in range(12, 15):
+        report_date = f"2026-08-{day:02d}"
+        for ad_id in ("ad-2", "ad-3"):
+            for suffix in ("a", "b"):
+                _metric(
+                    conn, report_date, ad_id, spend=0.75, impressions=1000,
+                    clicks=20, installs=0, joins=0,
+                    asset_id=f"asset-{ad_id}-{suffix}",
+                )
+    conn.commit()
+
+    result = AdExperimentCycleEvaluator(conn).evaluate_due(as_of_date="2026-08-14")
+    detail = AdExperimentCycleEvaluator(conn).detail(cycle["cycle_id"])
+    d3 = detail["evaluations"][-1]
+
+    assert result["count"] == 2
+    assert d3["checkpoint"] == "D3"
+    assert d3["evaluation_status"] == "OBSERVE"
+    assert d3["action_candidates"] == []
+    assert d3["metrics_by_experiment"]["experiment-2"]["spend"] == pytest.approx(2.25)
+    assert d3["metrics_by_experiment"]["experiment-2"]["installs"] is None
+    assert d3["metrics_by_experiment"]["experiment-2"][
+        "duplicate_projection_rows_collapsed"
+    ] == 3
+    assert conn.execute("SELECT COUNT(*) FROM growth_operation_action").fetchone()[0] == 1
+
+
+def test_d3_stop_loss_compiles_second_round_plan_for_confirmation() -> None:
+    conn = _db()
+    _insert_pause_chain(conn, terminal=True, include_siblings=True)
+    cycle = AdExperimentCycleService(conn).reconcile_verified_action(
+        "action-1", actor="growth-experiment-evaluator",
+    )
+    _performance_table(conn)
+    for report_date, impressions, clicks in (
+        ("2026-08-12", 100, 4),
+        ("2026-08-13", 400, 1),
+        ("2026-08-14", 400, 1),
+    ):
+        _metric(
+            conn, report_date, "ad-2", spend=0.60, impressions=impressions,
+            clicks=clicks, installs=1, joins=0,
+        )
+        _metric(
+            conn, report_date, "ad-3", spend=0.40, impressions=500,
+            clicks=20, installs=2, joins=1,
+        )
+    conn.commit()
+
+    result = AdExperimentCycleEvaluator(conn).evaluate_due(as_of_date="2026-08-14")
+    detail = AdExperimentCycleEvaluator(conn).detail(cycle["cycle_id"])
+    latest = detail["plans"][-1]
+
+    assert result["count"] == 2
+    assert detail["evaluations"][-1]["checkpoint"] == "D3"
+    assert detail["evaluations"][-1]["evaluation_status"] == "ACTION_RECOMMENDED"
+    assert latest["action_type"] == "PAUSE_AD"
+    assert latest["target_experiment_id"] == "experiment-2"
+    assert latest["target_id"] == "ad-2"
+    assert latest["status"] == "AWAITING_CONFIRMATION"
+    assert latest["requires_confirmation"] is True
+    assert latest["operation_action_id"]
+    assert latest["meta_write_allowed"] is False
+    proposed = conn.execute(
+        "SELECT status,target_id FROM growth_operation_action WHERE operation_action_id=?",
+        (latest["operation_action_id"],),
+    ).fetchone()
+    approval = conn.execute(
+        "SELECT status FROM growth_operation_approval WHERE operation_action_id=?",
+        (latest["operation_action_id"],),
+    ).fetchone()
+    assert tuple(proposed) == ("CREATED", "ad-2")
+    assert approval["status"] == "PROPOSED"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM meta_execution_task WHERE operation_action_id=?",
+        (latest["operation_action_id"],),
+    ).fetchone()[0] == 0
+    assert detail["cycle"]["state"] == "NEXT_PLAN_READY"
+    assert AdExperimentService(conn).get("experiment-1")["state"] == "PAUSED"
+
+
+def test_cycle_evaluation_rejects_frozen_subject_identity_drift() -> None:
+    conn = _db()
+    _insert_pause_chain(conn, terminal=True, include_siblings=True)
+    AdExperimentCycleService(conn).reconcile_verified_action(
+        "action-1", actor="growth-experiment-evaluator",
+    )
+    _performance_table(conn)
+    _metric(conn, "2026-08-12", "ad-2", spend=0.2, impressions=100, clicks=4, installs=1, joins=0)
+    _metric(conn, "2026-08-12", "ad-3", spend=0.2, impressions=100, clicks=4, installs=1, joins=0)
+    conn.execute(
+        "UPDATE ad_experiment SET source_ad_id='forged-ad' WHERE experiment_id='experiment-2'",
+    )
+    conn.commit()
+
+    result = AdExperimentCycleEvaluator(conn).evaluate_due(as_of_date="2026-08-12")
+
+    assert result["count"] == 0
+    assert result["deferred"][0]["reason"] == "cycle_evaluation_experiment_binding_drift"
+    assert conn.execute("SELECT COUNT(*) FROM ad_experiment_cycle_evaluation").fetchone()[0] == 0
+
+
+def test_d7_cycle_closes_with_no_change_plan_when_no_guardrail_breaches() -> None:
+    conn = _db()
+    _insert_pause_chain(conn, terminal=True, include_siblings=True)
+    cycle = AdExperimentCycleService(conn).reconcile_verified_action(
+        "action-1", actor="growth-experiment-evaluator",
+    )
+    _performance_table(conn)
+    for day in range(12, 19):
+        report_date = f"2026-08-{day:02d}"
+        for ad_id in ("ad-2", "ad-3"):
+            _metric(
+                conn, report_date, ad_id, spend=0.20, impressions=500,
+                clicks=20, installs=2, joins=1,
+            )
+    conn.commit()
+
+    result = AdExperimentCycleEvaluator(conn).evaluate_due(as_of_date="2026-08-18")
+    detail = AdExperimentCycleEvaluator(conn).detail(cycle["cycle_id"])
+
+    assert result["count"] == 3
+    assert [item["checkpoint"] for item in detail["evaluations"]] == ["D1", "D3", "D7"]
+    assert detail["evaluations"][-1]["evaluation_status"] == "CYCLE_COMPLETE_NO_CHANGE"
+    assert detail["cycle"]["state"] == "EVALUATED"
+    assert [item["status"] for item in detail["plans"]] == [
+        "SUPERSEDED", "SUPERSEDED", "READY",
+    ]
+    assert detail["plans"][-1]["plan"]["next_checkpoint"] == ""
+    assert detail["plans"][-1]["plan"]["requires_confirmation"] is False
+    assert conn.execute("SELECT COUNT(*) FROM growth_operation_action").fetchone()[0] == 1
+    assert AdExperimentService(conn).get("experiment-1")["state"] == "PAUSED"

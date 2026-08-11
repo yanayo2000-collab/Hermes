@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from app.growth.ad_experiment_service import AdExperimentService
 from app.growth.common import canonical_json, decode_json, new_id, payload_hash, utc_now
+from app.growth.delivery_guardrails import new_account_delivery_guardrails
 from app.growth.errors import GrowthNotFound, GrowthStateConflict, GrowthValidationError
 from app.growth.schema import ensure_growth_schema
 
@@ -50,6 +51,7 @@ class AdExperimentCycleService:
                 or result["source_receipt_hash"] != source["receipt_hash"]
                 or result["evidence_root_hash"] != source["evidence_root_hash"]
                 or result["source_execution_task_id"] != source["execution_task_id"]
+                or result["evaluation_subject_hash"] != source["evaluation_subject_hash"]
             ):
                 raise GrowthStateConflict("closed_loop_cycle_source_drift")
             return result
@@ -62,24 +64,27 @@ class AdExperimentCycleService:
                 INSERT INTO ad_experiment_cycle
                 (cycle_id,experiment_id,source_operation_action_id,source_execution_task_id,
                  source_receipt_id,source_plan_hash,source_receipt_hash,evidence_root_hash,
-                 action_type,target_type,target_id,evaluation_checkpoints_json,
+                 action_type,target_type,target_id,evaluation_subject_json,
+                 evaluation_subject_hash,evaluation_checkpoints_json,
                  window_opened_at,first_complete_date,reporting_timezone,state,
                  latest_checkpoint,latest_evaluation_status,causal_claim,meta_write_allowed,
                  created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'WAITING_EVIDENCE','','',0,0,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'WAITING_EVIDENCE','','',0,0,?,?)
                 """,
                 (
                     cycle_id, source["experiment_id"], normalized_action_id,
                     source["execution_task_id"], source["receipt_id"], source["plan_hash"],
                     source["receipt_hash"], source["evidence_root_hash"], source["action_type"],
                     source["target_type"], source["target_id"],
+                    canonical_json(source["evaluation_subject"]),
+                    source["evaluation_subject_hash"],
                     canonical_json(EVALUATION_CHECKPOINTS), source["window_opened_at"],
                     source["first_complete_date"], REPORTING_TIMEZONE, now, now,
                 ),
             )
             experiments = AdExperimentService(self.conn)
             experiment = experiments.get(source["experiment_id"])
-            if experiment["state"] == "ADJUSTING":
+            if experiment["state"] in {"ADJUSTING", "PAUSED"}:
                 experiment = experiments.transition(
                     source["experiment_id"], "EVALUATING_ADJUSTMENT", actor=normalized_actor,
                     reason=f"cycle_opened:{cycle_id}", event_type="ADJUSTMENT_EVALUATION_STARTED",
@@ -108,6 +113,7 @@ class AdExperimentCycleService:
                     "first_complete_date": source["first_complete_date"],
                     "reporting_timezone": REPORTING_TIMEZONE,
                     "checkpoints": EVALUATION_CHECKPOINTS,
+                    "evaluation_subject_hash": source["evaluation_subject_hash"],
                     "causal_claim": False,
                     "meta_writes_performed": False,
                 },
@@ -311,6 +317,8 @@ class AdExperimentCycleService:
             finished_at.astimezone(ZoneInfo(REPORTING_TIMEZONE)).date() + timedelta(days=1)
         ).isoformat()
         receipt_hash = payload_hash(receipts)
+        evaluation_subject = self._evaluation_subject(experiment, target_id)
+        evaluation_subject_hash = payload_hash(evaluation_subject)
         evidence_root_hash = payload_hash({
             "schema_version": "gle-ad-experiment-cycle-v1",
             "experiment_id": experiment_id,
@@ -321,6 +329,7 @@ class AdExperimentCycleService:
             "action_type": action_type,
             "target_type": target_type,
             "target_id": target_id,
+            "evaluation_subject_hash": evaluation_subject_hash,
             "window_opened_at": opened_at,
             "first_complete_date": first_complete_date,
             "reporting_timezone": REPORTING_TIMEZONE,
@@ -338,8 +347,91 @@ class AdExperimentCycleService:
             "action_type": action_type,
             "target_type": target_type,
             "target_id": target_id,
+            "evaluation_subject": evaluation_subject,
+            "evaluation_subject_hash": evaluation_subject_hash,
             "window_opened_at": opened_at,
             "first_complete_date": first_complete_date,
+        }
+
+    def _evaluation_subject(
+        self, experiment: Dict[str, Any], target_ad_id: str,
+    ) -> Dict[str, Any]:
+        experiment_id = str(experiment.get("experiment_id") or "").strip()
+        launch_id = str(experiment.get("source_report_id") or "").strip()
+        account_id = str(experiment.get("account_id") or "").removeprefix("act_")
+        rows = []
+        if launch_id:
+            rows = self.conn.execute(
+                """SELECT * FROM ad_experiment
+                   WHERE source_report_id=? ORDER BY experiment_id""",
+                (launch_id,),
+            ).fetchall()
+        experiments = [
+            AdExperimentService._serialize(row) for row in rows
+        ] if rows else [experiment]
+        valid_group = 2 <= len(experiments) <= 4
+        cells: List[Dict[str, Any]] = []
+        seen_experiments: set[str] = set()
+        seen_ads: set[str] = set()
+        for item in experiments:
+            item_experiment_id = str(item.get("experiment_id") or "").strip()
+            ad_id = str(item.get("source_ad_id") or "").strip()
+            item_account_id = str(item.get("account_id") or "").removeprefix("act_")
+            if (
+                not item_experiment_id or not ad_id or item_account_id != account_id
+                or item_experiment_id in seen_experiments or ad_id in seen_ads
+            ):
+                valid_group = False
+                break
+            seen_experiments.add(item_experiment_id)
+            seen_ads.add(ad_id)
+            stop_rules = dict(
+                dict(item.get("stop_rule_json") or {}).get("delivery_guardrails") or {}
+            )
+            stop_rules_source = "EXPERIMENT_FROZEN_DELIVERY_GUARDRAILS"
+            if not stop_rules and launch_id:
+                stop_rules = new_account_delivery_guardrails()
+                stop_rules_source = "LEGACY_NEW_ACCOUNT_POLICY_COMPAT_MX_COLD_START_STOP_V1"
+            cells.append({
+                "experiment_id": item_experiment_id,
+                "ad_id": ad_id,
+                "role": str(dict(item.get("control_definition_json") or {}).get("role") or "").upper(),
+                "delivery_guardrails": stop_rules,
+                "delivery_guardrails_hash": payload_hash(stop_rules),
+                "delivery_guardrails_source": stop_rules_source,
+            })
+        if (
+            not valid_group or experiment_id not in seen_experiments
+            or target_ad_id not in seen_ads
+        ):
+            stop_rules = dict(
+                dict(experiment.get("stop_rule_json") or {}).get("delivery_guardrails") or {}
+            )
+            stop_rules_source = "EXPERIMENT_FROZEN_DELIVERY_GUARDRAILS"
+            if not stop_rules and str(experiment.get("source_report_id") or "").strip():
+                stop_rules = new_account_delivery_guardrails()
+                stop_rules_source = "LEGACY_NEW_ACCOUNT_POLICY_COMPAT_MX_COLD_START_STOP_V1"
+            cells = [{
+                "experiment_id": experiment_id,
+                "ad_id": target_ad_id,
+                "role": str(dict(experiment.get("control_definition_json") or {}).get("role") or "").upper(),
+                "delivery_guardrails": stop_rules,
+                "delivery_guardrails_hash": payload_hash(stop_rules),
+                "delivery_guardrails_source": stop_rules_source,
+            }]
+            launch_id = ""
+        return {
+            "schema_version": "gle-evaluation-cycle-subject-v1",
+            "mode": "SAME_LAUNCH_REMAINING_ADS" if len(cells) >= 2 else "SINGLE_TARGET_AFTER_PAUSE",
+            "launch_id": launch_id,
+            "account_id": account_id,
+            "target_experiment_id": experiment_id,
+            "target_ad_id": target_ad_id,
+            "cells": cells,
+            "metric_source": "ad_creative_performance_daily",
+            "metric_date_field": "report_date_london",
+            "causal_claim": False,
+            "meta_write_allowed": False,
         }
 
     @staticmethod
@@ -362,6 +454,9 @@ class AdExperimentCycleService:
     @staticmethod
     def _serialize(row: sqlite3.Row) -> Dict[str, Any]:
         result = dict(row)
+        result["evaluation_subject"] = decode_json(
+            result.pop("evaluation_subject_json"), {},
+        )
         result["evaluation_checkpoints"] = decode_json(
             result.pop("evaluation_checkpoints_json"), [],
         )
