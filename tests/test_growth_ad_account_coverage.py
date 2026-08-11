@@ -340,6 +340,11 @@ def test_dashboard_coverage_opens_the_existing_governed_task_flow() -> None:
     assert "只读分析 · 调整需确认" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "现在能做" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "既有计划、明确确认与回读流程" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "immediate_assessment" in workspace_js
+    assert "立即经营判断" in workspace_js
+    assert "现在不用再停广告" in workspace_js
+    assert "这不是暂停后的效果评价" in workspace_js
+    assert "继续观察，暂不干预" in workspace_js
 
 
 def test_readonly_api_returns_the_exact_five_account_scope(tmp_path: Path) -> None:
