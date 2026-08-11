@@ -225,8 +225,8 @@ def _normalize_ad_fact_account_value(row: Dict[str, Any]) -> str:
     return str((row or {}).get('app_id') or '').strip()
 
 
-def _ad_fact_grain_key(row: Dict[str, Any]) -> Tuple[str, ...]:
-    base = (
+def _ad_fact_legacy_grain_key(row: Dict[str, Any]) -> Tuple[str, ...]:
+    return (
         str((row or {}).get('date') or '').strip(),
         str((row or {}).get('data_source') or '').strip() or 'Unknown',
         str((row or {}).get('platform') or '').strip() or 'Unknown',
@@ -239,6 +239,40 @@ def _ad_fact_grain_key(row: Dict[str, Any]) -> Tuple[str, ...]:
         str((row or {}).get('ad') or '').strip(),
         str((row or {}).get('source_type') or '').strip(),
     )
+
+
+def _ad_meta_exact_grain_key(row: Dict[str, Any]) -> Optional[Tuple[str, ...]]:
+    if (
+        str((row or {}).get('data_source') or '').strip().lower() != 'meta'
+        or str((row or {}).get('platform') or '').strip().lower() != 'meta'
+    ):
+        return None
+    account_id = _normalize_ad_account_id_candidate(
+        (row or {}).get('account_id') or (row or {}).get('ad_account_id')
+    )
+    campaign_id = str((row or {}).get('campaign_id') or '').strip()
+    adset_id = str((row or {}).get('adset_id') or '').strip()
+    ad_id = str((row or {}).get('ad_id') or '').strip()
+    identifiers = (account_id, campaign_id, adset_id, ad_id)
+    if any(not value.isdigit() or len(value) > 32 for value in identifiers):
+        return None
+    return (
+        'meta-exact-ad-v2',
+        str((row or {}).get('date') or '').strip(),
+        'Meta',
+        'Meta',
+        account_id,
+        str((row or {}).get('appsflyer_app_id') or '').strip(),
+        str((row or {}).get('country') or '').strip() or 'Unknown',
+        str((row or {}).get('media_source') or '').strip(),
+        campaign_id,
+        adset_id,
+        ad_id,
+        str((row or {}).get('source_type') or '').strip(),
+    )
+
+
+def _ad_fact_grain_key(row: Dict[str, Any]) -> Tuple[str, ...]:
     if (
         (row or {}).get('qualified_join_metric_observed') is True
         and str((row or {}).get('data_source') or '').strip().lower() == 'tugaofunnel'
@@ -254,11 +288,16 @@ def _ad_fact_grain_key(row: Dict[str, Any]) -> Tuple[str, ...]:
             str((row or {}).get('ad_id') or '').strip(),
             str((row or {}).get('external_app') or '').strip(),
         )
-    return base
+    return _ad_meta_exact_grain_key(row) or _ad_fact_legacy_grain_key(row)
 
 
 def _ad_fact_row_id(row: Dict[str, Any]) -> str:
     raw = json.dumps(_ad_fact_grain_key(row), ensure_ascii=False, sort_keys=False)
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def _ad_fact_legacy_row_id(row: Dict[str, Any]) -> str:
+    raw = json.dumps(_ad_fact_legacy_grain_key(row), ensure_ascii=False, sort_keys=False)
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
 
@@ -365,6 +404,8 @@ def _ad_materialize_fact_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
             '_qualified_join_identities': set(),
             '_qualified_join_input_rows': 0,
         })
+        if _ad_meta_exact_grain_key(row) is not None:
+            bucket['fact_grain_version'] = 'meta_exact_ad_v2'
         row_target_app = _ad_dashboard_row_target_app(row)
         if bucket.get('target_app') not in {'linky', 'timo'} and row_target_app in {'linky', 'timo'}:
             bucket['target_app'] = row_target_app
@@ -548,6 +589,7 @@ def ensure_ad_dashboard_fact_tables(conn: sqlite3.Connection) -> None:
         """)
         conn.execute('CREATE INDEX IF NOT EXISTS idx_ad_dashboard_fact_target_app ON ad_dashboard_fact_rows(target_app, platform, date)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_ad_dashboard_fact_lineage ON ad_dashboard_fact_rows(date, platform, account_id, campaign_id, campaign)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_ad_dashboard_fact_ad_identity ON ad_dashboard_fact_rows(ad_id, date, account_id)')
     except Exception:
         # Older databases may be opened read-only during diagnostics. Schema
         # compatibility backfills are best effort, matching the legacy path.
@@ -609,6 +651,19 @@ def _remove_reclassified_unknown_fact(conn: sqlite3.Connection, row: Dict[str, A
     return max(int(cursor.rowcount or 0), 0)
 
 
+def _remove_legacy_meta_fact_predecessor(conn: sqlite3.Connection, row: Dict[str, Any]) -> int:
+    if _ad_meta_exact_grain_key(row) is None:
+        return 0
+    legacy_row_id = _ad_fact_legacy_row_id(row)
+    if legacy_row_id == _ad_fact_row_id(row):
+        return 0
+    cursor = conn.execute(
+        "DELETE FROM ad_dashboard_fact_rows WHERE row_id=? AND lower(data_source)='meta'",
+        (legacy_row_id,),
+    )
+    return max(int(cursor.rowcount or 0), 0)
+
+
 def upsert_ad_dashboard_fact_rows(
     conn: sqlite3.Connection,
     rows: List[Dict[str, Any]],
@@ -662,6 +717,7 @@ def upsert_ad_dashboard_fact_rows(
             now,
         ]
         _remove_reclassified_unknown_fact(conn, row)
+        _remove_legacy_meta_fact_predecessor(conn, row)
         conn.execute(sql, values)
         count += 1
     return count

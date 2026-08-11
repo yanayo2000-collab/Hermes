@@ -31,6 +31,7 @@ from app.ad_dashboard_repository import (
 )
 from app.sqlite_write_queue import (
     SQLiteWriteQueueError,
+    _exact_meta_write_readback,
     _qualified_join_write_readback,
     db_writer_enabled,
     db_writer_required,
@@ -326,6 +327,7 @@ def _store_fact_rows(
                 'sync_status': str(result.get('sync_status') or 'partial'),
                 'sync_error_message': str(result.get('sync_error_message') or ''),
                 'qualified_join_readback': dict(result.get('qualified_join_readback') or {}),
+                'exact_meta_readback': dict(result.get('exact_meta_readback') or {}),
                 'write_source': 'mcn-db-writer',
             }
         except SQLiteWriteQueueError as exc:
@@ -360,6 +362,7 @@ def _store_fact_rows(
                 start_date=min(fact_dates),
                 end_date=max(fact_dates),
             )
+            exact_meta_readback = _exact_meta_write_readback(conn, rows)
             mark_ad_dashboard_sync_state(
                 conn,
                 source=str(source or 'all'),
@@ -381,6 +384,7 @@ def _store_fact_rows(
         'sync_error_message': str(fact_completeness.get('error_message') or ''),
         'write_source': 'direct',
         'qualified_join_readback': qualified_join_readback,
+        'exact_meta_readback': exact_meta_readback,
     }
 
 

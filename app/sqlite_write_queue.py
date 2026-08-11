@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.ad_dashboard_repository import (
+    AD_DASHBOARD_FACT_COLUMNS,
+    _ad_fact_legacy_row_id,
     _ad_fact_row_id,
     _ad_materialize_fact_rows,
     ad_dashboard_fact_rows_completeness,
@@ -96,6 +98,85 @@ def _qualified_join_write_readback(
             and row['payload'].get('qualified_join_exact_attribution') is True
             and str(row['payload'].get('qualified_join_attribution_status') or '') == 'exact'
         ),
+    }
+
+
+def _exact_meta_write_readback(
+    conn: sqlite3.Connection,
+    rows: list[Dict[str, Any]],
+) -> Dict[str, Any]:
+    expected_rows = [
+        row for row in _ad_materialize_fact_rows(rows)
+        if str(row.get('fact_grain_version') or '') == 'meta_exact_ad_v2'
+    ]
+    expected = {_ad_fact_row_id(row): row for row in expected_rows}
+    if len(expected) != len(expected_rows):
+        raise SQLiteWriteQueueError('exact_meta_write_readback_expected_row_collision')
+    if not expected:
+        return {
+            'stored_rows': 0,
+            'superseded_legacy_rows_remaining': 0,
+            'cost': 0.0,
+            'impressions': 0,
+            'clicks': 0,
+        }
+
+    stored: Dict[str, Dict[str, Any]] = {}
+    row_ids = sorted(expected)
+    select_columns = [
+        'row_id', 'date', 'data_source', 'platform', 'account_id',
+        'campaign_id', 'adset_id', 'ad_id', 'payload_json',
+        *AD_DASHBOARD_FACT_COLUMNS,
+    ]
+    for offset in range(0, len(row_ids), 500):
+        chunk = row_ids[offset:offset + 500]
+        placeholders = ','.join('?' for _ in chunk)
+        for raw in conn.execute(
+            f"SELECT {','.join(select_columns)} FROM ad_dashboard_fact_rows "
+            f"WHERE row_id IN ({placeholders})",
+            chunk,
+        ).fetchall():
+            stored[str(raw['row_id'])] = dict(raw)
+    if set(stored) != set(expected):
+        raise SQLiteWriteQueueError('exact_meta_write_readback_row_set_mismatch')
+
+    for row_id, source in expected.items():
+        target = stored[row_id]
+        for key in ('date', 'data_source', 'platform', 'account_id', 'campaign_id', 'adset_id', 'ad_id'):
+            source_value = source.get(key)
+            if key == 'account_id':
+                source_value = source.get('account_id') or source.get('ad_account_id') or ''
+            if str(target.get(key) or '') != str(source_value or ''):
+                raise SQLiteWriteQueueError('exact_meta_write_readback_identity_mismatch')
+        for key in AD_DASHBOARD_FACT_COLUMNS:
+            if float(target.get(key) or 0.0) != float(source.get(key) or 0.0):
+                raise SQLiteWriteQueueError('exact_meta_write_readback_metric_mismatch')
+        try:
+            payload = json.loads(str(target.get('payload_json') or '{}'))
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict) or payload.get('fact_grain_version') != 'meta_exact_ad_v2':
+            raise SQLiteWriteQueueError('exact_meta_write_readback_contract_missing')
+
+    legacy_row_ids = sorted({_ad_fact_legacy_row_id(row) for row in expected_rows})
+    legacy_remaining = 0
+    for offset in range(0, len(legacy_row_ids), 500):
+        chunk = legacy_row_ids[offset:offset + 500]
+        placeholders = ','.join('?' for _ in chunk)
+        legacy_remaining += int(conn.execute(
+            f"SELECT COUNT(*) FROM ad_dashboard_fact_rows "
+            f"WHERE lower(data_source)='meta' AND row_id IN ({placeholders})",
+            chunk,
+        ).fetchone()[0])
+    if legacy_remaining:
+        raise SQLiteWriteQueueError('exact_meta_write_readback_legacy_predecessor_remaining')
+
+    return {
+        'stored_rows': len(stored),
+        'superseded_legacy_rows_remaining': legacy_remaining,
+        'cost': round(sum(float(row.get('cost') or 0.0) for row in expected_rows), 6),
+        'impressions': int(sum(float(row.get('impressions') or 0.0) for row in expected_rows)),
+        'clicks': int(sum(float(row.get('clicks') or 0.0) for row in expected_rows)),
     }
 
 
@@ -285,6 +366,7 @@ def _apply_ad_dashboard_fact_replace(*, db_path: str, job: Dict[str, Any]) -> Di
                 if tugao_funnel_required
                 else {'stored_rows': 0, 'success_users': 0, 'success_no_wa_users': 0, 'exact_attribution_rows': 0}
             )
+            exact_meta_readback = _exact_meta_write_readback(conn, rows)
             mark_ad_dashboard_sync_state(
                 conn,
                 source=str(job.get('source') or 'all'),
@@ -315,6 +397,7 @@ def _apply_ad_dashboard_fact_replace(*, db_path: str, job: Dict[str, Any]) -> Di
             1 for row in rows if (row or {}).get('qualified_join_metric_observed') is True
         ),
         'qualified_join_readback': qualified_join_readback,
+        'exact_meta_readback': exact_meta_readback,
         'source': 'mcn-db-writer',
     }
 
