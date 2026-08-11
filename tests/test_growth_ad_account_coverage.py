@@ -212,16 +212,23 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert 'id="adGleCoverageReadiness"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleCoverageFilters"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "在投待数据" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "定位经营数据" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "查看数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleTaskWorkbenchMount"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'class="ad-gle-operations-grid"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "覆盖广告任务工作台" not in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "查看关联任务" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "核对 ${activeWaiting} 条在投广告的精确数据归属" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "查看任务" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "核对 ${activeWaiting} 条在投数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adOpenGleRecommendations"' not in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "关键归因数据未收齐" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "不声称因果赢家" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "覆盖区本身不写 Meta" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "归因未收齐不判定因果赢家" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "只读分析 · 调整需确认" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "可用于经营判断" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "查看观察进度" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "当前没有需要确认的 GLE 任务" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "缺失值保持为空" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "当前筛选显示" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "可以切换上方状态继续查看" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "先处理需确认任务，再查看数据与广告" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "当前最重要的工作" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "Gate0=QUASI_ONLY" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "Gate1=NOT_READY" not in AD_DATA_DASHBOARD_PAGE_HTML
 
@@ -282,8 +289,9 @@ def test_dashboard_coverage_opens_the_existing_governed_task_flow() -> None:
     assert "else document.body.appendChild(panel);" in workspace_js
     assert "if (!embeddedMount)" in workspace_js
     assert "openExperiment(id)" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "覆盖区本身不写 Meta" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "既有计划、明确确认与回读流程" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "只读分析 · 调整需确认" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "现在能做" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "既有计划、明确确认与回读流程" not in AD_DATA_DASHBOARD_PAGE_HTML
 
 
 def test_readonly_api_returns_the_exact_five_account_scope(tmp_path: Path) -> None:
