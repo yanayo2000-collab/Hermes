@@ -303,9 +303,15 @@ def parse_appsflyer_csv(
             "impressions": _integer(raw_row.get("Impressions"), "G104B6_METRIC_INVALID"),
             "clicks": _integer(raw_row.get("Clicks"), "G104B6_METRIC_INVALID"),
             "total_attributions": _integer(
-                raw_row.get("Total attributions appsflyer"), "G104B6_METRIC_INVALID"
+                raw_row.get("Total attributions appsflyer"),
+                "G104B6_METRIC_INVALID",
+                nullable=True,
             ),
-            "installs": _integer(raw_row.get("Installs appsflyer"), "G104B6_METRIC_INVALID"),
+            "installs": _integer(
+                raw_row.get("Installs appsflyer"),
+                "G104B6_METRIC_INVALID",
+                nullable=True,
+            ),
             "reattributions": _integer(
                 raw_row.get("Re-attributions appsflyer"), "G104B6_METRIC_INVALID", nullable=True
             ),
