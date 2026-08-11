@@ -8323,18 +8323,25 @@ AD_DATA_DASHBOARD_PAGE_HTML = """
     .ad-gle-readiness-track i{display:block;height:100%;border-radius:inherit;background:#17a673}
     .ad-gle-readiness-detail{margin-top:5px;color:var(--ad-muted);font-size:12px;line-height:1.45}
     .ad-gle-state-badge{display:inline-flex;align-items:center;min-height:28px;padding:4px 9px;border:1px solid #fed7aa;border-radius:8px;background:var(--ad-amber-soft);color:#92400e;font-size:12px;font-weight:780;white-space:nowrap}
+    .ad-gle-viewbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px;border-bottom:1px solid #e4e9f0}
+    .ad-gle-view-tabs{display:flex;align-items:center;gap:18px}
+    .ad-gle-view-tabs button{display:inline-flex;align-items:center;gap:7px;min-height:42px;padding:0 2px;border:0;border-bottom:2px solid transparent;background:transparent;color:#667085;font-size:13px;font-weight:780;cursor:pointer}
+    .ad-gle-view-tabs button[aria-selected="true"]{border-bottom-color:#17233d;color:#17233d}
+    .ad-gle-view-tabs button:hover{color:#344054}
+    .ad-gle-view-tabs button:focus-visible{outline:3px solid rgba(37,99,235,.2);outline-offset:3px}
+    .ad-gle-view-tabs button span{display:inline-grid;place-items:center;min-width:22px;height:20px;padding:0 6px;border-radius:999px;background:#eef2f6;color:inherit;font-size:10px;font-variant-numeric:tabular-nums}
+    .ad-gle-view-tabs button.is-warning span{background:#fff4e5;color:#9a5b00}
+    .ad-gle-view-help{color:var(--ad-muted);font-size:11px;text-align:right}
     .ad-gle-filterbar{display:flex;align-items:center;gap:6px;margin-bottom:10px;overflow:auto;padding-bottom:2px}
     .ad-gle-filterbar button{flex:0 0 auto;min-height:34px;padding:7px 10px;border:1px solid var(--ad-line-strong);border-radius:8px;background:#fff;color:#475467;font-size:12px;font-weight:760;cursor:pointer}
     .ad-gle-filterbar button:hover{border-color:#98a2b3;background:#f8fafc}
     .ad-gle-filterbar button[aria-pressed="true"]{border-color:#17233d;background:#17233d;color:#fff}
     .ad-gle-filterbar button.is-warning:not([aria-pressed="true"]){border-color:#f3c78f;background:#fff9f0;color:#9a5b00}
     .ad-gle-filterbar button:focus-visible,.ad-gle-account summary:focus-visible,.ad-gle-row-action:focus-visible,.ad-gle-account-open:focus-visible{outline:3px solid rgba(37,99,235,.22);outline-offset:2px}
-    .ad-gle-operations-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(340px,.65fr);gap:12px;align-items:start}
+    .ad-gle-operations-grid{display:block;min-width:0}
     .ad-gle-coverage-main,#adGleTaskWorkbenchMount{min-width:0}
-    #adGleTaskWorkbenchMount{position:sticky;top:12px}
-    .ad-gle-operations-grid.is-task-detail{grid-template-columns:1fr}
-    .ad-gle-operations-grid.is-task-detail .ad-gle-coverage-main{display:none}
-    .ad-gle-operations-grid.is-task-detail #adGleTaskWorkbenchMount{position:static;grid-column:1/-1}
+    .ad-gle-operations-grid [data-gle-view-panel][hidden]{display:none!important}
+    #adGleTaskWorkbenchMount{position:static}
     .ad-gle-coverage-grid{overflow:hidden;border:1px solid var(--ad-line);border-radius:8px;background:#fff}
     .ad-gle-account-table-head,.ad-gle-account summary{display:grid;grid-template-columns:minmax(220px,1.35fr) 90px 120px minmax(145px,.8fr) 100px;gap:12px;align-items:center}
     .ad-gle-account-table-head{min-height:36px;padding:0 12px;border-bottom:1px solid #e9edf3;background:#f8fafc;color:var(--ad-muted);font-size:11px;font-weight:820}
@@ -8369,9 +8376,8 @@ AD_DATA_DASHBOARD_PAGE_HTML = """
     .ad-gle-next.is-waiting{color:#9a5b00;font-weight:760}
     .ad-gle-empty{padding:22px 14px;color:var(--ad-muted);font-size:12px;text-align:center}
     .ad-gle-boundary{margin-top:10px;padding:10px 13px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;color:var(--ad-muted);font-size:12px;line-height:1.45}
-    @media(max-width:1180px){.ad-gle-operations-grid{grid-template-columns:1fr}#adGleTaskWorkbenchMount{position:static;grid-row:1}.ad-gle-coverage-main{grid-row:2}}
     @media(max-width:980px){.ad-gle-summary{grid-template-columns:repeat(3,minmax(0,1fr))}.ad-gle-metric:nth-child(4){border-left:0}.ad-gle-metric:nth-child(n+4){border-top:1px solid #edf0f4}.ad-gle-readiness{grid-template-columns:1fr}.ad-gle-state-badge{justify-self:start}.ad-gle-account-table-head,.ad-gle-account summary{grid-template-columns:minmax(190px,1.25fr) 80px 110px minmax(130px,.8fr) 92px}}
-    @media(max-width:720px){.ad-gle-panel-head{display:grid}.ad-gle-panel-head .ad-report-actions{justify-content:flex-start}.ad-gle-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ad-gle-metric:nth-child(3){border-left:0}.ad-gle-metric:nth-child(n+3){border-top:1px solid #edf0f4}.ad-gle-metric:nth-child(4){border-left:1px solid #edf0f4}.ad-gle-account-table-head{display:none}.ad-gle-account summary{grid-template-columns:1fr 1fr;gap:8px 12px;padding:12px}.ad-gle-account-name,.ad-gle-account-expand{grid-column:1/-1}.ad-gle-account-expand{justify-content:flex-start}.ad-gle-account-toolbar{align-items:flex-end;flex-direction:column}.ad-gle-ad-row{grid-template-columns:1fr 1fr}.ad-gle-ad-row>div:first-child,.ad-gle-next{grid-column:1/-1}}
+    @media(max-width:720px){.ad-gle-panel-head{display:grid}.ad-gle-panel-head .ad-report-actions{justify-content:flex-start}.ad-gle-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ad-gle-metric:nth-child(3){border-left:0}.ad-gle-metric:nth-child(n+3){border-top:1px solid #edf0f4}.ad-gle-metric:nth-child(4){border-left:1px solid #edf0f4}.ad-gle-viewbar{align-items:flex-start;flex-direction:column;gap:0}.ad-gle-view-tabs{width:100%;gap:20px}.ad-gle-view-help{display:none}.ad-gle-account-table-head{display:none}.ad-gle-account summary{grid-template-columns:1fr 1fr;gap:8px 12px;padding:12px}.ad-gle-account-name,.ad-gle-account-expand{grid-column:1/-1}.ad-gle-account-expand{justify-content:flex-start}.ad-gle-account-toolbar{align-items:flex-end;flex-direction:column}.ad-gle-ad-row{grid-template-columns:1fr 1fr}.ad-gle-ad-row>div:first-child,.ad-gle-next{grid-column:1/-1}}
     /* detail table contract marker: padding:9px 10px */
     .ad-reco-table-wrap{overflow:auto;border:1px solid var(--ad-line);border-radius:8px;background:#fff}
     .ad-reco-table{width:100%;min-width:820px;border-collapse:separate;border-spacing:0;table-layout:fixed}
@@ -8788,10 +8794,19 @@ AD_DATA_DASHBOARD_PAGE_HTML = """
       </div>
       <div class="ad-gle-summary" id="adGleCoverageSummary"></div>
       <div class="ad-gle-readiness" id="adGleCoverageReadiness" aria-live="polite"></div>
-      <div class="ad-gle-filterbar" id="adGleCoverageFilters" role="group" aria-label="筛选 GLE 广告状态"></div>
-      <div class="ad-gle-operations-grid">
-        <section class="ad-gle-coverage-main" aria-label="广告覆盖明细"><div class="ad-gle-coverage-grid" id="adGleCoverageAccounts"></div></section>
-        <aside id="adGleTaskWorkbenchMount" data-experiment-ids="[]" aria-label="覆盖广告关联任务"><div class="ad-gle-empty">正在读取关联任务…</div></aside>
+      <div class="ad-gle-viewbar">
+        <div class="ad-gle-view-tabs" role="tablist" aria-label="GLE 工作区视图">
+          <button type="button" id="adGleCoverageViewTab" role="tab" aria-selected="true" aria-controls="adGleCoverageViewPanel" data-gle-workspace-view="coverage">广告覆盖 <span id="adGleCoverageViewCount">—</span></button>
+          <button type="button" id="adGleTaskViewTab" role="tab" aria-selected="false" aria-controls="adGleTaskWorkbenchMount" data-gle-workspace-view="tasks">关联任务 <span id="adGleTaskViewCount">—</span></button>
+        </div>
+        <span class="ad-gle-view-help" id="adGleWorkspaceViewHint">先定位广告；需要判断或操作时再进入关联任务</span>
+      </div>
+      <div class="ad-gle-operations-grid" data-gle-workspace-view="coverage">
+        <section class="ad-gle-coverage-main" id="adGleCoverageViewPanel" role="tabpanel" aria-labelledby="adGleCoverageViewTab" data-gle-view-panel="coverage">
+          <div class="ad-gle-filterbar" id="adGleCoverageFilters" role="group" aria-label="筛选 GLE 广告状态"></div>
+          <div class="ad-gle-coverage-grid" id="adGleCoverageAccounts"></div>
+        </section>
+        <section id="adGleTaskWorkbenchMount" role="tabpanel" aria-labelledby="adGleTaskViewTab" data-gle-view-panel="tasks" data-experiment-ids="[]" aria-label="覆盖广告关联任务" hidden><div class="ad-gle-empty">正在读取关联任务…</div></section>
       </div>
       <div class="ad-gle-boundary" id="adGleCoverageBoundary">只读分析 · 调整需确认 · 归因未收齐不判定因果赢家</div>
     </section>
@@ -9471,6 +9486,7 @@ function recoPreviewCell(row,assetIndex){const rowSrc=String(row&&row.creative_p
 let currentDailyReport=null;
 let currentGleAdCoverage=null;
 let currentGleCoverageFilter='all';
+let currentGleWorkspaceView='coverage';
 let currentGleTaskByExperiment=new Map();
 let currentGleTaskIndexLoaded=false;
 function gleCoverageMetric(label,value,tone=''){return `<article class="ad-gle-metric${tone?` ${tone}`:''}"><span>${esc(label)}</span><strong>${esc(String(value))}</strong></article>`;}
@@ -9482,7 +9498,9 @@ function gleCoverageItemMatches(item,filter){const active=String(item&&item.effe
 function gleCoverageAllItems(payload){return (payload&&Array.isArray(payload.accounts)?payload.accounts:[]).flatMap(account=>Array.isArray(account.items)?account.items:[]);}
 function gleCoverageFilterDefinitions(payload){const items=gleCoverageAllItems(payload);const count=filter=>items.filter(item=>gleCoverageItemMatches(item,filter)).length;return [['all','全部广告',items.length],['needs_action','需你处理',currentGleTaskIndexLoaded?count('needs_action'):'—'],['active_waiting','在投待数据',count('active_waiting')],['active_ready','在投可读',count('active_ready')],['multi','多 Cell',count('multi')],['single','单广告观察',count('single')]];}
 function renderGleCoverageFilters(payload){const node=document.getElementById('adGleCoverageFilters');if(!node)return;node.innerHTML=gleCoverageFilterDefinitions(payload).map(([key,label,count])=>`<button type="button" data-gle-coverage-filter="${esc(key)}" aria-pressed="${key===currentGleCoverageFilter?'true':'false'}" class="${['needs_action','active_waiting'].includes(key)?'is-warning':''}">${esc(label)} · ${esc(count)}</button>`).join('');node.querySelectorAll('[data-gle-coverage-filter]').forEach(button=>button.addEventListener('click',()=>{currentGleCoverageFilter=button.getAttribute('data-gle-coverage-filter')||'all';renderGleAdCoverage(currentGleAdCoverage);}));}
-function openGleExperimentTask(experimentId){const id=String(experimentId||'');if(!id)return;if(window.GrowthWorkspace&&typeof window.GrowthWorkspace.openExperiment==='function'){window.GrowthWorkspace.openExperiment(id);return;}document.getElementById('adGleTaskWorkbenchMount')?.scrollIntoView({behavior:'smooth',block:'start'});}
+function setGleWorkspaceView(view,{focus=false,resetTask=false}={}){const normalized=view==='tasks'?'tasks':'coverage';currentGleWorkspaceView=normalized;const grid=document.querySelector('.ad-gle-operations-grid');if(grid)grid.dataset.gleWorkspaceView=normalized;document.querySelectorAll('[data-gle-view-panel]').forEach(panel=>{panel.hidden=panel.getAttribute('data-gle-view-panel')!==normalized;});document.querySelectorAll('[data-gle-workspace-view]').forEach(button=>{const active=button.getAttribute('data-gle-workspace-view')===normalized;button.setAttribute('aria-selected',active?'true':'false');button.tabIndex=active?0:-1;});const hint=document.getElementById('adGleWorkspaceViewHint');if(hint)hint.textContent=normalized==='tasks'?'按状态查看精确绑定任务；只有需要确认的事项才会要求操作':'先定位广告；需要判断或操作时再进入关联任务';if(normalized==='tasks'&&resetTask&&window.GrowthWorkspace&&typeof window.GrowthWorkspace.showQueue==='function')window.GrowthWorkspace.showQueue({scroll:false});if(focus){const panel=document.querySelector(`[data-gle-view-panel="${normalized}"]`);panel?.scrollIntoView({behavior:'smooth',block:'start'});}}
+function renderGleWorkspaceNavigation(payload){const coverageCount=document.getElementById('adGleCoverageViewCount');const taskCount=document.getElementById('adGleTaskViewCount');const taskTab=document.getElementById('adGleTaskViewTab');const total=gleCoverageAllItems(payload).length;const tasks=gleBoundExperimentIds(payload).length;if(coverageCount)coverageCount.textContent=String(total);if(taskCount)taskCount.textContent=currentGleTaskIndexLoaded?String(tasks):'—';if(taskTab)taskTab.classList.toggle('is-warning',[...currentGleTaskByExperiment.values()].some(task=>gleCoverageTaskState(task).actionable));setGleWorkspaceView(currentGleWorkspaceView);}
+function openGleExperimentTask(experimentId){const id=String(experimentId||'');if(!id)return;setGleWorkspaceView('tasks');if(window.GrowthWorkspace&&typeof window.GrowthWorkspace.openExperiment==='function'){window.GrowthWorkspace.openExperiment(id);return;}document.getElementById('adGleTaskWorkbenchMount')?.scrollIntoView({behavior:'smooth',block:'start'});}
 function syncGleCoverageTaskScope(payload){const experimentIds=gleBoundExperimentIds(payload),tasks=[...currentGleTaskByExperiment.values()];const mount=document.getElementById('adGleTaskWorkbenchMount');if(mount){mount.dataset.experimentIds=JSON.stringify(experimentIds);mount.dataset.scopeReady='1';}if(window.GrowthWorkspace&&typeof window.GrowthWorkspace.setCoverageScope==='function'){window.GrowthWorkspace.setCoverageScope(experimentIds,tasks).catch(showLoadError);return;}window.dispatchEvent(new CustomEvent('gle-coverage-scope-updated',{detail:{experimentIds}}));}
 function setGleTaskIndex(items,{complete=true}={}){currentGleTaskByExperiment=new Map((Array.isArray(items)?items:[]).map(item=>[String(item&&item.experiment_id||''),item]).filter(([id])=>id));currentGleTaskIndexLoaded=Boolean(complete);}
 function gleBoundExperimentIds(payload){return [...new Set(gleCoverageAllItems(payload).map(item=>String(item&&item.experiment_binding&&item.experiment_binding.experiment_id||'').trim()).filter(Boolean))];}
@@ -9514,6 +9532,7 @@ function renderGleAdCoverage(payload){
     gleCoverageMetric('需你处理',currentGleTaskIndexLoaded?actionableTasks.length:'—',actionableTasks.length?'is-warning':'')
   ].join(''):'<div class="ad-insight">覆盖账户待核对</div>';
   if(readinessNode)readinessNode.innerHTML=accounts.length?`<div class="ad-gle-readiness-copy"><small>下一步</small><strong>${actionableTasks.length?`处理 ${actionableTasks.length} 个广告任务`:(activeWaiting?`核对 ${activeWaiting} 条在投数据`:'暂无待处理任务')}</strong></div><div><div class="ad-gle-readiness-track" role="progressbar" aria-label="在投广告数据就绪率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${readyPercent}"><i style="width:${readyPercent}%"></i></div><div class="ad-gle-readiness-detail">数据就绪率 ${readyPercent}%</div></div><span class="ad-gle-state-badge">${actionableTasks.length?'需要你确认':'观察中'}</span>`:'';
+  renderGleWorkspaceNavigation(payload);
   renderGleCoverageFilters(payload);
   const visibleAccounts=accounts.map(account=>{const items=Array.isArray(account.items)?account.items:[];return{account,items:items.filter(item=>gleCoverageItemMatches(item,currentGleCoverageFilter))};}).filter(entry=>entry.items.length).sort((a,b)=>{const waitingA=Math.max(0,Number(a.account.effective_active_ads||0)-Number(a.account.active_ads_with_metric_observation||0));const waitingB=Math.max(0,Number(b.account.effective_active_ads||0)-Number(b.account.active_ads_with_metric_observation||0));return waitingB-waitingA||String(a.account.account_name||'').localeCompare(String(b.account.account_name||''));});
   if(accountsNode)accountsNode.innerHTML=visibleAccounts.length?`<div class="ad-gle-account-table-head"><span>广告账户</span><span>覆盖</span><span>在投数据</span><span>覆盖模式</span><span>下钻</span></div>${visibleAccounts.map(({account,items})=>{
@@ -9715,6 +9734,7 @@ setupTrendDateInput('adTrendDateTo','to');
 document.getElementById('adApplyFilters')?.addEventListener('click',()=>loadDashboard().catch(showLoadError));
 document.getElementById('adRefreshDailyReport').addEventListener('click',()=>loadDailyReport({force:true}).catch(showLoadError));
 document.getElementById('adRefreshGleCoverage')?.addEventListener('click',()=>loadGleAdCoverage());
+document.querySelectorAll('[data-gle-workspace-view]').forEach(button=>button.addEventListener('click',()=>setGleWorkspaceView(button.getAttribute('data-gle-workspace-view')||'coverage',{focus:false,resetTask:true})));
 document.getElementById('adRunImScriptResearch')?.addEventListener('click',()=>runImScriptResearch().catch(showLoadError));
 document.getElementById('adResetFilters')?.addEventListener('click',resetFilters);
 document.getElementById('adImDiagnosticsRegion')?.addEventListener('change',()=>{imDiagnosticsRegion=currentImDiagnosticsRegion();loadImDiagnostics().catch(showLoadError);});
@@ -9746,7 +9766,7 @@ if(startupDashboardFallback){startupDashboardFallback.errors=[...(startupDashboa
 loadDashboard().catch(showLoadError);
 </script>
 <script src="/static/ops/growth-decision.js?v=20260805-system-managed-v2"></script>
-<script src="/static/ops/growth-workspace.js?v=20260810-gle-compact-operations-v1"></script>
+<script src="/static/ops/growth-workspace.js?v=20260811-gle-single-focus-v2"></script>
 </body>
 </html>
 """

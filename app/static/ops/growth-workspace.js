@@ -269,46 +269,53 @@
     document.head.appendChild(integratedShell);
     const embeddedShell = document.createElement('style');
     embeddedShell.textContent = `
-      .growth-layer-embedded{position:relative;inset:auto;z-index:1;height:auto;min-height:0;overflow:hidden;border:1px solid #dfe5ee;border-radius:10px;background:#fff}
+      .growth-layer-embedded{position:relative;inset:auto;z-index:1;height:auto;min-height:0;overflow:visible;border:0;border-radius:0;background:#fff}
       .growth-layer-embedded[hidden]{display:none}.growth-layer-embedded .growth-backdrop{display:none}
-      .growth-layer-embedded .growth-drawer{position:relative;inset:auto;width:100%;height:100%;border:0;box-shadow:none}
-      .growth-layer-embedded .growth-drawer-head{min-height:58px;padding:0 14px;background:#fbfcfe}
-      #growthWorkspacePanel.growth-layer-embedded:not(.is-detail-open) .growth-embedded-head{grid-template-columns:minmax(0,1fr) auto}
-      #growthWorkspacePanel.growth-layer-embedded:not(.is-detail-open) .growth-embedded-head>.growth-nav-back[hidden]{display:none!important}
-      #growthWorkspacePanel.growth-layer-embedded:not(.is-detail-open) .growth-embedded-head>div{grid-column:1!important}
-      #growthWorkspacePanel.growth-layer-embedded:not(.is-detail-open) .growth-embedded-refresh{grid-column:2!important}
+      .growth-layer-embedded .growth-drawer{position:relative;inset:auto;width:100%;height:auto;border:0;box-shadow:none}
+      #growthWorkspacePanel.growth-layer-embedded:not(.is-detail-open) .growth-embedded-head{display:none}
+      .growth-layer-embedded .growth-drawer-head{min-height:54px;padding:0 2px;background:#fff}
       #growthWorkspacePanel.growth-layer-embedded.is-detail-open .growth-embedded-head{grid-template-columns:32px minmax(0,1fr)}
       #growthWorkspacePanel.growth-layer-embedded.is-detail-open .growth-embedded-head>div{grid-column:2!important}
       #growthWorkspacePanel.growth-layer-embedded.is-detail-open .growth-embedded-refresh{display:none!important}
       .growth-layer-embedded .growth-drawer-head>.growth-icon-button{display:none!important}
       #growthWorkspacePanel .growth-embedded-refresh{min-height:32px!important;padding:0 10px!important;border-color:#d7deea!important;background:#fff!important;color:#475467!important;font-size:11px!important}
       #growthWorkspacePanel .growth-embedded-refresh:hover{border-color:#98a2b3!important;background:#f8fafc!important}
-      .growth-layer-embedded .growth-queue-tabs{grid-template-columns:repeat(4,max-content);gap:5px;overflow:auto;padding:8px 10px;border-bottom:1px solid var(--line);background:#fff}
-      #growthWorkspacePanel.growth-layer-embedded .growth-queue-tabs button{min-height:30px!important;padding:0 9px!important;border:1px solid transparent!important;border-radius:999px!important;background:#f4f6f9!important;color:#667085!important;font-size:11px!important}
-      #growthWorkspacePanel.growth-layer-embedded .growth-queue-tabs button.is-active{border-color:#cad6ee!important;background:#eef3ff!important;color:#315fd8!important}
-      .growth-layer-embedded .growth-queue-tabs span{min-width:16px;height:16px;margin-left:3px;padding:0 4px;background:#fff;font-size:9px}
-      .growth-layer-embedded .growth-detail{flex:0 0 auto;overflow:visible;padding:12px}
-      .growth-layer-embedded .growth-empty{min-height:156px;padding:18px}
-      .growth-layer-embedded .growth-queue-head{align-items:center;margin:0 0 10px;padding:0 2px}
-      .growth-layer-embedded .growth-queue-head h2{margin:0 0 2px;font-size:14px}
-      .growth-layer-embedded .growth-queue-head p{font-size:11px;line-height:1.4}
-      .growth-layer-embedded .growth-task-list{gap:8px}
+      .growth-layer-embedded .growth-queue-tabs{grid-template-columns:repeat(4,max-content);justify-content:start;gap:20px;overflow:auto;padding:0;border-bottom:1px solid var(--line);background:#fff}
+      #growthWorkspacePanel.growth-layer-embedded .growth-queue-tabs button{min-height:42px!important;padding:0 2px!important;border:0!important;border-bottom:2px solid transparent!important;border-radius:0!important;background:transparent!important;color:#667085!important;font-size:12px!important}
+      #growthWorkspacePanel.growth-layer-embedded .growth-queue-tabs button.is-active{border-bottom-color:#17233d!important;background:transparent!important;color:#17233d!important}
+      .growth-layer-embedded .growth-queue-tabs span{min-width:18px;height:18px;margin-left:4px;padding:0 5px;background:#eef2f6;font-size:9px}
+      .growth-layer-embedded .growth-detail{flex:0 0 auto;overflow:visible;padding:16px 0 2px;background:#fff}
+      .growth-layer-embedded .growth-empty{min-height:180px;padding:20px;border:1px dashed #d8e0eb;border-radius:8px;background:#fafbfc}
+      .growth-layer-embedded .growth-queue-head{align-items:flex-end;margin:0 0 12px;padding:0}
+      .growth-layer-embedded .growth-queue-head h2{margin:0 0 3px;font-size:15px}
+      .growth-layer-embedded .growth-queue-head p{font-size:11px;line-height:1.5}
+      .growth-layer-embedded .growth-task-list{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:10px}
+      .growth-layer-embedded .growth-task-list>.growth-task-group:only-child,.growth-layer-embedded .growth-task-list>.growth-task-card:only-child{grid-column:1/-1}
       .growth-layer-embedded .growth-task-group{border-radius:8px}
-      .growth-layer-embedded .growth-task-group>header{padding:9px 10px}
+      .growth-layer-embedded .growth-task-group>header{padding:10px 12px}
       .growth-layer-embedded .growth-task-group>header b{font-size:12px}
-      .growth-layer-embedded .growth-task-group-row{min-height:52px!important;padding:0 10px!important;grid-template-columns:minmax(0,1fr) 15px;gap:7px}
-      .growth-layer-embedded .growth-task-group-row>span{display:none}
+      .growth-layer-embedded .growth-task-group-row{min-height:58px!important;padding:0 12px!important;grid-template-columns:minmax(0,1fr) auto 15px;gap:9px}
+      .growth-layer-embedded .growth-task-group-row>span{display:block;max-width:150px;overflow:hidden;text-overflow:ellipsis}
       .growth-layer-embedded .growth-task-group-copy strong{font-size:12px}
       .growth-layer-embedded .growth-task-group-copy small{font-size:10px}
-      .growth-layer-embedded .growth-task-card{min-height:68px!important;padding:11px 12px!important;gap:10px}
+      .growth-layer-embedded .growth-task-card{min-height:76px!important;padding:12px 14px!important;gap:12px}
       .growth-layer-embedded .growth-task-card strong{font-size:12px}
       .growth-layer-embedded .growth-task-card p{font-size:11px}
       .growth-layer-embedded .growth-task-meta{margin-top:5px}
-      .growth-layer-embedded .growth-task-next{max-width:110px;font-size:10px}
-      .growth-layer-embedded.is-detail-open{min-height:560px}
-      .growth-layer-embedded.is-detail-open .growth-detail{flex:1 1 auto;overflow:auto;padding:20px 22px 24px}
+      .growth-layer-embedded .growth-task-next{max-width:150px;font-size:10px}
+      .growth-layer-embedded.is-detail-open{min-height:0}
+      .growth-layer-embedded.is-detail-open .growth-detail{display:block;overflow:visible;padding:14px 0 2px;background:#fff}
+      .growth-layer-embedded.is-detail-open .growth-detail.has-autonomy-panel{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(300px,.65fr);align-items:start;gap:0 16px}
+      .growth-layer-embedded.is-detail-open .growth-detail>*{max-width:none;margin-left:0;margin-right:0}
+      .growth-layer-embedded.is-detail-open .growth-detail.has-autonomy-panel>*:not(#growthAutonomyPanel):not(.growth-technical){grid-column:1}
+      .growth-layer-embedded.is-detail-open #growthAutonomyPanel{grid-column:2;grid-row:1/span 6;margin-top:0;padding-top:0}
+      .growth-layer-embedded.is-detail-open #growthAutonomyPanel .growth-review-card{margin-top:0}
+      .growth-layer-embedded.is-detail-open .growth-technical{grid-column:1/-1}
+      .growth-layer-embedded.is-detail-open .growth-section{margin-top:10px;padding:14px}
+      .growth-layer-embedded.is-detail-open .growth-actions{min-height:62px;margin-top:10px;padding:0 12px}
       .growth-layer-embedded .growth-modal-layer{position:absolute}
-      @media(max-width:720px){.growth-layer-embedded .growth-queue-tabs{grid-template-columns:repeat(4,max-content)}.growth-layer-embedded.is-detail-open{min-height:620px}.growth-layer-embedded.is-detail-open .growth-detail{padding:14px 12px 18px}}
+      @media(max-width:980px){.growth-layer-embedded .growth-task-list{grid-template-columns:1fr}.growth-layer-embedded.is-detail-open .growth-detail.has-autonomy-panel{display:block}.growth-layer-embedded.is-detail-open #growthAutonomyPanel{position:static;margin-top:10px;padding-top:14px}}
+      @media(max-width:720px){.growth-layer-embedded .growth-queue-tabs{grid-template-columns:repeat(4,max-content);gap:14px}.growth-layer-embedded .growth-task-group-row{grid-template-columns:minmax(0,1fr) 15px}.growth-layer-embedded .growth-task-group-copy{display:grid!important}.growth-layer-embedded .growth-task-group-row>span:not(.growth-task-group-copy){display:none}.growth-layer-embedded.is-detail-open .growth-detail{padding:12px 0 2px}}
     `;
     document.head.appendChild(embeddedShell);
   }
@@ -366,16 +373,21 @@
     if (isEmbeddedWorkspace()) panel.scrollIntoView({behavior:'smooth',block:'start'});
   }
 
+  function showEmbeddedQueue({scroll=true}={}) {
+    if (!isEmbeddedWorkspace()) return;
+    state.activeExperiment = '';
+    state.detail = null;
+    setWorkspaceReturn(null);
+    renderQueueTabs();
+    renderExperimentQueue();
+    if (scroll) document.getElementById('growthWorkspacePanel')?.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+
   function backWorkspace() {
     const target = state.workspaceReturn;
     if (!target) return;
     if (target.kind === 'embeddedQueue') {
-      state.activeExperiment = '';
-      state.detail = null;
-      setWorkspaceReturn(null);
-      renderQueueTabs();
-      renderExperimentQueue();
-      document.getElementById('growthWorkspacePanel')?.scrollIntoView({behavior:'smooth',block:'start'});
+      showEmbeddedQueue();
       return;
     }
     if (target.kind === 'taskHome') {
@@ -1658,8 +1670,7 @@
     document.querySelector('#growthWorkspacePanel .growth-workbar')?.toggleAttribute('hidden',Boolean(active));
     const panel=document.getElementById('growthWorkspacePanel');
     if(panel&&isEmbeddedWorkspace())panel.classList.toggle('is-detail-open',Boolean(active));
-    const mount=document.getElementById('adGleTaskWorkbenchMount');
-    if(mount)mount.closest('.ad-gle-operations-grid')?.classList.toggle('is-task-detail',Boolean(active));
+    if(!active)document.getElementById('growthDetail')?.classList.remove('has-autonomy-panel');
   }
 
   function experimentTitle(experiment) {
@@ -1818,6 +1829,7 @@
     const feedbackGroups=Object.values(metaReview.review_feedback_json||{}).flatMap(item=>Object.keys(item||{}));
     const rejectionReason=feedbackGroups.join('、')||'Meta 广告政策拒审';
     const node = document.getElementById('growthDetail');
+    node.classList.toggle('has-autonomy-panel',Boolean(experiment.account_id&&!creationIncident));
     const drawerTitle=document.getElementById('growthDrawerTitle');if(drawerTitle)drawerTitle.textContent=experimentDrawerTitle(experiment);
     const drawerContext=document.getElementById('growthDrawerContext');if(drawerContext)drawerContext.textContent=`${experimentTitle(experiment)} · ${String(experiment.target_app||'Tugao').replace(/^./,char=>char.toUpperCase())} · ${experiment.country||'-'} · ${statusLabel(experiment.state)}`;
     node.innerHTML = creationIncident?`
@@ -2450,5 +2462,5 @@
   async function openExperiment(id) { openWorkspace(id); }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install); else install();
-  window.GrowthWorkspace = {openEpisode,openKnowledge,openExperiment,openAdExperiment,acceptRecommendation,refresh:loadList,open:openWorkspace,openTasks:openLaunchWorkspace,setCoverageScope};
+  window.GrowthWorkspace = {openEpisode,openKnowledge,openExperiment,openAdExperiment,acceptRecommendation,refresh:loadList,open:openWorkspace,openTasks:openLaunchWorkspace,setCoverageScope,showQueue:showEmbeddedQueue};
 })();

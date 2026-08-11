@@ -211,6 +211,12 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert "GLE 全广告经营覆盖" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleCoverageReadiness"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleCoverageFilters"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'id="adGleCoverageViewTab"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'id="adGleTaskViewTab"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'data-gle-view-panel="coverage"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'data-gle-view-panel="tasks"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'data-gle-workspace-view="coverage"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'data-gle-workspace-view="tasks"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "在投待数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleTaskWorkbenchMount"' in AD_DATA_DASHBOARD_PAGE_HTML
@@ -251,13 +257,18 @@ def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -
     assert "openGleExperimentTask" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "syncGleCoverageTaskScope" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "setCoverageScope(experimentIds,tasks)" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "setGleWorkspaceView('tasks')" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "showQueue({scroll:false})" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "需你处理" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "AI 处理中" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "观察中" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-filterbar button:focus-visible" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-panel{padding:16px}" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert ".ad-gle-operations-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(340px,.65fr)" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert ".ad-gle-operations-grid.is-task-detail .ad-gle-coverage-main{display:none}" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert ".ad-gle-operations-grid{display:block;min-width:0}" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert '.ad-gle-operations-grid [data-gle-view-panel][hidden]{display:none!important}' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "grid-template-columns:minmax(0,1.55fr) minmax(340px,.65fr)" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert ".ad-gle-operations-grid.is-task-detail" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "#adGleTaskWorkbenchMount{position:sticky" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-account-table-head{min-height:36px" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-chip{display:inline-flex;align-items:center;min-height:24px" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-account-open,.ad-gle-row-action{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:34px" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -280,7 +291,18 @@ def test_dashboard_coverage_opens_the_existing_governed_task_flow() -> None:
     assert 'role="region" aria-label="覆盖广告关联任务"' in workspace_js
     assert "growth-embedded-refresh" in workspace_js
     assert "growth-layer-embedded.is-detail-open" in workspace_js
-    assert "classList.toggle('is-task-detail',Boolean(active))" in workspace_js
+    assert "showQueue:showEmbeddedQueue" in workspace_js
+    assert "function showEmbeddedQueue({scroll=true}={})" in workspace_js
+    assert "classList.toggle('is-task-detail',Boolean(active))" not in workspace_js
+    assert ".growth-layer-embedded .growth-task-list{grid-template-columns:repeat(2,minmax(0,1fr))" in workspace_js
+    assert ".growth-layer-embedded .growth-task-group-row>span{display:block" in workspace_js
+    assert ".growth-layer-embedded .growth-task-group-copy{display:grid!important}" in workspace_js
+    assert ".growth-layer-embedded .growth-task-group-row>span:not(.growth-task-group-copy){display:none}" in workspace_js
+    assert ".growth-layer-embedded.is-detail-open{min-height:0}" in workspace_js
+    assert ".growth-layer-embedded.is-detail-open .growth-detail{display:block;overflow:visible" in workspace_js
+    assert ".growth-layer-embedded.is-detail-open .growth-detail.has-autonomy-panel{display:grid" in workspace_js
+    assert ".growth-layer-embedded.is-detail-open{min-height:560px}" not in workspace_js
+    assert ".growth-layer-embedded.is-detail-open .growth-detail{flex:1 1 auto;overflow:auto" not in workspace_js
     assert 'id="growthTaskSearch"' not in workspace_js[
         workspace_js.index("panel.innerHTML = embeddedMount ?"):
         workspace_js.index(" : `\n      <div class=\"growth-backdrop\"")
