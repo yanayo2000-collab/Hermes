@@ -20,6 +20,7 @@ from app.growth.ad_account_coverage import (
 )
 from app.growth.adaptive_agent_service import AdaptiveGrowthAgentService
 from app.growth.ad_experiment_evaluator import AdExperimentEvaluator
+from app.growth.ad_experiment_cycle_service import AdExperimentCycleService
 from app.growth.ad_experiment_service import AdExperimentService
 from app.growth.audience_strategy import (
     AUDIENCE_DELIVERY_ESTIMATE_SNAPSHOT,
@@ -4120,6 +4121,13 @@ def create_ad_experiment_router(
         operator(request)
         return execute(lambda: _with_connection(db, lambda conn: AdExperimentEvaluator(conn).list(experiment_id)))
 
+    @router.get("/experiments/{experiment_id}/cycles")
+    def get_experiment_cycles(experiment_id: str, request: Request) -> Dict[str, Any]:
+        operator(request)
+        return execute(lambda: _with_connection(
+            db, lambda conn: AdExperimentCycleService(conn).list_for_experiment(experiment_id),
+        ))
+
     @router.post("/new-account-launches/{launch_id}/audience-checkpoints", status_code=201)
     def evaluate_audience_pair(
         launch_id: str, body: AudiencePairEvaluationRequest, request: Request,
@@ -4182,6 +4190,7 @@ def create_ad_experiment_router(
         return execute(lambda: _with_connection(db, lambda conn: {
             "experiment": AdExperimentService(conn).get(experiment_id),
             "performance": AdExperimentEvaluator(conn).list(experiment_id),
+            "cycles": AdExperimentCycleService(conn).list_for_experiment(experiment_id),
             "timeline": AdExperimentService(conn).timeline(experiment_id),
         }))
 
