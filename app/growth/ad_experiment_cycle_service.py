@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
 
 from app.growth.ad_experiment_service import AdExperimentService
 from app.growth.common import canonical_json, decode_json, new_id, payload_hash, utc_now
-from app.growth.delivery_guardrails import new_account_delivery_guardrails
 from app.growth.errors import GrowthNotFound, GrowthStateConflict, GrowthValidationError
 from app.growth.schema import ensure_growth_schema
 
@@ -15,6 +15,25 @@ from app.growth.schema import ensure_growth_schema
 REPORTING_TIMEZONE = "Asia/Shanghai"
 EVALUATION_CHECKPOINTS = ["D1", "D3", "D7"]
 SUPPORTED_CYCLE_ACTIONS = {"PAUSE_AD"}
+LEGACY_NEW_ACCOUNT_POLICY_COMPAT = {
+    "version": "mx_cold_start_stop_v1",
+    "ctr_floor": {
+        "minimum_impressions": 800,
+        "minimum_ctr": 0.012,
+        "action": "PAUSE_AD",
+    },
+    "zero_install_spend": {
+        "minimum_attribution_hours": 24,
+        "spend_limit_usd": 1.20,
+        "maximum_installs": 0,
+        "action": "PAUSE_AD",
+    },
+    "high_cpi": {
+        "minimum_installs": 10,
+        "maximum_cpi_usd": 0.55,
+        "action": "PAUSE_AD",
+    },
+}
 
 
 class AdExperimentCycleService:
@@ -390,7 +409,7 @@ class AdExperimentCycleService:
             )
             stop_rules_source = "EXPERIMENT_FROZEN_DELIVERY_GUARDRAILS"
             if not stop_rules and launch_id:
-                stop_rules = new_account_delivery_guardrails()
+                stop_rules = deepcopy(LEGACY_NEW_ACCOUNT_POLICY_COMPAT)
                 stop_rules_source = "LEGACY_NEW_ACCOUNT_POLICY_COMPAT_MX_COLD_START_STOP_V1"
             cells.append({
                 "experiment_id": item_experiment_id,
@@ -409,7 +428,7 @@ class AdExperimentCycleService:
             )
             stop_rules_source = "EXPERIMENT_FROZEN_DELIVERY_GUARDRAILS"
             if not stop_rules and str(experiment.get("source_report_id") or "").strip():
-                stop_rules = new_account_delivery_guardrails()
+                stop_rules = deepcopy(LEGACY_NEW_ACCOUNT_POLICY_COMPAT)
                 stop_rules_source = "LEGACY_NEW_ACCOUNT_POLICY_COMPAT_MX_COLD_START_STOP_V1"
             cells = [{
                 "experiment_id": experiment_id,

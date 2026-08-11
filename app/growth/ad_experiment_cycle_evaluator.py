@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 from app.growth.ad_experiment_cycle_service import REPORTING_TIMEZONE
 from app.growth.ad_experiment_service import AdExperimentService
 from app.growth.common import canonical_json, decode_json, new_id, payload_hash, utc_now
-from app.growth.delivery_guardrails import evaluate_delivery_stop_loss
 from app.growth.errors import GrowthError, GrowthStateConflict, GrowthValidationError
 from app.growth.schema import ensure_growth_schema
 
@@ -197,10 +196,9 @@ class AdExperimentCycleEvaluator:
             if payload_hash(rules) != str(item.get("delivery_guardrails_hash") or ""):
                 raise GrowthStateConflict("cycle_delivery_guardrails_hash_invalid")
             # This cycle intentionally admits only exact Meta delivery fields.
-            # Install/CPI rules remain frozen for audit, but are not executable
-            # until an exact per-Ad attribution source is admitted.
-            decision_rules = {"ctr_floor": dict(rules.get("ctr_floor") or {})}
-            breaches = evaluate_delivery_stop_loss(core, decision_rules, checkpoint=checkpoint)
+            # Evaluate CTR locally so future additions to the broader operating
+            # guardrail engine cannot silently become executable here.
+            breaches = self._exact_ctr_breaches(core, rules)
             if breaches:
                 candidates.append({
                     "action_type": "PAUSE_AD",
@@ -265,6 +263,28 @@ class AdExperimentCycleEvaluator:
             "SELECT * FROM ad_experiment_cycle_evaluation WHERE cycle_evaluation_id=?",
             (evaluation_id,),
         ).fetchone())
+
+    @staticmethod
+    def _exact_ctr_breaches(
+        metrics: Dict[str, Any], rules: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        ctr_rule = dict(rules.get("ctr_floor") or {})
+        ctr = metrics.get("ctr")
+        impressions = float(metrics.get("impressions") or 0)
+        if (
+            not ctr_rule
+            or ctr is None
+            or impressions < float(ctr_rule.get("minimum_impressions") or 0)
+            or float(ctr) >= float(ctr_rule.get("minimum_ctr") or 0)
+        ):
+            return []
+        return [{
+            "rule": "ctr_floor",
+            "summary": (
+                f"展示已达 {int(impressions)}，CTR {float(ctr):.2%} 低于 "
+                f"{float(ctr_rule.get('minimum_ctr') or 0):.2%}"
+            ),
+        }]
 
     def _ensure_next_plan(
         self, cycle: Dict[str, Any], evaluation: Dict[str, Any],
