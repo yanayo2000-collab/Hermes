@@ -8323,26 +8323,28 @@ AD_DATA_DASHBOARD_PAGE_HTML = """
     .ad-gle-readiness-track i{display:block;height:100%;border-radius:inherit;background:#17a673}
     .ad-gle-readiness-detail{margin-top:5px;color:var(--ad-muted);font-size:12px;line-height:1.45}
     .ad-gle-state-badge{display:inline-flex;align-items:center;min-height:28px;padding:4px 9px;border:1px solid #fed7aa;border-radius:8px;background:var(--ad-amber-soft);color:#92400e;font-size:12px;font-weight:780;white-space:nowrap}
-    .ad-gle-viewbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px;border-bottom:1px solid #e4e9f0}
+    .ad-gle-viewbar{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:46px;padding:0 12px;border-bottom:1px solid #e4e9f0;background:#f8fafc}
     .ad-gle-view-tabs{display:flex;align-items:center;gap:18px}
-    .ad-gle-view-tabs button{display:inline-flex;align-items:center;gap:7px;min-height:42px;padding:0 2px;border:0;border-bottom:2px solid transparent;background:transparent;color:#667085;font-size:13px;font-weight:780;cursor:pointer}
-    .ad-gle-view-tabs button[aria-selected="true"]{border-bottom-color:#17233d;color:#17233d}
-    .ad-gle-view-tabs button:hover{color:#344054}
+    #adGleCoveragePanel .ad-gle-view-tabs button{display:inline-flex!important;align-items:center!important;gap:7px!important;min-height:42px!important;padding:0 2px!important;border:0!important;border-bottom:2px solid transparent!important;border-radius:0!important;background:transparent!important;color:#667085!important;box-shadow:none!important;font-size:13px!important;font-weight:780!important;cursor:pointer}
+    #adGleCoveragePanel .ad-gle-view-tabs button[aria-selected="true"]{border-bottom-color:#17233d!important;color:#17233d!important}
+    #adGleCoveragePanel .ad-gle-view-tabs button:hover{color:#344054!important}
     .ad-gle-view-tabs button:focus-visible{outline:3px solid rgba(37,99,235,.2);outline-offset:3px}
-    .ad-gle-view-tabs button span{display:inline-grid;place-items:center;min-width:22px;height:20px;padding:0 6px;border-radius:999px;background:#eef2f6;color:inherit;font-size:10px;font-variant-numeric:tabular-nums}
-    .ad-gle-view-tabs button.is-warning span{background:#fff4e5;color:#9a5b00}
+    .ad-gle-view-tabs button span{display:inline-grid!important;place-items:center!important;min-width:24px!important;height:20px!important;padding:0 6px!important;border-radius:999px!important;background:#e2e8f0!important;color:#344054!important;font-size:10px!important;font-weight:850!important;font-variant-numeric:tabular-nums}
+    .ad-gle-view-tabs button[aria-selected="true"] span{background:#17233d!important;color:#fff!important}
+    .ad-gle-view-tabs button.is-warning span{background:#fff4e5!important;color:#9a5b00!important}
+    .ad-gle-view-tabs button.is-warning[aria-selected="true"] span{background:#9a5b00!important;color:#fff!important}
     .ad-gle-view-help{color:var(--ad-muted);font-size:11px;text-align:right}
-    .ad-gle-filterbar{display:flex;align-items:center;gap:6px;margin-bottom:10px;overflow:auto;padding-bottom:2px}
+    .ad-gle-filterbar{display:flex;align-items:center;gap:6px;margin:0;overflow:auto;padding:10px 12px;border-bottom:1px solid #edf0f4}
     .ad-gle-filterbar button{flex:0 0 auto;min-height:34px;padding:7px 10px;border:1px solid var(--ad-line-strong);border-radius:8px;background:#fff;color:#475467;font-size:12px;font-weight:760;cursor:pointer}
     .ad-gle-filterbar button:hover{border-color:#98a2b3;background:#f8fafc}
     .ad-gle-filterbar button[aria-pressed="true"]{border-color:#17233d;background:#17233d;color:#fff}
     .ad-gle-filterbar button.is-warning:not([aria-pressed="true"]){border-color:#f3c78f;background:#fff9f0;color:#9a5b00}
     .ad-gle-filterbar button:focus-visible,.ad-gle-account summary:focus-visible,.ad-gle-row-action:focus-visible,.ad-gle-account-open:focus-visible{outline:3px solid rgba(37,99,235,.22);outline-offset:2px}
-    .ad-gle-operations-grid{display:block;min-width:0}
+    .ad-gle-operations-grid{display:block;min-width:0;overflow:hidden;border:1px solid var(--ad-line);border-radius:8px;background:#fff}
     .ad-gle-coverage-main,#adGleTaskWorkbenchMount{min-width:0}
     .ad-gle-operations-grid [data-gle-view-panel][hidden]{display:none!important}
     #adGleTaskWorkbenchMount{position:static}
-    .ad-gle-coverage-grid{overflow:hidden;border:1px solid var(--ad-line);border-radius:8px;background:#fff}
+    .ad-gle-coverage-grid{overflow:hidden;background:#fff}
     .ad-gle-account-table-head,.ad-gle-account summary{display:grid;grid-template-columns:minmax(220px,1.35fr) 90px 120px minmax(145px,.8fr) 100px;gap:12px;align-items:center}
     .ad-gle-account-table-head{min-height:36px;padding:0 12px;border-bottom:1px solid #e9edf3;background:#f8fafc;color:var(--ad-muted);font-size:11px;font-weight:820}
     .ad-gle-account{background:#fff}
@@ -8794,14 +8796,14 @@ AD_DATA_DASHBOARD_PAGE_HTML = """
       </div>
       <div class="ad-gle-summary" id="adGleCoverageSummary"></div>
       <div class="ad-gle-readiness" id="adGleCoverageReadiness" aria-live="polite"></div>
-      <div class="ad-gle-viewbar">
-        <div class="ad-gle-view-tabs" role="tablist" aria-label="GLE 工作区视图">
-          <button type="button" id="adGleCoverageViewTab" role="tab" aria-selected="true" aria-controls="adGleCoverageViewPanel" data-gle-workspace-view="coverage">广告覆盖 <span id="adGleCoverageViewCount">—</span></button>
-          <button type="button" id="adGleTaskViewTab" role="tab" aria-selected="false" aria-controls="adGleTaskWorkbenchMount" data-gle-workspace-view="tasks">关联任务 <span id="adGleTaskViewCount">—</span></button>
-        </div>
-        <span class="ad-gle-view-help" id="adGleWorkspaceViewHint">先定位广告；需要判断或操作时再进入关联任务</span>
-      </div>
       <div class="ad-gle-operations-grid" data-gle-workspace-view="coverage">
+        <div class="ad-gle-viewbar">
+          <div class="ad-gle-view-tabs" role="tablist" aria-label="GLE 工作区视图">
+            <button type="button" id="adGleCoverageViewTab" role="tab" aria-selected="true" aria-controls="adGleCoverageViewPanel" data-gle-workspace-view="coverage">广告覆盖 <span id="adGleCoverageViewCount">—</span></button>
+            <button type="button" id="adGleTaskViewTab" role="tab" aria-selected="false" aria-controls="adGleTaskWorkbenchMount" data-gle-workspace-view="tasks">关联任务 <span id="adGleTaskViewCount">—</span></button>
+          </div>
+          <span class="ad-gle-view-help" id="adGleWorkspaceViewHint">先定位广告；需要判断或操作时再进入关联任务</span>
+        </div>
         <section class="ad-gle-coverage-main" id="adGleCoverageViewPanel" role="tabpanel" aria-labelledby="adGleCoverageViewTab" data-gle-view-panel="coverage">
           <div class="ad-gle-filterbar" id="adGleCoverageFilters" role="group" aria-label="筛选 GLE 广告状态"></div>
           <div class="ad-gle-coverage-grid" id="adGleCoverageAccounts"></div>

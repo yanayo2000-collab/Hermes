@@ -221,6 +221,9 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert "查看数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleTaskWorkbenchMount"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'class="ad-gle-operations-grid"' in AD_DATA_DASHBOARD_PAGE_HTML
+    operations_start = AD_DATA_DASHBOARD_PAGE_HTML.index('class="ad-gle-operations-grid"')
+    operations_end = AD_DATA_DASHBOARD_PAGE_HTML.index('id="adGleCoverageViewPanel"')
+    assert 'class="ad-gle-viewbar"' in AD_DATA_DASHBOARD_PAGE_HTML[operations_start:operations_end]
     assert "覆盖广告任务工作台" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看任务" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "核对 ${activeWaiting} 条在投数据" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -264,7 +267,8 @@ def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -
     assert "观察中" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-filterbar button:focus-visible" in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-panel{padding:16px}" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert ".ad-gle-operations-grid{display:block;min-width:0}" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert ".ad-gle-operations-grid{display:block;min-width:0;overflow:hidden;border:1px solid var(--ad-line)" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert '.ad-gle-view-tabs button[aria-selected="true"] span{background:#17233d!important;color:#fff!important}' in AD_DATA_DASHBOARD_PAGE_HTML
     assert '.ad-gle-operations-grid [data-gle-view-panel][hidden]{display:none!important}' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "grid-template-columns:minmax(0,1.55fr) minmax(340px,.65fr)" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert ".ad-gle-operations-grid.is-task-detail" not in AD_DATA_DASHBOARD_PAGE_HTML
@@ -293,6 +297,9 @@ def test_dashboard_coverage_opens_the_existing_governed_task_flow() -> None:
     assert "growth-layer-embedded.is-detail-open" in workspace_js
     assert "showQueue:showEmbeddedQueue" in workspace_js
     assert "function showEmbeddedQueue({scroll=true}={})" in workspace_js
+    assert "if (isEmbeddedWorkspace()) {\n      showEmbeddedQueue();\n      return;\n    }" in workspace_js
+    assert "if(isEmbeddedWorkspace())setWorkspaceReturn({kind:'embeddedQueue'});" in workspace_js
+    assert "event.stopPropagation();\n      backWorkspace();" in workspace_js
     assert "classList.toggle('is-task-detail',Boolean(active))" not in workspace_js
     assert ".growth-layer-embedded .growth-task-list{grid-template-columns:repeat(2,minmax(0,1fr))" in workspace_js
     assert ".growth-layer-embedded .growth-task-group-row>span{display:block" in workspace_js
