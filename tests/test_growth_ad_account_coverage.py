@@ -227,6 +227,8 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert "覆盖广告任务工作台" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看任务" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "核对 ${activeWaiting} 条在投数据" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "优先复核" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "任务待处理" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adOpenGleRecommendations"' not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "归因未收齐不判定因果赢家" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "只读分析 · 调整需确认" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -240,6 +242,23 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert "当前最重要的工作" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "Gate0=QUASI_ONLY" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "Gate1=NOT_READY" not in AD_DATA_DASHBOARD_PAGE_HTML
+
+
+def test_dashboard_coverage_surfaces_existing_governed_recommendations() -> None:
+    assert "function gleRecommendationSummary(report)" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "dailyRecoNeedsOperator(row)" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "String(row&&row.data_origin||'LEGACY').toUpperCase()!=='LEGACY'" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "优先复核 ${recommendation.total} 条表现偏弱广告" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "当前没有证据支持直接暂停、降预算或放量" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "确认 ${recommendation.hard} 条止损调整" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'data-gle-open-recommendations' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "function openGleRecommendationQueue()" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "currentDailyRecoFilter='pending'" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "renderDailyRecommendationTable(currentDailyReport.recommendations)" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "document.getElementById('adDailyRecommendationPanel')" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "if(currentGleAdCoverage)renderGleAdCoverage(currentGleAdCoverage)" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "执行前仍需你逐条确认" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "暂不干预" in AD_DATA_DASHBOARD_PAGE_HTML
 
 
 def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -> None:
