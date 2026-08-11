@@ -27,9 +27,19 @@ HEADER = (
 )
 
 
-def csv_bytes(*, duplicate_c1: bool = False, omit_c2: bool = False) -> bytes:
+def csv_bytes(
+    *,
+    duplicate_c1: bool = False,
+    omit_c2: bool = False,
+    missing_c1_attribution_metrics: bool = False,
+) -> bytes:
+    c1_row = (
+        "Facebook Ads,120250588945870544,505,10,,,,\n"
+        if missing_c1_attribution_metrics
+        else "Facebook Ads,120250588945870544,505,10,2,2,,\n"
+    )
     rows = [
-        "Facebook Ads,120250588945870544,505,10,2,2,,\n",
+        c1_row,
     ]
     if duplicate_c1:
         rows.append("Facebook Ads,120250588945870544,1,1,1,1,0,0\n")
@@ -210,6 +220,30 @@ def test_natural_candidate_requires_asia_shanghai() -> None:
     assert result["status"] == "NATURAL_AUDIT_CANDIDATE_EXACT_CELL_LINEAGE_REDERIVED"
     assert "HISTORICAL_WINDOW_NOT_ADMISSIBLE_FOR_NATURAL_AUDIT" not in result["gaps"]
     assert result["ceiling"]["source_content_authority"] == "NOT_VERIFIED"
+
+
+def test_natural_candidate_preserves_missing_attribution_metrics_as_null() -> None:
+    raw = csv_bytes(missing_c1_attribution_metrics=True)
+    request = request_for(
+        raw,
+        mode="NATURAL_AUDIT_CANDIDATE",
+        timezone_name="Asia/Shanghai",
+    )
+    evidence = derive_lineage_evidence(
+        request=request,
+        appsflyer_raw=raw,
+        meta_capture=meta_capture(),
+    )
+
+    assert evidence["status"] == "NATURAL_AUDIT_CANDIDATE_EXACT_CELL_LINEAGE_REDERIVED"
+    assert [row["appsflyer"]["total_attributions"] for row in evidence["rows"]] == [None, 9]
+    assert [row["appsflyer"]["installs"] for row in evidence["rows"]] == [None, 9]
+    assert validate_lineage_evidence(
+        evidence,
+        request=request,
+        appsflyer_raw=raw,
+        meta_capture=meta_capture(),
+    ) == evidence
 
 
 @pytest.mark.parametrize(
