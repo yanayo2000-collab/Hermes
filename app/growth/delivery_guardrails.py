@@ -43,7 +43,8 @@ def evaluate_delivery_stop_loss(
 
     ctr_rule = dict(rules.get("ctr_floor") or {})
     if (
-        ctr is not None
+        ctr_rule
+        and ctr is not None
         and impressions >= float(ctr_rule.get("minimum_impressions") or 0)
         and float(ctr) < float(ctr_rule.get("minimum_ctr") or 0)
     ):
@@ -58,7 +59,8 @@ def evaluate_delivery_stop_loss(
     zero_rule = dict(rules.get("zero_install_spend") or {})
     attribution_ready = normalized_checkpoint in {"D1", "D3", "D7"}
     if (
-        attribution_ready
+        zero_rule
+        and attribution_ready
         and spend >= float(zero_rule.get("spend_limit_usd") or 0)
         and installs <= float(zero_rule.get("maximum_installs") or 0)
     ):
@@ -71,7 +73,8 @@ def evaluate_delivery_stop_loss(
 
     cpi_rule = dict(rules.get("high_cpi") or {})
     if (
-        cpi is not None
+        cpi_rule
+        and cpi is not None
         and installs >= float(cpi_rule.get("minimum_installs") or 0)
         and float(cpi) > float(cpi_rule.get("maximum_cpi_usd") or 0)
     ):

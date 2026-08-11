@@ -150,6 +150,14 @@ class AdExperimentEvaluator:
             experiment = AdExperimentService._serialize(row)
             if normalized_account_id and str(experiment.get("account_id") or "").removeprefix("act_") != normalized_account_id:
                 continue
+            if self.conn.execute(
+                "SELECT 1 FROM ad_experiment_cycle WHERE experiment_id=? LIMIT 1",
+                (experiment["experiment_id"],),
+            ).fetchone():
+                # Cycle-managed actions use their own action receipt boundary and
+                # checkpoint namespace. The legacy evaluator must never reuse the
+                # experiment's original RUNNING boundary for a later adjustment.
+                continue
             passive_observation = dict(experiment.get("hypothesis_json") or {}).get("mode") == "passive_observation"
             control = dict(experiment.get("control_definition_json") or {})
             if str(experiment.get("source_report_id") or "") and str(control.get("test_variable") or "") in {

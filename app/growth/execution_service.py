@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.growth.common import canonical_json, decode_json, new_id, payload_hash, utc_now
-from app.growth.errors import GrowthNotFound, GrowthStateConflict, GrowthValidationError
+from app.growth.errors import GrowthError, GrowthNotFound, GrowthStateConflict, GrowthValidationError
 from app.growth.primary_text_only_compiler import (
     assert_phase1_live_permission,
     is_primary_text_only_plan,
@@ -785,7 +785,12 @@ class ExecutionTaskService:
                 self._sync_experiment_for_action(
                     task["operation_action_id"], phase=target, actor=worker_id,
                 )
-        return self.get_task(task_id)
+        result = self.get_task(task_id)
+        if target == "SUCCESS":
+            result["evaluation_cycle"] = self._reconcile_evaluation_cycle(
+                task["operation_action_id"], actor=worker_id,
+            )
+        return result
 
     def record_receipt(
         self,
@@ -901,7 +906,9 @@ class ExecutionTaskService:
             next_state = "CREATION_PARTIAL_FAILURE" if action_type == "CREATE_PAUSED_AD" else "DATA_INCOMPLETE"
         elif action_type == "CREATE_PAUSED_AD":
             next_state = "META_REVIEW_PENDING"
-        elif action_type in {"PAUSE_AD", "PAUSE_ADSET"}:
+        elif action_type == "PAUSE_AD":
+            next_state = "EVALUATING_ADJUSTMENT"
+        elif action_type == "PAUSE_ADSET":
             next_state = "PAUSED"
         elif action_type == "REACTIVATE_AD":
             next_state = "RUNNING"
@@ -927,6 +934,48 @@ class ExecutionTaskService:
                     """,
                     (utc_now(), experiment_id),
                 )
+
+    def _reconcile_evaluation_cycle(
+        self, operation_action_id: str, *, actor: str,
+    ) -> Dict[str, Any]:
+        action = self.get_operation_action(operation_action_id)
+        if str(action.get("action_type") or "").upper() != "PAUSE_AD":
+            return {"status": "NOT_APPLICABLE", "meta_writes_performed": False}
+        try:
+            from app.growth.ad_experiment_cycle_service import AdExperimentCycleService
+
+            cycle = AdExperimentCycleService(
+                self.conn, ensure_schema=False,
+            ).reconcile_verified_action(operation_action_id, actor=actor)
+            return {
+                "status": "OPENED", "cycle_id": cycle["cycle_id"],
+                "first_complete_date": cycle["first_complete_date"],
+                "meta_writes_performed": False,
+            }
+        except GrowthError as exc:
+            payload = dict(action.get("payload_json") or {})
+            experiment_id = str(payload.get("experiment_id") or "").strip()
+            if experiment_id:
+                experiment = self.conn.execute(
+                    "SELECT state FROM ad_experiment WHERE experiment_id=?", (experiment_id,),
+                ).fetchone()
+                if experiment:
+                    from app.growth.ad_experiment_service import AdExperimentService
+
+                    with self.conn:
+                        AdExperimentService(self.conn)._event(
+                            experiment_id, str(experiment["state"]), str(experiment["state"]),
+                            "EVALUATION_CYCLE_RECONCILIATION_PENDING", actor,
+                            str(exc), {
+                                "operation_action_id": operation_action_id,
+                                "causal_claim": False,
+                                "meta_writes_performed": False,
+                            },
+                        )
+            return {
+                "status": "PENDING_RECONCILIATION", "reason": str(exc),
+                "meta_writes_performed": False,
+            }
 
     def _record_creative_revision_window(
         self, *, experiment_id: str, ad_id: str, creative_id: str, image_id: str,

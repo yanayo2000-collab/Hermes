@@ -264,6 +264,83 @@ CREATE TABLE IF NOT EXISTS ad_experiment_evaluation (
     FOREIGN KEY (experiment_id) REFERENCES ad_experiment(experiment_id)
 );
 
+CREATE TABLE IF NOT EXISTS ad_experiment_cycle (
+    cycle_id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL,
+    source_operation_action_id TEXT NOT NULL UNIQUE,
+    source_execution_task_id TEXT NOT NULL UNIQUE,
+    source_receipt_id TEXT NOT NULL,
+    source_plan_hash TEXT NOT NULL,
+    source_receipt_hash TEXT NOT NULL,
+    evidence_root_hash TEXT NOT NULL UNIQUE,
+    action_type TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    evaluation_subject_json TEXT NOT NULL,
+    evaluation_subject_hash TEXT NOT NULL,
+    evaluation_checkpoints_json TEXT NOT NULL,
+    window_opened_at TEXT NOT NULL,
+    first_complete_date TEXT NOT NULL,
+    reporting_timezone TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'WAITING_EVIDENCE' CHECK (state IN (
+        'WAITING_EVIDENCE','EVALUATING','EVALUATED','NEXT_PLAN_READY','BLOCKED'
+    )),
+    latest_checkpoint TEXT NOT NULL DEFAULT '' CHECK (
+        latest_checkpoint IN ('','D1','D3','D7')
+    ),
+    latest_evaluation_status TEXT NOT NULL DEFAULT '',
+    causal_claim INTEGER NOT NULL DEFAULT 0 CHECK (causal_claim = 0),
+    meta_write_allowed INTEGER NOT NULL DEFAULT 0 CHECK (meta_write_allowed = 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (experiment_id) REFERENCES ad_experiment(experiment_id),
+    FOREIGN KEY (source_operation_action_id) REFERENCES growth_operation_action(operation_action_id),
+    FOREIGN KEY (source_execution_task_id) REFERENCES meta_execution_task(execution_task_id)
+);
+
+CREATE TABLE IF NOT EXISTS ad_experiment_cycle_evaluation (
+    cycle_evaluation_id TEXT PRIMARY KEY,
+    cycle_id TEXT NOT NULL,
+    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D7')),
+    window_json TEXT NOT NULL,
+    metrics_by_experiment_json TEXT NOT NULL,
+    action_candidates_json TEXT NOT NULL DEFAULT '[]',
+    evaluation_status TEXT NOT NULL CHECK (evaluation_status IN (
+        'OBSERVE','ACTION_RECOMMENDED','CYCLE_COMPLETE_NO_CHANGE'
+    )),
+    data_quality_status TEXT NOT NULL CHECK (data_quality_status = 'PASS'),
+    evidence_json TEXT NOT NULL,
+    evidence_hash TEXT NOT NULL UNIQUE,
+    causal_claim INTEGER NOT NULL DEFAULT 0 CHECK (causal_claim = 0),
+    meta_write_allowed INTEGER NOT NULL DEFAULT 0 CHECK (meta_write_allowed = 0),
+    evaluated_at TEXT NOT NULL,
+    UNIQUE (cycle_id, checkpoint),
+    FOREIGN KEY (cycle_id) REFERENCES ad_experiment_cycle(cycle_id)
+);
+
+CREATE TABLE IF NOT EXISTS ad_experiment_cycle_next_plan (
+    cycle_plan_id TEXT PRIMARY KEY,
+    cycle_id TEXT NOT NULL,
+    cycle_evaluation_id TEXT NOT NULL UNIQUE,
+    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D7')),
+    action_type TEXT NOT NULL CHECK (action_type IN ('OBSERVE','PAUSE_AD')),
+    target_experiment_id TEXT NOT NULL DEFAULT '',
+    target_id TEXT NOT NULL DEFAULT '',
+    operation_action_id TEXT NOT NULL DEFAULT '',
+    plan_json TEXT NOT NULL,
+    plan_hash TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN (
+        'READY','AWAITING_CONFIRMATION','BLOCKED','SUPERSEDED','COMPLETED','DISMISSED'
+    )),
+    requires_confirmation INTEGER NOT NULL DEFAULT 0 CHECK (requires_confirmation IN (0,1)),
+    causal_claim INTEGER NOT NULL DEFAULT 0 CHECK (causal_claim = 0),
+    meta_write_allowed INTEGER NOT NULL DEFAULT 0 CHECK (meta_write_allowed = 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (cycle_id) REFERENCES ad_experiment_cycle(cycle_id),
+    FOREIGN KEY (cycle_evaluation_id) REFERENCES ad_experiment_cycle_evaluation(cycle_evaluation_id)
+);
+
 CREATE TABLE IF NOT EXISTS growth_strategy_knowledge (
     knowledge_id TEXT PRIMARY KEY,
     episode_id TEXT NOT NULL,
@@ -527,6 +604,17 @@ CREATE INDEX IF NOT EXISTS idx_growth_operation_approval_status
 CREATE INDEX IF NOT EXISTS idx_ad_experiment_state ON ad_experiment(state, updated_at);
 CREATE INDEX IF NOT EXISTS idx_ad_experiment_source ON ad_experiment(source_recommendation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_ad_experiment_event_timeline ON ad_experiment_events(experiment_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ad_experiment_cycle_due
+    ON ad_experiment_cycle(state, first_complete_date, created_at);
+CREATE INDEX IF NOT EXISTS idx_ad_experiment_cycle_experiment
+    ON ad_experiment_cycle(experiment_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ad_experiment_cycle_evaluation
+    ON ad_experiment_cycle_evaluation(cycle_id, checkpoint, evaluated_at);
+CREATE INDEX IF NOT EXISTS idx_ad_experiment_cycle_plan
+    ON ad_experiment_cycle_next_plan(cycle_id, status, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ad_experiment_cycle_plan_operation
+    ON ad_experiment_cycle_next_plan(operation_action_id)
+    WHERE operation_action_id<>'';
 CREATE INDEX IF NOT EXISTS idx_ad_creative_revision_ad
     ON ad_creative_revision_window(ad_id, effective_from);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ad_creative_revision_current
@@ -649,6 +737,9 @@ DROP TABLE IF EXISTS growth_strategy_recommendation;
 DROP TABLE IF EXISTS growth_next_action;
 DROP TABLE IF EXISTS growth_autonomy_policy;
 DROP TABLE IF EXISTS growth_strategy_knowledge;
+DROP TABLE IF EXISTS ad_experiment_cycle_next_plan;
+DROP TABLE IF EXISTS ad_experiment_cycle_evaluation;
+DROP TABLE IF EXISTS ad_experiment_cycle;
 DROP TABLE IF EXISTS ad_experiment_evaluation;
 DROP TABLE IF EXISTS ad_creative_revision_window;
 DROP TABLE IF EXISTS ad_experiment_events;
