@@ -84,6 +84,7 @@ ZH_LABELS: Dict[str, str] = {
     'creative_scale_candidate': '素材放量候选',
     'continue_observe': '继续观察',
     'generate_repair_creative': '生成修正素材',
+    'repair_delivery_config': '重建受控投放',
     'generate_derivative_creative': '生成衍生素材',
     'inspect_post_im_funnel': '检查im链路',
     'check_im_flow': '检查im链路',
@@ -107,7 +108,7 @@ LEGACY_STATUS_DIAGNOSIS_TYPE: Dict[str, str] = {
     'over_cap': 'front_funnel_weak',
     'slight_over_cap': 'continue_observe',
     'sample_insufficient': 'sample_insufficient',
-    'under_delivery': 'sample_insufficient',
+    'under_delivery': 'under_delivery',
     'no_cap': 'continue_observe',
     'mixed_change': 'continue_observe',
     'structure_optimization': 'front_funnel_weak',
@@ -1885,16 +1886,35 @@ class AdDailyRecommendationEngine:
                 )
             if scorecard.get('band') == 'data_insufficient':
                 business_result_available = scorecard.get('business_result_available') is True
-                if business_result_available and float(item.installs or 0) == 0 and binds == 0:
+                maturity_day = int(item.maturity_day or 0)
+                review_day = int((self.config.get('rules') or {}).get('under_delivery_review_day') or 4)
+                installs = float(item.installs or 0)
+                if business_result_available and binds == 0 and maturity_day >= review_day and installs <= 0 and spend < min_strong_spend:
                     return self._make_recommendation(
-                        item, window, cap=cap, primary_action='observe',
-                        reason_zh='近7天未形成安装或真实入会样本；继续延长观察期不会自动增加样本，系统转为核对投放状态、预算与受众交付。',
-                        status_tag='under_delivery', diagnosis_type='under_delivery', action_type='manual_review',
-                        primary_layer='sample_maturity', maturity_status=maturity, confidence='low',
+                        item, window, cap=cap, primary_action='repair_delivery_config',
+                        reason_zh=f'D+{review_day} 后仍没有形成有效消耗、安装或真实入会；继续等待不会修复交付。建议复用已审核素材与文案，重建带 CPI 成本上限的暂停态受控投放，确认后由系统创建实验草稿。',
+                        status_tag='under_delivery', diagnosis_type='under_delivery', action_type='repair_delivery_config',
+                        primary_layer='delivery', maturity_status=maturity, confidence='medium',
+                        evidence_points=score_points, needs_data=needs_data,
+                    )
+                if business_result_available and binds == 0 and maturity_day >= review_day and installs <= 0:
+                    return self._make_recommendation(
+                        item, window, cap=cap, primary_action='generate_repair_creative',
+                        reason_zh=f'D+{review_day} 后已有 ${spend:.2f} 消耗但仍无安装和真实入会，不再延长观察。建议生成修正素材并建立带 CPI 成本上限的暂停态对照实验，确认后再进入审核与投放。',
+                        status_tag='frontend_risk', diagnosis_type='front_funnel_weak', action_type='generate_repair_creative',
+                        primary_layer='front_funnel', maturity_status=maturity, confidence='medium',
+                        allow_generate_creative=True, evidence_points=score_points, needs_data=needs_data,
+                    )
+                if business_result_available and binds == 0 and maturity_day >= review_day and installs > 0:
+                    return self._make_recommendation(
+                        item, window, cap=cap, primary_action='manual_review',
+                        reason_zh=f'D+{review_day} 后已有 {installs:g} 个安装但仍无真实入会；继续等待不能排除 IM 承接、Linky / bind / CRM 回传或流量质量问题。系统转入后链路核对，未核实前不盲目换素材或改预算。',
+                        status_tag='data_quality', diagnosis_type='creative_effective_post_im_failed', action_type='inspect_post_im_funnel',
+                        primary_layer='post_im_funnel', maturity_status=maturity, confidence='medium',
                         evidence_points=score_points, needs_data=needs_data,
                     )
                 reason_zh = (
-                    '真实入会数据已接入，当前样本尚未达到强动作门槛；系统继续积累样本，不据此调整预算。'
+                    f'真实入会数据已接入，当前仍在 D+{review_day} 有限观察期内；到期后将按投放不足、素材前链路或后链路问题自动分流，不会无限等待。'
                     if business_result_available and binds == 0
                     else '真实入会结果尚未接入，或五项核心指标中存在关键缺项；系统继续补数，不要求用户核对。'
                 )
