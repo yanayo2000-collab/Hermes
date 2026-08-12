@@ -64,8 +64,9 @@ def test_review_ui_is_automatic_and_surfaces_each_ads_next_step() -> None:
     assert "gle_scope_verified:true" in page
     assert "data-growth-bulk-confirm" not in page
     assert "查看账户明细" not in page
-    assert "维持投放，重点复核" in page
-    assert "数据更新后自动重算" in page
+    assert "系统核对低投放原因" in page
+    assert "不会按日历无限延长观察期" in page
+    assert "本轮已经完成评分" in page
     assert "data-gle-open-operating-workbench" in page
     assert "window.showGleOperatingStatus" in page
     assert "&refresh=1" in page
@@ -144,13 +145,13 @@ console.log(JSON.stringify({{
         text=True,
     )
     payload = json.loads(result.stdout)
-    assert payload["review"]["label"] == "维持投放，重点复核"
+    assert payload["review"]["label"] == "系统核对低投放原因"
     assert payload["review"]["bucket"] == "system"
-    assert "自动重算" in payload["review"]["detail"]
+    assert "不再无限等待" in payload["review"]["detail"]
     assert payload["pause"]["label"] == "确认暂停"
     assert payload["pause"]["action"] == "decision"
-    assert payload["waiting"]["label"] == "等待精确数据"
-    assert payload["scoring"]["label"] == "等待本轮评分"
+    assert payload["waiting"]["label"] == "近7天无精确投放数据"
+    assert payload["scoring"]["label"] == "本轮未形成可评分样本"
     assert payload["inactive"]["label"] == "当前未投放"
     assert payload["task"]["label"] == "查看任务进度"
     assert payload["actionableTask"]["label"] == "处理任务"

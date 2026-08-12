@@ -1885,6 +1885,14 @@ class AdDailyRecommendationEngine:
                 )
             if scorecard.get('band') == 'data_insufficient':
                 business_result_available = scorecard.get('business_result_available') is True
+                if business_result_available and float(item.installs or 0) == 0 and binds == 0:
+                    return self._make_recommendation(
+                        item, window, cap=cap, primary_action='observe',
+                        reason_zh='近7天未形成安装或真实入会样本；继续延长观察期不会自动增加样本，系统转为核对投放状态、预算与受众交付。',
+                        status_tag='under_delivery', diagnosis_type='under_delivery', action_type='manual_review',
+                        primary_layer='sample_maturity', maturity_status=maturity, confidence='low',
+                        evidence_points=score_points, needs_data=needs_data,
+                    )
                 reason_zh = (
                     '真实入会数据已接入，当前样本尚未达到强动作门槛；系统继续积累样本，不据此调整预算。'
                     if business_result_available and binds == 0
