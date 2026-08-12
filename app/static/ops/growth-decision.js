@@ -3,6 +3,7 @@
 
   const ACTION_MAP = {
     generate_derivative_creative: 'CREATE_EXPERIMENT',
+    generate_repair_creative: 'CREATE_EXPERIMENT',
     generate_creative: 'CREATE_EXPERIMENT',
     pause: 'PAUSE',
     scale_up: 'SCALE_UP',
@@ -49,7 +50,6 @@
       .growth-decision-evidence{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.growth-decision-evidence div{min-width:0;background:#f8fafc;border:1px solid #edf1f5;border-radius:8px;padding:7px 8px}.growth-decision-evidence span{display:block;color:#64748b;font-size:10px}.growth-decision-evidence b{display:block;margin-top:2px;color:#0f172a;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .growth-decision-similar-details{border:1px solid #e2e8f0;border-radius:9px;background:#fff}.growth-decision-similar-details summary{padding:8px 10px;color:#475569;font-size:11px;font-weight:780;cursor:pointer}.growth-decision-similar{display:grid;gap:6px;padding:0 10px 9px}.growth-decision-similar article{border:1px solid #e2e8f0;border-radius:8px;padding:8px 9px;background:#f8fafc;font-size:11px;color:#475467}.growth-decision-similar strong{color:#101828}
       .growth-decision-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 18px;border-top:1px solid #e5e7eb;background:#fff}.growth-decision-status{font-size:11px;line-height:1.35;color:#64748b}.growth-decision-foot-actions{display:flex;align-items:center;gap:8px}.growth-decision-later,.growth-decision-submit{min-height:36px!important;margin:0!important;border-radius:9px!important;padding:8px 14px!important;font:800 12px/1.2 inherit!important;box-shadow:none!important;white-space:nowrap!important;cursor:pointer}.growth-decision-later{border:1px solid #d0d5dd!important;background:#fff!important;color:#475467!important}.growth-decision-submit{border:0!important;background:#111827!important;color:#fff!important}.growth-decision-submit:disabled{opacity:.55!important;cursor:not-allowed!important}
-      .growth-bulk-modal{width:min(680px,100%)}.growth-bulk-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.growth-bulk-summary div{padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc}.growth-bulk-summary span{display:block;color:#667085;font-size:11px}.growth-bulk-summary strong{display:block;margin-top:3px;color:#101828;font-size:18px}.growth-bulk-list{display:grid;gap:0;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden}.growth-bulk-list div{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 11px;border-bottom:1px solid #edf2f7;font-size:12px;color:#344054}.growth-bulk-list div:last-child{border-bottom:0}.growth-bulk-list b{color:#101828}.growth-bulk-safe-note{padding:9px 11px;border:1px solid #abefc6;border-radius:9px;background:#ecfdf3;color:#027a48;font-size:11px;line-height:1.45}.growth-bulk-result{padding:9px 11px;border-radius:9px;background:#f8fafc;color:#475467;font-size:12px;line-height:1.45}
       [data-growth-decision]{margin:0!important;background:#111827!important;color:#fff!important;border-color:#111827!important}
       @media(max-width:720px){.growth-decision-grid{grid-template-columns:1fr}.growth-decision-impact{grid-template-columns:1fr;gap:4px}.growth-decision-impact strong{grid-row:auto}.growth-decision-modal{max-height:calc(100dvh - 12px)}.growth-decision-body{padding:12px}.growth-decision-foot{padding:10px 12px}}
     `;
@@ -77,15 +77,6 @@
     modal.addEventListener('click', event => { if (event.target === modal) close(); });
     modal.querySelector('#growthDecisionAction').addEventListener('change', updateActionEffect);
     modal.querySelector('.growth-decision-submit').addEventListener('click', submit);
-    const bulkModal = document.createElement('div');
-    bulkModal.id = 'growthBulkDecisionModal';
-    bulkModal.className = 'growth-decision-backdrop';
-    bulkModal.setAttribute('aria-hidden', 'true');
-    bulkModal.innerHTML = `<section class="growth-decision-modal growth-bulk-modal" role="dialog" aria-modal="true" aria-labelledby="growthBulkDecisionTitle"><header class="growth-decision-head"><div><h2 id="growthBulkDecisionTitle">确认加入数据复核队列</h2><p>仅限已授权给 GLE 的 5 个广告账户</p></div><button class="growth-decision-close growth-bulk-close" type="button" aria-label="关闭">×</button></header><div class="growth-decision-body"><div class="growth-bulk-summary" id="growthBulkSummary"></div><div class="growth-bulk-safe-note">每条广告均已通过 exact ad_id 匹配授权范围。本次只加入经营数据复核队列；Meta 写入 0，不会暂停、降预算、放量或修改广告。</div><div class="growth-bulk-list" id="growthBulkList"></div><div class="growth-bulk-result" id="growthBulkResult" aria-live="polite">等待确认。</div></div><footer class="growth-decision-foot"><span class="growth-decision-status">范围不明的广告已自动排除；提交后可在“已交给系统”中查看。</span><div class="growth-decision-foot-actions"><button class="growth-decision-later growth-bulk-close" type="button">取消</button><button class="growth-decision-submit growth-bulk-submit" type="button">确认加入复核队列</button></div></footer></section>`;
-    document.body.appendChild(bulkModal);
-    bulkModal.querySelectorAll('.growth-bulk-close').forEach(button => button.addEventListener('click', closeBulk));
-    bulkModal.addEventListener('click', event => { if (event.target === bulkModal) closeBulk(); });
-    bulkModal.querySelector('.growth-bulk-submit').addEventListener('click', submitBulk);
   }
 
   function recommendationById(id) {
@@ -136,7 +127,7 @@
   function acceptedMessage(decision) {
     const action = String(decision.selected_action || '').toUpperCase();
     if (action === 'OBSERVE') return '已交给系统，系统会持续观察并在数据成熟后提醒你。';
-    if (action === 'CHECK_DATA') return '已交给系统，数据复核已进入待处理队列。';
+    if (action === 'CHECK_DATA') return '系统已完成当前只读复核；未达到强动作门槛时会继续观察，并在数据更新后自动重算。';
     if (decision.target_type === 'EXPERIMENT' && decision.target_id) return '已交给系统，跟踪实验已经建立，可在广告任务中查看进度。';
     return '已交给系统，后续处理状态会由系统持续更新。';
   }
@@ -178,85 +169,6 @@
     modal.classList.remove('is-open');
     modal.setAttribute('aria-hidden', 'true');
     if (previousFocus && typeof previousFocus.focus === 'function') previousFocus.focus();
-  }
-
-  function closeBulk() {
-    const modal = document.getElementById('growthBulkDecisionModal');
-    if (!modal) return;
-    modal.classList.remove('is-open');
-    modal.setAttribute('aria-hidden', 'true');
-  }
-
-  function safeBulkCandidates() {
-    const rows = typeof window.dailyRecommendationRowsForBulk === 'function' ? window.dailyRecommendationRowsForBulk() : [];
-    return (rows || []).filter(row => {
-      const systemManaged = row.system_managed === true || String(row.management_state && row.management_state.mode || '') === 'SYSTEM_MANAGED';
-      return row.gle_scope_verified === true && String(row.gle_scope_ad_id || '') === String(row.source_ad_id || '') && String(row.data_origin || 'LEGACY').toUpperCase() !== 'LEGACY' && !systemManaged && !(row.decision_state && row.decision_state.decision_id) && actionFromRecommendation(row) === 'CHECK_DATA';
-    });
-  }
-
-  function openBulk() {
-    ensureModal();
-    const candidates = safeBulkCandidates();
-    if (!candidates.length) return;
-    const modal = document.getElementById('growthBulkDecisionModal');
-    const checkCount = candidates.length;
-    const accountNames = new Set(candidates.map(row => String(row.gle_scope_account_name || row.gle_scope_account_id || '')).filter(Boolean));
-    document.getElementById('growthBulkSummary').innerHTML = `<div><span>加入数据复核</span><strong>${checkCount}</strong></div><div><span>授权账户</span><strong>${accountNames.size}</strong></div><div><span>Meta 写入</span><strong>0</strong></div>`;
-    const visible = candidates.slice(0, 8);
-    document.getElementById('growthBulkList').innerHTML = visible.map(row => `<div><b>${esc(row.object_name || row.object_id || row.recommendation_id)}</b><span>${esc(row.gle_scope_account_name || row.gle_scope_account_id)} · ${esc(row.gle_scope_ad_id)}</span></div>`).join('') + (candidates.length > visible.length ? `<div><b>其余 ${candidates.length - visible.length} 条</b><span>均在同一授权范围内</span></div>` : '');
-    document.getElementById('growthBulkResult').textContent = `共 ${candidates.length} 条，已匹配 ${accountNames.size} 个授权账户，等待一次确认。`;
-    const button = modal.querySelector('.growth-bulk-submit');
-    button.textContent = '确认加入复核队列';
-    button.disabled = false;
-    button.dataset.complete = '0';
-    modal.classList.add('is-open');
-    modal.setAttribute('aria-hidden', 'false');
-  }
-
-  async function submitBulk() {
-    const candidates = safeBulkCandidates();
-    const modal = document.getElementById('growthBulkDecisionModal');
-    const button = modal.querySelector('.growth-bulk-submit');
-    if (button.dataset.complete === '1') { closeBulk(); return; }
-    const result = document.getElementById('growthBulkResult');
-    button.disabled = true;
-    let succeeded = 0;
-    const failed = [];
-    for (const row of candidates) {
-      result.textContent = `正在处理 ${succeeded + failed.length + 1}/${candidates.length}…`;
-      const key = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `growth-bulk-${Date.now()}-${succeeded + failed.length}`;
-      const body = {recommendation_id:row.recommendation_id,selected_action:actionFromRecommendation(row),rejected_actions:[],decision_reason:{type:reasonFromRecommendation(row),note:'批量确认安全方案'},confidence:Number(confidenceValue(row.confidence))};
-      try {
-        const response = await fetch('/api/ops/growth/decisions', {method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key,'X-Request-ID':key},body:JSON.stringify(body)});
-        const payload = await response.json().catch(() => ({}));
-        let decision = payload;
-        if (response.status === 409) {
-          const previewResponse = await fetch(`/api/ops/growth/recommendations/${encodeURIComponent(row.recommendation_id)}/decision-preview`);
-          const preview = await previewResponse.json().catch(() => ({}));
-          if (!previewResponse.ok || !preview.existing_decision || !preview.existing_decision.decision_id) throw decisionError(response.status, payload);
-          decision = preview.existing_decision;
-        } else if (!response.ok) throw decisionError(response.status, payload);
-        const accepted = {...decision, selected_action:decision.selected_action || body.selected_action};
-        row.decision_state = accepted;
-        if (typeof window.applyDailyRecommendationDecisionState === 'function') window.applyDailyRecommendationDecisionState(row.recommendation_id, accepted);
-        succeeded += 1;
-      } catch (error) {
-        failed.push(row.object_name || row.object_id || row.recommendation_id);
-      }
-    }
-    if (!failed.length) {
-      await refreshRecommendationPanel();
-      result.textContent = `已交给系统 ${succeeded} 条。可关闭后在“已交给系统”中统一查看。`;
-      button.textContent = '完成';
-      button.disabled = false;
-      button.dataset.complete = '1';
-      return;
-    }
-    result.textContent = `已成功 ${succeeded} 条，失败 ${failed.length} 条；失败项仍保留待确认，系统没有自动重试。`;
-    button.textContent = '关闭';
-    button.disabled = false;
-    button.dataset.complete = '1';
   }
 
   function updateActionEffect() {
@@ -414,10 +326,8 @@
   }
 
   document.addEventListener('click', event => {
-    const bulkButton = event.target.closest('[data-growth-bulk-confirm]');
-    if (bulkButton) { openBulk(); return; }
     const button = event.target.closest('[data-growth-decision]');
     if (button) open(button.getAttribute('data-growth-decision') || '');
   });
-  document.addEventListener('keydown', event => { if (event.key === 'Escape') { close(); closeBulk(); } });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
 })();
