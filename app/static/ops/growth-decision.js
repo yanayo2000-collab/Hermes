@@ -81,7 +81,7 @@
     bulkModal.id = 'growthBulkDecisionModal';
     bulkModal.className = 'growth-decision-backdrop';
     bulkModal.setAttribute('aria-hidden', 'true');
-    bulkModal.innerHTML = `<section class="growth-decision-modal growth-bulk-modal" role="dialog" aria-modal="true" aria-labelledby="growthBulkDecisionTitle"><header class="growth-decision-head"><div><h2 id="growthBulkDecisionTitle">确认加入数据复核队列</h2><p>一次确认，不需要逐条打开</p></div><button class="growth-decision-close growth-bulk-close" type="button" aria-label="关闭">×</button></header><div class="growth-decision-body"><div class="growth-bulk-summary" id="growthBulkSummary"></div><div class="growth-bulk-safe-note">本次只会把表现偏弱广告加入经营数据复核队列。Meta 写入 0：不会暂停、降预算、放量或修改广告。</div><div class="growth-bulk-list" id="growthBulkList"></div><div class="growth-bulk-result" id="growthBulkResult" aria-live="polite">等待确认。</div></div><footer class="growth-decision-foot"><span class="growth-decision-status">提交后可在“已交给系统”中一次查看。</span><div class="growth-decision-foot-actions"><button class="growth-decision-later growth-bulk-close" type="button">取消</button><button class="growth-decision-submit growth-bulk-submit" type="button">确认加入复核队列</button></div></footer></section>`;
+    bulkModal.innerHTML = `<section class="growth-decision-modal growth-bulk-modal" role="dialog" aria-modal="true" aria-labelledby="growthBulkDecisionTitle"><header class="growth-decision-head"><div><h2 id="growthBulkDecisionTitle">确认加入数据复核队列</h2><p>仅限已授权给 GLE 的 5 个广告账户</p></div><button class="growth-decision-close growth-bulk-close" type="button" aria-label="关闭">×</button></header><div class="growth-decision-body"><div class="growth-bulk-summary" id="growthBulkSummary"></div><div class="growth-bulk-safe-note">每条广告均已通过 exact ad_id 匹配授权范围。本次只加入经营数据复核队列；Meta 写入 0，不会暂停、降预算、放量或修改广告。</div><div class="growth-bulk-list" id="growthBulkList"></div><div class="growth-bulk-result" id="growthBulkResult" aria-live="polite">等待确认。</div></div><footer class="growth-decision-foot"><span class="growth-decision-status">范围不明的广告已自动排除；提交后可在“已交给系统”中查看。</span><div class="growth-decision-foot-actions"><button class="growth-decision-later growth-bulk-close" type="button">取消</button><button class="growth-decision-submit growth-bulk-submit" type="button">确认加入复核队列</button></div></footer></section>`;
     document.body.appendChild(bulkModal);
     bulkModal.querySelectorAll('.growth-bulk-close').forEach(button => button.addEventListener('click', closeBulk));
     bulkModal.addEventListener('click', event => { if (event.target === bulkModal) closeBulk(); });
@@ -191,7 +191,7 @@
     const rows = typeof window.dailyRecommendationRowsForBulk === 'function' ? window.dailyRecommendationRowsForBulk() : [];
     return (rows || []).filter(row => {
       const systemManaged = row.system_managed === true || String(row.management_state && row.management_state.mode || '') === 'SYSTEM_MANAGED';
-      return String(row.data_origin || 'LEGACY').toUpperCase() !== 'LEGACY' && !systemManaged && !(row.decision_state && row.decision_state.decision_id) && actionFromRecommendation(row) === 'CHECK_DATA';
+      return row.gle_scope_verified === true && String(row.gle_scope_ad_id || '') === String(row.source_ad_id || '') && String(row.data_origin || 'LEGACY').toUpperCase() !== 'LEGACY' && !systemManaged && !(row.decision_state && row.decision_state.decision_id) && actionFromRecommendation(row) === 'CHECK_DATA';
     });
   }
 
@@ -201,10 +201,11 @@
     if (!candidates.length) return;
     const modal = document.getElementById('growthBulkDecisionModal');
     const checkCount = candidates.length;
-    document.getElementById('growthBulkSummary').innerHTML = `<div><span>加入数据复核</span><strong>${checkCount}</strong></div><div><span>Meta 写入</span><strong>0</strong></div>`;
+    const accountNames = new Set(candidates.map(row => String(row.gle_scope_account_name || row.gle_scope_account_id || '')).filter(Boolean));
+    document.getElementById('growthBulkSummary').innerHTML = `<div><span>加入数据复核</span><strong>${checkCount}</strong></div><div><span>授权账户</span><strong>${accountNames.size}</strong></div><div><span>Meta 写入</span><strong>0</strong></div>`;
     const visible = candidates.slice(0, 8);
-    document.getElementById('growthBulkList').innerHTML = visible.map(row => `<div><b>${esc(row.object_name || row.object_id || row.recommendation_id)}</b><span>经营数据复核</span></div>`).join('') + (candidates.length > visible.length ? `<div><b>其余 ${candidates.length - visible.length} 条</b><span>同一复核范围</span></div>` : '');
-    document.getElementById('growthBulkResult').textContent = `共 ${candidates.length} 条，等待一次确认。`;
+    document.getElementById('growthBulkList').innerHTML = visible.map(row => `<div><b>${esc(row.object_name || row.object_id || row.recommendation_id)}</b><span>${esc(row.gle_scope_account_name || row.gle_scope_account_id)} · ${esc(row.gle_scope_ad_id)}</span></div>`).join('') + (candidates.length > visible.length ? `<div><b>其余 ${candidates.length - visible.length} 条</b><span>均在同一授权范围内</span></div>` : '');
+    document.getElementById('growthBulkResult').textContent = `共 ${candidates.length} 条，已匹配 ${accountNames.size} 个授权账户，等待一次确认。`;
     const button = modal.querySelector('.growth-bulk-submit');
     button.textContent = '确认加入复核队列';
     button.disabled = false;
