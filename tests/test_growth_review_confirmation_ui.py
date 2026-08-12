@@ -32,7 +32,9 @@ window.dailyRecommendationDecisionAction = row => row && row.evidence && row.evi
 {instrumented}
 console.log(JSON.stringify({{
   reviewAction: window.__growthDecisionTest.actionFromRecommendation({json.dumps(row)}),
-  repairAction: window.__growthDecisionTest.actionFromRecommendation({{action_type: 'generate_repair_creative'}})
+  repairAction: window.__growthDecisionTest.actionFromRecommendation({{action_type: 'generate_repair_creative'}}),
+  deliveryRepairAction: window.__growthDecisionTest.actionFromRecommendation({{action_type: 'repair_delivery_config'}}),
+  postImAction: window.__growthDecisionTest.actionFromRecommendation({{action_type: 'inspect_post_im_funnel'}})
 }}));
 """
     result = subprocess.run(
@@ -45,6 +47,8 @@ console.log(JSON.stringify({{
     assert json.loads(result.stdout) == {
         "reviewAction": "CHECK_DATA",
         "repairAction": "CREATE_EXPERIMENT",
+        "deliveryRepairAction": "CREATE_EXPERIMENT",
+        "postImAction": "CHECK_DATA",
     }
 
 
@@ -70,9 +74,16 @@ def test_review_ui_is_automatic_and_surfaces_each_ads_next_step() -> None:
     assert "data-gle-open-operating-workbench" in page
     assert "window.showGleOperatingStatus" in page
     assert "&refresh=1" in page
-    assert "growth-decision.js?v=20260812-gle-workbench-v1" in page
+    assert "growth-decision.js?v=20260812-gle-correction-loop-v1" in page
+    assert "growth-workspace.js?v=20260812-gle-correction-loop-v1" in page
 
     assert "generate_repair_creative: 'CREATE_EXPERIMENT'" in decision
+    assert "repair_delivery_config: 'CREATE_EXPERIMENT'" in decision
+    assert "inspect_post_im_funnel: 'CHECK_DATA'" in decision
+    workspace = (ROOT / "app/static/ops/growth-workspace.js").read_text(encoding="utf-8")
+    assert "id=\"growthCostCapUsd\"" in workspace
+    assert "['generate_creative','generate_repair_creative'].includes(raw)" in workspace
+    assert "cpi_target:Number(recommendation.cpi_target" in workspace
     assert "growthBulkDecisionModal" not in decision
     assert "确认加入复核队列" not in decision
     assert "系统已完成当前只读复核" in decision

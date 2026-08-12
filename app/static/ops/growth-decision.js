@@ -4,12 +4,14 @@
   const ACTION_MAP = {
     generate_derivative_creative: 'CREATE_EXPERIMENT',
     generate_repair_creative: 'CREATE_EXPERIMENT',
+    repair_delivery_config: 'CREATE_EXPERIMENT',
     generate_creative: 'CREATE_EXPERIMENT',
     pause: 'PAUSE',
     scale_up: 'SCALE_UP',
     reduce_budget: 'REDUCE_BUDGET',
     observe: 'OBSERVE',
     inspect_data_quality: 'CHECK_DATA',
+    inspect_post_im_funnel: 'CHECK_DATA',
     manual_review: 'CHECK_DATA'
   };
   const REASONS = [
@@ -20,7 +22,7 @@
     ['OTHER', '其他']
   ];
   const ACTION_EFFECTS = {
-    CREATE_EXPERIMENT: '确认后创建实验草稿并关联这条建议；还需要检查方案、审批和 dry-run，不会直接修改 Meta 广告。',
+    CREATE_EXPERIMENT: '确认后创建暂停态受控实验草稿，复用已审核配置并带入 CPI 成本上限；完成素材、方案、审批和 dry-run 后，仍需你再次确认才会真实写入 Meta。',
     PAUSE: '确认后系统建立暂停实验草稿并完成安全检查；真实 Meta 写入开启前不会改动广告。',
     SCALE_UP: '确认后系统建立扩量实验草稿并完成预算护栏；真实 Meta 写入开启前不会改动预算。',
     REDUCE_BUDGET: '确认后系统建立降预算实验草稿并完成止损检查；真实 Meta 写入开启前不会改动预算。',
@@ -214,7 +216,7 @@
 
   function planHtml(row) {
     const action = actionFromRecommendation(row);
-    const labels = {CREATE_EXPERIMENT:'创建广告实验',PAUSE:'暂停止损',SCALE_UP:'扩大预算',REDUCE_BUDGET:'降低预算',OBSERVE:'继续观察',CHECK_DATA:'检查数据'};
+    const labels = {CREATE_EXPERIMENT:String(row.action_type||'')==='repair_delivery_config'?'重建受控投放':'创建修正实验',PAUSE:'暂停止损',SCALE_UP:'扩大预算',REDUCE_BUDGET:'降低预算',OBSERVE:'继续观察',CHECK_DATA:'检查数据'};
     return `<div><span>建议动作</span><b>${esc(labels[action] || action)}</b></div><div><span>作用对象</span><b>${esc(row.object_name || row.object_id || '-')}</b></div><div><span>系统判断</span><b>${esc(row.reason_zh || row.diagnosis_type_zh || row.status_tag || '-')}</b></div><div><span>证据把握</span><b>${esc(row.confidence_zh || row.confidence || '中')}</b></div>`;
   }
 
