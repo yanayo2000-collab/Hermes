@@ -297,9 +297,12 @@ def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -
     assert "currentGleTaskByExperiment" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "data-gle-open-task" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "openGleExperimentTask" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "正在打开任务…" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "button.setAttribute('aria-busy','true')" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "await window.GrowthWorkspace.openExperiment(id)" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "syncGleCoverageTaskScope" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "setCoverageScope(experimentIds,tasks)" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "setGleWorkspaceView('tasks')" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "setGleWorkspaceView('tasks',{focus:true})" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "setGleWorkspaceView('recommendations'" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "showQueue({scroll:false})" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "需你处理" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -337,6 +340,11 @@ def test_dashboard_coverage_opens_the_existing_governed_task_flow() -> None:
     assert "growth-layer-embedded.is-detail-open" in workspace_js
     assert "showQueue:showEmbeddedQueue" in workspace_js
     assert "function showEmbeddedQueue({scroll=true}={})" in workspace_js
+    assert "async function openWorkspace(experimentId, options={})" in workspace_js
+    assert "const loaded = await loadList({select:experimentId})" in workspace_js
+    assert "Promise.allSettled([...state.coverageScope]" in workspace_js
+    assert "任务详情暂时无法读取，请重试；系统未执行任何 Meta 操作。" in workspace_js
+    assert "async function openExperiment(id) { return openWorkspace(id); }" in workspace_js
     assert "if (isEmbeddedWorkspace()) {\n      showEmbeddedQueue();\n      return;\n    }" in workspace_js
     assert "if(isEmbeddedWorkspace())setWorkspaceReturn({kind:'embeddedQueue'});" in workspace_js
     assert "event.stopPropagation();\n      backWorkspace();" in workspace_js
