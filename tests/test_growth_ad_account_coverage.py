@@ -211,12 +211,18 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert "GLE 全广告经营覆盖" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleCoverageReadiness"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleCoverageFilters"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'id="adGleRecommendationViewTab"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleCoverageViewTab"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleTaskViewTab"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'data-gle-view-panel="recommendations"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'data-gle-view-panel="coverage"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'data-gle-view-panel="tasks"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'data-gle-workspace-view="recommendations"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'data-gle-workspace-view="coverage"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'data-gle-workspace-view="tasks"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'id="adGleRecommendationSummary"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'id="adGleRecommendationFilters"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'id="adGleRecommendationRows"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "在投待数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleTaskWorkbenchMount"' in AD_DATA_DASHBOARD_PAGE_HTML
@@ -226,7 +232,7 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert 'class="ad-gle-viewbar"' in AD_DATA_DASHBOARD_PAGE_HTML[operations_start:operations_end]
     assert "覆盖广告任务工作台" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看任务" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "核对 ${activeWaiting} 条在投数据" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "系统补齐 ${activeWaiting} 条在投数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "优先复核" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "任务待处理" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adOpenGleRecommendations"' not in AD_DATA_DASHBOARD_PAGE_HTML
@@ -248,24 +254,26 @@ def test_dashboard_coverage_surfaces_existing_governed_recommendations() -> None
     assert "function gleRecommendationSummary(report)" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "dailyRecoNeedsOperator(row)" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "String(row&&row.data_origin||'LEGACY').toUpperCase()!=='LEGACY'" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "系统已复核 ${recommendation.systemReview} 条表现偏弱广告" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "function gleOperatingWorkItems" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "function renderGleRecommendationWorkbench" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "只有会改变广告的方案才需要你确认" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "当前没有证据支持直接暂停、降预算或放量" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "当前无需修改 Meta；系统继续经营跟踪" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "确认 ${recommendation.hard} 条止损调整" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert 'data-gle-open-recommendations' in AD_DATA_DASHBOARD_PAGE_HTML
-    assert 'data-gle-open-system-reviews' in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "function openGleRecommendationQueue()" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'data-gle-open-operating-workbench' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "function openGleRecommendationQueue(filter='confirm')" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "function openGleSystemReviewQueue()" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "currentDailyRecoFilter='pending'" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "currentDailyRecoFilter='system_review'" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "renderDailyRecommendationTable(currentDailyReport.recommendations)" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "document.getElementById('adDailyRecommendationPanel')" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "currentGleRecommendationFilter=filter" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "setGleWorkspaceView('recommendations',{focus:true})" in AD_DATA_DASHBOARD_PAGE_HTML
+    queue_start = AD_DATA_DASHBOARD_PAGE_HTML.index("function openGleRecommendationQueue")
+    queue_end = AD_DATA_DASHBOARD_PAGE_HTML.index("function renderGleAdCoverage", queue_start)
+    assert "adDailyRecommendationPanel" not in AD_DATA_DASHBOARD_PAGE_HTML[queue_start:queue_end]
     assert "if(currentGleAdCoverage)renderGleAdCoverage(currentGleAdCoverage)" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "执行前仍需你逐条确认" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "function gleCoverageRecommendationIndex" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "function gleCoverageNextStep" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "等待下一轮评分" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "继续观察" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "等待本轮评分" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "维持投放，重点复核" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "保持投放，准备放量" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看账户明细" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "data-growth-bulk-confirm" not in AD_DATA_DASHBOARD_PAGE_HTML
 
@@ -274,6 +282,9 @@ def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -
     assert 'role="group" aria-label="筛选 GLE 广告状态"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'data-gle-coverage-filter="${esc(key)}"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'aria-pressed="${key===currentGleCoverageFilter' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'role="group" aria-label="筛选 GLE 经营建议"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'data-gle-recommendation-filter="${esc(key)}"' in AD_DATA_DASHBOARD_PAGE_HTML
+    assert 'aria-pressed="${key===currentGleRecommendationFilter' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "gleCoverageItemMatches" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "focusGleAdInDashboard" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "setPlatformCollapsed('Meta',false,{manual:true})" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -289,6 +300,7 @@ def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -
     assert "syncGleCoverageTaskScope" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "setCoverageScope(experimentIds,tasks)" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "setGleWorkspaceView('tasks')" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "setGleWorkspaceView('recommendations'" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "showQueue({scroll:false})" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "需你处理" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "AI 处理中" in AD_DATA_DASHBOARD_PAGE_HTML

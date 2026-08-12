@@ -158,7 +158,7 @@
     document.querySelector('.growth-decision-adjust').hidden = true;
     document.querySelector('.growth-decision-later').textContent = '关闭';
     const button = document.querySelector('#growthDecisionModal .growth-decision-submit');
-    button.textContent = '查看已交给系统';
+    button.textContent = '返回 GLE 工作台';
     button.disabled = false;
     button.dataset.acceptedNavigation = '1';
   }
@@ -251,7 +251,9 @@
     const button = document.querySelector('#growthDecisionModal .growth-decision-submit');
     if (button.dataset.acceptedNavigation === '1') {
       close();
-      if (typeof window.showDailyRecommendationHandedOff === 'function') {
+      if (typeof window.showGleOperatingStatus === 'function') {
+        window.showGleOperatingStatus();
+      } else if (typeof window.showDailyRecommendationHandedOff === 'function') {
         window.showDailyRecommendationHandedOff();
       }
       return;
