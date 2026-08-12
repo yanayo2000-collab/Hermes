@@ -205,6 +205,54 @@ def test_fact_binding_ignores_blank_source_identity_but_rejects_missing_or_confl
     assert result["summary"]["active_ads_with_metric_observation"] == 1
 
 
+def test_coverage_readiness_uses_the_same_seven_day_window_as_operating_scores() -> None:
+    account = GLE_AD_ACCOUNT_SCOPE_V1[0]
+    current = _live_ad(account, "20")
+    stale = _live_ad(account, "21")
+    conn = _database()
+    conn.executemany(
+        "INSERT INTO ad_dashboard_fact_rows VALUES (?,?,?)",
+        [
+            (current["id"], "2026-08-03", account["account_id"]),
+            (stale["id"], "2026-08-02", account["account_id"]),
+        ],
+    )
+    conn.commit()
+
+    result = build_gle_ad_account_coverage(
+        conn,
+        [
+            {
+                "account_id": item["account_id"],
+                "account_name": account["account_name"],
+                "market": account["market"],
+                "ad_id": item["id"],
+                "ad_name": item["name"],
+                "campaign_id": item["campaign_id"],
+                "adset_id": item["adset_id"],
+                "configured_status": item["status"],
+                "effective_status": item["effective_status"],
+                "created_time": item["created_time"],
+                "updated_time": item["updated_time"],
+            }
+            for item in (current, stale)
+        ],
+    )
+
+    items = {
+        item["ad_id"]: item
+        for current_account in result["accounts"]
+        for item in current_account["items"]
+    }
+    assert result["fact_window"] == {
+        "start_date": "2026-08-03",
+        "cutoff_date": "2026-08-09",
+        "days": 7,
+    }
+    assert items[current["id"]]["monitoring_status"] == "METRIC_OBSERVATION_AVAILABLE"
+    assert items[stale["id"]]["monitoring_status"] == "WAITING_FOR_DASHBOARD_FACTS"
+
+
 def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -> None:
     assert 'id="adGleCoveragePanel"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "/api/ops/ad-data-dashboard/gle-ad-coverage" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -271,8 +319,11 @@ def test_dashboard_coverage_surfaces_existing_governed_recommendations() -> None
     assert "执行前仍需你逐条确认" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "function gleCoverageRecommendationIndex" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "function gleCoverageNextStep" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "等待本轮评分" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "维持投放，重点复核" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "等待本轮评分" not in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "本轮未形成可评分样本" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "近7天无精确投放数据" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "系统核对低投放原因" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "不会按日历无限延长观察期" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "保持投放，准备放量" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看账户明细" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "data-growth-bulk-confirm" not in AD_DATA_DASHBOARD_PAGE_HTML

@@ -7,7 +7,10 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 
 SCHEMA_VERSION = "gle-ad-account-coverage-v1"
-FACT_WINDOW_DAYS = 31
+# Keep coverage readiness on the same rolling window used by the operating
+# report.  A fact from several weeks ago must not make an ad look score-ready
+# when the current seven-day report has no usable input for it.
+FACT_WINDOW_DAYS = 7
 MAX_ADS_PER_ACCOUNT = 1_000
 MAX_META_PAGES = 5
 
