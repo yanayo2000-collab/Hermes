@@ -24,7 +24,7 @@
     SCALE_UP: '确认后系统建立扩量实验草稿并完成预算护栏；真实 Meta 写入开启前不会改动预算。',
     REDUCE_BUDGET: '确认后系统建立降预算实验草稿并完成止损检查；真实 Meta 写入开启前不会改动预算。',
     OBSERVE: '确认后系统持续观察数据，到期后再把结论交给你，不修改广告。',
-    CHECK_DATA: '确认后系统将数据异常放入待处理队列，不修改广告。'
+    CHECK_DATA: '确认后将这条表现偏弱广告加入经营数据复核队列；不会暂停、降预算、放量或修改 Meta。'
   };
   let active = null;
   let activeUiKey = '';
@@ -81,7 +81,7 @@
     bulkModal.id = 'growthBulkDecisionModal';
     bulkModal.className = 'growth-decision-backdrop';
     bulkModal.setAttribute('aria-hidden', 'true');
-    bulkModal.innerHTML = `<section class="growth-decision-modal growth-bulk-modal" role="dialog" aria-modal="true" aria-labelledby="growthBulkDecisionTitle"><header class="growth-decision-head"><div><h2 id="growthBulkDecisionTitle">批量查看并确认</h2><p>一次确认安全方案，不逐条打开</p></div><button class="growth-decision-close growth-bulk-close" type="button" aria-label="关闭">×</button></header><div class="growth-decision-body"><div class="growth-bulk-summary" id="growthBulkSummary"></div><div class="growth-bulk-safe-note">本次只会交给系统继续观察或检查数据，不会修改 Meta 广告、预算或投放开关。暂停、扩量、降预算和创建实验仍需逐条确认。</div><div class="growth-bulk-list" id="growthBulkList"></div><div class="growth-bulk-result" id="growthBulkResult" aria-live="polite">等待确认。</div></div><footer class="growth-decision-foot"><span class="growth-decision-status">提交后可在“已交给系统”中一次查看。</span><div class="growth-decision-foot-actions"><button class="growth-decision-later growth-bulk-close" type="button">取消</button><button class="growth-decision-submit growth-bulk-submit" type="button">确认并交给系统</button></div></footer></section>`;
+    bulkModal.innerHTML = `<section class="growth-decision-modal growth-bulk-modal" role="dialog" aria-modal="true" aria-labelledby="growthBulkDecisionTitle"><header class="growth-decision-head"><div><h2 id="growthBulkDecisionTitle">确认加入数据复核队列</h2><p>一次确认，不需要逐条打开</p></div><button class="growth-decision-close growth-bulk-close" type="button" aria-label="关闭">×</button></header><div class="growth-decision-body"><div class="growth-bulk-summary" id="growthBulkSummary"></div><div class="growth-bulk-safe-note">本次只会把表现偏弱广告加入经营数据复核队列。Meta 写入 0：不会暂停、降预算、放量或修改广告。</div><div class="growth-bulk-list" id="growthBulkList"></div><div class="growth-bulk-result" id="growthBulkResult" aria-live="polite">等待确认。</div></div><footer class="growth-decision-foot"><span class="growth-decision-status">提交后可在“已交给系统”中一次查看。</span><div class="growth-decision-foot-actions"><button class="growth-decision-later growth-bulk-close" type="button">取消</button><button class="growth-decision-submit growth-bulk-submit" type="button">确认加入复核队列</button></div></footer></section>`;
     document.body.appendChild(bulkModal);
     bulkModal.querySelectorAll('.growth-bulk-close').forEach(button => button.addEventListener('click', closeBulk));
     bulkModal.addEventListener('click', event => { if (event.target === bulkModal) closeBulk(); });
@@ -190,9 +190,8 @@
   function safeBulkCandidates() {
     const rows = typeof window.dailyRecommendationRowsForBulk === 'function' ? window.dailyRecommendationRowsForBulk() : [];
     return (rows || []).filter(row => {
-      const raw = String(row.primary_action || row.action_type || 'observe').toLowerCase();
       const systemManaged = row.system_managed === true || String(row.management_state && row.management_state.mode || '') === 'SYSTEM_MANAGED';
-      return String(row.data_origin || 'LEGACY').toUpperCase() !== 'LEGACY' && !systemManaged && !(row.decision_state && row.decision_state.decision_id) && ['observe', 'manual_review', 'inspect_data_quality'].includes(raw) && ['OBSERVE', 'CHECK_DATA'].includes(actionFromRecommendation(row));
+      return String(row.data_origin || 'LEGACY').toUpperCase() !== 'LEGACY' && !systemManaged && !(row.decision_state && row.decision_state.decision_id) && actionFromRecommendation(row) === 'CHECK_DATA';
     });
   }
 
@@ -201,14 +200,13 @@
     const candidates = safeBulkCandidates();
     if (!candidates.length) return;
     const modal = document.getElementById('growthBulkDecisionModal');
-    const observeCount = candidates.filter(row => actionFromRecommendation(row) === 'OBSERVE').length;
-    const checkCount = candidates.length - observeCount;
-    document.getElementById('growthBulkSummary').innerHTML = `<div><span>继续观察</span><strong>${observeCount}</strong></div><div><span>检查数据</span><strong>${checkCount}</strong></div>`;
+    const checkCount = candidates.length;
+    document.getElementById('growthBulkSummary').innerHTML = `<div><span>加入数据复核</span><strong>${checkCount}</strong></div><div><span>Meta 写入</span><strong>0</strong></div>`;
     const visible = candidates.slice(0, 8);
-    document.getElementById('growthBulkList').innerHTML = visible.map(row => `<div><b>${esc(row.object_name || row.object_id || row.recommendation_id)}</b><span>${actionFromRecommendation(row) === 'OBSERVE' ? '继续观察' : '检查数据'}</span></div>`).join('') + (candidates.length > visible.length ? `<div><b>其余 ${candidates.length - visible.length} 条</b><span>同一安全范围</span></div>` : '');
+    document.getElementById('growthBulkList').innerHTML = visible.map(row => `<div><b>${esc(row.object_name || row.object_id || row.recommendation_id)}</b><span>经营数据复核</span></div>`).join('') + (candidates.length > visible.length ? `<div><b>其余 ${candidates.length - visible.length} 条</b><span>同一复核范围</span></div>` : '');
     document.getElementById('growthBulkResult').textContent = `共 ${candidates.length} 条，等待一次确认。`;
     const button = modal.querySelector('.growth-bulk-submit');
-    button.textContent = '确认并交给系统';
+    button.textContent = '确认加入复核队列';
     button.disabled = false;
     button.dataset.complete = '0';
     modal.classList.add('is-open');
@@ -276,7 +274,10 @@
   }
 
   function actionFromRecommendation(row) {
-    const raw = String(row.primary_action || row.action_type || 'OBSERVE').toLowerCase();
+    const canonical = typeof window.dailyRecommendationDecisionAction === 'function' ? String(window.dailyRecommendationDecisionAction(row) || '').toLowerCase() : '';
+    const scorecard = row && row.evidence && row.evidence.scorecard || {};
+    const fallback = String(row.primary_action || row.action_type || 'OBSERVE').toLowerCase();
+    const raw = canonical || (fallback === 'observe' && String(scorecard.band || '').toLowerCase() === 'poor' ? 'manual_review' : fallback);
     return ACTION_MAP[raw] || (row.allow_generate_creative === true ? 'CREATE_EXPERIMENT' : 'OBSERVE');
   }
 
