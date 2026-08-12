@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 
 
+GROWTH_SCHEMA_VERSION = "gle-growth-schema-20260812-v1"
+_GROWTH_SCHEMA_LOCK = threading.RLock()
+
+
 GROWTH_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS growth_schema_metadata (
+    metadata_key TEXT PRIMARY KEY,
+    metadata_value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS growth_context_snapshot (
     context_snapshot_id TEXT PRIMARY KEY,
     app_id TEXT NOT NULL,
@@ -752,10 +763,34 @@ DROP TABLE IF EXISTS growth_decision_episode;
 DROP TABLE IF EXISTS growth_decision;
 DROP TABLE IF EXISTS experiment_context_snapshots;
 DROP TABLE IF EXISTS growth_context_snapshot;
+DROP TABLE IF EXISTS growth_schema_metadata;
 """
 
 
+def _growth_schema_is_current(conn: sqlite3.Connection) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT metadata_value FROM growth_schema_metadata WHERE metadata_key='schema_version'"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return bool(row and str(row[0]) == GROWTH_SCHEMA_VERSION)
+
+
 def ensure_growth_schema(conn: sqlite3.Connection) -> None:
+    # Request-time Growth readers share the same SQLite database.  Once startup
+    # has applied this exact schema version they must not execute DDL again: a
+    # concurrent DROP/CREATE trigger invalidates other readers with
+    # ``database schema has changed``.
+    if _growth_schema_is_current(conn):
+        return
+    with _GROWTH_SCHEMA_LOCK:
+        if _growth_schema_is_current(conn):
+            return
+        _apply_growth_schema(conn)
+
+
+def _apply_growth_schema(conn: sqlite3.Connection) -> None:
     # Recreate this trigger so existing databases gain bounded GET-only
     # reconciliation without requiring a table migration.
     for attempt in range(3):
@@ -832,5 +867,13 @@ def ensure_growth_schema(conn: sqlite3.Connection) -> None:
                 AND e.source_campaign_id=json_extract(t.meta_object_ids_json,'$.campaign_id')
           )
         ORDER BY t.updated_at DESC,t.execution_task_id DESC"""
+    )
+    conn.execute(
+        """INSERT INTO growth_schema_metadata(metadata_key,metadata_value,updated_at)
+           VALUES ('schema_version',?,CURRENT_TIMESTAMP)
+           ON CONFLICT(metadata_key) DO UPDATE SET
+             metadata_value=excluded.metadata_value,
+             updated_at=excluded.updated_at""",
+        (GROWTH_SCHEMA_VERSION,),
     )
     conn.commit()

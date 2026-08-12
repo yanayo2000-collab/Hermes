@@ -367,14 +367,15 @@
     }
   }
 
-  function openWorkspace(experimentId, options={}) {
+  async function openWorkspace(experimentId, options={}) {
     const panel = document.getElementById('growthWorkspacePanel');
     if (options.resetReturn) setWorkspaceReturn(null);
     if (options.returnTarget) setWorkspaceReturn(options.returnTarget);
     panel.hidden = false;
     if (!isEmbeddedWorkspace()) document.body.style.overflow = 'hidden';
-    loadList({select:experimentId});
+    const loaded = await loadList({select:experimentId});
     if (isEmbeddedWorkspace()) panel.scrollIntoView({behavior:'smooth',block:'start'});
+    return loaded;
   }
 
   function showEmbeddedQueue({scroll=true}={}) {
@@ -1577,9 +1578,20 @@
     const detail = document.getElementById('growthDetail');
     if (detail && !options?.silent) detail.innerHTML = '<div class="growth-empty"><div><b>正在读取实验</b></div></div>';
     try {
-      const payload = isEmbeddedWorkspace()
-        ? {items:await Promise.all([...state.coverageScope].map(async id=>{const item=await api(`/api/ops/ad-data-dashboard/experiments/${encodeURIComponent(id)}`);return {...(item.experiment||{}),workflow:item.workflow||item.experiment?.workflow||{}};}))}
-        : await api('/api/ops/ad-data-dashboard/experiments?limit=200');
+      let payload;
+      if (isEmbeddedWorkspace()) {
+        const results = await Promise.allSettled([...state.coverageScope].map(async id=>{
+          const item=await api(`/api/ops/ad-data-dashboard/experiments/${encodeURIComponent(id)}`);
+          return {...(item.experiment||{}),workflow:item.workflow||item.experiment?.workflow||{}};
+        }));
+        const items=results.filter(result=>result.status==='fulfilled').map(result=>result.value);
+        if(options?.select&&!items.some(item=>String(item?.experiment_id||'')===String(options.select))){
+          throw new Error('任务详情暂时无法读取，请重试；系统未执行任何 Meta 操作。');
+        }
+        payload={items};
+      } else {
+        payload=await api('/api/ops/ad-data-dashboard/experiments?limit=200');
+      }
       state.experiments = payload.items || [];
       const count = document.getElementById('growthWorkspaceCount');
       if (count) count.textContent = String(state.experiments.filter(item=>String((item.workflow||{}).bucket||'action_required')==='action_required').length);
@@ -1589,8 +1601,10 @@
       const desired = selectedItem?.experiment_id || (scopedExperiments().some(item=>item.experiment_id===state.activeExperiment)?state.activeExperiment:'');
       if (desired) await openAdExperiment(desired);
       else renderExperimentQueue();
+      return true;
     } catch (error) {
       if (detail) detail.innerHTML = `<div class="growth-error">${esc(readableError(error))}</div>`;
+      return false;
     }
   }
 
@@ -2483,7 +2497,7 @@
 
   async function openEpisode(id) { openWorkspace(); const node=document.getElementById('growthDetail');node.innerHTML='<div class="growth-empty"><div><b>正在读取 Episode</b></div></div>';try{const detail=await api(`/api/ops/growth/episodes/${encodeURIComponent(id)}`);node.innerHTML=`<div class="growth-detail-head"><div><h2>Episode 复盘</h2><p>${esc(id)}</p></div><span class="growth-chip">${esc(statusLabel((detail.episode||{}).status))}</span></div><details class="growth-technical" open><summary>Context → Knowledge</summary><pre>${esc(pretty(detail))}</pre></details>${(detail.episode||{}).status==='COMPLETED'?'<div class="growth-notice">Completed Episode 已冻结；仍可审核或归档知识。</div>':''}`;}catch(error){node.innerHTML=`<div class="growth-error">${esc(readableError(error))}</div>`;}}
   async function openKnowledge(id) { openWorkspace(); const node=document.getElementById('growthDetail');node.innerHTML='<div class="growth-empty"><div><b>正在读取知识证据</b></div></div>';try{const detail=await api(`/api/ops/growth/knowledge/${encodeURIComponent(id)}`);node.innerHTML=`<div class="growth-detail-head"><div><h2>知识证据</h2><p>${esc(id)}</p></div><span class="growth-chip">${esc(statusLabel((detail.knowledge||{}).status))}</span></div><details class="growth-technical" open><summary>相似 Episode 与证据</summary><pre>${esc(pretty(detail))}</pre></details>`;}catch(error){node.innerHTML=`<div class="growth-error">${esc(readableError(error))}</div>`;}}
-  async function openExperiment(id) { openWorkspace(id); }
+  async function openExperiment(id) { return openWorkspace(id); }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install); else install();
   window.GrowthWorkspace = {openEpisode,openKnowledge,openExperiment,openAdExperiment,acceptRecommendation,refresh:loadList,open:openWorkspace,openTasks:openLaunchWorkspace,setCoverageScope,showQueue:showEmbeddedQueue};
