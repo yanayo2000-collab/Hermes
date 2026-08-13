@@ -75,7 +75,7 @@ def test_review_ui_is_automatic_and_surfaces_each_ads_next_step() -> None:
     assert "window.showGleOperatingStatus" in page
     assert "&refresh=1" in page
     assert "growth-decision.js?v=20260813-gle-submit-followup-v1" in page
-    assert "growth-workspace.js?v=20260812-gle-correction-loop-v1" in page
+    assert "growth-workspace.js?v=20260813-gle-browser-task-detail-v1" in page
 
     assert "generate_repair_creative: 'CREATE_EXPERIMENT'" in decision
     assert "repair_delivery_config: 'CREATE_EXPERIMENT'" in decision
