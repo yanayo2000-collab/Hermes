@@ -836,9 +836,20 @@ class AdExperimentService:
             raise GrowthValidationError("target_app_must_be_tugao")
         steps = dict(resolved.get("steps") or {})
         image_step = dict(steps.get("IMAGE_UPLOAD") or {})
+        verified_reuse_hash = str(image_step.get("reuse_image_hash") or "").strip()
+        verified_source = (
+            str(dict(resolved.get("preflight_snapshot_json") or {}).get("source") or "")
+            == "meta_graph_read_only"
+        )
         image_id = str(image_step.get("image_id") or "").strip()
         current_creative = self.latest_approved_creative(str(experiment["experiment_id"]))
-        if self._creative_linkage_tables_available():
+        if verified_reuse_hash and verified_source:
+            image_step = {
+                "reuse_image_hash": verified_reuse_hash,
+                "source": "verified_meta_source_creative",
+            }
+            resolved["asset_sha256"] = ""
+        elif self._creative_linkage_tables_available():
             if not current_creative:
                 raise GrowthValidationError("approved_creative_image_required_for_current_experiment")
             image_id = str(current_creative["image_id"])
@@ -846,23 +857,25 @@ class AdExperimentService:
             resolved["asset_sha256"] = str(current_creative.get("image_hash") or "")
         elif not image_id:
             raise GrowthValidationError("approved_creative_image_required")
-        review = self.conn.execute(
-            """
-            SELECT review_status FROM creative_review_records
-            WHERE image_id=? ORDER BY created_at DESC LIMIT 1
-            """,
-            (image_id,),
-        ).fetchone()
-        if not review or str(review["review_status"] or "").upper() != "APPROVED":
-            raise GrowthValidationError("approved_creative_image_required")
-        image = self.conn.execute(
-            "SELECT image_ref FROM creative_generated_images WHERE image_id=?",
-            (image_id,),
-        ).fetchone()
-        image_path = Path(str(image["image_ref"] or "")).expanduser().resolve() if image else Path()
-        if not image or not image_path.is_file():
-            raise GrowthValidationError("approved_creative_file_missing")
-        image_step["image_path"] = str(image_path)
+        image_path = Path()
+        if not verified_reuse_hash:
+            review = self.conn.execute(
+                """
+                SELECT review_status FROM creative_review_records
+                WHERE image_id=? ORDER BY created_at DESC LIMIT 1
+                """,
+                (image_id,),
+            ).fetchone()
+            if not review or str(review["review_status"] or "").upper() != "APPROVED":
+                raise GrowthValidationError("approved_creative_image_required")
+            image = self.conn.execute(
+                "SELECT image_ref FROM creative_generated_images WHERE image_id=?",
+                (image_id,),
+            ).fetchone()
+            image_path = Path(str(image["image_ref"] or "")).expanduser().resolve() if image else Path()
+            if not image or not image_path.is_file():
+                raise GrowthValidationError("approved_creative_file_missing")
+            image_step["image_path"] = str(image_path)
         steps["IMAGE_UPLOAD"] = image_step
 
         after = dict(resolved.get("after_json") or {})
@@ -870,7 +883,10 @@ class AdExperimentService:
         adset = dict(after.get("adset") or {})
         ad = dict(after.get("ad") or {})
         creative = dict(after.get("creative") or {})
-        creative["image_id"] = image_id
+        if image_id:
+            creative["image_id"] = image_id
+        if verified_reuse_hash:
+            creative["source_image_hash"] = verified_reuse_hash
         after["creative"] = creative
         resolved["after_json"] = after
         creative_step = dict(steps.get("CREATIVE_CREATE") or {})
@@ -883,7 +899,11 @@ class AdExperimentService:
         bid_amount = _cost_cap_bid_amount(cost_cap_usd)
         audience = dict(hypothesis.get("audience") or {})
         country = str(experiment.get("country") or audience.get("country") or "").upper()
-        targeting = strict_meta_targeting(country, "BROAD")
+        targeting = (
+            dict(adset.get("targeting") or {})
+            if verified_reuse_hash and verified_source
+            else strict_meta_targeting(country, "BROAD")
+        )
         assert_strict_targeting(targeting, country)
 
         application_id = str(os.getenv("GROWTH_META_TUGAO_APPLICATION_ID") or "1684703062404662").strip()
@@ -936,14 +956,17 @@ class AdExperimentService:
         }
         steps["CREATIVE_CREATE"] = {
             "name": str(dict(steps.get("CREATIVE_CREATE") or {}).get("name") or f"{ad.get('name')}_CR"),
-            "image_id": image_id,
             "object_story_spec": {"page_id": page_id, "link_data": link_data},
         }
+        if image_id:
+            steps["CREATIVE_CREATE"]["image_id"] = image_id
         steps["AD_CREATE"] = {"name": str(ad.get("name") or "").strip(), "status": "PAUSED"}
         if any(not str(dict(steps.get(name) or {}).get("name") or "").strip() for name in ("CAMPAIGN_CREATE", "ADSET_CREATE", "CREATIVE_CREATE", "AD_CREATE")):
             raise GrowthValidationError("meta_object_names_required")
         resolved["steps"] = steps
-        resolved["asset_sha256"] = hashlib.sha256(image_path.read_bytes()).hexdigest()
+        resolved["asset_sha256"] = (
+            "" if verified_reuse_hash else hashlib.sha256(image_path.read_bytes()).hexdigest()
+        )
         resolved["max_write_requests"] = 5
         return resolved
 

@@ -19,6 +19,7 @@
   const LAUNCH_PROGRESS_STORAGE_KEY = 'growth-new-account-launch-progress-v2';
   const LEGACY_LAUNCH_PROGRESS_STORAGE_KEY = 'growth-new-account-launch-progress-v1';
   const LAUNCH_ORDERS_CACHE_KEY = 'growth-launch-orders-cache-v1';
+  const BULK_REBUILD_STORAGE_KEY = 'growth-bulk-rebuild-approval-v1';
   const state = {experiments:[],activeExperiment:'',workBucket:'action_required',taskSearch:'',detail:null,postKeys:{},createStep:1,createSource:'recommendation',workspaceReturn:null,coverageScope:new Set()};
 
   function esc(value) {
@@ -48,6 +49,11 @@
     const signature = `${scope}:${stableHash(requestIdentity)}`;
     if (!state.postKeys[signature]) state.postKeys[signature] = `growth-ui-${signature}`;
     return {'Content-Type':'application/json','Idempotency-Key':state.postKeys[signature],'X-Request-ID':`growth-ui-request-${stableHash(signature)}`};
+  }
+
+  function bulkRebuildHeaders(batchId, recommendationId, phase) {
+    const identity=`gle-bulk-rebuild:${batchId}:${recommendationId}:${phase}`;
+    return {'Content-Type':'application/json','Idempotency-Key':identity,'X-Request-ID':`gle-bulk-request-${stableHash(identity)}`};
   }
 
   function readableError(error) {
@@ -2165,11 +2171,24 @@
   }
 
   function openPlanConfirmation(experiment,planId) {
-    showModal(`<section class="growth-modal growth-modal-compact"><header class="growth-modal-head"><div><b>确认方案</b><small>${esc(experimentTitle(experiment))}</small></div><button type="button" class="growth-icon-button" data-modal-close>×</button></header><div class="growth-modal-body"><p>确认预算、素材、受众和目标对象没有变化。确认后先做安全演练。</p></div><footer class="growth-modal-foot"><button type="button" data-modal-close>返回</button><button type="button" class="growth-primary" id="growthApproveExactPlan">确认方案</button></footer></section>`);
+    const isRebuild=Boolean((experiment.hypothesis_json||{}).rebuild_source);
+    showModal(`<section class="growth-modal growth-modal-compact"><header class="growth-modal-head"><div><b>${isRebuild?'审批重建方案':'确认方案'}</b><small>${esc(experimentTitle(experiment))}</small></div><button type="button" class="growth-icon-button" data-modal-close>×</button></header><div class="growth-modal-body"><p>${isRebuild?'系统已从原 Meta 广告回读并冻结账户、素材、文案、受众和预算；新广告组使用 CPI 成本上限。确认后会自动完成安全演练并创建全暂停对象，不会开始投放。':'确认预算、素材、受众和目标对象没有变化。确认后先做安全演练。'}</p><div id="growthApprovePlanStatus" class="growth-notice" hidden></div></div><footer class="growth-modal-foot"><button type="button" data-modal-close>返回</button><button type="button" class="growth-primary" id="growthApproveExactPlan">${isRebuild?'批准并开始重建':'确认方案'}</button></footer></section>`);
     document.getElementById('growthApproveExactPlan').addEventListener('click', async event => {
-      const button=event.currentTarget;
-      try { button.disabled=true;const body={confirmation:'APPROVE_EXACT_PLAN'};await api(`/api/ops/ad-data-dashboard/meta-plans/${encodeURIComponent(planId)}/approve`,{method:'POST',headers:postHeaders('ad-plan-approve',{plan_id:planId,...body}),body:JSON.stringify(body)});closeModal();await openAdExperiment(experiment.experiment_id); }
-      catch(error){button.disabled=false;showModalError(readableError(error));}
+      const button=event.currentTarget,status=document.getElementById('growthApprovePlanStatus');
+      try {
+        button.disabled=true;if(status){status.hidden=false;status.textContent=isRebuild?'正在批准方案…':'正在确认方案…';}
+        const body={confirmation:'APPROVE_EXACT_PLAN'};
+        await api(`/api/ops/ad-data-dashboard/meta-plans/${encodeURIComponent(planId)}/approve`,{method:'POST',headers:postHeaders('ad-plan-approve',{plan_id:planId,...body}),body:JSON.stringify(body)});
+        if(isRebuild){
+          if(status)status.textContent='审批已记录，正在执行安全演练…';
+          const dryBody={execution_mode:'dry_run'};
+          await api(`/api/ops/ad-data-dashboard/meta-plans/${encodeURIComponent(planId)}/execute`,{method:'POST',headers:postHeaders('rebuild-plan-dry-run',{plan_id:planId,...dryBody}),body:JSON.stringify(dryBody)});
+          if(status)status.textContent='安全演练通过，正在提交暂停态对象创建…';
+          const liveBody={execution_mode:'live',confirmation:'CREATE_PAUSED_OBJECTS'};
+          await api(`/api/ops/ad-data-dashboard/meta-plans/${encodeURIComponent(planId)}/execute`,{method:'POST',headers:postHeaders('rebuild-plan-live',{plan_id:planId,...liveBody}),body:JSON.stringify(liveBody)});
+        }
+        closeModal();await openAdExperiment(experiment.experiment_id);
+      } catch(error){button.disabled=false;if(status){status.hidden=false;status.textContent=readableError(error);}else showModalError(readableError(error));}
     });
   }
 
@@ -2408,14 +2427,16 @@
 
   function recommendationDraft(recommendation, selectedAction) {
     const level=String(recommendation.object_level||'').toLowerCase(),objectId=String(recommendation.object_id||'');
+    const canonicalAccountId=String(recommendation.account_id||recommendation.gle_scope_account_id||'').replace(/^act_/,'');
+    const canonicalAdId=String(recommendation.source_ad_id||recommendation.ad_id||recommendation.gle_scope_ad_id||'');
     return {
       target_app:String(recommendation.target_app||recommendation.project||'linky').toLowerCase(),
       country:String(recommendation.country||''),platform:'meta',
-      account_id:String(recommendation.account_id||''),source_report_id:String(recommendation.report_id||''),
+      account_id:canonicalAccountId,source_report_id:String(recommendation.report_id||''),
       source_recommendation_id:String(recommendation.recommendation_id||''),
       source_campaign_id:level==='campaign'?objectId:String(recommendation.source_campaign_id||recommendation.campaign_id||''),
       source_adset_id:['adset','ad_set'].includes(level)?objectId:String(recommendation.source_adset_id||recommendation.adset_id||''),
-      source_ad_id:level==='ad'?objectId:String(recommendation.source_ad_id||recommendation.ad_id||''),
+      source_ad_id:canonicalAdId,
       source_creative_id:String(recommendation.source_creative_id||recommendation.creative_id||''),
       experiment_type:recommendationExperimentType(recommendation,selectedAction),
       hypothesis_json:{summary:String(recommendation.reason_zh||recommendation.diagnosis_type_zh||'验证系统优化建议'),recommended_action:selectedAction,evidence_only:true,cpi_target:Number(recommendation.cpi_target||recommendation.objective?.cpi_target||recommendation.evidence?.cpi_target||0)||null,initial_daily_budget:Number(recommendation.initial_daily_budget||recommendation.daily_budget||0)||null,targeting:recommendation.targeting||{}},
@@ -2425,20 +2446,130 @@
     };
   }
 
-  async function acceptRecommendation(recommendation, decision) {
+  async function acceptRecommendation(recommendation, decision, options={}) {
     const action=String(decision.selected_action||'OBSERVE').toUpperCase();
     if(['OBSERVE','CHECK_DATA'].includes(action)) {
       return {message:action==='OBSERVE'?'已确认，系统会持续观察并在数据成熟后提醒你。':'已确认，系统已将数据复核放入待处理队列。'};
     }
     const body=recommendationDraft(recommendation,action);
-    const experiment=await api('/api/ops/ad-data-dashboard/experiments/draft',{method:'POST',headers:postHeaders('accepted-recommendation-draft',body),body:JSON.stringify(body)});
+    const requestHeaders=(phase,identity)=>options.batchId
+      ?bulkRebuildHeaders(options.batchId,String(recommendation.recommendation_id||''),phase)
+      :postHeaders(phase,identity);
+    const experiment=await api('/api/ops/ad-data-dashboard/experiments/draft',{method:'POST',headers:requestHeaders('accepted-recommendation-draft',body),body:JSON.stringify(body)});
     try {
       await api(`/api/ops/growth/decisions/${encodeURIComponent(decision.decision_id)}/target`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({target_type:'EXPERIMENT',target_id:experiment.experiment_id})});
     } catch(error) {
       if(!(error.status===409&&String(error.message||'').includes('decision_not_bindable')))throw error;
     }
-    openWorkspace(experiment.experiment_id);
-    return {experiment_id:experiment.experiment_id,message:'已确认，系统已自动建立跟踪闭环并带入建议与证据。'};
+    let plan={};
+    if(action==='CREATE_EXPERIMENT'){
+      plan=await api(`/api/ops/ad-data-dashboard/experiments/${encodeURIComponent(experiment.experiment_id)}/rebuild-plan/prepare`,{method:'POST',headers:requestHeaders('accepted-recommendation-rebuild-plan',{experiment_id:experiment.experiment_id,recommendation_id:body.source_recommendation_id}),body:JSON.stringify({})});
+    }
+    if(options.open!==false)openWorkspace(experiment.experiment_id);
+    return {
+      experiment_id:experiment.experiment_id,
+      plan_id:String(plan.plan_id||plan.operation_action_id||''),
+      message:action==='CREATE_EXPERIMENT'?'已生成重建方案，请查看并审批。':'已确认，系统已自动建立跟踪闭环并带入建议与证据。'
+    };
+  }
+
+  function readBulkRebuildBatch() {
+    try{return JSON.parse(localStorage.getItem(BULK_REBUILD_STORAGE_KEY)||'null');}catch(_){return null;}
+  }
+
+  function writeBulkRebuildBatch(batch) {
+    batch.updated_at=new Date().toISOString();
+    localStorage.setItem(BULK_REBUILD_STORAGE_KEY,JSON.stringify(batch));
+  }
+
+  function bulkRebuildItemStatus(item) {
+    const labels={PENDING:'等待处理',RUNNING:'处理中',SUCCESS:'已创建暂停态对象',MANUAL_REVIEW:'结果待人工核对'};
+    return labels[item.status]||item.status||'等待处理';
+  }
+
+  function renderBulkRebuildProgress(batch) {
+    const node=document.getElementById('growthBulkRebuildProgress');
+    if(!node)return;
+    const success=batch.items.filter(item=>item.status==='SUCCESS').length;
+    const manual=batch.items.filter(item=>item.status==='MANUAL_REVIEW').length;
+    const pending=batch.items.filter(item=>item.status==='PENDING').length;
+    node.innerHTML=`<div class="growth-review-card"><b>批次 ${esc(batch.batch_id.slice(-8))}</b>成功 ${success} · 待核对 ${manual} · 未开始 ${pending}</div><div class="growth-timeline">${batch.items.map(item=>`<div><b>${esc(item.ad_name||item.ad_id)} · ${esc(bulkRebuildItemStatus(item))}</b><br>${esc(item.account_name||item.account_id||'')} · ${esc(item.ad_id||'')}${item.experiment_id?` · <button type="button" data-bulk-open-task="${esc(item.experiment_id)}">查看任务</button>`:''}${item.error?`<br>${esc(item.error)}`:''}</div>`).join('')}</div>`;
+    node.querySelectorAll('[data-bulk-open-task]').forEach(button=>button.addEventListener('click',()=>{closeModal();openWorkspace(button.getAttribute('data-bulk-open-task')||'');}));
+  }
+
+  async function executeBulkRebuildItem(batch,item) {
+    const recommendation=item.recommendation,recommendationId=String(recommendation.recommendation_id||'');
+    const decisionBody={
+      recommendation_id:recommendationId,selected_action:'CREATE_EXPERIMENT',rejected_actions:[],
+      decision_reason:{type:'OPERATOR_APPROVED',note:`批量重建审批 ${batch.batch_id}`},confidence:1
+    };
+    const decision=await api('/api/ops/growth/decisions',{method:'POST',headers:bulkRebuildHeaders(batch.batch_id,recommendationId,'decision'),body:JSON.stringify(decisionBody)});
+    const accepted=await acceptRecommendation(recommendation,{...decision,selected_action:'CREATE_EXPERIMENT'},{batchId:batch.batch_id,open:false});
+    item.experiment_id=String(accepted.experiment_id||'');item.plan_id=String(accepted.plan_id||'');
+    if(!item.plan_id)throw new Error('重建方案标识未完整回读，系统已停止该条处理。');
+    const approveBody={confirmation:'APPROVE_EXACT_PLAN'};
+    await api(`/api/ops/ad-data-dashboard/meta-plans/${encodeURIComponent(item.plan_id)}/approve`,{method:'POST',headers:bulkRebuildHeaders(batch.batch_id,recommendationId,'approve'),body:JSON.stringify(approveBody)});
+    const dryBody={execution_mode:'dry_run'};
+    await api(`/api/ops/ad-data-dashboard/meta-plans/${encodeURIComponent(item.plan_id)}/execute`,{method:'POST',headers:bulkRebuildHeaders(batch.batch_id,recommendationId,'dry-run'),body:JSON.stringify(dryBody)});
+    const liveBody={execution_mode:'live',confirmation:'CREATE_PAUSED_OBJECTS'};
+    await api(`/api/ops/ad-data-dashboard/meta-plans/${encodeURIComponent(item.plan_id)}/execute`,{method:'POST',headers:bulkRebuildHeaders(batch.batch_id,recommendationId,'create-paused'),body:JSON.stringify(liveBody)});
+  }
+
+  async function runBulkRebuildBatch(batch,button) {
+    button.disabled=true;button.textContent='正在逐条处理…';
+    for(const item of batch.items){
+      if(item.status!=='PENDING')continue;
+      item.status='RUNNING';item.error='';writeBulkRebuildBatch(batch);renderBulkRebuildProgress(batch);
+      try{
+        await executeBulkRebuildItem(batch,item);
+        item.status='SUCCESS';
+      }catch(error){
+        item.status='MANUAL_REVIEW';item.error=readableError(error);
+      }
+      writeBulkRebuildBatch(batch);renderBulkRebuildProgress(batch);
+    }
+    batch.status=batch.items.every(item=>item.status==='SUCCESS')?'SUCCESS':'MANUAL_REVIEW';
+    writeBulkRebuildBatch(batch);renderBulkRebuildProgress(batch);
+    button.textContent=batch.status==='SUCCESS'?'全部完成':'处理完成，存在待核对项';
+    window.dispatchEvent(new CustomEvent('gle-bulk-rebuild-completed',{detail:{batch_id:batch.batch_id,status:batch.status}}));
+    if(typeof window.refreshGleDecisionSurface==='function')await window.refreshGleDecisionSurface();
+  }
+
+  function showBulkRebuildModal(batch,{allowPending=true}={}) {
+    const pending=batch.items.filter(item=>item.status==='PENDING').length;
+    showModal(`<section class="growth-modal"><header class="growth-modal-head"><div><b>批量审批重建投放 · ${batch.items.length}</b><small>只处理投放配置重建，不混入暂停、调预算、放量或素材动作</small></div><button type="button" class="growth-icon-button" data-modal-close>×</button></header><div class="growth-modal-body"><div class="growth-safety"><b>确认结果</b> 每条广告独立回读来源、审批和安全演练；只创建暂停态 Meta 对象，不会开启投放或产生新增花费。结果不确定的条目会立即停止且不会自动重试。</div><div id="growthBulkRebuildProgress"></div></div><footer class="growth-modal-foot"><button type="button" data-modal-close>关闭</button>${allowPending&&pending?`<button type="button" class="growth-primary" id="growthConfirmBulkRebuild">${pending===batch.items.length?'确认并创建':'继续处理'} ${pending} 组暂停态广告</button>`:''}</footer></section>`);
+    renderBulkRebuildProgress(batch);
+    document.getElementById('growthConfirmBulkRebuild')?.addEventListener('click',event=>runBulkRebuildBatch(batch,event.currentTarget));
+  }
+
+  function openBulkRebuildApproval(candidates) {
+    const eligible=(Array.isArray(candidates)?candidates:[]).filter(item=>
+      item&&item.batch_action==='repair_delivery_config'&&item.recommendation&&item.recommendation.recommendation_id
+    );
+    if(!eligible.length){showModalError('当前没有可批量审批的重建投放方案。');return false;}
+    const eligibleIds=eligible.map(item=>String(item.recommendation.recommendation_id||'')).sort();
+    const existing=readBulkRebuildBatch();
+    const existingIds=(existing&&Array.isArray(existing.items)?existing.items:[]).map(item=>String(item.recommendation&&item.recommendation.recommendation_id||'')).sort();
+    if(existing&&stableJson(existingIds)===stableJson(eligibleIds)){
+      existing.items.forEach(item=>{
+        if(item.status==='RUNNING'){
+          item.status='MANUAL_REVIEW';
+          item.error='页面在请求处理中断开，真实结果需要先核对；系统不会自动重试该条。';
+        }
+      });
+      writeBulkRebuildBatch(existing);showBulkRebuildModal(existing,{allowPending:true});return true;
+    }
+    const batch={
+      batch_id:`gle-bulk-${Date.now()}-${stableHash(eligible.map(item=>item.recommendation.recommendation_id))}`,
+      status:'PENDING',created_at:new Date().toISOString(),items:eligible.map(item=>({
+        status:'PENDING',error:'',experiment_id:'',plan_id:'',account_id:String(item.account_id||''),
+        account_name:String(item.account_name||''),ad_id:String(item.ad_id||''),ad_name:String(item.ad_name||''),
+        recommendation:item.recommendation
+      }))
+    };
+    writeBulkRebuildBatch(batch);
+    showBulkRebuildModal(batch,{allowPending:true});
+    return true;
   }
 
   async function openTechnicalOverview() {
@@ -2508,5 +2639,5 @@
   async function openExperiment(id) { return openWorkspace(id); }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install); else install();
-  window.GrowthWorkspace = {openEpisode,openKnowledge,openExperiment,openAdExperiment,acceptRecommendation,refresh:loadList,open:openWorkspace,openTasks:openLaunchWorkspace,setCoverageScope,showQueue:showEmbeddedQueue};
+  window.GrowthWorkspace = {openEpisode,openKnowledge,openExperiment,openAdExperiment,acceptRecommendation,openBulkRebuildApproval,readBulkRebuildBatch,refresh:loadList,open:openWorkspace,openTasks:openLaunchWorkspace,setCoverageScope,showQueue:showEmbeddedQueue};
 })();
