@@ -9866,7 +9866,7 @@ if(startupDashboardFallback){startupDashboardFallback.errors=[...(startupDashboa
 loadDashboard().catch(showLoadError);
 </script>
 <script src="/static/ops/growth-decision.js?v=20260813-gle-submit-followup-v1"></script>
-<script src="/static/ops/growth-workspace.js?v=20260813-gle-browser-task-detail-v1"></script>
+<script src="/static/ops/growth-workspace.js?v=20260813-gle-inline-approval-v1"></script>
 </body>
 </html>
 """

@@ -145,12 +145,12 @@
     });
     panel.querySelector('#growthRefresh')?.addEventListener('click', loadList);
     panel.querySelector('#growthCreateExperiment')?.addEventListener('click', openCreateFlow);
-    panel.querySelectorAll('[data-growth-bucket]').forEach(button => button.addEventListener('click', () => { state.workBucket=button.dataset.growthBucket||'action_required';state.activeExperiment='';renderQueueTabs();renderExperimentQueue(); }));
-    panel.querySelector('#growthAuditAll')?.addEventListener('click', () => { state.workBucket='all';state.activeExperiment='';renderQueueTabs();renderExperimentQueue(); });
+    panel.querySelectorAll('[data-growth-bucket]').forEach(button => button.addEventListener('click', () => { closeModal();state.workBucket=button.dataset.growthBucket||'action_required';state.activeExperiment='';renderQueueTabs();renderExperimentQueue(); }));
+    panel.querySelector('#growthAuditAll')?.addEventListener('click', () => { closeModal();state.workBucket='all';state.activeExperiment='';renderQueueTabs();renderExperimentQueue(); });
     panel.querySelector('#growthTaskSearch')?.addEventListener('input', event => { state.taskSearch=event.target.value.trim();state.activeExperiment='';renderExperimentQueue(); });
     window.addEventListener('creative-pro-workbench-updated', event => syncLaunchProgress(event.detail || {}));
     window.addEventListener('gle-coverage-scope-updated', event => setCoverageScope(event.detail?.experimentIds || []).catch(error => console.error('growth_coverage_scope_failed', error)));
-    document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;const launch=document.getElementById('growthLaunchPanel');if(launch&&!launch.hidden){closeLaunchWorkspace();return;}const workspace=document.getElementById('growthWorkspacePanel');if(workspace&&!workspace.hidden)closeWorkspace();});
+    document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;const activeModal=document.querySelector('#growthModal:not([hidden]),#growthLaunchModal:not([hidden])');if(activeModal){closeModal();return;}const launch=document.getElementById('growthLaunchPanel');if(launch&&!launch.hidden){closeLaunchWorkspace();return;}const workspace=document.getElementById('growthWorkspacePanel');if(workspace&&!workspace.hidden)closeWorkspace();});
     restoreLaunchProgress();
     restoreLaunchOrdersCache();
     updateLaunchProgressBadge();
@@ -317,7 +317,20 @@
       .growth-layer-embedded.is-detail-open .growth-technical{grid-column:1/-1}
       .growth-layer-embedded.is-detail-open .growth-section{margin-top:10px;padding:14px}
       .growth-layer-embedded.is-detail-open .growth-actions{min-height:62px;margin-top:10px;padding:0 12px}
-      .growth-layer-embedded .growth-modal-layer{position:absolute}
+      #growthWorkspacePanel.growth-layer-embedded.has-inline-action{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,430px);align-items:start;gap:16px}
+      .growth-layer-embedded.has-inline-action .growth-drawer{min-width:0}
+      .growth-layer-embedded.has-inline-action .growth-modal-layer{position:sticky;inset:auto;top:12px;z-index:2;min-width:0;display:block;place-items:unset;border:1px solid #dfe5ee;border-radius:10px;background:#fff;box-shadow:0 8px 24px rgba(26,43,76,.08)}
+      .growth-layer-embedded.has-inline-action .growth-inline-context{display:grid;gap:2px;padding:14px 16px 11px;border-bottom:1px solid #e7ebf1;background:#f8fafc}
+      .growth-layer-embedded.has-inline-action .growth-inline-context span{color:#17233d;font-size:12px;font-weight:800}
+      .growth-layer-embedded.has-inline-action .growth-inline-context small{color:#667085;font-size:10px;line-height:1.45}
+      .growth-layer-embedded.has-inline-action .growth-modal{width:100%;max-height:calc(100vh - 32px);border-radius:0 0 10px 10px;box-shadow:none}
+      .growth-layer-embedded.has-inline-action .growth-modal-head{min-height:58px;padding:0 16px}
+      .growth-layer-embedded.has-inline-action .growth-modal-head b{font-size:15px}
+      .growth-layer-embedded.has-inline-action .growth-modal-body{padding:18px 16px}
+      .growth-layer-embedded.has-inline-action .growth-modal-body h3{font-size:16px}
+      .growth-layer-embedded.has-inline-action .growth-modal-foot{min-height:62px;padding:10px 16px;flex-wrap:wrap}
+      .growth-layer-embedded.has-inline-action .growth-modal-foot button:focus-visible,.growth-layer-embedded.has-inline-action .growth-icon-button:focus-visible{outline:3px solid rgba(53,105,232,.2)!important;outline-offset:2px!important}
+      @media(max-width:1180px){#growthWorkspacePanel.growth-layer-embedded.has-inline-action{grid-template-columns:1fr}.growth-layer-embedded.has-inline-action .growth-modal-layer{position:relative;top:auto}.growth-layer-embedded.has-inline-action .growth-modal{max-height:none}}
       @media(max-width:980px){.growth-layer-embedded .growth-task-list{grid-template-columns:1fr}.growth-layer-embedded.is-detail-open .growth-detail.has-autonomy-panel{display:block}.growth-layer-embedded.is-detail-open #growthAutonomyPanel{position:static;margin-top:10px;padding-top:14px}}
       @media(max-width:720px){.growth-layer-embedded .growth-queue-tabs{grid-template-columns:repeat(4,max-content);gap:14px}.growth-layer-embedded .growth-task-group-row{grid-template-columns:minmax(0,1fr) 15px}.growth-layer-embedded .growth-task-group-copy{display:grid!important}.growth-layer-embedded .growth-task-group-row>span:not(.growth-task-group-copy){display:none}.growth-layer-embedded.is-detail-open .growth-detail{padding:12px 0 2px}}
     `;
@@ -380,6 +393,7 @@
 
   function showEmbeddedQueue({scroll=true}={}) {
     if (!isEmbeddedWorkspace()) return;
+    closeModal();
     state.activeExperiment = '';
     state.detail = null;
     setWorkspaceReturn(null);
@@ -2492,7 +2506,23 @@
     let node=launchPanel&&!launchPanel.hidden?document.getElementById('growthLaunchModal'):document.getElementById('growthModal');
     if(!node&&launchPanel&&!launchPanel.hidden){node=document.createElement('section');node.id='growthLaunchModal';node.className='growth-modal-layer';launchPanel.appendChild(node);}
     if(!node){console.error('growth_modal_container_missing');return false;}
+    const workspace=document.getElementById('growthWorkspacePanel');
+    const inline=node.id==='growthModal'&&isEmbeddedWorkspace();
     node.innerHTML=html;node.hidden=false;
+    if(inline){
+      workspace?.classList.add('has-inline-action');
+      node.classList.add('growth-inline-action');
+      node.setAttribute('role','complementary');
+      const dialog=node.querySelector('.growth-modal');
+      const title=String(dialog?.querySelector('.growth-modal-head b')?.textContent||'处理当前任务').trim();
+      dialog?.setAttribute('role','region');dialog?.removeAttribute('aria-modal');dialog?.setAttribute('aria-label',title);
+      const context=document.createElement('div');
+      context.className='growth-inline-context';
+      context.innerHTML='<span>当前任务的下一步</span><small>在这里核对影响范围并确认；任务列表和当前上下文会保留。</small>';
+      node.prepend(context);
+      node.setAttribute('aria-label',`当前任务操作：${title}`);
+      node.scrollIntoView({block:'nearest'});
+    }
     node.querySelectorAll('[data-modal-close]').forEach(button=>button.addEventListener('click',closeModal));
     return true;
   }
@@ -2501,7 +2531,7 @@
     const body=document.querySelector('#growthLaunchModal:not([hidden]) .growth-modal-body,#growthModal:not([hidden]) .growth-modal-body');if(!body)return;let node=body.querySelector('.growth-error');if(!node){node=document.createElement('div');node.className='growth-error';body.appendChild(node);}node.textContent=message;
   }
 
-  function closeModal() { clearLaunchBatchWorkflowTimer();launchState.batchWorkflowPlanId='';['growthModal','growthLaunchModal'].forEach(id=>{const node=document.getElementById(id);if(node){node.hidden=true;node.innerHTML='';}}); }
+  function closeModal() { clearLaunchBatchWorkflowTimer();launchState.batchWorkflowPlanId='';document.getElementById('growthWorkspacePanel')?.classList.remove('has-inline-action');['growthModal','growthLaunchModal'].forEach(id=>{const node=document.getElementById(id);if(node){node.hidden=true;node.innerHTML='';node.classList.remove('growth-inline-action');node.removeAttribute('role');node.removeAttribute('aria-label');}}); }
 
   async function openEpisode(id) { openWorkspace(); const node=document.getElementById('growthDetail');node.innerHTML='<div class="growth-empty"><div><b>正在读取 Episode</b></div></div>';try{const detail=await api(`/api/ops/growth/episodes/${encodeURIComponent(id)}`);node.innerHTML=`<div class="growth-detail-head"><div><h2>Episode 复盘</h2><p>${esc(id)}</p></div><span class="growth-chip">${esc(statusLabel((detail.episode||{}).status))}</span></div><details class="growth-technical" open><summary>Context → Knowledge</summary><pre>${esc(pretty(detail))}</pre></details>${(detail.episode||{}).status==='COMPLETED'?'<div class="growth-notice">Completed Episode 已冻结；仍可审核或归档知识。</div>':''}`;}catch(error){node.innerHTML=`<div class="growth-error">${esc(readableError(error))}</div>`;}}
   async function openKnowledge(id) { openWorkspace(); const node=document.getElementById('growthDetail');node.innerHTML='<div class="growth-empty"><div><b>正在读取知识证据</b></div></div>';try{const detail=await api(`/api/ops/growth/knowledge/${encodeURIComponent(id)}`);node.innerHTML=`<div class="growth-detail-head"><div><h2>知识证据</h2><p>${esc(id)}</p></div><span class="growth-chip">${esc(statusLabel((detail.knowledge||{}).status))}</span></div><details class="growth-technical" open><summary>相似 Episode 与证据</summary><pre>${esc(pretty(detail))}</pre></details>`;}catch(error){node.innerHTML=`<div class="growth-error">${esc(readableError(error))}</div>`;}}
