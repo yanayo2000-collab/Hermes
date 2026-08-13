@@ -9713,6 +9713,7 @@ function renderDailyRecoToolbar(rows){const node=document.getElementById('adDail
 function preserveDailyRecommendationViewport(callback){const left=window.scrollX;const top=window.scrollY;callback();window.scrollTo(left,top);window.requestAnimationFrame(()=>window.scrollTo(left,top));}
 window.applyDailyRecommendationDecisionState=(recommendationId,decision)=>{if(!currentDailyReport||!Array.isArray(currentDailyReport.recommendations))return false;const targetKey=String(recommendationId||'');const index=currentDailyReport.recommendations.findIndex(row=>String(row.recommendation_id||row.__ui_reco_key||'')===targetKey);if(index<0)return false;const current=currentDailyReport.recommendations[index]||{};currentDailyReport.recommendations[index]={...current,decision_state:{...(decision||{})}};writeLocalDailyReport(currentDailyReport);preserveDailyRecommendationViewport(()=>renderDailyRecommendationTable(currentDailyReport.recommendations));if(currentGleAdCoverage)renderGleAdCoverage(currentGleAdCoverage);return true;};
 window.refreshDailyRecommendationPanel=()=>loadDailyReport({force:true,preserveUi:true});
+window.refreshGleDecisionSurface=async()=>{await Promise.allSettled([loadDailyReport({force:true,preserveUi:true}),loadGleAdCoverage()]);};
 window.showDailyRecommendationHandedOff=()=>{if(!currentDailyReport||!Array.isArray(currentDailyReport.recommendations))return;currentDailyRecoFilter='handed_off';dailyRecoExpanded=false;renderDailyRecommendationTable(currentDailyReport.recommendations);document.getElementById('adDailyRecommendationToolbar')?.scrollIntoView({block:'nearest'});};
 function renderDailyRecommendationTable(rawRows){
   const objectMap=dailyAdObjectById();
@@ -9864,7 +9865,7 @@ const startupDashboardFallback=readLocalDashboardPayload({allowStale:true})||rea
 if(startupDashboardFallback){startupDashboardFallback.errors=[...(startupDashboardFallback.errors||[]).filter(item=>String(item&&item.source||'')!=='已显示缓存数据'),dashboardFallbackNotice()];renderDashboardPayload(startupDashboardFallback,{preserveDailyReport:true,preserveFilters:true,skipDeferredTrend:true});}
 loadDashboard().catch(showLoadError);
 </script>
-<script src="/static/ops/growth-decision.js?v=20260812-gle-correction-loop-v1"></script>
+<script src="/static/ops/growth-decision.js?v=20260813-gle-submit-followup-v1"></script>
 <script src="/static/ops/growth-workspace.js?v=20260812-gle-correction-loop-v1"></script>
 </body>
 </html>

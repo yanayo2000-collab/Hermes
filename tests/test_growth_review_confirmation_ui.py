@@ -74,7 +74,7 @@ def test_review_ui_is_automatic_and_surfaces_each_ads_next_step() -> None:
     assert "data-gle-open-operating-workbench" in page
     assert "window.showGleOperatingStatus" in page
     assert "&refresh=1" in page
-    assert "growth-decision.js?v=20260812-gle-correction-loop-v1" in page
+    assert "growth-decision.js?v=20260813-gle-submit-followup-v1" in page
     assert "growth-workspace.js?v=20260812-gle-correction-loop-v1" in page
 
     assert "generate_repair_creative: 'CREATE_EXPERIMENT'" in decision
@@ -88,6 +88,10 @@ def test_review_ui_is_automatic_and_surfaces_each_ads_next_step() -> None:
     assert "确认加入复核队列" not in decision
     assert "系统已完成当前只读复核" in decision
     assert "返回 GLE 工作台" in decision
+    assert "查看并审批" in decision
+    assert "button.dataset.targetExperimentId = experimentId" in decision
+    assert "if (result && result.experiment_id) close();" not in decision
+    assert "window.refreshGleDecisionSurface=async()=>" in page
 
     history_start = page.index("function renderDailyRecommendationTable")
     history_end = page.index("function renderDailyReport", history_start)
@@ -95,6 +99,18 @@ def test_review_ui_is_automatic_and_surfaces_each_ads_next_step() -> None:
     assert "data-growth-decision" not in history_source
     assert "data-creative-from-reco" not in history_source
     assert "到 GLE 工作台确认" in history_source
+
+
+def test_submitted_experiment_stays_visible_and_opens_the_exact_approval_task() -> None:
+    source = DECISION_JS.read_text(encoding="utf-8")
+    assert source.index("renderAcceptedState(completedDecision);") < source.index(
+        "await refreshRecommendationPanel();",
+        source.index("renderAcceptedState(completedDecision);"),
+    )
+    assert "target_type: acceptedResult.experiment_id ? 'EXPERIMENT'" in source
+    assert "target_id: acceptedResult.experiment_id || acceptedDecision.target_id" in source
+    assert "await window.openGleExperimentTask(experimentId);" in source
+    assert "方案已生成，等待你审批并完成 dry-run。" in source
 
 
 def test_fresh_report_cannot_erase_an_accepted_local_decision() -> None:

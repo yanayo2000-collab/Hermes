@@ -124,6 +124,7 @@
     document.querySelector('.growth-decision-later').textContent = '暂不处理';
     const button = document.querySelector('#growthDecisionModal .growth-decision-submit');
     button.dataset.acceptedNavigation = '0';
+    button.dataset.targetExperimentId = '';
   }
 
   function acceptedMessage(decision) {
@@ -148,21 +149,32 @@
   }
 
   async function refreshRecommendationPanel() {
-    if (typeof window.refreshDailyRecommendationPanel !== 'function') return;
-    try { await window.refreshDailyRecommendationPanel(); } catch (_) {}
+    const refresh = typeof window.refreshGleDecisionSurface === 'function'
+      ? window.refreshGleDecisionSurface
+      : window.refreshDailyRecommendationPanel;
+    if (typeof refresh !== 'function') return;
+    try { await refresh(); } catch (_) {}
   }
 
   function renderAcceptedState(decision) {
     markAccepted(decision);
-    document.getElementById('growthDecisionTitle').textContent = '方案已交给系统';
-    document.querySelector('.growth-decision-impact').innerHTML = '<strong>无需再次确认</strong><span>系统已接手这条方案。</span><small>当前状态和下一步会保留在这里，不会因为关闭页面而消失。</small>';
-    document.getElementById('growthDecisionStatus').textContent = `${acceptedMessage(decision)} 已从“待确认”移到“已交给系统”。`;
+    const experimentId = String(decision.target_type || '').toUpperCase() === 'EXPERIMENT'
+      ? String(decision.target_id || '').trim()
+      : '';
+    document.getElementById('growthDecisionTitle').textContent = experimentId ? '重建方案已创建' : '方案已交给系统';
+    document.querySelector('.growth-decision-impact').innerHTML = experimentId
+      ? '<strong>下一步：审批重建方案</strong><span>暂停态方案已经生成，尚未写入 Meta。</span><small>进入任务后检查复用配置和 CPI 成本上限；完成审批与 dry-run 后，仍需再次确认才会真实执行。</small>'
+      : '<strong>无需再次确认</strong><span>系统已接手这条方案。</span><small>当前状态和下一步会保留在这里，不会因为关闭页面而消失。</small>';
+    document.getElementById('growthDecisionStatus').textContent = experimentId
+      ? '方案已生成，等待你审批并完成 dry-run。'
+      : `${acceptedMessage(decision)} 已从“待确认”移到“已交给系统”。`;
     document.querySelector('.growth-decision-adjust').hidden = true;
     document.querySelector('.growth-decision-later').textContent = '关闭';
     const button = document.querySelector('#growthDecisionModal .growth-decision-submit');
-    button.textContent = '返回 GLE 工作台';
+    button.textContent = experimentId ? '查看并审批' : '返回 GLE 工作台';
     button.disabled = false;
     button.dataset.acceptedNavigation = '1';
+    button.dataset.targetExperimentId = experimentId;
   }
 
   function close() {
@@ -252,8 +264,11 @@
     if (!active) return;
     const button = document.querySelector('#growthDecisionModal .growth-decision-submit');
     if (button.dataset.acceptedNavigation === '1') {
+      const experimentId = String(button.dataset.targetExperimentId || '').trim();
       close();
-      if (typeof window.showGleOperatingStatus === 'function') {
+      if (experimentId && typeof window.openGleExperimentTask === 'function') {
+        await window.openGleExperimentTask(experimentId);
+      } else if (typeof window.showGleOperatingStatus === 'function') {
         window.showGleOperatingStatus();
       } else if (typeof window.showDailyRecommendationHandedOff === 'function') {
         window.showDailyRecommendationHandedOff();
@@ -289,14 +304,19 @@
       button.textContent = '正在交给系统';
       const acceptedDecision = {...payload, selected_action:body.selected_action};
       markAccepted(acceptedDecision);
+      let acceptedResult = {};
       if (window.GrowthWorkspace && typeof window.GrowthWorkspace.acceptRecommendation === 'function') {
-        const result = await window.GrowthWorkspace.acceptRecommendation(active, acceptedDecision);
-        status.textContent = result && result.message ? result.message : '已确认，系统已开始后续处理。';
-        if (result && result.experiment_id) close();
+        acceptedResult = await window.GrowthWorkspace.acceptRecommendation(active, acceptedDecision) || {};
+        status.textContent = acceptedResult.message || '已确认，系统已开始后续处理。';
       } else {
         status.textContent = '已确认，系统已开始跟踪后续效果。';
       }
-      renderAcceptedState({...acceptedDecision, target_type:acceptedDecision.target_type || (active.decision_state || {}).target_type, target_id:acceptedDecision.target_id || (active.decision_state || {}).target_id});
+      const completedDecision = {
+        ...acceptedDecision,
+        target_type: acceptedResult.experiment_id ? 'EXPERIMENT' : (acceptedDecision.target_type || (active.decision_state || {}).target_type),
+        target_id: acceptedResult.experiment_id || acceptedDecision.target_id || (active.decision_state || {}).target_id
+      };
+      renderAcceptedState(completedDecision);
       await refreshRecommendationPanel();
     } catch (error) {
       if (error && error.alreadyDecided) {
