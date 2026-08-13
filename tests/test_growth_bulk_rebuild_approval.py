@@ -80,3 +80,15 @@ def test_bulk_rebuild_ui_is_scoped_persistent_and_never_enables_delivery() -> No
     bulk_block = workspace[workspace.index("async function executeBulkRebuildItem"):workspace.index("async function runBulkRebuildBatch")]
     assert "ENABLE_DELIVERY" not in bulk_block
     assert "MANUAL_REVIEW" in workspace
+
+
+def test_bulk_rebuild_opens_its_embedded_modal_in_a_visible_panel() -> None:
+    page = (ROOT / "app/main_pages.py").read_text()
+    start = page.index("function openGleBulkRebuildApproval")
+    end = page.index("function renderGleRecommendationWorkbench", start)
+    helper = page[start:end]
+
+    assert helper.index("setGleWorkspaceView('tasks',{focus:true});") < helper.index(
+        "window.GrowthWorkspace.openBulkRebuildApproval(candidates)"
+    )
+    assert "addEventListener('click',()=>openGleBulkRebuildApproval(" in page
