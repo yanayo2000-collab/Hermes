@@ -1580,13 +1580,21 @@
     try {
       let payload;
       if (isEmbeddedWorkspace()) {
-        const results = await Promise.allSettled([...state.coverageScope].map(async id=>{
+        const selectedId=String(options?.select||'').trim();
+        const requestedIds=new Set(state.coverageScope);
+        if(selectedId)requestedIds.add(selectedId);
+        const results = await Promise.allSettled([...requestedIds].map(async id=>{
           const item=await api(`/api/ops/ad-data-dashboard/experiments/${encodeURIComponent(id)}`);
           return {...(item.experiment||{}),workflow:item.workflow||item.experiment?.workflow||{}};
         }));
         const items=results.filter(result=>result.status==='fulfilled').map(result=>result.value);
-        if(options?.select&&!items.some(item=>String(item?.experiment_id||'')===String(options.select))){
+        if(selectedId&&!items.some(item=>String(item?.experiment_id||'')===selectedId)){
           throw new Error('任务详情暂时无法读取，请重试；系统未执行任何 Meta 操作。');
+        }
+        if(selectedId&&!state.coverageScope.has(selectedId)){
+          state.coverageScope.add(selectedId);
+          const mount=document.getElementById('adGleTaskWorkbenchMount');
+          if(mount)mount.dataset.experimentIds=JSON.stringify([...state.coverageScope]);
         }
         payload={items};
       } else {

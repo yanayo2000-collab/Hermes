@@ -393,7 +393,11 @@ def test_dashboard_coverage_opens_the_existing_governed_task_flow() -> None:
     assert "function showEmbeddedQueue({scroll=true}={})" in workspace_js
     assert "async function openWorkspace(experimentId, options={})" in workspace_js
     assert "const loaded = await loadList({select:experimentId})" in workspace_js
-    assert "Promise.allSettled([...state.coverageScope]" in workspace_js
+    assert "const requestedIds=new Set(state.coverageScope);" in workspace_js
+    assert "if(selectedId)requestedIds.add(selectedId);" in workspace_js
+    assert "Promise.allSettled([...requestedIds]" in workspace_js
+    assert "state.coverageScope.add(selectedId);" in workspace_js
+    assert "mount.dataset.experimentIds=JSON.stringify([...state.coverageScope])" in workspace_js
     assert "任务详情暂时无法读取，请重试；系统未执行任何 Meta 操作。" in workspace_js
     assert "async function openExperiment(id) { return openWorkspace(id); }" in workspace_js
     assert "if (isEmbeddedWorkspace()) {\n      showEmbeddedQueue();\n      return;\n    }" in workspace_js
