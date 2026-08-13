@@ -38,11 +38,12 @@ from app.growth.approval_service import OperationApprovalService
 from app.growth.common import canonical_json, decode_json, payload_hash, utc_now
 from app.growth.creative_naming import compact_launch_ad_name
 from app.growth.decision_service import DecisionService
-from app.growth.delivery_guardrails import new_account_delivery_guardrails
+from app.growth.delivery_guardrails import DEFAULT_CPI_TARGET_USD, new_account_delivery_guardrails
 from app.growth.episode_service import EpisodeService
 from app.growth.errors import GrowthError, GrowthNotFound, GrowthValidationError
 from app.growth.execution_service import ExecutionTaskService
 from app.growth.meta_graph_adapter import configured_regional_regulation_identities
+from app.growth.meta_read_service import MetaGraphReadService
 from app.growth.knowledge_service import KnowledgeService
 from app.growth.historical_cell_lineage_projection import historical_cell_lineage_projection
 from app.growth.new_account_launch_retention import (
@@ -1344,6 +1345,56 @@ def create_ad_experiment_router(
 
     def actor(user: Dict[str, Any]) -> str:
         return _operator_principal(user)
+
+    def resolve_rebuild_source_binding(
+        conn: sqlite3.Connection, experiment: Dict[str, Any], recommendation: Dict[str, Any],
+    ) -> Dict[str, str]:
+        source_ad_id = str(experiment.get("source_ad_id") or "").strip()
+        if source_ad_id.isdigit():
+            return {
+                "ad_id": source_ad_id,
+                "account_id": str(experiment.get("account_id") or "").strip().removeprefix("act_"),
+            }
+        report_id = str(recommendation.get("report_id") or experiment.get("source_report_id") or "").strip()
+        recommendation_object_id = str(recommendation.get("object_id") or "").strip()
+        report = conn.execute(
+            "SELECT payload_json FROM ad_daily_report WHERE report_id=?", (report_id,),
+        ).fetchone() if report_id else None
+        report_payload = decode_json(report["payload_json"], {}) if report else {}
+        observed = next((
+            dict(item) for item in list(report_payload.get("ad_objects") or [])
+            if str(dict(item).get("object_id") or "") == recommendation_object_id
+        ), {})
+        account_id = str(observed.get("account_id") or experiment.get("account_id") or "").strip().removeprefix("act_")
+        ad_name = str(observed.get("ad") or "").strip()
+        if not account_id or not ad_name:
+            raise GrowthValidationError("rebuild_source_observation_identity_missing")
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ad_creative_asset'",
+        ).fetchone():
+            raise GrowthValidationError("rebuild_source_creative_index_missing")
+        rows = conn.execute(
+            """SELECT DISTINCT account_id,campaign_id,adset_id,ad_id,creative_id
+            FROM ad_creative_asset WHERE account_id=? AND ad_name=? AND ad_id<>''
+            ORDER BY last_seen_at DESC""", (account_id, ad_name),
+        ).fetchall()
+        identities = {(
+            str(row["account_id"] or ""), str(row["campaign_id"] or ""),
+            str(row["adset_id"] or ""), str(row["ad_id"] or ""), str(row["creative_id"] or ""),
+        ) for row in rows}
+        if len(identities) != 1:
+            raise GrowthValidationError(
+                "rebuild_source_binding_ambiguous" if identities else "rebuild_source_binding_not_found"
+            )
+        account, campaign_id, adset_id, ad_id, creative_id = next(iter(identities))
+        return {
+            "account_id": account, "campaign_id": campaign_id, "adset_id": adset_id,
+            "ad_id": ad_id, "creative_id": creative_id, "report_id": report_id,
+        }
+
+    def compact_rebuild_name(value: Any, suffix: str) -> str:
+        base = re.sub(r"\s+", " ", str(value or "").strip()) or "Tugao"
+        return f"{base[:max(1, 80 - len(suffix))]}{suffix}"
 
     def execute(fn: Callable[[], Any]) -> Any:
         try:
@@ -3469,6 +3520,149 @@ def create_ad_experiment_router(
         if str(body.action_type).upper() != "CREATE_PAUSED_AD":
             raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "create_plan_requires_create_paused_ad"})
         return preview_plan(experiment_id, body, request, idempotency_key, request_id)
+
+    @router.post("/experiments/{experiment_id}/rebuild-plan/prepare", status_code=201)
+    def prepare_rebuild_plan(
+        experiment_id: str, request: Request,
+        idempotency_key: str = Header(..., alias="Idempotency-Key"),
+        request_id: str = Header(..., alias="X-Request-ID"),
+    ) -> Dict[str, Any]:
+        user = operator(request)
+
+        def action() -> Dict[str, Any]:
+            if not meta_session or not meta_access_token or not meta_graph_root:
+                raise HTTPException(status_code=503, detail={
+                    "code": "EXECUTION_UNAVAILABLE", "message": "meta_rebuild_readback_unavailable",
+                })
+            with db.connect() as conn:
+                service = AdExperimentService(conn)
+                experiment = service.get(experiment_id)
+                existing = conn.execute(
+                    """SELECT operation_action_id FROM growth_operation_action
+                    WHERE action_type='CREATE_PAUSED_AD' AND json_extract(payload_json,'$.experiment_id')=?
+                      AND status IN ('CREATED','QUEUED','EXECUTING','VERIFIED')
+                    ORDER BY created_at DESC LIMIT 1""", (experiment_id,),
+                ).fetchone()
+                if existing:
+                    result = service.plan_detail(str(existing["operation_action_id"]))
+                    result.update({"request_id": request_id, "reused": True})
+                    return result
+                recommendation = conn.execute(
+                    "SELECT * FROM ad_recommendation WHERE recommendation_id=?",
+                    (str(experiment.get("source_recommendation_id") or ""),),
+                ).fetchone()
+                if not recommendation:
+                    raise GrowthValidationError("rebuild_source_recommendation_missing")
+                recommendation_dict = dict(recommendation)
+                binding = resolve_rebuild_source_binding(conn, experiment, recommendation_dict)
+                source = MetaGraphReadService(
+                    session=meta_session, access_token=meta_access_token,
+                    base_url="https://graph.facebook.com",
+                    api_version=str(meta_graph_root).rstrip("/").rsplit("/", 1)[-1],
+                ).read_ad_rebuild_source(ad_id=binding["ad_id"])
+                ids = dict(source["source_ids"])
+                if binding.get("account_id") and binding["account_id"] != str(source["account_id"]):
+                    raise GrowthValidationError("rebuild_source_account_mismatch")
+                if binding.get("creative_id") and binding["creative_id"] != ids["creative_id"]:
+                    raise GrowthValidationError("rebuild_source_creative_mismatch")
+                adset, campaign, ad = dict(source["adset"]), dict(source["campaign"]), dict(source["ad"])
+                creative_contract = dict(source["creative_contract"])
+                promoted = dict(adset.get("promoted_object") or {})
+                if str(promoted.get("application_id") or "") != str(meta_application_id):
+                    raise GrowthValidationError("rebuild_source_not_tugao")
+                daily_budget_usd = float(adset.get("daily_budget") or 0) / 100.0
+                if not 5 <= daily_budget_usd <= 100:
+                    raise GrowthValidationError("rebuild_source_daily_budget_out_of_range")
+                hypothesis = dict(experiment.get("hypothesis_json") or {})
+                cpi_target = float(hypothesis.get("cpi_target") or DEFAULT_CPI_TARGET_USD)
+                suffix = f"_CC{int(round(cpi_target * 100)):02d}_R{datetime.now().strftime('%y%m%d')}_{experiment_id[-4:]}"
+                names = {
+                    "campaign": compact_rebuild_name(campaign.get("name"), suffix),
+                    "adset": compact_rebuild_name(adset.get("name"), suffix),
+                    "ad": compact_rebuild_name(ad.get("name"), suffix),
+                }
+                source_snapshot = {
+                    "source": "meta_graph_read_only", "read_at": source["read_at"], "source_ids": ids,
+                    "source_statuses": {
+                        "campaign": campaign.get("status"), "adset": adset.get("status"), "ad": ad.get("status"),
+                    },
+                    "source_config": {
+                        "daily_budget": adset.get("daily_budget"), "bid_strategy": adset.get("bid_strategy"),
+                        "bid_amount": adset.get("bid_amount"), "billing_event": adset.get("billing_event"),
+                        "optimization_goal": adset.get("optimization_goal"), "targeting": adset.get("targeting"),
+                        "promoted_object": promoted, "attribution_spec": adset.get("attribution_spec"),
+                        "page_id": creative_contract["page_id"], "image_hash": creative_contract["image_hash"],
+                    },
+                }
+                source_snapshot["snapshot_hash"] = payload_hash(source_snapshot)
+                decision = conn.execute(
+                    """SELECT d.decision_id,e.episode_id FROM growth_decision d
+                    LEFT JOIN growth_decision_episode e ON e.decision_id=d.decision_id
+                    WHERE d.target_type='EXPERIMENT' AND d.target_id=?
+                    ORDER BY d.created_at DESC LIMIT 1""", (experiment_id,),
+                ).fetchone()
+                if not decision:
+                    raise GrowthValidationError("rebuild_decision_missing")
+                updated_hypothesis = {
+                    **hypothesis, "cpi_target": cpi_target, "initial_daily_budget": daily_budget_usd,
+                    "page_id": creative_contract["page_id"], "meta_names": names,
+                    "rebuild_source": source_snapshot,
+                }
+                with conn:
+                    conn.execute(
+                        """UPDATE ad_experiment SET target_app='tugao',account_id=?,source_report_id=?,
+                        source_campaign_id=?,source_adset_id=?,source_ad_id=?,source_creative_id=?,
+                        hypothesis_json=?,updated_at=? WHERE experiment_id=?""",
+                        (str(source["account_id"]), binding.get("report_id", ""), ids["campaign_id"],
+                         ids["adset_id"], ids["ad_id"], ids["creative_id"],
+                         canonical_json(updated_hypothesis), utc_now(), experiment_id),
+                    )
+                plan_request = {
+                    "decision_id": str(decision["decision_id"]), "episode_id": str(decision["episode_id"] or ""),
+                    "action_type": "CREATE_PAUSED_AD", "target_account_id": str(source["account_id"]),
+                    "target_object_type": "AD", "target_object_id": "",
+                    "recommendation_id": str(experiment.get("source_recommendation_id") or ""),
+                    "before_json": source_snapshot,
+                    "after_json": {
+                        "status": "PAUSED", "campaign": {"name": names["campaign"]},
+                        "adset": {
+                            "name": names["adset"], "daily_budget_usd": daily_budget_usd,
+                            "cost_cap_usd": cpi_target, "targeting": dict(adset.get("targeting") or {}),
+                        },
+                        "ad": {
+                            "name": names["ad"], "primary_text": creative_contract["primary_text"],
+                            "headline": creative_contract["headline"], "description": creative_contract["description"],
+                            "call_to_action": creative_contract["call_to_action"],
+                        },
+                        "creative": {
+                            "page_id": creative_contract["page_id"],
+                            "source_image_hash": creative_contract["image_hash"],
+                        },
+                    },
+                    "steps": {
+                        "CAMPAIGN_CREATE": {"name": names["campaign"]},
+                        "ADSET_CREATE": {"name": names["adset"]},
+                        "IMAGE_UPLOAD": {
+                            "reuse_image_hash": creative_contract["image_hash"],
+                            "source": "verified_meta_source_creative",
+                        },
+                        "CREATIVE_CREATE": {"name": f"{names['ad']}_CR"},
+                        "AD_CREATE": {"name": names["ad"]},
+                    },
+                    "max_write_requests": 5, "preflight_snapshot_json": source_snapshot,
+                    "reason": "REBUILD_WITH_COST_CAP_FROM_VERIFIED_META_SOURCE",
+                    "evaluation_window": {"checkpoints": ["D1", "D3", "D7"]},
+                }
+                result = service.preview_plan(
+                    experiment_id, plan_request, actor=actor(user),
+                    idempotency_key=f"rebuild:{idempotency_key}",
+                )
+                result.update({
+                    "request_id": request_id, "source_readback": source_snapshot, "meta_object_writes": 0,
+                })
+                return result
+
+        return execute(action)
 
     @router.post("/experiments/{experiment_id}/activation-plan/preview", status_code=201)
     def preview_activation_plan(

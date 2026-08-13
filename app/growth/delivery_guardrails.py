@@ -4,6 +4,9 @@ from copy import deepcopy
 from typing import Any, Dict, List
 
 
+DEFAULT_CPI_TARGET_USD = 0.30
+
+
 NEW_ACCOUNT_DELIVERY_GUARDRAILS: Dict[str, Any] = {
     "version": "mx_cold_start_stop_v1",
     "ctr_floor": {
