@@ -82,13 +82,28 @@ def test_bulk_rebuild_ui_is_scoped_persistent_and_never_enables_delivery() -> No
     assert "MANUAL_REVIEW" in workspace
 
 
-def test_bulk_rebuild_opens_its_embedded_modal_in_a_visible_panel() -> None:
+def test_bulk_rebuild_opens_a_top_level_modal_without_switching_tabs() -> None:
     page = (ROOT / "app/main_pages.py").read_text()
+    workspace = (ROOT / "app/static/ops/growth-workspace.js").read_text()
     start = page.index("function openGleBulkRebuildApproval")
     end = page.index("function renderGleRecommendationWorkbench", start)
     helper = page[start:end]
 
-    assert helper.index("setGleWorkspaceView('tasks',{focus:true});") < helper.index(
-        "window.GrowthWorkspace.openBulkRebuildApproval(candidates)"
-    )
+    assert "setGleWorkspaceView('tasks'" not in helper
+    assert "window.GrowthWorkspace.openBulkRebuildApproval(candidates)" in helper
+    assert "node.id='growthBulkRebuildModal'" in workspace
+    assert "document.body.appendChild(node)" in workspace
+    assert ".growth-bulk-modal-layer" in workspace
+    assert "position:fixed;z-index:1900" in workspace
     assert "addEventListener('click',()=>openGleBulkRebuildApproval(" in page
+
+
+def test_bulk_rebuild_storage_is_compact_and_fails_closed() -> None:
+    workspace = (ROOT / "app/static/ops/growth-workspace.js").read_text()
+
+    assert "function bulkRebuildRecommendationSnapshot" in workspace
+    assert "snapshot.objective={cpi_target:source.objective.cpi_target}" in workspace
+    assert "window.sessionStorage.setItem(BULK_REBUILD_STORAGE_KEY,serialized)" in workspace
+    assert "showBulkRebuildModal(batch,{allowPending:true,persisted})" in workspace
+    assert "persisted&&allowPending&&pending" in workspace
+    assert "本条尚未发起，批次已安全停止" in workspace

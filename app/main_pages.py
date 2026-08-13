@@ -9570,7 +9570,7 @@ function gleOperatingItemMatches(work,filter){if(filter==='confirm')return work.
 function gleOperatingFilterDefinitions(items){const count=key=>items.filter(item=>gleOperatingItemMatches(item,key)).length;return[['today','今日经营',count('today')],['confirm','需你确认',count('confirm')],['system','系统处理中',count('system')],['maintain','保持投放',count('maintain')],['history','未投放',count('history')],['all','全部',items.length]];}
 function gleOperatingEvidence(work){const row=work.recommendation;if(row)return recoEvidenceText(row);if(!work.active)return'当前未投放 · 保留历史绑定与最近状态';if(!work.ready)return'近7天缺少可按 exact ad_id 归属的投放事实';return'近7天存在事实 · 未形成可评分的付费消耗或真实入会';}
 function gleOperatingActionHtml(work){const step=work.nextStep;if(step.action==='task')return `<button type="button" class="ad-gle-row-action ${work.taskState&&work.taskState.actionable?'is-primary':''}" data-gle-open-task="${esc(work.experimentId)}">${esc(step.label)} <span aria-hidden="true">→</span></button><small>${esc(step.detail)}</small>`;if(step.action==='decision'&&work.recommendation)return `<button type="button" class="ad-gle-row-action is-primary" data-growth-decision="${esc(work.recommendation.__ui_reco_key)}">${esc(step.label)} <span aria-hidden="true">→</span></button><small>${esc(step.detail)}</small>`;return `<strong>${esc(step.label)}</strong><small>${esc(step.detail)}</small>`;}
-function openGleBulkRebuildApproval(candidates){if(!window.GrowthWorkspace||typeof window.GrowthWorkspace.openBulkRebuildApproval!=='function'){showLoadError(new Error('批量审批工作台尚未加载完成，请刷新后重试。'));return false;}setGleWorkspaceView('tasks',{focus:true});return window.GrowthWorkspace.openBulkRebuildApproval(candidates);}
+function openGleBulkRebuildApproval(candidates){if(!window.GrowthWorkspace||typeof window.GrowthWorkspace.openBulkRebuildApproval!=='function'){showLoadError(new Error('批量审批工作台尚未加载完成，请刷新后重试。'));return false;}return window.GrowthWorkspace.openBulkRebuildApproval(candidates);}
 function renderGleRecommendationWorkbench(payload){
   const all=gleOperatingWorkItems(payload,currentDailyReport),summaryNode=document.getElementById('adGleRecommendationSummary'),filterNode=document.getElementById('adGleRecommendationFilters'),rowsNode=document.getElementById('adGleRecommendationRows');
   if(!summaryNode||!filterNode||!rowsNode)return;
@@ -9869,7 +9869,7 @@ if(startupDashboardFallback){startupDashboardFallback.errors=[...(startupDashboa
 loadDashboard().catch(showLoadError);
 </script>
 <script src="/static/ops/growth-decision.js?v=20260813-gle-submit-followup-v1"></script>
-<script src="/static/ops/growth-workspace.js?v=20260813-gle-bulk-rebuild-v1"></script>
+<script src="/static/ops/growth-workspace.js?v=20260813-gle-bulk-rebuild-v2"></script>
 </body>
 </html>
 """
