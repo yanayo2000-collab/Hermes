@@ -413,6 +413,18 @@ def test_dashboard_coverage_opens_the_existing_governed_task_flow() -> None:
     assert ".growth-layer-embedded.is-detail-open .growth-detail.has-autonomy-panel{display:grid" in workspace_js
     assert ".growth-layer-embedded.is-detail-open{min-height:560px}" not in workspace_js
     assert ".growth-layer-embedded.is-detail-open .growth-detail{flex:1 1 auto;overflow:auto" not in workspace_js
+    assert "#growthWorkspacePanel.growth-layer-embedded.has-inline-action{display:grid" in workspace_js
+    assert ".growth-layer-embedded.has-inline-action .growth-modal-layer{position:sticky" in workspace_js
+    assert "background:rgba(19,31,56,.3)" not in workspace_js[workspace_js.index("embeddedShell.textContent"):]
+    assert "const inline=node.id==='growthModal'&&isEmbeddedWorkspace()" in workspace_js
+    assert "workspace?.classList.add('has-inline-action')" in workspace_js
+    assert "dialog?.setAttribute('role','region')" in workspace_js
+    assert "dialog?.removeAttribute('aria-modal')" in workspace_js
+    assert "当前任务的下一步" in workspace_js
+    assert "任务列表和当前上下文会保留" in workspace_js
+    assert "if(activeModal){closeModal();return;}" in workspace_js
+    assert "button.addEventListener('click', () => { closeModal();state.workBucket" in workspace_js
+    assert "document.getElementById('growthWorkspacePanel')?.classList.remove('has-inline-action')" in workspace_js
     assert 'id="growthTaskSearch"' not in workspace_js[
         workspace_js.index("panel.innerHTML = embeddedMount ?"):
         workspace_js.index(" : `\n      <div class=\"growth-backdrop\"")
