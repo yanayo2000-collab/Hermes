@@ -6981,6 +6981,111 @@ class IntakeServiceMixin:
             },
         }
 
+    def list_external_fan_conversions(
+        self,
+        *,
+        updated_since: str = '',
+        limit: int = 500,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        normalized_since = str(updated_since or '').strip()
+        if normalized_since:
+            try:
+                normalized_since = parse_iso_datetime(normalized_since).astimezone(
+                    timezone.utc
+                ).isoformat()
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail='invalid_updated_since') from exc
+        normalized_limit = max(1, min(int(limit or 500), 1000))
+        normalized_offset = max(0, int(offset or 0))
+        updated_expression = "COALESCE(NULLIF(processed_at, ''), created_at)"
+        duplicate_expression = """
+            LOWER(COALESCE(result_code, '')) LIKE '%duplicate%'
+            OR LOWER(COALESCE(result_reason, '')) LIKE '%data duplication%'
+            OR LOWER(COALESCE(result_reason, '')) LIKE '%duplicate_sid%'
+            OR LOWER(COALESCE(result_reason, '')) LIKE '%sid already exists%'
+        """
+        conditions = [
+            "LOWER(TRIM(system_status)) IN ('fully_success','success')",
+            "TRIM(COALESCE(item_id, '')) != ''",
+            "TRIM(COALESCE(parsed_phone, '')) != ''",
+            "TRIM(COALESCE(parsed_account_id, '')) != ''",
+            "LOWER(TRIM(COALESCE(parsed_app, ''))) IN ('linky','timo')",
+            f'NOT ({duplicate_expression})',
+        ]
+        params: List[Any] = []
+        if normalized_since:
+            conditions.append(f'julianday({updated_expression}) >= julianday(?)')
+            params.append(normalized_since)
+        where_clause = ' AND '.join(conditions)
+        with self.db.connect() as conn:
+            total_row = conn.execute(
+                f'SELECT COUNT(*) AS total FROM ops_intake_items WHERE {where_clause}',
+                tuple(params),
+            ).fetchone()
+            source_rows = [dict(row) for row in conn.execute(
+                f"""
+                SELECT item_id,guild_name,submitted_by_user_id,submitted_by_username,
+                       external_customer_service_id,external_customer_service_name,
+                       parsed_phone,parsed_account_id,parsed_app,parsed_agency,
+                       created_at,processed_at,{updated_expression} AS source_updated_at
+                FROM ops_intake_items
+                WHERE {where_clause}
+                ORDER BY julianday({updated_expression}) ASC,item_id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (*params, normalized_limit, normalized_offset),
+            ).fetchall()]
+        rows = []
+        for row in source_rows:
+            normalized_phone, _ = self._normalize_binding_history_phone_keys(
+                str(row.get('parsed_phone') or '')
+            )
+            item_id = str(row.get('item_id') or '').strip()
+            operator_name = str(
+                row.get('external_customer_service_name')
+                or row.get('submitted_by_username')
+                or row.get('external_customer_service_id')
+                or row.get('submitted_by_user_id')
+                or ''
+            ).strip()
+            operator_account_key = str(
+                row.get('external_customer_service_id')
+                or row.get('submitted_by_user_id')
+                or row.get('submitted_by_username')
+                or ''
+            ).strip()
+            source_record_key = f'ops_intake_item:{item_id}'
+            observed_at = str(row.get('processed_at') or row.get('created_at') or '').strip()
+            rows.append({
+                'sourceRecordKey': source_record_key,
+                'idempotencyKey': source_record_key,
+                'platform': str(row.get('parsed_app') or '').strip().upper(),
+                'subjectId': str(row.get('parsed_account_id') or '').strip(),
+                'whatsappId': normalized_phone,
+                'operatorName': operator_name,
+                'operatorAccountKey': operator_account_key,
+                'guildName': str(
+                    row.get('guild_name') or row.get('parsed_agency') or ''
+                ).strip(),
+                'observedAt': observed_at,
+                'sourceUpdatedAt': str(row.get('source_updated_at') or observed_at).strip(),
+            })
+        total = int(total_row['total'] or 0) if total_row else 0
+        return {
+            'ok': True,
+            'data': {
+                'schemaVersion': 1,
+                'sourceContract': 'ops_intake_success_v1',
+                'updatedSince': normalized_since,
+                'total': total,
+                'limit': normalized_limit,
+                'offset': normalized_offset,
+                'hasMore': normalized_offset + len(rows) < total,
+                'rows': rows,
+            },
+        }
+
     def list_ops_intake_bind_failed_items(
         self,
         *,

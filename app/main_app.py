@@ -8513,6 +8513,22 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
             )
         )
 
+    @app.get('/api/external/fan-conversions/daily')
+    def external_fan_conversions_daily(
+        request: Request,
+        updated_since: str = '',
+        limit: int = 500,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        _require_newcomer_external_feed(request)
+        return _external_response_or_raise(
+            lambda: service.list_external_fan_conversions(
+                updated_since=updated_since,
+                limit=limit,
+                offset=offset,
+            )
+        )
+
     @app.get('/api/external/timo/v1/countries')
     def external_timo_countries(request: Request) -> Dict[str, Any]:
         _require_timo_external_feed(request)
