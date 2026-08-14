@@ -109,7 +109,9 @@ install -m 0644 "$root/app/schema_migrations.py" "$backup/schema_migrations.py"
 if [[ -f "$config_file" ]]; then config_existed=1; install -m 0600 "$config_file" "$backup/newcomer-publication.env"; fi
 if [[ -f "$secret_file" ]]; then secret_existed=1; install -m 0600 "$secret_file" "$backup/newcomer-webhook.secret"; fi
 "$root/.venv/bin/python" "$root/scripts/create_verified_sqlite_backup.py" \
-  --source "$root/data/automation.db" --backup-dir "$backup/sqlite" >/dev/null
+  --source "$root/data/automation.db" --backup-dir "$backup/sqlite" \
+  --min-free-after-gb 6 --working-margin-gb 1 --size-multiplier 1.0 \
+  --max-used-percent 75 >/dev/null
 sqlite_backup="$(find "$backup/sqlite" -maxdepth 1 -type f -name '*.db' -print | head -1)"
 [[ -n "$sqlite_backup" && -s "$sqlite_backup" ]]
 
