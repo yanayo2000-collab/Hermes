@@ -299,7 +299,7 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
 
 
 def test_dashboard_coverage_surfaces_existing_governed_recommendations() -> None:
-    assert "function gleRecommendationSummary(report)" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "function gleRecommendationSummary(report,workItems=null)" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "dailyRecoNeedsOperator(row)" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "String(row&&row.data_origin||'LEGACY').toUpperCase()!=='LEGACY'" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "function gleOperatingWorkItems" in AD_DATA_DASHBOARD_PAGE_HTML

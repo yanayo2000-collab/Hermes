@@ -58,6 +58,8 @@ def test_review_ui_is_automatic_and_surfaces_each_ads_next_step() -> None:
 
     assert "window.dailyRecommendationDecisionAction=row=>dailyRecoDisplayAction(row);" in page
     assert "function gleScopedRecommendationRows" in page
+    assert "function gleRecommendationScope" in page
+    assert "function dailyRecoHistoryRouting" in page
     assert "function gleCoverageRecommendationIndex" in page
     assert "function gleCoverageNextStep" in page
     assert "function gleOperatingWorkItems" in page
@@ -98,7 +100,12 @@ def test_review_ui_is_automatic_and_surfaces_each_ads_next_step() -> None:
     history_source = page[history_start:history_end]
     assert "data-growth-decision" not in history_source
     assert "data-creative-from-reco" not in history_source
-    assert "到 GLE 工作台确认" in history_source
+    assert "data-gle-open-recommendation-queue" in history_source
+    assert "routing.label" in history_source
+    assert "__gle_history_routing:dailyRecoHistoryRouting(row)" in history_source
+    assert "进入 GLE 确认" in page
+    assert "未纳入 GLE · 仅供分析" in page
+    assert "renderDailyRecommendationTable(currentDailyReport.recommendations)" in page
 
 
 def test_submitted_experiment_stays_visible_and_opens_the_exact_approval_task() -> None:
@@ -161,7 +168,9 @@ console.log(JSON.stringify({{
   scoring: gleCoverageNextStep(null, {{ready: true}}),
   inactive: gleCoverageNextStep(null, {{active: false, ready: false}}),
   task: gleCoverageNextStep(null, {{ready: true, task: true}}),
-  actionableTask: gleCoverageNextStep(null, {{ready: true, task: true, taskActionable: true}})
+  actionableTask: gleCoverageNextStep(null, {{ready: true, task: true, taskActionable: true}}),
+  taskWithPause: gleCoverageNextStep({{action: 'pause', status: '严重超阈值'}}, {{ready: true, task: true}}),
+  actionableTaskWithPause: gleCoverageNextStep({{action: 'pause', status: '严重超阈值'}}, {{ready: true, task: true, taskActionable: true}})
 }}));
 """
     result = subprocess.run(
@@ -183,6 +192,9 @@ console.log(JSON.stringify({{
     assert payload["task"]["label"] == "查看任务进度"
     assert payload["actionableTask"]["label"] == "处理任务"
     assert payload["actionableTask"]["bucket"] == "confirm"
+    assert payload["taskWithPause"]["label"] == "确认暂停"
+    assert payload["taskWithPause"]["action"] == "decision"
+    assert payload["actionableTaskWithPause"]["label"] == "处理任务"
 
 
 def test_operating_workbench_assigns_one_next_step_to_every_covered_ad() -> None:
@@ -288,3 +300,75 @@ console.log(JSON.stringify(scoped));
             "gle_scope_ad_id": "ad-inside",
         }
     ]
+
+
+def test_six_authorized_pending_rows_share_one_count_and_outside_rows_stay_readonly() -> None:
+    page = MAIN_PAGES.read_text(encoding="utf-8")
+    scope_start = page.index("function gleReviewScopeIndex")
+    scope_end = page.index("function gleCoverageRecommendationIndex", scope_start)
+    scope_source = page[scope_start:scope_end]
+    summary_start = page.index("function gleRecommendationSummary")
+    summary_end = page.index("function openGleRecommendationQueue", summary_start)
+    summary_source = page[summary_start:summary_end]
+    routing_start = page.index("function dailyRecoHistoryRouting")
+    routing_end = page.index("const recoFilterDefs", routing_start)
+    routing_source = page[routing_start:routing_end]
+
+    authorized_ids = [f"authorized-{index}" for index in range(6)]
+    outside_ids = [f"outside-{index}" for index in range(15)]
+    coverage = {
+        "accounts": [
+            {
+                "account_id": "account-authorized",
+                "account_name": "GLE 授权账户",
+                "items": [{"ad_id": ad_id} for ad_id in authorized_ids],
+            }
+        ]
+    }
+    recommendations = [
+        {
+            "recommendation_id": f"recommendation-{ad_id}",
+            "source_ad_id": ad_id,
+            "data_origin": "NATIVE_V2",
+            "action": "repair_delivery_config",
+        }
+        for ad_id in authorized_ids + outside_ids
+    ]
+    work_items = [
+        {
+            "nextStep": {"bucket": "confirm"},
+            "recommendation": row,
+        }
+        for row in recommendations[:6]
+    ]
+    harness = f"""
+const currentGleAdCoverage = {json.dumps(coverage)};
+const dailyRecoNeedsOperator = row => row && row.action === 'repair_delivery_config';
+const dailyRecoDisplayAction = row => row && row.action;
+const dailyRecoIsSystemReview = () => false;
+{scope_source}
+{summary_source}
+{routing_source}
+const recommendations = {json.dumps(recommendations)};
+const workItems = {json.dumps(work_items)};
+const summary = gleRecommendationSummary({{recommendations}}, workItems);
+const routing = recommendations.map(row => dailyRecoHistoryRouting(row, currentGleAdCoverage));
+console.log(JSON.stringify({{
+  scoped: gleScopedRecommendationRows(recommendations, currentGleAdCoverage).length,
+  summaryTotal: summary.total,
+  confirmLabels: routing.filter(item => item.actionable).map(item => item.label),
+  outsideLabels: routing.filter(item => !item.gleScoped).map(item => item.label)
+}}));
+"""
+    result = subprocess.run(
+        ["node", "-e", harness],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["scoped"] == 6
+    assert payload["summaryTotal"] == 6
+    assert payload["confirmLabels"] == ["进入 GLE 确认"] * 6
+    assert payload["outsideLabels"] == ["未纳入 GLE · 仅供分析"] * 15
