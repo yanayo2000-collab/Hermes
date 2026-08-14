@@ -108,11 +108,14 @@ install -m 0644 "$root/app/main_service_intake.py" "$backup/main_service_intake.
 install -m 0644 "$root/app/schema_migrations.py" "$backup/schema_migrations.py"
 if [[ -f "$config_file" ]]; then config_existed=1; install -m 0600 "$config_file" "$backup/newcomer-publication.env"; fi
 if [[ -f "$secret_file" ]]; then secret_existed=1; install -m 0600 "$secret_file" "$backup/newcomer-webhook.secret"; fi
-"$root/.venv/bin/python" "$root/scripts/create_verified_sqlite_backup.py" \
-  --source "$root/data/automation.db" --backup-dir "$backup/sqlite" \
-  --min-free-after-gb 6 --working-margin-gb 1 --size-multiplier 1.0 \
-  --max-used-percent 75 >/dev/null
 sqlite_backup="$(find "$backup/sqlite" -maxdepth 1 -type f -name '*.db' -print | head -1)"
+if [[ -z "$sqlite_backup" ]]; then
+  "$root/.venv/bin/python" "$root/scripts/create_verified_sqlite_backup.py" \
+    --source "$root/data/automation.db" --backup-dir "$backup/sqlite" \
+    --min-free-after-gb 6 --working-margin-gb 1 --size-multiplier 1.0 \
+    --max-used-percent 75 >/dev/null
+  sqlite_backup="$(find "$backup/sqlite" -maxdepth 1 -type f -name '*.db' -print | head -1)"
+fi
 [[ -n "$sqlite_backup" && -s "$sqlite_backup" ]]
 
 mkdir -p "$config_dir" /etc/systemd/system/mcn-backend.service.d \
@@ -147,14 +150,20 @@ systemctl daemon-reload
 installed=1
 
 BACKUP="$backup" SQLITE_BACKUP="$sqlite_backup" ID="$release_id" REVISION="$source_revision" PLAN="$plan" ROOT="$root" "$root/.venv/bin/python" - <<'PY'
-import hashlib,importlib.util,json,os
+import hashlib,importlib.util,json,os,re
 from pathlib import Path
 backup=Path(os.environ['BACKUP'])
 root=Path(os.environ['ROOT'])
 names=('main_app.py','main_service_executor.py','main_service_intake.py','schema_migrations.py')
 artifacts=[{'path':str(backup/n),'sha256':hashlib.sha256((backup/n).read_bytes()).hexdigest(),'verification':'exact production preimage'} for n in names]
 sqlite=Path(os.environ['SQLITE_BACKUP'])
-artifacts.append({'path':str(sqlite),'sha256':hashlib.sha256(sqlite.read_bytes()).hexdigest(),'verification':'verified online SQLite backup'})
+receipt=json.loads(Path(str(sqlite)+'.json').read_text())
+assert receipt.get('backup') == str(sqlite)
+assert receipt.get('backup_size_bytes') == sqlite.stat().st_size
+assert receipt.get('verification') == 'quick_check_ok' and receipt.get('quick_check') == 'ok'
+sqlite_sha=str(receipt.get('sha256',''))
+assert re.fullmatch(r'[0-9a-f]{64}',sqlite_sha)
+artifacts.append({'path':str(sqlite),'sha256':sqlite_sha,'verification':'verified online SQLite backup'})
 spec=importlib.util.spec_from_file_location('mcn_release_governance',root/'scripts/mcn_release_governance.py')
 governance=importlib.util.module_from_spec(spec); spec.loader.exec_module(governance)
 scope_specs=(
