@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root=/opt/mcn-ai-automation
-release_id=fan-data-newcomer-handshake-v1-20260814T184500CST
+release_id=fan-data-newcomer-handshake-v1-20260814T190000CST
 source_revision=48ee59b6128a3bf9e098d28c9c31e5fc0d9cf34d
 job_dir="${MCN_DEPLOY_QUEUE_JOB_DIR:?missing deploy queue job directory}"
 artifact="$job_dir/artifacts/$release_id.tar.gz"
@@ -190,7 +190,7 @@ payload={
   'change_source':{'kind':'codex_task','reference':'Nova fan-data newcomer and CRM handshake','base_revision':os.environ['REVISION']},
   'files':['app/main_app.py','app/main_service_executor.py','app/main_service_intake.py','app/newcomer_publication.py','app/schema_migrations.py','scripts/notify_newcomer_publications.py'],
   'units':['mcn-backend.service','mcn-daily-data-completion-notifier.service'],
-  'databases':[{'name':'automation','path':'/data/mcn-data/automation.db','health_check':'verified online backup plus publication integrity gates','declared_generation':'additive newcomer publication v1'}],
+  'databases':[{'name':'automation','path':'/data/mcn-data/automation.db','health_check':'probe','declared_generation':'additive newcomer publication v1'}],
   'backup':{'required':True,'status':'verified','artifacts':artifacts},
   'tests':[{'name':'newcomer-and-conversion-contract','status':'passed','evidence':'12 focused tests, union compile, exact artifact hashes'}],
   'smokes':[{'name':'external-feed-and-backfill','status':'pending','evidence':'post restart loopback API and 2026-08-13 publication'}],
