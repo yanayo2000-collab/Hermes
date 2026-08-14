@@ -5,6 +5,7 @@ import sqlite3
 from typing import Iterable
 
 from app.growth.schema import ensure_growth_schema
+from app.newcomer_publication import NEWCOMER_SCHEMA_INDEXES, NEWCOMER_SCHEMA_TABLES
 
 
 TIMO_ACTIVE_RECOVERY_INDEX_NAME = 'idx_timo_recovery_runs_active_guild'
@@ -25,6 +26,10 @@ TIMO_ACTIVE_RECOVERY_INDEX_SQL = (
 
 
 SCHEMA_MIGRATIONS: dict[str, dict[str, tuple[str, ...]]] = {
+    'newcomer_daily_publication_v1': {
+        'tables': NEWCOMER_SCHEMA_TABLES,
+        'indexes': NEWCOMER_SCHEMA_INDEXES,
+    },
     'guild_country_contract_v1': {
         'alter': (
             "ALTER TABLE guild_executors ADD COLUMN guild_country TEXT",

@@ -60,6 +60,11 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         or os.getenv('TIMO_EXTERNAL_API_TOKEN')
         or ''
     ).strip()
+    newcomer_external_feed_token = str(
+        cfg.get('NEWCOMER_EXTERNAL_FEED_TOKEN')
+        or os.getenv('NEWCOMER_EXTERNAL_FEED_TOKEN')
+        or timo_external_feed_token
+    ).strip()
     db = Database(cfg["DB_PATH"])
     auth_manager = OpsAuthManager(
         db,
@@ -624,6 +629,17 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         prefix = 'Bearer '
         provided = auth_header[len(prefix):].strip() if auth_header.startswith(prefix) else ''
         if not provided or not hmac.compare_digest(provided, timo_external_feed_token):
+            raise HTTPException(status_code=401, detail={'ok': False, 'reason': 'unauthorized'})
+
+    def _require_newcomer_external_feed(request: Request) -> None:
+        if not newcomer_external_feed_token:
+            raise HTTPException(
+                status_code=503,
+                detail={'ok': False, 'reason': 'newcomer_external_feed_token_not_configured'},
+            )
+        auth_header = str(request.headers.get('Authorization') or '').strip()
+        provided = auth_header[7:].strip() if auth_header.startswith('Bearer ') else ''
+        if not provided or not hmac.compare_digest(provided, newcomer_external_feed_token):
             raise HTTPException(status_code=401, detail={'ok': False, 'reason': 'unauthorized'})
 
     def _external_response_or_raise(fn):
@@ -8476,6 +8492,26 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         _ops_hot_read_cache_invalidate('approval_accounts:options')
         return {'ok': True, 'deleted': bool(deleted)}
+
+    @app.get('/api/external/newcomers/daily')
+    def external_newcomer_daily(
+        request: Request,
+        platform: str,
+        business_date: str,
+        revision: int = 0,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        _require_newcomer_external_feed(request)
+        return _external_response_or_raise(
+            lambda: service.list_newcomer_daily_publication(
+                platform=platform,
+                business_date=business_date,
+                revision=revision,
+                limit=limit,
+                offset=offset,
+            )
+        )
 
     @app.get('/api/external/timo/v1/countries')
     def external_timo_countries(request: Request) -> Dict[str, Any]:

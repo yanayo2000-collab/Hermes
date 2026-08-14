@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from app.main_shared import *
+from app.newcomer_publication import (
+    NewcomerPublicationNotReady,
+    list_newcomer_publication,
+    reconcile_newcomer_publication,
+)
 
 
 class ExecutorServiceMixin:
@@ -2604,6 +2609,12 @@ class ExecutorServiceMixin:
                     job.get('job_id'),
                 ),
             )
+                publication = reconcile_newcomer_publication(
+                    conn,
+                    platform=executor_app,
+                    business_date=stat_date,
+                    created_at=finished_iso,
+                )
                 conn.commit()
         finally:
             self._release_guild_anchor_daily_stats_deploy_guard(deploy_guard)
@@ -2619,6 +2630,7 @@ class ExecutorServiceMixin:
             'status': status,
             'error': error,
             'refreshed_at': finished_iso,
+            'newcomer_publication': publication,
         }
 
     def _fail_guild_anchor_daily_stat_job(self, job: Dict[str, Any], error: str) -> None:
@@ -2634,7 +2646,8 @@ class ExecutorServiceMixin:
             delay = delays[min(max(0, attempt_count - 1), len(delays) - 1)]
             next_retry_at = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
         with self.db.connect() as conn:
-            conn.execute(
+            conn.execute('BEGIN IMMEDIATE')
+            updated = conn.execute(
                 """
                 UPDATE guild_anchor_daily_stat_jobs
                 SET status = ?, lease_owner = '', lease_until = '', finished_at = ?, next_retry_at = ?,
@@ -2651,7 +2664,40 @@ class ExecutorServiceMixin:
                     self._worker_id,
                 ),
             )
+            if updated.rowcount:
+                platform = str(job.get('guild_executor_key') or '').split(':', 1)[0].lower()
+                if platform in {'linky', 'timo'}:
+                    reconcile_newcomer_publication(
+                        conn,
+                        platform=platform,
+                        business_date=str(job.get('stat_date') or ''),
+                        created_at=now_iso,
+                    )
             conn.commit()
+
+    def list_newcomer_daily_publication(
+        self,
+        *,
+        platform: str,
+        business_date: str,
+        revision: int = 0,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        try:
+            with self.db.connect() as conn:
+                return list_newcomer_publication(
+                    conn,
+                    platform=platform,
+                    business_date=business_date,
+                    revision=revision,
+                    limit=limit,
+                    offset=offset,
+                )
+        except NewcomerPublicationNotReady as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def run_due_guild_anchor_daily_stat_jobs(self, *, limit: int = 1, app_name: str = '') -> Dict[str, Any]:
         try:
