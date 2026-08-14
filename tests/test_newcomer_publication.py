@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from pathlib import Path
 import sqlite3
 from urllib import error
 
@@ -18,6 +19,15 @@ from app.newcomer_publication import (
     reconcile_newcomer_publication,
     send_newcomer_event,
 )
+
+
+def test_five_minute_notifier_drop_in_drains_durable_outbox():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / 'scripts/systemd/mcn-daily-data-completion-notifier.service.d/20-newcomer-publication.conf'
+    ).read_text(encoding='utf-8')
+    assert 'ExecStartPost=-' in source
+    assert 'notify_newcomer_publications.py' in source
 
 
 DATE = '2026-08-13'
