@@ -107,3 +107,39 @@ def test_bulk_rebuild_storage_is_compact_and_fails_closed() -> None:
     assert "showBulkRebuildModal(batch,{allowPending:true,persisted})" in workspace
     assert "persisted&&allowPending&&pending" in workspace
     assert "本条尚未发起，批次已安全停止" in workspace
+
+
+def test_bulk_rebuild_modal_separates_confirmation_from_progress() -> None:
+    workspace = (ROOT / "app/static/ops/growth-workspace.js").read_text()
+
+    assert "确认批量重建" in workspace
+    assert "批量重建进度" in workspace
+    assert "确认后系统会做什么" in workspace
+    assert "开始重建 ${pending} 条广告" in workspace
+    assert "总体进度 ${progress}%" in workspace
+    assert "优先处理" in workspace
+    assert "等待处理的广告" in workspace
+    assert "role=\"progressbar\"" in workspace
+    assert "role=\"status\" aria-live=\"polite\"" in workspace
+
+
+def test_bulk_rebuild_modal_humanizes_exceptions_and_keeps_raw_detail_collapsed() -> None:
+    workspace = (ROOT / "app/static/ops/growth-workspace.js").read_text()
+
+    assert "function bulkRebuildErrorGuidance" in workspace
+    assert "语言定向需要核对" in workspace
+    assert "系统已停止该条，不会自动重试" in workspace
+    assert "<summary>技术详情</summary>" in workspace
+    assert "查看并处理" in workspace
+    assert "查看重建结果" in workspace
+    assert "growth-bulk-priority" in workspace
+
+
+def test_bulk_rebuild_modal_is_bounded_and_keeps_actions_visible() -> None:
+    workspace = (ROOT / "app/static/ops/growth-workspace.js").read_text()
+
+    assert "max-height:min(760px,calc(100vh - 36px))" in workspace
+    assert ".growth-bulk-modal-layer .growth-modal-body{min-height:0;overflow:auto" in workspace
+    assert ".growth-bulk-modal-layer .growth-modal-foot{flex:0 0 auto" in workspace
+    assert "growth-bulk-group-list{max-height:250px;overflow:auto" in workspace
+    assert "requestAnimationFrame(()=>{const target=node.querySelector('#growthConfirmBulkRebuild:not([hidden])')" in workspace
