@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root=/opt/mcn-ai-automation
-release_id=fan-data-newcomer-handshake-v1-20260814T190000CST
+release_id=fan-data-newcomer-handshake-v1-20260814T191500CST
 source_revision=48ee59b6128a3bf9e098d28c9c31e5fc0d9cf34d
 job_dir="${MCN_DEPLOY_QUEUE_JOB_DIR:?missing deploy queue job directory}"
 artifact="$job_dir/artifacts/$release_id.tar.gz"
@@ -51,7 +51,7 @@ payload={
   'change_source':{'kind':'incident_rollback','reference':'fan-data-newcomer-handshake-v1','base_revision':'forward_release_failed'},
   'files':['app/main_app.py','app/main_service_executor.py','app/main_service_intake.py','app/schema_migrations.py'],
   'units':['mcn-backend.service','mcn-daily-data-completion-notifier.service'],
-  'databases':[{'name':'automation','path':'/data/mcn-data/automation.db','health_check':'probe','declared_generation':'additive schema may remain'}],
+  'databases':[{'name':'automation','path':'/opt/mcn-ai-automation/data/automation.db','health_check':'probe','declared_generation':'additive schema may remain'}],
   'backup':{'required':True,'status':'verified','artifacts':artifacts},
   'tests':[{'name':'preimage-compile','status':'passed','evidence':'exact preimages restored and compiled'}],
   'smokes':[{'name':'backend-health','status':'pending','evidence':'post rollback restart'}],
@@ -109,7 +109,7 @@ install -m 0644 "$root/app/schema_migrations.py" "$backup/schema_migrations.py"
 if [[ -f "$config_file" ]]; then config_existed=1; install -m 0600 "$config_file" "$backup/newcomer-publication.env"; fi
 if [[ -f "$secret_file" ]]; then secret_existed=1; install -m 0600 "$secret_file" "$backup/newcomer-webhook.secret"; fi
 "$root/.venv/bin/python" "$root/scripts/create_verified_sqlite_backup.py" \
-  --source /data/mcn-data/automation.db --backup-dir "$backup/sqlite" >/dev/null
+  --source "$root/data/automation.db" --backup-dir "$backup/sqlite" >/dev/null
 sqlite_backup="$(find "$backup/sqlite" -maxdepth 1 -type f -name '*.db' -print | head -1)"
 [[ -n "$sqlite_backup" && -s "$sqlite_backup" ]]
 
@@ -190,7 +190,7 @@ payload={
   'change_source':{'kind':'codex_task','reference':'Nova fan-data newcomer and CRM handshake','base_revision':os.environ['REVISION']},
   'files':['app/main_app.py','app/main_service_executor.py','app/main_service_intake.py','app/newcomer_publication.py','app/schema_migrations.py','scripts/notify_newcomer_publications.py'],
   'units':['mcn-backend.service','mcn-daily-data-completion-notifier.service'],
-  'databases':[{'name':'automation','path':'/data/mcn-data/automation.db','health_check':'probe','declared_generation':'additive newcomer publication v1'}],
+  'databases':[{'name':'automation','path':str(root/'data/automation.db'),'health_check':'probe','declared_generation':'additive newcomer publication v1'}],
   'backup':{'required':True,'status':'verified','artifacts':artifacts},
   'tests':[{'name':'newcomer-and-conversion-contract','status':'passed','evidence':'12 focused tests, union compile, exact artifact hashes'}],
   'smokes':[{'name':'external-feed-and-backfill','status':'pending','evidence':'post restart loopback API and 2026-08-13 publication'}],
@@ -208,10 +208,11 @@ restart_started=1
 set -a
 source "$config_file"
 set +a
-PYTHONPATH="$root" DB_PATH=/data/mcn-data/automation.db "$root/.venv/bin/python" - <<'PY'
+PYTHONPATH="$root" DB_PATH="$root/data/automation.db" "$root/.venv/bin/python" - <<'PY'
 import sqlite3
+import os
 from app.newcomer_publication import reconcile_newcomer_publication
-conn=sqlite3.connect('/data/mcn-data/automation.db',timeout=30); conn.row_factory=sqlite3.Row
+conn=sqlite3.connect(os.environ['DB_PATH'],timeout=30); conn.row_factory=sqlite3.Row
 conn.execute('PRAGMA busy_timeout=30000')
 try:
     with conn:
