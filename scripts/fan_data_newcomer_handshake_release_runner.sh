@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root=/opt/mcn-ai-automation
-release_id=fan-data-newcomer-handshake-v1-20260814T173500CST
+release_id=fan-data-newcomer-handshake-v1-20260814T175500CST
 source_revision=48ee59b6128a3bf9e098d28c9c31e5fc0d9cf34d
 job_dir="${MCN_DEPLOY_QUEUE_JOB_DIR:?missing deploy queue job directory}"
 artifact="$job_dir/artifacts/$release_id.tar.gz"
@@ -144,14 +144,47 @@ install -m 0644 "$staging/candidate/scripts/systemd/mcn-daily-data-completion-no
 systemctl daemon-reload
 installed=1
 
-BACKUP="$backup" SQLITE_BACKUP="$sqlite_backup" ID="$release_id" REVISION="$source_revision" PLAN="$plan" "$root/.venv/bin/python" - <<'PY'
-import hashlib,json,os
+BACKUP="$backup" SQLITE_BACKUP="$sqlite_backup" ID="$release_id" REVISION="$source_revision" PLAN="$plan" ROOT="$root" "$root/.venv/bin/python" - <<'PY'
+import hashlib,importlib.util,json,os
 from pathlib import Path
 backup=Path(os.environ['BACKUP'])
+root=Path(os.environ['ROOT'])
 names=('main_app.py','main_service_executor.py','main_service_intake.py','schema_migrations.py')
 artifacts=[{'path':str(backup/n),'sha256':hashlib.sha256((backup/n).read_bytes()).hexdigest(),'verification':'exact production preimage'} for n in names]
 sqlite=Path(os.environ['SQLITE_BACKUP'])
 artifacts.append({'path':str(sqlite),'sha256':hashlib.sha256(sqlite.read_bytes()).hexdigest(),'verification':'verified online SQLite backup'})
+spec=importlib.util.spec_from_file_location('mcn_release_governance',root/'scripts/mcn_release_governance.py')
+governance=importlib.util.module_from_spec(spec); spec.loader.exec_module(governance)
+scope_specs=(
+  ('app/main_app.py','main_app.py',[
+    'newcomer_external_feed_token = str(',
+    'def _require_newcomer_external_feed',
+    'def external_newcomer_daily(',
+  ]),
+  ('app/main_service_executor.py','main_service_executor.py',[
+    'from app.newcomer_publication import (',
+    'def list_newcomer_daily_publication(',
+  ]),
+  ('app/main_service_intake.py','main_service_intake.py',[
+    'def list_external_fan_conversions(',
+  ]),
+)
+scope_files=[]
+for relative,preimage_name,markers in scope_specs:
+    preimage=backup/preimage_name
+    snapshot=governance._change_scope_diff_snapshot(preimage,root/relative)
+    scope_files.append({
+      'path':relative,
+      'preimage_path':str(preimage),
+      'preimage_sha256':snapshot['preimage_sha256'],
+      'expected_diff_sha256':snapshot['diff_sha256'],
+      'expected_hunks':snapshot['hunks'],
+      'expected_changed_lines':snapshot['changed_lines'],
+      'expected_deleted_lines':snapshot['deleted_lines'],
+      'max_hunks':snapshot['hunks'],
+      'max_changed_lines':snapshot['changed_lines'],
+      'allowed_regions':markers,
+    })
 payload={
   'release_id':os.environ['ID'],
   'change_source':{'kind':'codex_task','reference':'Nova fan-data newcomer and CRM handshake','base_revision':os.environ['REVISION']},
@@ -162,6 +195,7 @@ payload={
   'tests':[{'name':'newcomer-and-conversion-contract','status':'passed','evidence':'12 focused tests, union compile, exact artifact hashes'}],
   'smokes':[{'name':'external-feed-and-backfill','status':'pending','evidence':'post restart loopback API and 2026-08-13 publication'}],
   'rollback':{'status':'ready','strategy':'Restore exact code/config preimages and governed backend restart; verified SQLite backup retained.'},
+  'change_scope':{'mode':'minimal_patch','files':scope_files},
 }
 Path(os.environ['PLAN']).write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
 PY
