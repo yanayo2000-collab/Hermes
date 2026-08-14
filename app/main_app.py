@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import hashlib
 from pathlib import Path
 
 from app.main_shared import *
@@ -108,6 +109,14 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         'BR': str(cfg.get('META_ADS_PAGE_ID_BR') or os.getenv('META_ADS_PAGE_ID_BR') or '1279714905221405').strip(),
         'ID': str(cfg.get('META_ADS_PAGE_ID_ID') or os.getenv('META_ADS_PAGE_ID_ID') or '1132608379946941').strip(),
         'MX': str(cfg.get('META_ADS_PAGE_ID_MX') or os.getenv('META_ADS_PAGE_ID_MX') or '1188394557692833').strip(),
+        'CO': str(cfg.get('META_ADS_PAGE_ID_CO') or os.getenv('META_ADS_PAGE_ID_CO') or '1279714905221405').strip(),
+    }
+    meta_ads_country_account_ids = {
+        country: str(cfg.get(f'META_ADS_ACCOUNT_ID_{country}') or os.getenv(f'META_ADS_ACCOUNT_ID_{country}') or '').strip().removeprefix('act_')
+        for country in ('BR', 'ID', 'MX', 'CO')
+    }
+    meta_ads_market_profiles = {
+        'CO': {'creative_currency': 'COP', 'reporting_timezone': 'America/Bogota', 'target_app': 'Tugao', 'destination_url': str(cfg.get('GROWTH_META_TUGAO_STORE_URL') or os.getenv('GROWTH_META_TUGAO_STORE_URL') or 'http://play.google.com/store/apps/details?id=com.timetrade.duitan'), 'identity_mode': 'TEST_VALIDATION'},
     }
     meta_ads_api_version = str(cfg.get('META_ADS_API_VERSION') or os.getenv('META_ADS_API_VERSION') or 'v25.0').strip() or 'v25.0'
     meta_ads_base_url = str(cfg.get('META_ADS_BASE_URL') or os.getenv('META_ADS_BASE_URL') or 'https://graph.facebook.com').strip() or 'https://graph.facebook.com'
@@ -214,6 +223,30 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
         ad_dashboard_cache_ttl_seconds = 0
     ad_dashboard_cache: Dict[str, Dict[str, Any]] = {}
     ad_dashboard_cache_lock = threading.Lock()
+    configured_ad_dashboard_snapshot_path = str(
+        cfg.get('AD_DASHBOARD_ATOMIC_SNAPSHOT_PATH')
+        or os.getenv('AD_DASHBOARD_ATOMIC_SNAPSHOT_PATH')
+        or ''
+    ).strip()
+    if configured_ad_dashboard_snapshot_path:
+        ad_dashboard_atomic_snapshot_path: Optional[Path] = Path(configured_ad_dashboard_snapshot_path).expanduser()
+    elif str(cfg.get('DB_PATH') or '').strip() not in {'', ':memory:'}:
+        ad_dashboard_atomic_snapshot_path = Path(str(cfg['DB_PATH'])).expanduser().resolve().parent / 'ad_dashboard_last_success.json'
+    else:
+        ad_dashboard_atomic_snapshot_path = None
+    configured_daily_report_snapshot_dir = str(
+        cfg.get('AD_DAILY_REPORT_SNAPSHOT_DIR')
+        or os.getenv('AD_DAILY_REPORT_SNAPSHOT_DIR')
+        or ''
+    ).strip()
+    if configured_daily_report_snapshot_dir:
+        ad_daily_report_snapshot_dir: Optional[Path] = Path(configured_daily_report_snapshot_dir).expanduser()
+    elif str(cfg.get('DB_PATH') or '').strip() not in {'', ':memory:'}:
+        ad_daily_report_snapshot_dir = (
+            Path(str(cfg['DB_PATH'])).expanduser().resolve().parent / 'ad_daily_report_last_success'
+        )
+    else:
+        ad_daily_report_snapshot_dir = None
     ad_daily_report_enabled = (
         bool(cfg.get('AD_DAILY_REPORT_ENABLED'))
         if 'AD_DAILY_REPORT_ENABLED' in cfg
@@ -1700,7 +1733,7 @@ function isSuperAdmin() { return currentUser && currentUser.role === 'super_admi
 function roleText(role) { if (role === 'super_admin') return '超级管理员'; if (role === 'admin') return '管理员'; if (role === 'customer_service') return '运营'; if (role === 'operator') return '运营'; return '运营'; }
 function badgeRole(role) { return `<span class="badge ${escapeHtml(role)}">${roleText(role)}</span>`; }
 function badgeEnabled(enabled) { return enabled ? '<span class="badge operator">启用</span>' : '<span class="badge off">停用</span>'; }
-function formatLoginTime(value) { const raw=String(value || '').trim(); if (!raw) return '-'; return raw.replace('T',' ').replace(/\.\d+/, '').replace(/(?:Z|[+-]\d{2}:?\d{2})$/, '').slice(0,19); }
+function formatLoginTime(value) { const raw=String(value || '').trim(); if (!raw) return '-'; const normalized=/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)?raw:`${raw.replace(' ','T')}Z`; const date=new Date(normalized); if (Number.isNaN(date.getTime())) return raw.replace('T',' ').slice(0,19); const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(date).map(part=>[part.type,part.value])); return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`; }
 function showToast(message, type='success') { if (window.OpsCommon) return window.OpsCommon.showToast(message, type, 'toast'); const toast=document.getElementById('toast'); toast.textContent=message; toast.className=`toast ${type}`; toast.style.display='block'; clearTimeout(window.__accountToastTimer); window.__accountToastTimer=setTimeout(()=>{toast.style.display='none';},2600); }
 function setStatus(id, message, type='') { const el=document.getElementById(id); el.textContent=message || ''; el.className=`status-line ${type}`.trim(); }
 function setBusy(btn, busy, text) { if (!btn) return; if (busy) { btn.dataset.originalText=btn.textContent; btn.textContent=text || '处理中...'; btn.disabled=true; } else { btn.textContent=btn.dataset.originalText || btn.textContent; btn.disabled=false; } }
@@ -3809,8 +3842,9 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
             '/static/ops/common.js',
             f"/static/ops/common.js?v={re.sub(r'[^a-zA-Z0-9_.-]', '', OPS_CLIENT_VERSION)}",
         )
+        site_icon_html = '<link rel="icon" type="image/x-icon" href="/favicon.ico?v=emerald-20260813"><link rel="icon" type="image/png" sizes="64x64" href="/favicon.png?v=emerald-20260813"><link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=emerald-20260813">'
         if '</head>' in html:
-            return html.replace('</head>', shell_style + '</head>', 1)
+            return html.replace('</head>', site_icon_html + shell_style + '</head>', 1)
         return shell_style + html
 
     def _ops_page_html(role: str) -> str:
@@ -4009,7 +4043,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
 
     def _ad_dashboard_summary_cache_key(context: Dict[str, Any]) -> str:
         key_payload = {
-            'schema': 'ad_dashboard_summary_v9_app_window',
+            'schema': 'ad_dashboard_summary_v11_tugao_fact_only',
             'days': int(context.get('days') or 30),
             'date_from': str(context.get('date_from') or ''),
             'date_to': str(context.get('date_to') or ''),
@@ -4101,6 +4135,86 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
             """
         )
 
+    def _is_canonical_ad_dashboard_context(context: Dict[str, Any]) -> bool:
+        if int(context.get('days') or 30) != 30 or int(context.get('top_limit') or 8) != 8:
+            return False
+        if str(context.get('date_from') or '') or str(context.get('date_to') or ''):
+            return False
+        if str(context.get('target_app') or 'all') != 'all':
+            return False
+        if any(context.get('filters', {}).get(key) for key in ('data_source', 'app_id', 'media_source')):
+            return False
+        if any(
+            values
+            for fields in (context.get('platform_filters') or {}).values()
+            for values in (fields or {}).values()
+        ):
+            return False
+        return not any(
+            str(value or '')
+            for window in (context.get('platform_date_windows') or {}).values()
+            for value in (window or {}).values()
+        )
+
+    def _read_atomic_ad_dashboard_snapshot(*, now_ts: float) -> Optional[Dict[str, Any]]:
+        path = ad_dashboard_atomic_snapshot_path
+        if path is None:
+            return None
+        try:
+            if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
+                return None
+            envelope = json.loads(path.read_text(encoding='utf-8'))
+            payload = envelope.get('payload') if isinstance(envelope, dict) else None
+            created_at = float(envelope.get('created_at') or 0.0) if isinstance(envelope, dict) else 0.0
+        except Exception:
+            return None
+        if (
+            not isinstance(payload, dict)
+            or int(payload.get('row_count') or 0) <= 0
+            or not isinstance(payload.get('data_freshness'), dict)
+        ):
+            return None
+        result = copy.deepcopy(payload)
+        result['cache'] = {
+            **(result.get('cache') or {}),
+            'hit': True,
+            'layer': 'atomic_file',
+            'stale': True,
+            'cached_at': datetime.fromtimestamp(created_at, timezone.utc).isoformat() if created_at else '',
+            'age_seconds': max(0, int(now_ts - created_at)) if created_at else None,
+            'serving_reason': 'database_independent_last_success',
+            'schedule': f'{ad_dashboard_cache_timezone} 09:20 daily',
+        }
+        return result
+
+    def _write_atomic_ad_dashboard_snapshot(payload: Dict[str, Any], *, created_at: float) -> None:
+        path = ad_dashboard_atomic_snapshot_path
+        if (
+            path is None
+            or not isinstance(payload, dict)
+            or int(payload.get('row_count') or 0) <= 0
+            or not isinstance(payload.get('data_freshness'), dict)
+        ):
+            return
+        temporary_path = path.with_name(f'.{path.name}.{os.getpid()}.tmp')
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            encoded = json.dumps(
+                {'schema': 'ad_dashboard_atomic_snapshot_v1', 'created_at': created_at, 'payload': payload},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            with temporary_path.open('w', encoding='utf-8') as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+        except Exception:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
     def _read_persistent_ad_dashboard_cache(
         cache_key: str,
         *,
@@ -4112,7 +4226,6 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     ) -> Optional[Dict[str, Any]]:
         try:
             with db.connect() as conn:
-                _ensure_ad_dashboard_snapshot_cache_table(conn)
                 row = conn.execute(
                     "SELECT created_at, payload_json FROM ad_dashboard_snapshot_cache WHERE cache_key = ?",
                     (cache_key,),
@@ -4155,7 +4268,6 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     def _read_any_persistent_ad_dashboard_cache(cache_key: str, *, now_ts: float, cache_timezone: str) -> Optional[Dict[str, Any]]:
         try:
             with db.connect() as conn:
-                _ensure_ad_dashboard_snapshot_cache_table(conn)
                 row = conn.execute(
                     "SELECT created_at, payload_json FROM ad_dashboard_snapshot_cache WHERE cache_key = ?",
                     (cache_key,),
@@ -4936,6 +5048,78 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                         row.pop(key, None)
         return cleaned
 
+    def _daily_report_snapshot_key(request: Request) -> str:
+        query_items = sorted(
+            (str(key), str(value))
+            for key, value in request.query_params.multi_items()
+            if str(key) not in {'lite', 'refresh'}
+        )
+        encoded = json.dumps(query_items, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _read_atomic_daily_report_snapshot(request: Request) -> Optional[Dict[str, Any]]:
+        if ad_daily_report_snapshot_dir is None:
+            return None
+        path = ad_daily_report_snapshot_dir / f'{_daily_report_snapshot_key(request)}.json'
+        try:
+            envelope = json.loads(path.read_text(encoding='utf-8'))
+            payload = envelope.get('payload') if isinstance(envelope, dict) else None
+            created_at = float(envelope.get('created_at') or 0.0)
+        except Exception:
+            return None
+        if (
+            not isinstance(payload, dict)
+            or str(payload.get('rule_version') or '') != RECOMMENDATION_RULE_VERSION
+            or not isinstance(payload.get('recommendations'), list)
+        ):
+            return None
+        payload = copy.deepcopy(payload)
+        age_seconds = max(0, int(time.time() - created_at)) if created_at else None
+        payload['cache'] = {
+            'hit': True,
+            'layer': 'atomic_daily_report',
+            'database_independent': True,
+            'stale': bool(age_seconds is None or age_seconds > 26 * 60 * 60),
+            'age_seconds': age_seconds,
+            'cached_at': datetime.fromtimestamp(created_at, timezone.utc).isoformat() if created_at else '',
+            'serving_reason': 'database_independent_last_success',
+            'refresh_mode': 'daily_0920_or_manual',
+        }
+        return payload
+
+    def _write_atomic_daily_report_snapshot(request: Request, payload: Dict[str, Any]) -> None:
+        if (
+            ad_daily_report_snapshot_dir is None
+            or not isinstance(payload, dict)
+            or str(payload.get('rule_version') or '') != RECOMMENDATION_RULE_VERSION
+            or not isinstance(payload.get('recommendations'), list)
+        ):
+            return
+        path = ad_daily_report_snapshot_dir / f'{_daily_report_snapshot_key(request)}.json'
+        temporary_path = path.with_name(f'.{path.name}.{os.getpid()}.tmp')
+        created_at = time.time()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            encoded = json.dumps(
+                {
+                    'schema': 'ad_daily_report_atomic_snapshot_v1',
+                    'created_at': created_at,
+                    'payload': payload,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            with temporary_path.open('w', encoding='utf-8') as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+        except Exception:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
     def _lite_daily_report_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Return the compact payload used by the dashboard recommendation panel."""
         cleaned = dict(payload or {})
@@ -5018,6 +5202,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                     conn,
                     report_date=report_cache_date or report_date,
                     data_mode=normalized_data_mode,
+                    ensure_schema=False,
                 )
                 if payload and str(payload.get('rule_version') or '') != RECOMMENDATION_RULE_VERSION:
                     payload = None
@@ -5098,8 +5283,12 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                     start_date=fact_start_date,
                     end_date=fact_end_date,
                     appsflyer_required=bool(appsflyer_api_token),
+                    tugao_funnel_required=True,
                 )
-                use_local_fact_rows = not bool(fact_completeness.get('missing_dates'))
+                use_local_fact_rows = bool(
+                    not fact_completeness.get('missing_dates')
+                    and not fact_completeness.get('missing_tugao_funnel')
+                )
             else:
                 use_local_fact_rows = False
             if fact_rows and use_local_fact_rows:
@@ -5251,10 +5440,15 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         platform_filters = context['platform_filters']
         cache_key = _ad_dashboard_summary_cache_key(context)
         now_ts = time.time()
+        if not refresh and _is_canonical_ad_dashboard_context(context):
+            atomic_payload = _read_atomic_ad_dashboard_snapshot(now_ts=now_ts)
+            if atomic_payload is not None:
+                return atomic_payload
         cache_window_start, cache_next_refresh = _ad_dashboard_cache_window(now_ts, ad_dashboard_cache_timezone)
         cache_max_age_seconds = ad_dashboard_cache_ttl_seconds if ad_dashboard_cache_ttl_seconds > 0 else max(int(cache_next_refresh - cache_window_start), 1)
         expected_latest_fact_date = _ad_dashboard_latest_complete_utc_date().isoformat()
         latest_fact_date = ''
+        latest_tugao_fact_date = ''
         try:
             with db.connect() as conn:
                 latest_fact_row = conn.execute(
@@ -5272,8 +5466,24 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                     """
                 ).fetchone()
                 latest_fact_date = str((latest_fact_row[0] if latest_fact_row else '') or '').strip()
+                latest_tugao_row = conn.execute(
+                    """
+                    SELECT MAX(date)
+                    FROM ad_dashboard_fact_rows
+                    WHERE LOWER(data_source) IN ('tugaofunnel', 'tugao_funnel', 'tugao_onsite_funnel')
+                    """
+                ).fetchone()
+                latest_tugao_fact_date = str((latest_tugao_row[0] if latest_tugao_row else '') or '').strip()
+                if latest_tugao_fact_date and (
+                    not latest_fact_date or latest_tugao_fact_date < latest_fact_date
+                ):
+                    latest_fact_date = latest_tugao_fact_date
         except Exception:
             latest_fact_date = ''
+        if refresh and latest_tugao_fact_date < expected_latest_fact_date:
+            # A manual refresh must not replace the last complete Tugao join
+            # snapshot with a media-only/BindSuccess shadow payload.
+            refresh = False
 
         def attach_data_freshness(payload: Dict[str, Any]) -> Dict[str, Any]:
             selected_date_end = str((payload or {}).get('date_end') or '').strip()
@@ -5292,7 +5502,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                     actual_latest_date and selected_date_end and selected_date_end < actual_latest_date
                 ),
                 'status': freshness_status,
-                'watermark_source': 'ad_dashboard_sync_state:all:ok',
+                'watermark_source': 'ad_dashboard_sync_state:all:ok+tugao_funnel_max_date',
             }
             return payload
 
@@ -5356,7 +5566,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                 return attach_data_freshness(stale_payload)
 
         force_live_for_missing_fact_dates = False
-        if cache_max_age_seconds > 0 and not refresh:
+        if cache_max_age_seconds > 0:
             fact_start_date, fact_end_date = ad_dashboard_fact_window_for_context(context)
             try:
                 with db.connect() as conn:
@@ -5379,9 +5589,11 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                     start_date=fact_start_date,
                     end_date=fact_end_date,
                     appsflyer_required=bool(appsflyer_api_token),
+                    tugao_funnel_required=True,
                 )
                 missing_fact_dates = set(fact_completeness.get('missing_dates') or [])
-                force_live_for_missing_fact_dates = fact_end_date.isoformat() in missing_fact_dates
+                missing_tugao_dates = set(fact_completeness.get('missing_tugao_funnel') or [])
+                force_live_for_missing_fact_dates = bool(missing_fact_dates or missing_tugao_dates)
             if fact_rows and not force_live_for_missing_fact_dates:
                 available_fact_dates: List[datetime.date] = []
                 for row in fact_rows:
@@ -5393,6 +5605,20 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                     except Exception:
                         continue
                 effective_date_to = context.get('date_to')
+                missing_tugao_dates = set(fact_completeness.get('missing_tugao_funnel') or [])
+                if fact_end_date.isoformat() in missing_tugao_dates:
+                    tugao_dates = []
+                    for row in fact_rows:
+                        source = str((row or {}).get('data_source') or '').strip().lower()
+                        raw_date = str((row or {}).get('date') or '').strip()
+                        if source not in {'tugaofunnel', 'tugao_funnel', 'tugao_onsite_funnel'} or not raw_date:
+                            continue
+                        try:
+                            tugao_dates.append(datetime.fromisoformat(raw_date).date())
+                        except Exception:
+                            continue
+                    if tugao_dates:
+                        effective_date_to = max(tugao_dates).isoformat()
                 if force_live_for_missing_fact_dates and available_fact_dates:
                     effective_date_to = max(available_fact_dates).isoformat()
                 effective_date_from = context.get('date_from')
@@ -5410,6 +5636,10 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                     platform_filters=platform_filters,
                     platform_date_windows=context.get('platform_date_windows') or {},
                 )
+                if fact_end_date.isoformat() in missing_tugao_dates:
+                    payload.setdefault('insights', []).append(
+                        f'Tugao 入会数据尚未就绪，当前保留截至 {effective_date_to or latest_tugao_fact_date} 的上一成功版本。'
+                    )
                 payload['cache'] = {
                     'hit': True,
                     'layer': 'local_fact' if fact_completeness.get('complete') else 'local_fact_partial',
@@ -5423,7 +5653,11 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                         'created_at': now_ts,
                         'payload': copy.deepcopy(payload),
                     }
-                return attach_data_freshness(payload)
+                payload = attach_data_freshness(payload)
+                _write_persistent_ad_dashboard_cache(cache_key, payload, created_at=now_ts)
+                if _is_canonical_ad_dashboard_context(context):
+                    _write_atomic_ad_dashboard_snapshot(payload, created_at=now_ts)
+                return payload
 
         try:
             payload = build_ad_data_dashboard_snapshot(
@@ -5469,16 +5703,40 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                 return attach_data_freshness(stale_payload)
             raise
         fact_rows = payload.pop('_fact_rows', [])
+        live_fact_dates: List[datetime.date] = []
+        for row in fact_rows:
+            raw_date = str((row or {}).get('date') or '').strip()
+            if not raw_date:
+                continue
+            try:
+                live_fact_dates.append(datetime.fromisoformat(raw_date).date())
+            except Exception:
+                continue
+        live_fact_completeness = (
+            ad_dashboard_fact_rows_completeness(
+                fact_rows,
+                start_date=min(live_fact_dates),
+                end_date=max(live_fact_dates),
+                appsflyer_required=bool(appsflyer_api_token),
+                tugao_funnel_required=True,
+            )
+            if live_fact_dates
+            else {'missing_tugao_funnel': [expected_latest_fact_date]}
+        )
+        if live_fact_completeness.get('missing_tugao_funnel'):
+            stale_payload = _read_any_persistent_ad_dashboard_cache(
+                cache_key,
+                now_ts=now_ts,
+                cache_timezone=ad_dashboard_cache_timezone,
+            )
+            if stale_payload is not None:
+                stale_payload.setdefault('insights', []).append(
+                    'Tugao 入会主数据尚未就绪，已保留上一成功版本；媒体或 BindSuccess 数据不会单独覆盖看板。'
+                )
+                return attach_data_freshness(stale_payload)
+            raise HTTPException(status_code=503, detail='tugao_funnel_not_ready')
         if fact_rows:
-            fact_dates: List[datetime.date] = []
-            for row in fact_rows:
-                raw_date = str((row or {}).get('date') or '').strip()
-                if not raw_date:
-                    continue
-                try:
-                    fact_dates.append(datetime.fromisoformat(raw_date).date())
-                except Exception:
-                    continue
+            fact_dates = live_fact_dates
             if fact_dates:
                 synced_at = datetime.fromtimestamp(now_ts, timezone.utc).isoformat()
                 try:
@@ -5495,6 +5753,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                             start_date=min(fact_dates),
                             end_date=max(fact_dates),
                             appsflyer_required=bool(appsflyer_api_token),
+                            tugao_funnel_required=True,
                         )
                         mark_ad_dashboard_sync_state(
                             conn,
@@ -5519,6 +5778,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
             'next_refresh_at': datetime.fromtimestamp(cache_next_refresh, ZoneInfo(ad_dashboard_cache_timezone)).isoformat(),
             'schedule': f'{ad_dashboard_cache_timezone} 09:20 daily',
         }
+        payload = attach_data_freshness(payload)
         if cache_max_age_seconds > 0:
             with ad_dashboard_cache_lock:
                 ad_dashboard_cache[cache_key] = {
@@ -5526,7 +5786,9 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                     'payload': copy.deepcopy(payload),
                 }
             _write_persistent_ad_dashboard_cache(cache_key, payload, created_at=now_ts)
-        return attach_data_freshness(payload)
+        if _is_canonical_ad_dashboard_context(context):
+            _write_atomic_ad_dashboard_snapshot(payload, created_at=now_ts)
+        return payload
 
     @app.get('/api/ops/ad-data-dashboard/daily-report')
     def ops_ad_data_dashboard_daily_report(
@@ -5540,19 +5802,40 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         window_days: int = 1,
     ) -> Dict[str, Any]:
         _require_ops_user(request, role=OPS_AUTH_ROLE_ADMIN)
-        payload = _build_daily_ad_report_for_request(
-            request,
-            report_date=report_date,
-            country=country,
-            project=project,
-            account_id=account_id,
-            platform=platform,
-            data_mode=data_mode,
-            window_days=window_days,
-            fast_cached=True,
-        )
-        with db.connect() as conn:
-            payload = _enrich_daily_payload_decision_states(payload, conn=conn)
+        force_refresh = str(request.query_params.get('refresh') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        cached_payload = _read_atomic_daily_report_snapshot(request)
+        if not force_refresh:
+            if cached_payload is not None:
+                if str(request.query_params.get('lite') or '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+                    return _lite_daily_report_payload(cached_payload)
+                return cached_payload
+        try:
+            payload = _build_daily_ad_report_for_request(
+                request,
+                report_date=report_date,
+                country=country,
+                project=project,
+                account_id=account_id,
+                platform=platform,
+                data_mode=data_mode,
+                window_days=window_days,
+                fast_cached=True,
+            )
+        except Exception:
+            if cached_payload is None:
+                raise
+            cached_payload['cache']['stale'] = True
+            cached_payload['cache']['serving_reason'] = 'refresh_failed_last_success_preserved'
+            cached_payload['cache']['refresh_failed'] = True
+            if str(request.query_params.get('lite') or '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+                return _lite_daily_report_payload(cached_payload)
+            return cached_payload
+        try:
+            with db.connect() as conn:
+                payload = _enrich_daily_payload_decision_states(payload, conn=conn)
+        except sqlite3.OperationalError:
+            pass
+        _write_atomic_daily_report_snapshot(request, payload)
         if str(request.query_params.get('lite') or '').strip().lower() in {'1', 'true', 'yes', 'on'}:
             return _lite_daily_report_payload(payload)
         return payload
@@ -6388,7 +6671,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         has_global_page_ads_management = 'pages_manage_ads' in granted_scopes
         has_business_asset_management = {'ads_management', 'business_management'}.issubset(granted_scopes)
         url = f'{graph_root}/me/adaccounts'
-        params: Optional[Dict[str, Any]] = {'fields': 'id,account_id,name,account_status,disable_reason,permissions,tasks', 'limit': 200}
+        params: Optional[Dict[str, Any]] = {'fields': 'id,account_id,name,account_status,disable_reason,currency,timezone_name,permissions,tasks', 'limit': 200}
         next_url = url
         rows: List[Dict[str, Any]] = []
         while next_url:
@@ -6408,7 +6691,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
                 can_manage = has_global_ads_management or bool(permissions.intersection({'ADVERTISE', 'MANAGE', 'MANAGE_CAMPAIGNS'}))
                 selectable = account_status == 1 and can_manage
                 reason = '账户不可用或已停用' if account_status != 1 else ('当前 Token 缺少广告管理权限' if not can_manage else '')
-                rows.append({'account_id': account_id, 'name': str(item.get('name') or '未命名账户').strip() or '未命名账户', 'account_status': account_status, 'status_label': '可用' if selectable else '不可用', 'selectable': selectable, 'disabled_reason': reason})
+                rows.append({'account_id': account_id, 'name': str(item.get('name') or '未命名账户').strip() or '未命名账户', 'account_status': account_status, 'currency': str(item.get('currency') or ''), 'timezone_name': str(item.get('timezone_name') or ''), 'status_label': '可用' if selectable else '不可用', 'selectable': selectable, 'disabled_reason': reason})
             next_url = str(((payload.get('paging') or {}).get('next')) or '').strip()
             params = None
         configured = {str(value or '').strip().removeprefix('act_') for value in meta_ads_account_ids}
@@ -6503,12 +6786,28 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         page_rows = list(page_by_id.values())
         page_rows.sort(key=lambda item: (not item['eligible'], item['name'].lower()))
         available_country_page_ids = {country: page_id for country, page_id in meta_ads_country_page_ids.items() if page_id in eligible_page_ids}
-        country_account_ids = {
-            country: next((str(item.get('account_id') or '') for item in rows if item.get('selectable') and account_page_ids.get(str(item.get('account_id') or '')) == page_id), '')
-            for country, page_id in available_country_page_ids.items()
-        }
+        selectable_account_ids = {str(item.get('account_id') or '') for item in rows if item.get('selectable')}
+        country_account_ids = {}
+        for country, page_id in available_country_page_ids.items():
+            configured_account_id = meta_ads_country_account_ids.get(country, '')
+            if configured_account_id in selectable_account_ids:
+                country_account_ids[country] = configured_account_id
+                continue
+            historical_account_id = next((str(item.get('account_id') or '') for item in rows if item.get('selectable') and account_page_ids.get(str(item.get('account_id') or '')) == page_id), '')
+            if historical_account_id:
+                country_account_ids[country] = historical_account_id
         country_account_ids = {country: account_id for country, account_id in country_account_ids.items() if account_id}
-        return {'ok': True, 'accounts': rows, 'pages': page_rows, 'available_count': available_count, 'available_page_count': sum(1 for item in page_rows if item['eligible']), 'default_account_id': next((item['account_id'] for item in rows if item['selectable'] and item['account_id'] in configured), next((item['account_id'] for item in rows if item['selectable']), '')), 'default_page_id': available_country_page_ids.get('BR', next((item['page_id'] for item in page_rows if item['eligible']), '')), 'country_page_ids': available_country_page_ids, 'country_account_ids': country_account_ids, 'account_page_ids': account_page_ids, 'meta_writes_performed': False}
+        accounts_by_id = {str(item.get('account_id') or ''): item for item in rows}
+        country_market_profiles = {}
+        for country, profile in meta_ads_market_profiles.items():
+            account_id = str(country_account_ids.get(country) or '')
+            account = dict(accounts_by_id.get(account_id) or {})
+            market_profile = dict(profile)
+            market_profile.update({'country': country, 'account_id': account_id, 'page_id': str(available_country_page_ids.get(country) or ''), 'billing_currency': str(account.get('currency') or ''), 'billing_timezone': str(account.get('timezone_name') or '')})
+            market_profile['paused_creation_allowed'] = bool(account_id and market_profile['page_id'])
+            market_profile['activation_allowed'] = False
+            country_market_profiles[country] = market_profile
+        return {'ok': True, 'accounts': rows, 'pages': page_rows, 'available_count': available_count, 'available_page_count': sum(1 for item in page_rows if item['eligible']), 'default_account_id': next((item['account_id'] for item in rows if item['selectable'] and item['account_id'] in configured), next((item['account_id'] for item in rows if item['selectable']), '')), 'default_page_id': available_country_page_ids.get('BR', next((item['page_id'] for item in page_rows if item['eligible']), '')), 'country_page_ids': available_country_page_ids, 'country_account_ids': country_account_ids, 'country_market_profiles': country_market_profiles, 'account_page_ids': account_page_ids, 'meta_writes_performed': False}
 
     @app.post('/api/ops/ad-data-dashboard/meta-accounts/page-eligibility')
     def ops_ad_data_dashboard_meta_page_eligibility(
@@ -6527,6 +6826,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         account_id = str(body.get('account_id') or '').strip().removeprefix('act_')
         country = str(body.get('country') or '').strip().upper()
         force = bool(body.get('force'))
+        requested_page_id = str(body.get('page_id') or '').strip()
         if force and not meta_rate_limit_manager.force_refresh_allowed(account_id):
             state = meta_rate_limit_manager.snapshot(account_id).as_dict()
             retry_after = max(60, int(state.get('retry_after_seconds') or 300))
@@ -6585,7 +6885,10 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
         validation_requests = 0
         historical_page_id = str(dict(discovery.get('account_page_ids') or {}).get(account_id) or '')
         preferred_country_page_id = str(meta_ads_country_page_ids.get(country) or '')
-        for raw_page in list(discovery.get('pages') or []):
+        discovered_pages = list(discovery.get('pages') or [])
+        if requested_page_id:
+            discovered_pages = [raw_page for raw_page in discovered_pages if str(dict(raw_page or {}).get('page_id') or '').strip() == requested_page_id]
+        for raw_page in discovered_pages:
             page = dict(raw_page or {})
             page_id = str(page.get('page_id') or '').strip()
             if not page_id:

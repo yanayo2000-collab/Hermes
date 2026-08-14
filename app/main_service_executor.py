@@ -639,9 +639,9 @@ class ExecutorServiceMixin:
         total_anchors: Optional[int],
         page: int,
         page_size: int,
-    ) -> None:
+    ) -> int:
         if not items:
-            return
+            return 0
         executor_key = self._guild_anchor_executor_key(executor)
         guild_name = str(executor.get('guild_name') or '').strip()
         now_iso = utc_now()
@@ -703,8 +703,20 @@ class ExecutorServiceMixin:
                 raw_hash,
             ))
         if not rows:
-            return
+            return 0
         with self.db.connect() as conn:
+            page_anchor_ids = sorted({str(row[2]) for row in rows if str(row[2])})
+            existing_anchor_ids: set[str] = set()
+            if page_anchor_ids:
+                placeholders = ','.join('?' for _ in page_anchor_ids)
+                existing_anchor_ids = {
+                    str(row['anchor_id'])
+                    for row in conn.execute(
+                        f"SELECT anchor_id FROM guild_anchor_seen "
+                        f"WHERE guild_executor_key = ? AND anchor_id IN ({placeholders})",
+                        (executor_key, *page_anchor_ids),
+                    ).fetchall()
+                }
             page_sid_by_anchor: Dict[str, str] = {}
             page_anchor_by_sid: Dict[str, str] = {}
             for row in rows:
@@ -768,6 +780,7 @@ class ExecutorServiceMixin:
                 rows,
             )
             conn.commit()
+        return len(set(page_anchor_ids) - existing_anchor_ids)
 
     def _count_seen_anchor_date(self, *, executor_key: str, stat_date: str) -> int:
         with self.db.connect() as conn:
@@ -1379,14 +1392,6 @@ class ExecutorServiceMixin:
         end_page = min(total_pages, max(start_page, previous_last_page + delta_pages + guard_pages))
         pages_to_scan = list(range(start_page, end_page + 1))
 
-        def count_seen_rows() -> int:
-            with self.db.connect() as count_conn:
-                row = count_conn.execute(
-                    "SELECT COUNT(*) AS n FROM guild_anchor_seen WHERE guild_executor_key = ?",
-                    (executor_key,),
-                ).fetchone()
-            return int(row['n'] or 0) if row else 0
-
         def scan_tail_page(page: int) -> bool:
             nonlocal scanned_count, new_anchor_count, last_items
             payload = first_payload if page == 1 else fetch_page(page)
@@ -1399,16 +1404,14 @@ class ExecutorServiceMixin:
                 for item in last_items
             )
             scanned_count += len(items)
-            before = count_seen_rows()
-            self._record_guild_anchor_seen_rows(
+            inserted_count = self._record_guild_anchor_seen_rows(
                 executor=executor,
                 items=items,
                 total_anchors=total_anchors,
                 page=page,
                 page_size=page_size,
             )
-            after = count_seen_rows()
-            new_anchor_count += max(0, after - before)
+            new_anchor_count += max(0, int(inserted_count or 0))
             if job_id:
                 with self.db.connect() as progress_conn:
                     progress_iso = utc_now()
@@ -2970,6 +2973,7 @@ class ExecutorServiceMixin:
                 'app_name': str(next((r for r in executor_rows if str(r.get('guild_name') or '').strip() == guild_name), {}).get('app_name') or 'linky').strip().lower() or 'linky',
                 'oauth_configured': bool(next((r for r in executor_rows if str(r.get('guild_name') or '').strip() == guild_name), {}).get('oauth_configured')),
                 'timo_ticket_configured': bool(next((r for r in executor_rows if str(r.get('guild_name') or '').strip() == guild_name), {}).get('timo_ticket_configured')),
+                'enabled': bool(next((r for r in executor_rows if str(r.get('guild_name') or '').strip() == guild_name), {}).get('enabled')),
             }
         for row in rows:
             guild_name = str(row.get('guild_name') or '').strip()
@@ -3057,38 +3061,75 @@ class ExecutorServiceMixin:
             (str(row.get('guild_name') or '').strip(), str(row.get('stat_date') or '').strip()): row
             for row in seen_cache_rows
         }
+        # Seen rows are diagnostic cache only.  A failed or incomplete source
+        # read must never be presented as a completed daily count.
         fallback_count = 0
-        for guild_name, guild in by_guild.items():
-            if str(guild.get('app_name') or '').strip().lower() != 'timo':
+        # Per-guild results are staging facts until the whole app/date batch is
+        # complete. Never expose or total a partially refreshed day.
+        expected_guild_names = {
+            str(guild.get('guild_name') or '').strip()
+            for guild in by_guild.values()
+            if bool(guild.get('enabled')) and str(guild.get('guild_name') or '').strip()
+        }
+        jobs_by_date: Dict[str, Dict[str, Dict[str, Any]]] = {stat_date: {} for stat_date in dates}
+        for job in job_rows:
+            guild_name = str(job.get('guild_name') or '').strip()
+            stat_date = str(job.get('stat_date') or '').strip()
+            if stat_date not in jobs_by_date or guild_name not in expected_guild_names:
                 continue
-            for stat_date in dates:
-                existing_cell = guild['dates'].get(stat_date)
-                if existing_cell is not None and str(existing_cell.get('status') or '') not in {'processing', 'failed'}:
+            jobs_by_date[stat_date][guild_name] = job
+        date_states: Dict[str, Dict[str, Any]] = {}
+        unpublished_dates = set()
+        for stat_date in dates:
+            date_jobs = jobs_by_date.get(stat_date) or {}
+            if not date_jobs:
+                date_states[stat_date] = {'published': True, 'status': 'published'}
+                continue
+            incomplete_guilds = []
+            has_processing = False
+            has_failed = False
+            for guild_name in expected_guild_names:
+                guild = by_guild.get(guild_name) or {}
+                cell = (guild.get('dates') or {}).get(stat_date)
+                cell_status = str((cell or {}).get('status') or '').strip()
+                job_status = str((date_jobs.get(guild_name) or {}).get('status') or '').strip()
+                complete = job_status == 'success' and cell_status not in {'', 'processing', 'failed'}
+                if complete:
                     continue
-                cached = seen_cache_by_key.get((guild_name, stat_date))
-                if not cached:
-                    continue
-                joined_count = int(cached.get('joined_count') or 0)
-                real_person_count = int(cached.get('real_person_count') or 0)
-                guild['dates'][stat_date] = {
-                    'joined_count': joined_count,
-                    'real_person_count': real_person_count,
-                    'status': 'fallback',
-                    'error': 'live_refresh_unavailable;using_seen_cache',
-                    'refreshed_at': cached.get('last_seen_at') or '',
-                    'total_anchors': None,
-                    'scanned_count': None,
-                    'page_count': None,
-                    'sort_direction': 'cache',
-                    'sort_confidence': 'seen_cache',
-                    'stale_after': '',
-                }
-                guild['total'] += joined_count
-                guild['real_person_total'] += real_person_count
-                guild['latest_status'] = 'fallback'
-                guild['latest_refreshed_at'] = cached.get('last_seen_at') or guild.get('latest_refreshed_at') or ''
-                by_date[stat_date] += joined_count
-                fallback_count += 1
+                incomplete_guilds.append(guild_name)
+                has_processing = has_processing or job_status in processing_statuses or not job_status
+                has_failed = has_failed or job_status in failed_statuses
+            if not incomplete_guilds:
+                date_states[stat_date] = {'published': True, 'status': 'published'}
+                continue
+            unpublished_dates.add(stat_date)
+            state_status = 'processing' if has_processing else ('failed' if has_failed else 'processing')
+            date_states[stat_date] = {
+                'published': False,
+                'status': state_status,
+                'incomplete_guild_count': len(incomplete_guilds),
+            }
+        if unpublished_dates:
+            for guild in by_guild.values():
+                for stat_date in unpublished_dates:
+                    date_state = date_states[stat_date]
+                    guild_name = str(guild.get('guild_name') or '').strip()
+                    prior_cell = (guild.get('dates') or {}).get(stat_date) or {}
+                    job_status = str((jobs_by_date.get(stat_date, {}).get(guild_name) or {}).get('status') or prior_cell.get('job_status') or '').strip()
+                    guild['dates'].pop(stat_date, None)
+                guild['total'] = sum(
+                    int(((guild.get('dates') or {}).get(stat_date) or {}).get('joined_count') or 0)
+                    for stat_date in dates
+                    if stat_date not in unpublished_dates
+                )
+                guild['real_person_total'] = sum(
+                    int(((guild.get('dates') or {}).get(stat_date) or {}).get('real_person_count') or 0)
+                    for stat_date in dates
+                    if stat_date not in unpublished_dates
+                )
+            by_date = {stat_date: value for stat_date, value in by_date.items() if stat_date not in unpublished_dates}
+            rows = [row for row in rows if str(row.get('stat_date') or '').strip() not in unpublished_dates]
+        visible_dates = [stat_date for stat_date in dates if stat_date not in unpublished_dates]
         refresh_state = self.guild_anchor_daily_stats_refresh_state()
         return {
             'ok': True,
@@ -3096,15 +3137,16 @@ class ExecutorServiceMixin:
             'date_from': start_date.isoformat(),
             'date_to': end_date.isoformat(),
             'app_name': normalized_app or 'all',
-            'dates': list(reversed(dates)),
+            'dates': list(reversed(visible_dates)),
             'guilds': list(by_guild.values()),
             'rows': rows,
+            'date_states': {k: date_states[k] for k in reversed(dates)},
             'summary': {
                 'guild_count': len(by_guild),
-                'date_count': len(dates),
+                'date_count': len(visible_dates),
                 'total_joined': sum(int(g.get('total') or 0) for g in by_guild.values()),
                 'total_real_person': sum(int(g.get('real_person_total') or 0) for g in by_guild.values()),
-                'by_date': {k: by_date[k] for k in reversed(dates)},
+                'by_date': {k: by_date[k] for k in reversed(visible_dates)},
             },
             'schedule': {
                 'enabled': self.guild_anchor_daily_stats_enabled,

@@ -3039,6 +3039,189 @@ class IntakeServiceMixin:
             updated_items.append(refreshed)
         return updated_items
 
+    def _reconcile_ops_intake_terminal_projections(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        now_iso: str,
+        item_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Repair intake cards only when durable downstream facts prove a terminal result."""
+        conditions = [
+            "system_status IN ('queued', 'processing', 'bind_queued', 'binding', 'crm_verifying')",
+            "COALESCE(feedback_status, '') NOT IN ('feedback_done', 'cleared')",
+        ]
+        params: List[Any] = []
+        normalized_item_id = str(item_id or '').strip()
+        if normalized_item_id:
+            conditions.append('item_id = ?')
+            params.append(normalized_item_id)
+        params.append(max(1, min(int(limit or 100), 500)))
+        rows = [dict(row) for row in conn.execute(
+            f"SELECT * FROM ops_intake_items WHERE {' AND '.join(conditions)} ORDER BY created_at ASC, item_id ASC LIMIT ?",
+            tuple(params),
+        ).fetchall()]
+        repaired: List[Dict[str, Any]] = []
+        for item in rows:
+            try:
+                snapshot = json.loads(item.get('result_snapshot') or '{}')
+            except Exception:
+                snapshot = {}
+            snapshot = snapshot if isinstance(snapshot, dict) else {}
+            task_id = str(snapshot.get('retry_task_id') or snapshot.get('task_id') or '').strip()
+            if not task_id:
+                continue
+            task_row = conn.execute(
+                """
+                SELECT t.task_id, t.lead_id, t.status, t.result_code, t.result_reason, t.raw_result,
+                       COALESCE(l.current_status, '') AS lead_status,
+                       COALESCE(l.crm_verified_at, '') AS crm_verified_at
+                FROM automation_tasks t
+                LEFT JOIN leads l ON l.lead_id = t.lead_id
+                WHERE t.task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if not task_row:
+                continue
+            task = dict(task_row)
+            task_status = str(task.get('status') or '').strip().lower()
+            result_code = str(task.get('result_code') or '').strip()
+            result_reason = str(task.get('result_reason') or '').strip()
+            lead_status = str(task.get('lead_status') or '').strip().lower()
+            try:
+                raw_result = json.loads(task.get('raw_result') or '{}')
+            except Exception:
+                raw_result = {}
+            raw_result = raw_result if isinstance(raw_result, dict) else {}
+            next_status = ''
+            next_feedback_status = 'not_feedbackable'
+            reply_text = ''
+            strong_evidence = ''
+            if task_status == 'success' and result_code in {'bind_success', 'bind_auto_reconciled_success'}:
+                crm_success = bool(str(task.get('crm_verified_at') or '').strip()) or bool(conn.execute(
+                    """
+                    SELECT 1 FROM sync_logs
+                    WHERE lead_id = ? AND sync_type = 'customer_upsert'
+                      AND target_system = 'crm' AND status = 'success'
+                    LIMIT 1
+                    """,
+                    (str(task.get('lead_id') or '').strip(),),
+                ).fetchone())
+                if lead_status not in {'bind_success', 'group_join_pending', 'group_join_success', 'synced'} or not crm_success:
+                    continue
+                next_status = 'fully_success'
+                next_feedback_status = 'pending_feedback'
+                reply_text = self._external_app_success_reply_text_for_crm_partial(item, '')
+                strong_evidence = 'terminal_bind_task_and_verified_crm'
+            elif task_status == 'failed' and lead_status in {'bind_failed', 'manual_review_pending'}:
+                reason = str(raw_result.get('reason') or result_code or 'bind_failed').strip()
+                next_status = 'manual_required' if lead_status == 'manual_review_pending' else 'bind_failed'
+                reply_envelope = {
+                    'accepted': False,
+                    'reason': reason,
+                    'result_code': result_code,
+                    'result_reason': result_reason,
+                    'bind_precheck': raw_result.get('bind_precheck'),
+                    'bind_failure_category': raw_result.get('bind_failure_category'),
+                    'lead_status': lead_status,
+                    'next_action': raw_result.get('next_action'),
+                    'requires_human_action': next_status == 'manual_required',
+                    'reply_phone': item.get('parsed_phone'),
+                    'reply_id': item.get('parsed_account_id'),
+                    'reply_group': item.get('parsed_group') or item.get('guild_name'),
+                    'reply_code': item.get('parsed_code') or '-',
+                }
+                reply_text = self._format_lark_reply_text(reply_envelope)
+                strong_evidence = 'terminal_failed_bind_task_and_failed_lead'
+            else:
+                continue
+            merged_snapshot = dict(snapshot)
+            merged_snapshot.update({
+                'task_id': task_id,
+                'lead_id': str(task.get('lead_id') or snapshot.get('lead_id') or '').strip(),
+                'lead_status': lead_status,
+                'result_code': result_code,
+                'result_reason': result_reason,
+                'reply_text': reply_text,
+                'projection_reconciled': True,
+                'projection_reconcile_source': 'terminal_task_guard',
+                'projection_reconcile_evidence': strong_evidence,
+                'projection_reconciled_at': now_iso,
+            })
+            cursor = conn.execute(
+                """
+                UPDATE ops_intake_items
+                SET system_status = ?, feedback_status = ?, reply_text = ?, result_code = ?,
+                    result_reason = ?, result_snapshot = ?, processed_at = ?
+                WHERE item_id = ?
+                  AND system_status IN ('queued', 'processing', 'bind_queued', 'binding', 'crm_verifying')
+                  AND COALESCE(feedback_status, '') NOT IN ('feedback_done', 'cleared')
+                """,
+                (
+                    next_status,
+                    next_feedback_status,
+                    reply_text,
+                    result_code,
+                    result_reason,
+                    json.dumps(merged_snapshot, ensure_ascii=False, default=str),
+                    now_iso,
+                    str(item.get('item_id') or ''),
+                ),
+            )
+            if int(cursor.rowcount or 0) <= 0:
+                continue
+            repaired_item = dict(item)
+            repaired_item.update({
+                'system_status': next_status,
+                'feedback_status': next_feedback_status,
+                'reply_text': reply_text,
+                'result_code': result_code,
+                'result_reason': result_reason,
+                'result_snapshot': json.dumps(merged_snapshot, ensure_ascii=False, default=str),
+                'processed_at': now_iso,
+            })
+            repaired.append(repaired_item)
+            self._record_audit_event(
+                conn,
+                event_type='ops_intake_terminal_projection_reconciled',
+                event_source='terminal_task_guard',
+                payload={
+                    'item_id': str(item.get('item_id') or ''),
+                    'task_id': task_id,
+                    'lead_id': str(task.get('lead_id') or ''),
+                    'system_status': next_status,
+                    'feedback_status': next_feedback_status,
+                    'result_code': result_code,
+                    'evidence': strong_evidence,
+                },
+                lead_id=str(task.get('lead_id') or '').strip() or None,
+            )
+        return repaired
+
+    def reconcile_ops_intake_terminal_projections(
+        self,
+        *,
+        item_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        now_iso = utc_now()
+        with self.db.connect() as conn:
+            repaired = self._reconcile_ops_intake_terminal_projections(
+                conn,
+                now_iso=now_iso,
+                item_id=item_id,
+                limit=limit,
+            )
+            conn.commit()
+        return {
+            'attempted': True,
+            'reconciled_count': len(repaired),
+            'item_ids': [str(item.get('item_id') or '') for item in repaired],
+        }
+
+
     def submit_ops_intake_guild_item(self, *, guild_name: str, text: str, fields: Optional[Dict[str, Any]], user: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         normalized_guild = str(guild_name or '').strip()
         if not self._ops_intake_user_can_access_guild(user, normalized_guild):
