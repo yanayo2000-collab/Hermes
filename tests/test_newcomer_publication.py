@@ -28,6 +28,12 @@ def test_five_minute_notifier_drop_in_drains_durable_outbox():
     ).read_text(encoding='utf-8')
     assert 'ExecStartPost=-' in source
     assert 'notify_newcomer_publications.py' in source
+    assert 'newcomer-publication.env' in source
+    backend_drop_in = (
+        Path(__file__).resolve().parents[1]
+        / 'scripts/systemd/mcn-backend.service.d/65-newcomer-publication.conf'
+    ).read_text(encoding='utf-8')
+    assert 'newcomer-publication.env' in backend_drop_in
 
 
 DATE = '2026-08-13'
