@@ -502,6 +502,14 @@ class MetaGraphExecutionAdapter:
             "CREATE_EXPERIMENT": 5, "CREATE_PAUSED_AD": 5, "REPLACE_CREATIVE": 2,
             "REACTIVATE_AD": 3,
         }.get(action_type, 1)
+        if (
+            action_type == "CREATE_PAUSED_AD"
+            and not cells
+            and str(plan.get("reuse_campaign_id") or "").strip()
+        ):
+            # A single-ad rebuild reuses the already verified Campaign and only
+            # creates Ad Set -> image -> creative -> paused Ad.
+            expected_writes = 4
         if action_type == "REACTIVATE_AD" and cells:
             if not 2 <= len(cells) <= 4:
                 raise GrowthValidationError("meta_delivery_path_count_invalid")
