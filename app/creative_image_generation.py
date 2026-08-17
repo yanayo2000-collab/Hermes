@@ -4976,11 +4976,16 @@ def _quality_visible_text(evaluation: Dict[str, Any]) -> str:
     return '\n'.join(values)
 
 
-def _parse_currency_amount(value: str) -> Optional[float]:
+def _parse_currency_amount(value: str, market: str = '') -> Optional[float]:
     normalized = str(value or '').strip().replace(' ', '')
     if not normalized:
         return None
-    if ',' in normalized and '.' in normalized:
+    if market == 'ID' and (
+        re.fullmatch(r'[0-9]{1,3}(?:\.[0-9]{3})+', normalized)
+        or re.fullmatch(r'[0-9]{1,3}(?:,[0-9]{3})+', normalized)
+    ):
+        normalized = normalized.replace('.', '').replace(',', '')
+    elif ',' in normalized and '.' in normalized:
         if normalized.rfind(',') > normalized.rfind('.'):
             normalized = normalized.replace('.', '').replace(',', '.')
         else:
@@ -5011,7 +5016,7 @@ def _currency_reward_review(text: str, market: str) -> Dict[str, Any]:
     else:
         pattern = re.compile(r'\b([0-9][0-9.,]*)\s*(?:pts|pontos|puntos|punto|points|poin)\b', re.I)
     for match in pattern.finditer(text or ''):
-        amount = _parse_currency_amount(match.group(1))
+        amount = _parse_currency_amount(match.group(1), market)
         if amount is not None:
             lower_before = (text or '').lower()[:match.start()]
             bucket_markers = {
