@@ -332,6 +332,9 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert 'id="adGleRecommendationFilters"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleRecommendationRows"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "在投零交付" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "确认重建投放" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "/gle-ad-coverage/rebuild-recommendations" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "直接重建预算、成本上限、受众与排期配置，不再等待数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "在投待同步" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleTaskWorkbenchMount"' in AD_DATA_DASHBOARD_PAGE_HTML
@@ -564,3 +567,77 @@ def test_readonly_api_returns_the_exact_five_account_scope(tmp_path: Path) -> No
     assert body["summary"]["covered_ads"] == 5
     assert body["safety"]["meta_writes_performed"] is False
     assert all(call["url"].endswith("/ads") for call in meta.calls)
+
+
+def test_zero_delivery_rebuild_materialization_revalidates_and_is_idempotent(tmp_path: Path) -> None:
+    path = tmp_path / "zero-delivery-rebuild.db"
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE ad_dashboard_sync_state (
+          source TEXT,date TEXT,status TEXT,row_count INTEGER
+        );
+        CREATE TABLE ad_dashboard_fact_rows (
+          ad_id TEXT,date TEXT,account_id TEXT
+        );
+        CREATE TABLE ad_experiment (
+          experiment_id TEXT,account_id TEXT,source_report_id TEXT,
+          source_campaign_id TEXT,source_adset_id TEXT,source_ad_id TEXT,
+          state TEXT,control_definition_json TEXT
+        );
+        """
+    )
+    for day in range(3, 10):
+        conn.execute(
+            "INSERT INTO ad_dashboard_sync_state VALUES ('all',?,'ok',5)",
+            (f"2026-08-{day:02d}",),
+        )
+    conn.commit()
+    conn.close()
+
+    class _Db:
+        @contextmanager
+        def connect(self):
+            current = sqlite3.connect(path)
+            current.row_factory = sqlite3.Row
+            try:
+                yield current
+            finally:
+                current.close()
+
+    rows_by_account = {
+        account["account_id"]: [_live_ad(account, "1")]
+        for account in GLE_AD_ACCOUNT_SCOPE_V1
+    }
+    target = rows_by_account[GLE_AD_ACCOUNT_SCOPE_V1[0]["account_id"]][0]
+    meta = _MetaSession(rows_by_account)
+    app = FastAPI()
+    app.include_router(
+        create_ad_experiment_router(
+            db=_Db(), require_admin=lambda _request: {"username": "operator"},
+            meta_session=meta, meta_access_token="token",
+            meta_graph_root="https://graph.example/v25.0",
+        )
+    )
+    client = TestClient(app)
+
+    first = client.post(
+        "/api/ops/ad-data-dashboard/gle-ad-coverage/rebuild-recommendations",
+        json={"ad_ids": [target["id"]]},
+    )
+    second = client.post(
+        "/api/ops/ad-data-dashboard/gle-ad-coverage/rebuild-recommendations",
+        json={"ad_ids": [target["id"]]},
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    recommendation = first.json()["recommendations"][0]
+    assert recommendation["action_type"] == "repair_delivery_config"
+    assert recommendation["source_ad_id"] == target["id"]
+    assert recommendation["decision_context"]["rebuild_mode"] == "CREATE_PAUSED_OBJECTS"
+    assert first.json()["meta_writes_performed"] is False
+    assert second.json()["recommendations"][0]["recommendation_id"] == recommendation["recommendation_id"]
+    with sqlite3.connect(path) as check:
+        assert check.execute("SELECT COUNT(*) FROM ad_recommendation").fetchone()[0] == 1

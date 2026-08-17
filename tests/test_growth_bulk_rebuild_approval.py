@@ -90,7 +90,8 @@ def test_bulk_rebuild_opens_a_top_level_modal_without_switching_tabs() -> None:
     helper = page[start:end]
 
     assert "setGleWorkspaceView('tasks'" not in helper
-    assert "window.GrowthWorkspace.openBulkRebuildApproval(candidates)" in helper
+    assert "window.GrowthWorkspace.openBulkRebuildApproval(prepared)" in helper
+    assert "/gle-ad-coverage/rebuild-recommendations" in helper
     assert "node.id='growthBulkRebuildModal'" in workspace
     assert "document.body.appendChild(node)" in workspace
     assert ".growth-bulk-modal-layer" in workspace

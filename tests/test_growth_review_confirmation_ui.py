@@ -190,8 +190,9 @@ console.log(JSON.stringify({{
     assert payload["pause"]["label"] == "确认暂停"
     assert payload["pause"]["action"] == "decision"
     assert payload["waiting"]["label"] == "数据同步或初始窗口待就绪"
-    assert payload["zeroDelivery"]["label"] == "近7天零交付"
-    assert payload["zeroDelivery"]["bucket"] == "system"
+    assert payload["zeroDelivery"]["label"] == "确认重建投放"
+    assert payload["zeroDelivery"]["bucket"] == "confirm"
+    assert payload["zeroDelivery"]["action"] == "rebuild"
     assert "同广告组已有 2 条广告获得交付" in payload["zeroDelivery"]["detail"]
     assert payload["scoring"]["label"] == "本轮未形成可评分样本"
     assert payload["inactive"]["label"] == "当前未投放"
