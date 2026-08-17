@@ -167,7 +167,8 @@ console.log(JSON.stringify({{
   review: gleCoverageNextStep({{action: 'manual_review', status: '表现偏弱'}}, {{ready: true}}),
   pause: gleCoverageNextStep({{action: 'pause', status: '严重超阈值'}}, {{ready: true}}),
   waiting: gleCoverageNextStep(null, {{ready: false}}),
-  zeroDelivery: gleCoverageNextStep(null, {{ready: false, monitoringStatus: 'NO_DELIVERY_IN_COMPLETE_WINDOW', deliveryDiagnosis: {{same_adset_delivering_ads: 2}}}}),
+      zeroDelivery: gleCoverageNextStep(null, {{ready: false, monitoringStatus: 'NO_DELIVERY_IN_COMPLETE_WINDOW', deliveryDiagnosis: {{same_adset_delivering_ads: 2}}}}),
+      zeroDelivery48h: gleCoverageNextStep(null, {{ready: false, monitoringStatus: 'NO_LIFETIME_DELIVERY_AFTER_48H', deliveryDiagnosis: {{same_adset_delivering_ads: 1}}}}),
   scoring: gleCoverageNextStep(null, {{ready: true}}),
   inactive: gleCoverageNextStep(null, {{active: false, ready: false}}),
   task: gleCoverageNextStep(null, {{ready: true, task: true}}),
@@ -194,6 +195,9 @@ console.log(JSON.stringify({{
     assert payload["zeroDelivery"]["bucket"] == "confirm"
     assert payload["zeroDelivery"]["action"] == "rebuild"
     assert "同广告组已有 2 条广告获得交付" in payload["zeroDelivery"]["detail"]
+    assert payload["zeroDelivery48h"]["label"] == "48小时零消耗，确认重建"
+    assert payload["zeroDelivery48h"]["bucket"] == "confirm"
+    assert "不能删除共享广告组" in payload["zeroDelivery48h"]["detail"]
     assert payload["scoring"]["label"] == "本轮未形成可评分样本"
     assert payload["inactive"]["label"] == "当前未投放"
     assert payload["task"]["label"] == "查看任务进度"

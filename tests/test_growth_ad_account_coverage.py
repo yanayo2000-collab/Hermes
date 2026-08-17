@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -41,7 +42,10 @@ class _MetaSession:
         return _Response({"data": self.rows_by_account.get(account_id, [])})
 
 
-def _live_ad(account: dict[str, str], suffix: str, *, effective: str = "ACTIVE") -> dict:
+def _live_ad(
+    account: dict[str, str], suffix: str, *, effective: str = "ACTIVE",
+    lifetime_impressions: int = 1, lifetime_spend: float = 0.01,
+) -> dict:
     return {
         "id": f"9{account['account_id'][-8:]}{suffix}",
         "name": f"ad-{suffix}",
@@ -52,6 +56,9 @@ def _live_ad(account: dict[str, str], suffix: str, *, effective: str = "ACTIVE")
         "effective_status": effective,
         "created_time": "2026-08-01T00:00:00+0000",
         "updated_time": "2026-08-09T00:00:00+0000",
+        "insights": {"data": [{
+            "impressions": str(lifetime_impressions), "spend": str(lifetime_spend),
+        }]} if lifetime_impressions or lifetime_spend else {"data": []},
     }
 
 
@@ -122,7 +129,8 @@ def test_all_five_accounts_and_every_meta_ad_are_rostered_read_only() -> None:
         "covered_active_ads": 6,
         "ads_with_metric_observation": 5,
         "active_ads_with_metric_observation": 5,
-        "active_ads_zero_delivery": 0,
+            "active_ads_zero_delivery": 0,
+            "active_ads_zero_delivery_after_48h": 0,
         "active_ads_waiting_for_facts": 1,
         "multi_cell_experiment_ads": 2,
         "single_ad_observation_ads": 4,
@@ -313,6 +321,32 @@ def test_complete_window_distinguishes_zero_delivery_from_initial_or_sync_waitin
     assert result["summary"]["active_ads_waiting_for_facts"] == 1
 
 
+def test_new_ad_with_zero_lifetime_delivery_becomes_actionable_after_48_hours() -> None:
+    account = GLE_AD_ACCOUNT_SCOPE_V1[0]
+    dead = _live_ad(account, "35", lifetime_impressions=0, lifetime_spend=0)
+    live_ads = fetch_scoped_meta_ads(
+        _MetaSession({account["account_id"]: [dead]}),
+        access_token="secret-not-output",
+        graph_root="https://graph.example/v25.0",
+    )
+    conn = _database()
+
+    result = build_gle_ad_account_coverage(
+        conn, live_ads, now=datetime.fromisoformat("2026-08-03T01:00:00+00:00"),
+    )
+    item = next(
+        item for current_account in result["accounts"] for item in current_account["items"]
+    )
+
+    assert result["fact_window"]["complete"] is False
+    assert item["monitoring_status"] == "NO_LIFETIME_DELIVERY_AFTER_48H"
+    assert item["delivery_diagnosis"]["age_hours"] == 49.0
+    assert item["delivery_diagnosis"]["lifetime_impressions"] == 0
+    assert item["delivery_diagnosis"]["lifetime_spend"] == 0
+    assert result["summary"]["active_ads_zero_delivery_after_48h"] == 1
+    assert result["summary"]["active_ads_waiting_for_facts"] == 0
+
+
 def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -> None:
     assert 'id="adGleCoveragePanel"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "/api/ops/ad-data-dashboard/gle-ad-coverage" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -333,6 +367,8 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert 'id="adGleRecommendationRows"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert "在投零交付" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "确认重建投放" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "48小时零消耗，确认重建" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "不能删除共享广告组" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "/gle-ad-coverage/rebuild-recommendations" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "直接重建预算、成本上限、受众与排期配置，不再等待数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "在投待同步" in AD_DATA_DASHBOARD_PAGE_HTML
@@ -611,6 +647,7 @@ def test_zero_delivery_rebuild_materialization_revalidates_and_is_idempotent(tmp
         for account in GLE_AD_ACCOUNT_SCOPE_V1
     }
     target = rows_by_account[GLE_AD_ACCOUNT_SCOPE_V1[0]["account_id"]][0]
+    target["insights"] = {"data": []}
     meta = _MetaSession(rows_by_account)
     app = FastAPI()
     app.include_router(
@@ -637,6 +674,7 @@ def test_zero_delivery_rebuild_materialization_revalidates_and_is_idempotent(tmp
     assert recommendation["action_type"] == "repair_delivery_config"
     assert recommendation["source_ad_id"] == target["id"]
     assert recommendation["decision_context"]["rebuild_mode"] == "CREATE_PAUSED_OBJECTS"
+    assert recommendation["decision_context"]["source_adset_delete_allowed"] is False
     assert first.json()["meta_writes_performed"] is False
     assert second.json()["recommendations"][0]["recommendation_id"] == recommendation["recommendation_id"]
     with sqlite3.connect(path) as check:
