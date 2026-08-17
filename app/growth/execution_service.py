@@ -1118,15 +1118,30 @@ class ExecutionTaskService:
                     "source_ad_id": str(object_ids.get(f"{prefix}ad_id") or ""),
                 }, image_id))
         else:
+            experiment_id = str(action_payload.get("experiment_id") or "")
+            replacement_context: Dict[str, Any] = {}
+            if action_type == "REPLACE_CREATIVE" and experiment_id:
+                row = self.conn.execute(
+                    """
+                    SELECT source_campaign_id,source_adset_id
+                    FROM ad_experiment WHERE experiment_id=?
+                    """,
+                    (experiment_id,),
+                ).fetchone()
+                replacement_context = dict(row) if row else {}
             after_creative = dict(dict(plan.get("after_json") or {}).get("creative") or {})
             bound_image_id = str(
                 after_creative.get("image_id")
                 or dict(dict(plan.get("steps") or {}).get("IMAGE_UPLOAD") or {}).get("image_id")
                 or ""
             ).strip()
-            bindings.append((str(action_payload.get("experiment_id") or ""), {
-                "source_campaign_id": str(object_ids.get("campaign_id") or ""),
-                "source_adset_id": str(object_ids.get("adset_id") or ""),
+            bindings.append((experiment_id, {
+                "source_campaign_id": str(
+                    object_ids.get("campaign_id") or replacement_context.get("source_campaign_id") or ""
+                ),
+                "source_adset_id": str(
+                    object_ids.get("adset_id") or replacement_context.get("source_adset_id") or ""
+                ),
                 "source_creative_id": str(object_ids.get("creative_id") or ""),
                 "source_ad_id": str(object_ids.get("ad_id") or object_ids.get("target_id") or ""),
             }, bound_image_id))
@@ -1273,7 +1288,7 @@ class ExecutionTaskService:
         """Backfill local asset lineage for verified creative writes exactly once."""
         rows = self.conn.execute(
             """
-            SELECT a.operation_action_id,a.payload_json,t.meta_object_ids_json
+            SELECT a.operation_action_id,a.action_type,a.payload_json,t.meta_object_ids_json
             FROM growth_operation_action a
             JOIN meta_execution_task t ON t.operation_action_id=a.operation_action_id
             WHERE a.action_type IN ('REPLACE_CREATIVE','CREATE_PAUSED_AD')
@@ -1285,11 +1300,13 @@ class ExecutionTaskService:
                             NULLIF(json_extract(a.payload_json,'$.plan.after_json.creative.image_id'),''),
                             NULLIF(json_extract(a.payload_json,'$.plan.steps.IMAGE_UPLOAD.image_id'),'')
                         )
+                    AND c.experiment_id=json_extract(a.payload_json,'$.experiment_id')
                     AND c.ad_id=COALESCE(
                             NULLIF(json_extract(t.meta_object_ids_json,'$.ad_id'),''),
                             NULLIF(json_extract(t.meta_object_ids_json,'$.target_id'),'')
                         )
                     AND c.creative_id=json_extract(t.meta_object_ids_json,'$.creative_id')
+                    AND c.campaign_id<>'' AND c.adset_id<>''
                     AND c.status='USED_IN_AD'
                     AND c.binding_status IN ('confirmed','matched')
               )
@@ -1313,20 +1330,46 @@ class ExecutionTaskService:
             object_ids = decode_json(row["meta_object_ids_json"], {})
             ad_id = str(object_ids.get("ad_id") or object_ids.get("target_id") or "").strip()
             creative_id = str(object_ids.get("creative_id") or "").strip()
+            experiment_id = str(payload.get("experiment_id") or "").strip()
             if not image_id or not ad_id or not creative_id:
                 skipped.append(operation_action_id)
                 continue
             existing = self.conn.execute(
                 """
-                SELECT 1 FROM creative_adoption_records
-                WHERE image_id=? AND ad_id=? AND creative_id=?
+                SELECT adoption_id,campaign_id,adset_id FROM creative_adoption_records
+                WHERE image_id=? AND experiment_id=? AND ad_id=? AND creative_id=?
                   AND status='USED_IN_AD' AND binding_status IN ('confirmed','matched')
                 LIMIT 1
                 """,
-                (image_id, ad_id, creative_id),
+                (image_id, experiment_id, ad_id, creative_id),
             ).fetchone()
             if existing:
-                skipped.append(operation_action_id)
+                hierarchy = self.conn.execute(
+                    """
+                    SELECT source_campaign_id,source_adset_id
+                    FROM ad_experiment WHERE experiment_id=?
+                    """,
+                    (experiment_id,),
+                ).fetchone()
+                campaign_id = str(hierarchy["source_campaign_id"] or "").strip() if hierarchy else ""
+                adset_id = str(hierarchy["source_adset_id"] or "").strip() if hierarchy else ""
+                if str(row["action_type"] or "").upper() == "REPLACE_CREATIVE" and campaign_id and adset_id and (
+                    not str(existing["campaign_id"] or "").strip()
+                    or not str(existing["adset_id"] or "").strip()
+                ):
+                    with self.conn:
+                        self.conn.execute(
+                            """
+                            UPDATE creative_adoption_records
+                            SET campaign_id=?,adset_id=?,adopted_campaign_id=?,adopted_adset_id=?
+                            WHERE adoption_id=?
+                              AND (campaign_id='' OR adset_id='')
+                            """,
+                            (campaign_id, adset_id, campaign_id, adset_id, existing["adoption_id"]),
+                        )
+                    repaired.append(operation_action_id)
+                else:
+                    skipped.append(operation_action_id)
                 continue
             with self.conn:
                 self._bind_experiment_meta_objects(operation_action_id, object_ids, require_complete=True)

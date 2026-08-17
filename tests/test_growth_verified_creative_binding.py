@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.creative_image_generation import ensure_creative_image_generation_tables
+from app.creative_image_generation import ensure_creative_image_generation_tables, mark_generated_image_adopted
 from app.growth.decision_service import DecisionService
 from app.growth.errors import GrowthStateConflict
 from app.growth.execution_service import ExecutionTaskService
@@ -159,3 +159,92 @@ def test_verified_creation_binding_fails_closed_without_frozen_image(tmp_path: P
         tasks._bind_experiment_meta_objects(
             action["operation_action_id"], object_ids, require_complete=True,
         )
+
+
+def test_verified_replacement_backfills_exact_experiment_hierarchy(tmp_path: Path) -> None:
+    conn = _connection(tmp_path / "growth-replacement.sqlite3")
+    _seed_experiment_and_image(conn)
+    conn.execute(
+        """
+        UPDATE ad_experiment
+        SET source_campaign_id='campaign-source',source_adset_id='adset-source',
+            source_creative_id='creative-new',source_ad_id='ad-new'
+        WHERE experiment_id='adexp-1'
+        """
+    )
+    decision = DecisionService(conn).create_decision(
+        recommendation_id="reco-1",
+        selected_action="REPLACE_CREATIVE",
+        decision_reason={"type": "CREATIVE_REPLACEMENT"},
+        confidence=1,
+        idempotency_key="decision-replacement",
+    )
+    tasks = ExecutionTaskService(conn)
+    action = tasks.create_operation_action(
+        decision_id=decision["decision_id"],
+        episode_id=decision["episode_id"],
+        action_type="REPLACE_CREATIVE",
+        target_type="AD",
+        target_id="ad-new",
+        payload={
+            "experiment_id": "adexp-1",
+            "plan": {
+                "target_account_id": "act_123",
+                "after_json": {"creative": {"image_id": "pro_img_new"}},
+            },
+        },
+    )
+    task = tasks.enqueue_task(
+        action["operation_action_id"], idempotency_key="task-replacement", payload={},
+    )
+    conn.execute(
+        "UPDATE meta_execution_task SET status='RUNNING' WHERE execution_task_id=?",
+        (task["execution_task_id"],),
+    )
+    conn.execute(
+        "UPDATE meta_execution_task SET status='VERIFYING' WHERE execution_task_id=?",
+        (task["execution_task_id"],),
+    )
+    conn.execute(
+        """
+        UPDATE meta_execution_task
+        SET status='SUCCESS',meta_object_ids_json=?,finished_at=?
+        WHERE execution_task_id=?
+        """,
+        (json.dumps({"ad_id": "ad-new", "creative_id": "creative-new"}),
+         "2026-08-17T00:01:00+00:00", task["execution_task_id"]),
+    )
+    conn.execute(
+        "UPDATE growth_operation_action SET status='VERIFIED' WHERE operation_action_id=?",
+        (action["operation_action_id"],),
+    )
+    adoption = mark_generated_image_adopted(
+        conn,
+        image_id="pro_img_new",
+        ad_id="ad-new",
+        creative_id="creative-new",
+        experiment_id="adexp-1",
+        binding_method="META_EXECUTION_RECEIPT_MATCH",
+        binding_confidence="HIGH",
+        binding_status="confirmed",
+    )
+
+    first = tasks.reconcile_verified_replacement_bindings()
+    second = tasks.reconcile_verified_replacement_bindings()
+
+    assert first["repaired"] == [action["operation_action_id"]]
+    assert second == {"scanned": 0, "repaired": [], "skipped": []}
+    binding = conn.execute(
+        """
+        SELECT adoption_id,campaign_id,adset_id,adopted_campaign_id,adopted_adset_id
+        FROM creative_adoption_records WHERE adoption_id=?
+        """,
+        (adoption["adoption_id"],),
+    ).fetchone()
+    assert dict(binding) == {
+        "adoption_id": adoption["adoption_id"],
+        "campaign_id": "campaign-source",
+        "adset_id": "adset-source",
+        "adopted_campaign_id": "campaign-source",
+        "adopted_adset_id": "adset-source",
+    }
