@@ -122,6 +122,8 @@ def test_all_five_accounts_and_every_meta_ad_are_rostered_read_only() -> None:
         "covered_active_ads": 6,
         "ads_with_metric_observation": 5,
         "active_ads_with_metric_observation": 5,
+        "active_ads_zero_delivery": 0,
+        "active_ads_waiting_for_facts": 1,
         "multi_cell_experiment_ads": 2,
         "single_ad_observation_ads": 4,
     }
@@ -248,9 +250,67 @@ def test_coverage_readiness_uses_the_same_seven_day_window_as_operating_scores()
         "start_date": "2026-08-03",
         "cutoff_date": "2026-08-09",
         "days": 7,
+        "complete": False,
     }
     assert items[current["id"]]["monitoring_status"] == "METRIC_OBSERVATION_AVAILABLE"
     assert items[stale["id"]]["monitoring_status"] == "WAITING_FOR_DASHBOARD_FACTS"
+
+
+def test_complete_window_distinguishes_zero_delivery_from_initial_or_sync_waiting() -> None:
+    account = GLE_AD_ACCOUNT_SCOPE_V1[0]
+    delivered = _live_ad(account, "30")
+    zero_with_delivering_sibling = _live_ad(account, "31")
+    zero_with_delivering_sibling["adset_id"] = delivered["adset_id"]
+    zero_adset = _live_ad(account, "32")
+    recent = _live_ad(account, "33")
+    recent["created_time"] = "2026-08-04T00:00:00+0000"
+    paused = _live_ad(account, "34", effective="PAUSED")
+    live_ads = fetch_scoped_meta_ads(
+        _MetaSession(
+            {
+                account["account_id"]: [
+                    delivered,
+                    zero_with_delivering_sibling,
+                    zero_adset,
+                    recent,
+                    paused,
+                ]
+            }
+        ),
+        access_token="secret-not-output",
+        graph_root="https://graph.example/v25.0",
+    )
+    conn = _database()
+    conn.executemany(
+        "INSERT INTO ad_dashboard_sync_state VALUES ('all',?,'ok',10)",
+        [(f"2026-08-{day:02d}",) for day in range(3, 9)],
+    )
+    conn.execute(
+        "INSERT INTO ad_dashboard_fact_rows VALUES (?,?,?)",
+        (delivered["id"], "2026-08-09", account["account_id"]),
+    )
+    conn.commit()
+
+    result = build_gle_ad_account_coverage(conn, live_ads)
+    items = {
+        item["ad_id"]: item
+        for current_account in result["accounts"]
+        for item in current_account["items"]
+    }
+
+    assert result["fact_window"]["complete"] is True
+    assert items[delivered["id"]]["monitoring_status"] == "METRIC_OBSERVATION_AVAILABLE"
+    sibling = items[zero_with_delivering_sibling["id"]]
+    assert sibling["monitoring_status"] == "NO_DELIVERY_IN_COMPLETE_WINDOW"
+    assert sibling["delivery_diagnosis"]["same_adset_delivering_ads"] == 1
+    assert sibling["delivery_diagnosis"]["review_focus"] == "AD_DELIVERY_ALLOCATION"
+    assert items[zero_adset["id"]]["delivery_diagnosis"]["review_focus"] == (
+        "ADSET_DELIVERY_CONFIGURATION"
+    )
+    assert items[recent["id"]]["monitoring_status"] == "WAITING_FOR_DASHBOARD_FACTS"
+    assert items[paused["id"]]["monitoring_status"] == "WAITING_FOR_DASHBOARD_FACTS"
+    assert result["summary"]["active_ads_zero_delivery"] == 2
+    assert result["summary"]["active_ads_waiting_for_facts"] == 1
 
 
 def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -> None:
@@ -271,7 +331,8 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert 'id="adGleRecommendationSummary"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleRecommendationFilters"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleRecommendationRows"' in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "在投待数据" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "在投零交付" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "在投待同步" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleTaskWorkbenchMount"' in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'class="ad-gle-operations-grid"' in AD_DATA_DASHBOARD_PAGE_HTML
@@ -280,7 +341,7 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert 'class="ad-gle-viewbar"' in AD_DATA_DASHBOARD_PAGE_HTML[operations_start:operations_end]
     assert "覆盖广告任务工作台" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看任务" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "系统补齐 ${activeWaiting} 条在投数据" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "核对 ${activeZeroDelivery} 条在投零交付" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "优先复核" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "任务待处理" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adOpenGleRecommendations"' not in AD_DATA_DASHBOARD_PAGE_HTML
@@ -321,9 +382,10 @@ def test_dashboard_coverage_surfaces_existing_governed_recommendations() -> None
     assert "function gleCoverageNextStep" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "等待本轮评分" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "本轮未形成可评分样本" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "近7天无精确投放数据" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "近7天零交付" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "数据同步或初始窗口待就绪" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "系统核对低投放原因" in AD_DATA_DASHBOARD_PAGE_HTML
-    assert "不会按日历无限延长观察期" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "不会按日历无限延长观察期" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "保持投放，准备放量" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看账户明细" not in AD_DATA_DASHBOARD_PAGE_HTML
     assert "data-growth-bulk-confirm" not in AD_DATA_DASHBOARD_PAGE_HTML

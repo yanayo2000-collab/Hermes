@@ -161,7 +161,7 @@ def _placeholders(values: Sequence[str]) -> str:
 def _load_fact_observations(
     conn: sqlite3.Connection,
     ad_ids: Sequence[str],
-) -> tuple[str | None, str | None, dict[str, dict[str, Any]]]:
+) -> tuple[str | None, str | None, bool, dict[str, str], dict[str, dict[str, Any]]]:
     try:
         row = conn.execute(
             """
@@ -175,8 +175,34 @@ def _load_fact_observations(
     except (sqlite3.Error, ValueError):
         cutoff_date = None
     if cutoff_date is None:
-        return None, None, {}
+        return None, None, False, {}, {}
     window_start = cutoff_date - timedelta(days=FACT_WINDOW_DAYS - 1)
+    complete_dates = {
+        str(row[0] or "").strip()
+        for row in conn.execute(
+            """
+            SELECT DISTINCT date
+            FROM ad_dashboard_sync_state
+            WHERE source='all' AND status='ok' AND row_count>0
+              AND date BETWEEN ? AND ?
+            """,
+            (window_start.isoformat(), cutoff_date.isoformat()),
+        )
+    }
+    complete_window = len(complete_dates) == FACT_WINDOW_DAYS
+    historical_latest = {
+        str(row[0] or "").strip(): str(row[1] or "").strip()
+        for row in conn.execute(
+            f"""
+            SELECT ad_id, MAX(date)
+            FROM ad_dashboard_fact_rows
+            WHERE date < ? AND ad_id IN ({_placeholders(ad_ids)})
+            GROUP BY ad_id
+            """,
+            (window_start.isoformat(), *ad_ids),
+        )
+        if str(row[0] or "").strip()
+    }
     sql = f"""
         SELECT ad_id, MIN(date) AS first_date, MAX(date) AS latest_date,
                COUNT(*) AS fact_row_count,
@@ -195,7 +221,20 @@ def _load_fact_observations(
         }
         ad_id = str(item["ad_id"] or "").strip()
         observations[ad_id] = item
-    return window_start.isoformat(), cutoff_date.isoformat(), observations
+    return (
+        window_start.isoformat(), cutoff_date.isoformat(), complete_window,
+        historical_latest, observations,
+    )
+
+
+def _created_before_window(value: Any, window_start: str | None) -> bool:
+    """Require a full prior calendar day; boundary-day creations stay pending."""
+    if not window_start:
+        return False
+    try:
+        return date.fromisoformat(str(value or "").strip()[:10]) < date.fromisoformat(window_start)
+    except ValueError:
+        return False
 
 
 def _experiment_memberships(
@@ -285,8 +324,24 @@ def build_gle_ad_account_coverage(
             _fail("GLE_AD_COVERAGE_ACCOUNT_NAME_INVALID")
         seen.add(ad_id)
     ad_ids = sorted(seen)
-    window_start, cutoff, facts = _load_fact_observations(conn, ad_ids)
+    window_start, cutoff, complete_window, historical_latest, facts = (
+        _load_fact_observations(conn, ad_ids)
+    )
     memberships = _experiment_memberships(conn, ad_ids)
+    roster_by_ad_id = {str(item["ad_id"]): item for item in normalized}
+    delivered_ad_ids = {
+        ad_id
+        for ad_id, fact in facts.items()
+        if int(fact.get("fact_row_count") or 0) > 0
+        and str(fact.get("min_account_id") or "").strip().removeprefix("act_")
+        == str(roster_by_ad_id.get(ad_id, {}).get("account_id") or "")
+        and str(fact.get("max_account_id") or "").strip().removeprefix("act_")
+        == str(roster_by_ad_id.get(ad_id, {}).get("account_id") or "")
+    }
+    delivered_by_adset: dict[str, int] = {}
+    for delivered_ad_id in delivered_ad_ids:
+        adset_id = str(roster_by_ad_id[delivered_ad_id].get("adset_id") or "")
+        delivered_by_adset[adset_id] = delivered_by_adset.get(adset_id, 0) + 1
     account_results: list[dict[str, Any]] = []
     all_items: list[dict[str, Any]] = []
     for account in GLE_AD_ACCOUNT_SCOPE_V1:
@@ -305,18 +360,40 @@ def build_gle_ad_account_coverage(
             fact_bound = bool(
                 fact and fact_account == item["account_id"] and fact_account_max == item["account_id"]
             )
+            existed_before_window = bool(
+                historical_latest.get(ad_id)
+                or _created_before_window(item.get("created_time"), window_start)
+            )
+            no_delivery = bool(
+                item.get("effective_status") == "ACTIVE"
+                and complete_window and existed_before_window and not fact_bound
+            )
+            if fact_bound:
+                monitoring_status = "METRIC_OBSERVATION_AVAILABLE"
+            elif no_delivery:
+                monitoring_status = "NO_DELIVERY_IN_COMPLETE_WINDOW"
+            else:
+                monitoring_status = "WAITING_FOR_DASHBOARD_FACTS"
             membership = memberships.get(ad_id)
             is_experiment = membership is not None
             if is_experiment and fact_bound:
                 evaluation_status = "EXPERIMENT_OPERATING_EVALUATION_AVAILABLE"
             elif is_experiment:
-                evaluation_status = "EXPERIMENT_REGISTERED_WAITING_FOR_FACTS"
+                evaluation_status = (
+                    "EXPERIMENT_ZERO_DELIVERY_REQUIRES_REVIEW"
+                    if no_delivery else "EXPERIMENT_REGISTERED_WAITING_FOR_FACTS"
+                )
             elif fact_bound:
                 evaluation_status = "SINGLE_AD_OPERATING_OBSERVATION_AVAILABLE"
             else:
-                evaluation_status = "OBSERVATION_REGISTERED_WAITING_FOR_FACTS"
+                evaluation_status = (
+                    "SINGLE_AD_ZERO_DELIVERY_REQUIRES_REVIEW"
+                    if no_delivery else "OBSERVATION_REGISTERED_WAITING_FOR_FACTS"
+                )
             blockers = ["MISSING_EXACT_CELL_LINEAGE", "GATE0_QUASI_ONLY", "GATE1_NOT_READY"]
-            if not fact_bound:
+            if no_delivery:
+                blockers.insert(0, "NO_DELIVERY_IN_COMPLETE_WINDOW")
+            elif not fact_bound:
                 blockers.insert(0, "DASHBOARD_FACTS_NOT_AVAILABLE_IN_WINDOW")
             if not is_experiment:
                 blockers.insert(0, "NOT_REGISTERED_AS_MULTI_CELL_EXPERIMENT")
@@ -324,9 +401,7 @@ def build_gle_ad_account_coverage(
                 **item,
                 "coverage_status": "COVERED_READ_ONLY",
                 "coverage_mode": "MULTI_CELL_EXPERIMENT" if is_experiment else "SINGLE_AD_OBSERVATION",
-                "monitoring_status": (
-                    "METRIC_OBSERVATION_AVAILABLE" if fact_bound else "WAITING_FOR_DASHBOARD_FACTS"
-                ),
+                "monitoring_status": monitoring_status,
                 "evaluation_status": evaluation_status,
                 "experiment_binding": membership,
                 "fact_window": {
@@ -334,6 +409,28 @@ def build_gle_ad_account_coverage(
                     "cutoff_date": cutoff,
                     "latest_fact_date": str((fact or {}).get("latest_date") or "") or None,
                     "row_count": int((fact or {}).get("fact_row_count") or 0),
+                    "complete": complete_window,
+                },
+                "delivery_diagnosis": {
+                    "status": (
+                        "DELIVERY_OBSERVED" if fact_bound else
+                        "NO_DELIVERY_CONFIRMED" if no_delivery else "PENDING_INITIAL_OR_SYNC"
+                    ),
+                    "reason_code": (
+                        "EXACT_AD_FACTS_AVAILABLE" if fact_bound else
+                        "NO_DELIVERY_IN_COMPLETE_WINDOW" if no_delivery else
+                        "WINDOW_OR_AD_AGE_INCOMPLETE"
+                    ),
+                    "historical_latest_fact_date": historical_latest.get(ad_id) or None,
+                    "same_adset_delivering_ads": int(
+                        delivered_by_adset.get(str(item.get("adset_id") or ""), 0)
+                    ),
+                    "operator_review_required": no_delivery,
+                    "review_focus": (
+                        "AD_DELIVERY_ALLOCATION"
+                        if no_delivery and delivered_by_adset.get(str(item.get("adset_id") or ""), 0)
+                        else "ADSET_DELIVERY_CONFIGURATION" if no_delivery else None
+                    ),
                 },
                 "current_natural_cell_lineage_status": "MISSING_EXACT_CELL_LINEAGE",
                 "gate0_status": "QUASI_ONLY",
@@ -358,6 +455,12 @@ def build_gle_ad_account_coverage(
                 "active_ads_with_metric_observation": sum(
                     item["monitoring_status"] == "METRIC_OBSERVATION_AVAILABLE" for item in active
                 ),
+                "active_ads_zero_delivery": sum(
+                    item["monitoring_status"] == "NO_DELIVERY_IN_COMPLETE_WINDOW" for item in active
+                ),
+                "active_ads_waiting_for_facts": sum(
+                    item["monitoring_status"] == "WAITING_FOR_DASHBOARD_FACTS" for item in active
+                ),
                 "multi_cell_experiment_ads": sum(
                     item["coverage_mode"] == "MULTI_CELL_EXPERIMENT" for item in projected
                 ),
@@ -381,6 +484,16 @@ def build_gle_ad_account_coverage(
             and item["monitoring_status"] == "METRIC_OBSERVATION_AVAILABLE"
             for item in all_items
         ),
+        "active_ads_zero_delivery": sum(
+            item["effective_status"] == "ACTIVE"
+            and item["monitoring_status"] == "NO_DELIVERY_IN_COMPLETE_WINDOW"
+            for item in all_items
+        ),
+        "active_ads_waiting_for_facts": sum(
+            item["effective_status"] == "ACTIVE"
+            and item["monitoring_status"] == "WAITING_FOR_DASHBOARD_FACTS"
+            for item in all_items
+        ),
         "multi_cell_experiment_ads": sum(
             item["coverage_mode"] == "MULTI_CELL_EXPERIMENT" for item in all_items
         ),
@@ -392,7 +505,10 @@ def build_gle_ad_account_coverage(
         "schema_version": SCHEMA_VERSION,
         "scope_status": "EXACT_FIVE_ACCOUNTS",
         "coverage_status": "ALL_META_ADS_ROSTERED_READ_ONLY",
-        "fact_window": {"start_date": window_start, "cutoff_date": cutoff, "days": FACT_WINDOW_DAYS},
+        "fact_window": {
+            "start_date": window_start, "cutoff_date": cutoff,
+            "days": FACT_WINDOW_DAYS, "complete": complete_window,
+        },
         "summary": summary,
         "accounts": account_results,
         "gate": {
