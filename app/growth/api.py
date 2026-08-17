@@ -359,6 +359,10 @@ class DecisionCreateRequest(BaseModel):
     context_snapshot_id: str = ""
 
 
+class ZeroDeliveryRebuildRecommendationsRequest(BaseModel):
+    ad_ids: List[str] = Field(min_length=1, max_length=100)
+
+
 class EpisodeUpdateRequest(BaseModel):
     status: str
     outcome_json: Optional[Dict[str, Any]] = None
@@ -1586,6 +1590,139 @@ def create_ad_experiment_router(
                 status_code=503,
                 detail={"code": "GLE_AD_COVERAGE_UNAVAILABLE", "message": str(exc)},
             ) from exc
+
+    @router.post("/gle-ad-coverage/rebuild-recommendations", status_code=201)
+    def prepare_zero_delivery_rebuild_recommendations(
+        body: ZeroDeliveryRebuildRecommendationsRequest,
+        request: Request,
+    ) -> Dict[str, Any]:
+        """Materialize rebuild recommendations only after live zero-delivery revalidation."""
+        operator(request)
+        requested = [str(value or "").strip() for value in body.ad_ids]
+        if any(not value.isdigit() or len(value) > 32 for value in requested):
+            raise HTTPException(status_code=400, detail={
+                "code": "VALIDATION_ERROR", "message": "zero_delivery_ad_id_invalid",
+            })
+        if len(set(requested)) != len(requested):
+            raise HTTPException(status_code=400, detail={
+                "code": "VALIDATION_ERROR", "message": "zero_delivery_ad_ids_must_be_unique",
+            })
+        try:
+            live_ads = fetch_scoped_meta_ads(
+                meta_session,
+                access_token=meta_access_token,
+                graph_root=meta_graph_root,
+            )
+            coverage = _with_connection(
+                db,
+                lambda conn: build_gle_ad_account_coverage(conn, live_ads),
+            )
+        except AdAccountCoverageError as exc:
+            raise HTTPException(status_code=503, detail={
+                "code": "GLE_AD_COVERAGE_UNAVAILABLE", "message": str(exc),
+            }) from exc
+
+        zero_delivery = {
+            str(item.get("ad_id") or ""): (account, item)
+            for account in coverage.get("accounts") or []
+            for item in account.get("items") or []
+            if str(item.get("effective_status") or "") == "ACTIVE"
+            and str(item.get("monitoring_status") or "") == "NO_DELIVERY_IN_COMPLETE_WINDOW"
+        }
+        invalid = [ad_id for ad_id in requested if ad_id not in zero_delivery]
+        if invalid:
+            raise HTTPException(status_code=409, detail={
+                "code": "STATE_CONFLICT",
+                "message": "zero_delivery_rebuild_scope_changed",
+                "ad_ids": invalid,
+            })
+
+        fact_window = dict(coverage.get("fact_window") or {})
+        report_id = (
+            f"gle_zero_delivery_{fact_window.get('start_date') or 'unknown'}_"
+            f"{fact_window.get('cutoff_date') or 'unknown'}"
+        )
+        recommendations: List[Dict[str, Any]] = []
+        with db.connect() as conn:
+            ensure_ad_daily_report_tables(conn)
+            for ad_id in requested:
+                account, item = zero_delivery[ad_id]
+                diagnosis = dict(item.get("delivery_diagnosis") or {})
+                recommendation_id = "gle_zero_delivery_" + payload_hash({
+                    "report_id": report_id,
+                    "account_id": account.get("account_id"),
+                    "campaign_id": item.get("campaign_id"),
+                    "adset_id": item.get("adset_id"),
+                    "ad_id": ad_id,
+                })[:24]
+                recommendation = {
+                    "recommendation_id": recommendation_id,
+                    "report_id": report_id,
+                    "object_id": ad_id,
+                    "object_level": "ad",
+                    "account_id": str(account.get("account_id") or ""),
+                    "source_campaign_id": str(item.get("campaign_id") or ""),
+                    "source_adset_id": str(item.get("adset_id") or ""),
+                    "source_ad_id": ad_id,
+                    "country": str(account.get("market") or ""),
+                    "project": "tugao",
+                    "target_app": "tugao",
+                    "primary_action": "repair_delivery_config",
+                    "action_type": "repair_delivery_config",
+                    "primary_action_zh": "重建受控投放",
+                    "diagnosis_type": "zero_delivery_in_complete_window",
+                    "diagnosis_type_zh": "完整7天零交付",
+                    "reason_zh": "完整7天窗口内该广告没有展示或消耗事实，直接重建受控投放配置，不再等待数据。",
+                    "status_tag": "zero_delivery_rebuild_required",
+                    "confidence": "high",
+                    "data_origin": "NATIVE_V2",
+                    "objective": {"cpi_target": DEFAULT_CPI_TARGET_USD},
+                    "decision_context": {
+                        "platform": "meta",
+                        "business_goal": "acquisition",
+                        "bid_strategy": "COST_CAP",
+                        "rebuild_mode": "CREATE_PAUSED_OBJECTS",
+                    },
+                    "evidence": {
+                        "cpi_target": DEFAULT_CPI_TARGET_USD,
+                        "data_window": fact_window,
+                        "evidence_points": [
+                            "NO_DELIVERY_IN_COMPLETE_WINDOW",
+                            str(diagnosis.get("review_focus") or ""),
+                        ],
+                    },
+                }
+                stored = canonical_json(recommendation)
+                existing = conn.execute(
+                    "SELECT payload_json FROM ad_recommendation WHERE recommendation_id=?",
+                    (recommendation_id,),
+                ).fetchone()
+                if existing and str(existing["payload_json"] or "") != stored:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "STATE_CONFLICT",
+                        "message": "zero_delivery_recommendation_identity_conflict",
+                    })
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO ad_recommendation
+                    (recommendation_id,report_id,object_id,primary_action,primary_action_zh,
+                     confidence,status_tag,decision_context_json,data_origin,payload_json)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        recommendation_id, report_id, ad_id, "repair_delivery_config",
+                        "重建受控投放", "high", "zero_delivery_rebuild_required",
+                        canonical_json(recommendation["decision_context"]), "NATIVE_V2", stored,
+                    ),
+                )
+                recommendations.append(recommendation)
+            conn.commit()
+        return {
+            "report_id": report_id,
+            "recommendations": recommendations,
+            "revalidated_zero_delivery": len(recommendations),
+            "meta_writes_performed": False,
+        }
 
     @router.get("/autonomy/{account_id}")
     def dashboard_autonomy(account_id: str, request: Request) -> Dict[str, Any]:
