@@ -934,6 +934,8 @@ def create_app(settings: Optional[Dict[str, Any]] = None) -> FastAPI:
             return None
         if path == '/api/ops/ad-data-dashboard/meta-accounts/page-eligibility' and normalized_method == 'POST':
             return OPS_AUTH_ROLE_ADMIN
+        if path == '/api/ops/ad-data-dashboard/gle-ad-coverage/rebuild-recommendations' and normalized_method == 'POST':
+            return OPS_AUTH_ROLE_ADMIN
         if path.startswith('/api/ops/task-control/'):
             return OPS_AUTH_ROLE_ADMIN
         if path in {

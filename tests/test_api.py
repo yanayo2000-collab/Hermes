@@ -4436,6 +4436,11 @@ def test_ops_api_permission_audit_rejects_unmapped_routes():
         app.state.assert_ops_api_permissions_complete()
 
 
+def test_gle_rebuild_recommendation_route_is_permission_mapped():
+    app = create_app({'DB_PATH': ':memory:', 'AUTO_LARK_REPLY': False, 'AUTH_ENABLED': True})
+
+    app.state.assert_ops_api_permissions_complete()
+
 
 def test_customer_service_can_access_newly_mapped_late_ops_reads():
     client = make_client({'AUTH_ENABLED': True, 'AUTH_INTERNAL_TOKEN': 'internal-secret'})
