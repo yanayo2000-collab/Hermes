@@ -371,6 +371,8 @@ def test_dashboard_exposes_all_ad_coverage_without_gate_or_meta_write_claims() -
     assert "不能删除共享广告组" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "/gle-ad-coverage/rebuild-recommendations" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "直接重建预算、成本上限、受众与排期配置，不再等待数据" in AD_DATA_DASHBOARD_PAGE_HTML
+    rebuild_action_html = AD_DATA_DASHBOARD_PAGE_HTML.split("if(step.action==='rebuild')return", 1)[1].split(";return", 1)[0]
+    assert "<small>${esc(step.detail)}</small>" not in rebuild_action_html
     assert "在投待同步" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "查看数据" in AD_DATA_DASHBOARD_PAGE_HTML
     assert 'id="adGleTaskWorkbenchMount"' in AD_DATA_DASHBOARD_PAGE_HTML
