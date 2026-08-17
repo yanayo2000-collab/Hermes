@@ -1118,27 +1118,26 @@ class ExecutionTaskService:
                     "source_ad_id": str(object_ids.get(f"{prefix}ad_id") or ""),
                 }, image_id))
         else:
-            replacement_image_id = ""
-            if action_type == "REPLACE_CREATIVE":
-                after_creative = dict(dict(plan.get("after_json") or {}).get("creative") or {})
-                replacement_image_id = str(
-                    after_creative.get("image_id")
-                    or dict(dict(plan.get("steps") or {}).get("IMAGE_UPLOAD") or {}).get("image_id")
-                    or ""
-                ).strip()
+            after_creative = dict(dict(plan.get("after_json") or {}).get("creative") or {})
+            bound_image_id = str(
+                after_creative.get("image_id")
+                or dict(dict(plan.get("steps") or {}).get("IMAGE_UPLOAD") or {}).get("image_id")
+                or ""
+            ).strip()
             bindings.append((str(action_payload.get("experiment_id") or ""), {
                 "source_campaign_id": str(object_ids.get("campaign_id") or ""),
                 "source_adset_id": str(object_ids.get("adset_id") or ""),
                 "source_creative_id": str(object_ids.get("creative_id") or ""),
                 "source_ad_id": str(object_ids.get("ad_id") or object_ids.get("target_id") or ""),
-            }, replacement_image_id))
-        if require_complete and cells and action_type == "CREATE_PAUSED_AD":
+            }, bound_image_id))
+        if require_complete and action_type == "CREATE_PAUSED_AD":
             for index, (experiment_id, values, image_id) in enumerate(bindings, start=1):
                 required = {"experiment_id": experiment_id, "image_id": image_id, **values}
                 missing = [key for key, value in required.items() if not str(value or "").strip()]
                 if missing:
+                    binding_label = f"C{index}" if cells else "single"
                     raise GrowthStateConflict(
-                        f"verified_meta_binding_incomplete:C{index}:{','.join(missing)}"
+                        f"verified_meta_binding_incomplete:{binding_label}:{','.join(missing)}"
                     )
         for experiment_id, values, image_id in bindings:
             if not experiment_id:
@@ -1271,13 +1270,29 @@ class ExecutionTaskService:
                 )
 
     def reconcile_verified_replacement_bindings(self, *, limit: int = 100) -> Dict[str, Any]:
-        """Backfill local asset lineage for verified replacement writes exactly once."""
+        """Backfill local asset lineage for verified creative writes exactly once."""
         rows = self.conn.execute(
             """
             SELECT a.operation_action_id,a.payload_json,t.meta_object_ids_json
             FROM growth_operation_action a
             JOIN meta_execution_task t ON t.operation_action_id=a.operation_action_id
-            WHERE a.action_type='REPLACE_CREATIVE' AND a.status='VERIFIED' AND t.status='SUCCESS'
+            WHERE a.action_type IN ('REPLACE_CREATIVE','CREATE_PAUSED_AD')
+              AND a.status='VERIFIED' AND t.status='SUCCESS'
+              AND COALESCE(json_array_length(json_extract(a.payload_json,'$.plan.cells')),0)=0
+              AND NOT EXISTS (
+                  SELECT 1 FROM creative_adoption_records c
+                  WHERE c.image_id=COALESCE(
+                            NULLIF(json_extract(a.payload_json,'$.plan.after_json.creative.image_id'),''),
+                            NULLIF(json_extract(a.payload_json,'$.plan.steps.IMAGE_UPLOAD.image_id'),'')
+                        )
+                    AND c.ad_id=COALESCE(
+                            NULLIF(json_extract(t.meta_object_ids_json,'$.ad_id'),''),
+                            NULLIF(json_extract(t.meta_object_ids_json,'$.target_id'),'')
+                        )
+                    AND c.creative_id=json_extract(t.meta_object_ids_json,'$.creative_id')
+                    AND c.status='USED_IN_AD'
+                    AND c.binding_status IN ('confirmed','matched')
+              )
             ORDER BY t.finished_at,t.execution_task_id
             LIMIT ?
             """,
