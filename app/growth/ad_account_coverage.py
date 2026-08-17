@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 
@@ -11,6 +11,7 @@ SCHEMA_VERSION = "gle-ad-account-coverage-v1"
 # report.  A fact from several weeks ago must not make an ad look score-ready
 # when the current seven-day report has no usable input for it.
 FACT_WINDOW_DAYS = 7
+NEW_AD_ZERO_DELIVERY_HOURS = 48
 MAX_ADS_PER_ACCOUNT = 1_000
 MAX_META_PAGES = 5
 
@@ -70,7 +71,8 @@ def fetch_scoped_meta_ads(
             params: Dict[str, Any] = {
                 "fields": (
                     "id,name,account_id,campaign_id,adset_id,status,effective_status,"
-                    "created_time,updated_time"
+                    "created_time,updated_time,"
+                    "insights.date_preset(maximum).limit(1){impressions,spend}"
                 ),
                 "limit": 200,
             }
@@ -112,6 +114,20 @@ def fetch_scoped_meta_ads(
                     raw.get("effective_status") or configured_status,
                     "GLE_AD_COVERAGE_EFFECTIVE_STATUS_INVALID",
                 )
+                insights = raw.get("insights")
+                if not isinstance(insights, dict) or not isinstance(insights.get("data"), list):
+                    _fail("GLE_AD_COVERAGE_LIFETIME_INSIGHTS_INVALID")
+                insight_rows = insights["data"]
+                if len(insight_rows) > 1 or any(not isinstance(row, dict) for row in insight_rows):
+                    _fail("GLE_AD_COVERAGE_LIFETIME_INSIGHTS_INVALID")
+                lifetime = insight_rows[0] if insight_rows else {}
+                try:
+                    lifetime_impressions = int(lifetime.get("impressions") or 0)
+                    lifetime_spend = float(lifetime.get("spend") or 0)
+                except (TypeError, ValueError):
+                    _fail("GLE_AD_COVERAGE_LIFETIME_INSIGHTS_INVALID")
+                if lifetime_impressions < 0 or lifetime_spend < 0:
+                    _fail("GLE_AD_COVERAGE_LIFETIME_INSIGHTS_INVALID")
                 seen_global.add(ad_id)
                 account_rows += 1
                 if account_rows > MAX_ADS_PER_ACCOUNT:
@@ -129,6 +145,11 @@ def fetch_scoped_meta_ads(
                         "effective_status": effective_status,
                         "created_time": str(raw.get("created_time") or "").strip(),
                         "updated_time": str(raw.get("updated_time") or "").strip(),
+                        "lifetime_delivery": {
+                            "impressions": lifetime_impressions,
+                            "spend": lifetime_spend,
+                            "source": "META_AD_INSIGHTS_MAXIMUM",
+                        },
                     }
                 )
             paging = body.get("paging")
@@ -237,6 +258,17 @@ def _created_before_window(value: Any, window_start: str | None) -> bool:
         return False
 
 
+def _age_hours(value: Any, *, now: datetime) -> float | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        created = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        return None
+    return max(0.0, (now.astimezone(timezone.utc) - created.astimezone(timezone.utc)).total_seconds() / 3600)
+
+
 def _experiment_memberships(
     conn: sqlite3.Connection,
     ad_ids: Sequence[str],
@@ -309,7 +341,10 @@ def _experiment_memberships(
 def build_gle_ad_account_coverage(
     conn: sqlite3.Connection,
     live_ads: Iterable[Mapping[str, Any]],
+    *,
+    now: datetime | None = None,
 ) -> Dict[str, Any]:
+    current_time = now or datetime.now(timezone.utc)
     scope = _scope_by_id()
     normalized = [dict(item) for item in live_ads]
     if not normalized:
@@ -364,11 +399,28 @@ def build_gle_ad_account_coverage(
                 historical_latest.get(ad_id)
                 or _created_before_window(item.get("created_time"), window_start)
             )
+            age_hours = _age_hours(item.get("created_time"), now=current_time)
+            lifetime_delivery = dict(item.get("lifetime_delivery") or {})
+            lifetime_delivery_exact = (
+                str(lifetime_delivery.get("source") or "") == "META_AD_INSIGHTS_MAXIMUM"
+            )
+            lifetime_impressions = int(lifetime_delivery.get("impressions") or 0)
+            lifetime_spend = float(lifetime_delivery.get("spend") or 0)
+            zero_delivery_after_48h = bool(
+                item.get("effective_status") == "ACTIVE"
+                and lifetime_delivery_exact
+                and age_hours is not None
+                and age_hours >= NEW_AD_ZERO_DELIVERY_HOURS
+                and lifetime_impressions == 0
+                and lifetime_spend == 0
+            )
             no_delivery = bool(
                 item.get("effective_status") == "ACTIVE"
                 and complete_window and existed_before_window and not fact_bound
             )
-            if fact_bound:
+            if zero_delivery_after_48h:
+                monitoring_status = "NO_LIFETIME_DELIVERY_AFTER_48H"
+            elif fact_bound:
                 monitoring_status = "METRIC_OBSERVATION_AVAILABLE"
             elif no_delivery:
                 monitoring_status = "NO_DELIVERY_IN_COMPLETE_WINDOW"
@@ -376,13 +428,17 @@ def build_gle_ad_account_coverage(
                 monitoring_status = "WAITING_FOR_DASHBOARD_FACTS"
             membership = memberships.get(ad_id)
             is_experiment = membership is not None
-            if is_experiment and fact_bound:
+            if is_experiment and zero_delivery_after_48h:
+                evaluation_status = "EXPERIMENT_ZERO_DELIVERY_AFTER_48H_REQUIRES_REBUILD"
+            elif is_experiment and fact_bound:
                 evaluation_status = "EXPERIMENT_OPERATING_EVALUATION_AVAILABLE"
             elif is_experiment:
                 evaluation_status = (
                     "EXPERIMENT_ZERO_DELIVERY_REQUIRES_REVIEW"
                     if no_delivery else "EXPERIMENT_REGISTERED_WAITING_FOR_FACTS"
                 )
+            elif zero_delivery_after_48h:
+                evaluation_status = "SINGLE_AD_ZERO_DELIVERY_AFTER_48H_REQUIRES_REBUILD"
             elif fact_bound:
                 evaluation_status = "SINGLE_AD_OPERATING_OBSERVATION_AVAILABLE"
             else:
@@ -391,7 +447,9 @@ def build_gle_ad_account_coverage(
                     if no_delivery else "OBSERVATION_REGISTERED_WAITING_FOR_FACTS"
                 )
             blockers = ["MISSING_EXACT_CELL_LINEAGE", "GATE0_QUASI_ONLY", "GATE1_NOT_READY"]
-            if no_delivery:
+            if zero_delivery_after_48h:
+                blockers.insert(0, "NO_LIFETIME_DELIVERY_AFTER_48H")
+            elif no_delivery:
                 blockers.insert(0, "NO_DELIVERY_IN_COMPLETE_WINDOW")
             elif not fact_bound:
                 blockers.insert(0, "DASHBOARD_FACTS_NOT_AVAILABLE_IN_WINDOW")
@@ -413,20 +471,27 @@ def build_gle_ad_account_coverage(
                 },
                 "delivery_diagnosis": {
                     "status": (
+                        "NO_LIFETIME_DELIVERY_AFTER_48H" if zero_delivery_after_48h else
                         "DELIVERY_OBSERVED" if fact_bound else
                         "NO_DELIVERY_CONFIRMED" if no_delivery else "PENDING_INITIAL_OR_SYNC"
                     ),
                     "reason_code": (
+                        "NO_LIFETIME_DELIVERY_AFTER_48H" if zero_delivery_after_48h else
                         "EXACT_AD_FACTS_AVAILABLE" if fact_bound else
                         "NO_DELIVERY_IN_COMPLETE_WINDOW" if no_delivery else
                         "WINDOW_OR_AD_AGE_INCOMPLETE"
                     ),
+                    "age_hours": round(age_hours, 1) if age_hours is not None else None,
+                    "lifetime_impressions": lifetime_impressions,
+                    "lifetime_spend": lifetime_spend,
                     "historical_latest_fact_date": historical_latest.get(ad_id) or None,
                     "same_adset_delivering_ads": int(
                         delivered_by_adset.get(str(item.get("adset_id") or ""), 0)
                     ),
-                    "operator_review_required": no_delivery,
+                    "operator_review_required": zero_delivery_after_48h or no_delivery,
                     "review_focus": (
+                        "NEW_AD_CREATIVE_AND_DELIVERY_REBUILD"
+                        if zero_delivery_after_48h else
                         "AD_DELIVERY_ALLOCATION"
                         if no_delivery and delivered_by_adset.get(str(item.get("adset_id") or ""), 0)
                         else "ADSET_DELIVERY_CONFIGURATION" if no_delivery else None
@@ -456,7 +521,14 @@ def build_gle_ad_account_coverage(
                     item["monitoring_status"] == "METRIC_OBSERVATION_AVAILABLE" for item in active
                 ),
                 "active_ads_zero_delivery": sum(
-                    item["monitoring_status"] == "NO_DELIVERY_IN_COMPLETE_WINDOW" for item in active
+                    item["monitoring_status"] in {
+                        "NO_LIFETIME_DELIVERY_AFTER_48H", "NO_DELIVERY_IN_COMPLETE_WINDOW",
+                    }
+                    for item in active
+                ),
+                "active_ads_zero_delivery_after_48h": sum(
+                    item["monitoring_status"] == "NO_LIFETIME_DELIVERY_AFTER_48H"
+                    for item in active
                 ),
                 "active_ads_waiting_for_facts": sum(
                     item["monitoring_status"] == "WAITING_FOR_DASHBOARD_FACTS" for item in active
@@ -486,7 +558,14 @@ def build_gle_ad_account_coverage(
         ),
         "active_ads_zero_delivery": sum(
             item["effective_status"] == "ACTIVE"
-            and item["monitoring_status"] == "NO_DELIVERY_IN_COMPLETE_WINDOW"
+            and item["monitoring_status"] in {
+                "NO_LIFETIME_DELIVERY_AFTER_48H", "NO_DELIVERY_IN_COMPLETE_WINDOW",
+            }
+            for item in all_items
+        ),
+        "active_ads_zero_delivery_after_48h": sum(
+            item["effective_status"] == "ACTIVE"
+            and item["monitoring_status"] == "NO_LIFETIME_DELIVERY_AFTER_48H"
             for item in all_items
         ),
         "active_ads_waiting_for_facts": sum(

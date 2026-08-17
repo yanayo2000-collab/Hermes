@@ -1627,7 +1627,9 @@ def create_ad_experiment_router(
             for account in coverage.get("accounts") or []
             for item in account.get("items") or []
             if str(item.get("effective_status") or "") == "ACTIVE"
-            and str(item.get("monitoring_status") or "") == "NO_DELIVERY_IN_COMPLETE_WINDOW"
+            and str(item.get("monitoring_status") or "") in {
+                "NO_LIFETIME_DELIVERY_AFTER_48H", "NO_DELIVERY_IN_COMPLETE_WINDOW",
+            }
         }
         invalid = [ad_id for ad_id in requested if ad_id not in zero_delivery]
         if invalid:
@@ -1648,6 +1650,10 @@ def create_ad_experiment_router(
             for ad_id in requested:
                 account, item = zero_delivery[ad_id]
                 diagnosis = dict(item.get("delivery_diagnosis") or {})
+                is_48h_zero = (
+                    str(item.get("monitoring_status") or "")
+                    == "NO_LIFETIME_DELIVERY_AFTER_48H"
+                )
                 recommendation_id = "gle_zero_delivery_" + payload_hash({
                     "report_id": report_id,
                     "account_id": account.get("account_id"),
@@ -1670,9 +1676,16 @@ def create_ad_experiment_router(
                     "primary_action": "repair_delivery_config",
                     "action_type": "repair_delivery_config",
                     "primary_action_zh": "重建受控投放",
-                    "diagnosis_type": "zero_delivery_in_complete_window",
-                    "diagnosis_type_zh": "完整7天零交付",
-                    "reason_zh": "完整7天窗口内该广告没有展示或消耗事实，直接重建受控投放配置，不再等待数据。",
+                    "diagnosis_type": (
+                        "new_ad_zero_lifetime_delivery_after_48h"
+                        if is_48h_zero else "zero_delivery_in_complete_window"
+                    ),
+                    "diagnosis_type_zh": "新广告48小时零消耗" if is_48h_zero else "完整7天零交付",
+                    "reason_zh": (
+                        "新广告创建已满48小时，Meta累计展示和消耗仍为0，直接重建受控投放，不再等待7天。"
+                        if is_48h_zero else
+                        "完整7天窗口内该广告没有展示或消耗事实，直接重建受控投放配置，不再等待数据。"
+                    ),
                     "status_tag": "zero_delivery_rebuild_required",
                     "confidence": "high",
                     "data_origin": "NATIVE_V2",
@@ -1682,6 +1695,12 @@ def create_ad_experiment_router(
                         "business_goal": "acquisition",
                         "bid_strategy": "COST_CAP",
                         "rebuild_mode": "CREATE_PAUSED_OBJECTS",
+                        "source_adset_delete_allowed": False,
+                        "source_adset_delete_blocker": (
+                            "SHARED_ADSET_HAS_DELIVERING_ADS"
+                            if int(diagnosis.get("same_adset_delivering_ads") or 0) > 0
+                            else "REVERSIBLE_ROLLBACK_REQUIRED"
+                        ),
                     },
                     "evidence": {
                         "cpi_target": DEFAULT_CPI_TARGET_USD,
