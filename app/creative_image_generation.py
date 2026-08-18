@@ -3222,6 +3222,28 @@ def create_chatgpt_pro_job(
     source_creative_id = str(body.get('source_creative_id') or task.get('source_creative_id') or task.get('creative_id') or '').strip()
     source_campaign_id = str(body.get('source_campaign_id') or task.get('source_campaign_id') or task.get('campaign_id') or '').strip()
     source_adset_id = str(body.get('source_adset_id') or task.get('source_adset_id') or task.get('adset_id') or '').strip()
+    if recommendation_id and source_ad_id:
+        existing = conn.execute(
+            """
+            SELECT job_id, experiment_id
+            FROM creative_pro_work_queue
+            WHERE recommendation_id=? AND source_ad_ids_json=? AND status<>'deleted'
+            ORDER BY created_at DESC, job_id DESC
+            LIMIT 1
+            """,
+            (recommendation_id, json.dumps([source_ad_id], ensure_ascii=False)),
+        ).fetchone()
+        if existing:
+            return {
+                'ok': True,
+                'schema_version': CREATIVE_IMAGE_GENERATION_SCHEMA_VERSION,
+                'provider_mode': PROVIDER_CHATGPT_PRO_MANUAL,
+                'deduplicated': True,
+                'external_write_performed': False,
+                'job': get_chatgpt_pro_job(conn, str(existing['job_id'])),
+                'experiment': get_creative_experiment(conn, str(existing['experiment_id'])),
+                'image': None,
+            }
     metrics = dict(brief.source_performance or body.get('metrics_snapshot') or task.get('metrics_snapshot') or {})
     source_preview_url = str(body.get('source_preview_url') or task.get('source_preview_url') or task.get('creative_preview_url') or brief.source_preview_url or '').strip()
     source_preview_asset_id = str(body.get('source_preview_asset_id') or task.get('source_preview_asset_id') or task.get('creative_preview_asset_id') or brief.source_preview_asset_id or '').strip()

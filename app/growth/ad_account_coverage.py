@@ -273,29 +273,71 @@ def _experiment_memberships(
     conn: sqlite3.Connection,
     ad_ids: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
+    experiment_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(ad_experiment)")
+    }
+    has_recommendation_link = "source_recommendation_id" in experiment_columns
+    has_updated_at = "updated_at" in experiment_columns
+    recommendation_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ad_recommendation'"
+    ).fetchone()
+    recommendation_select = (
+        ", source_recommendation_id" if has_recommendation_link else ""
+    )
+    updated_select = ", updated_at" if has_updated_at else ""
     sql = f"""
         SELECT experiment_id, account_id, source_report_id, source_campaign_id,
                source_adset_id, source_ad_id, state, control_definition_json
+               {recommendation_select}{updated_select}
         FROM ad_experiment
         WHERE source_ad_id IN ({_placeholders(ad_ids)})
         ORDER BY source_report_id, experiment_id
     """
     matched = [dict(row) for row in conn.execute(sql, list(ad_ids))]
+    if has_recommendation_link and recommendation_table:
+        recovered_sql = f"""
+            SELECT e.experiment_id, e.account_id, e.source_report_id,
+                   e.source_campaign_id, e.source_adset_id, e.source_ad_id,
+                   e.state, e.control_definition_json,
+                   e.source_recommendation_id{', e.updated_at' if has_updated_at else ''},
+                   r.payload_json AS recommendation_payload_json
+            FROM ad_experiment e
+            JOIN ad_recommendation r
+              ON r.recommendation_id=e.source_recommendation_id
+            WHERE json_extract(r.payload_json, '$.source_ad_id') IN ({_placeholders(ad_ids)})
+        """
+        recovered = [dict(row) for row in conn.execute(recovered_sql, list(ad_ids))]
+        by_experiment = {str(item.get("experiment_id") or ""): item for item in matched}
+        for item in recovered:
+            try:
+                recommendation_payload = json.loads(
+                    str(item.pop("recommendation_payload_json", "") or "{}")
+                )
+            except (json.JSONDecodeError, TypeError, ValueError):
+                recommendation_payload = {}
+            original_source_ad_id = str(
+                recommendation_payload.get("source_ad_id") or item.get("source_ad_id") or ""
+            ).strip()
+            if original_source_ad_id in ad_ids:
+                item["original_source_ad_id"] = original_source_ad_id
+                by_experiment[str(item.get("experiment_id") or "")] = item
+        matched = list(by_experiment.values())
+    for item in matched:
+        item.setdefault("original_source_ad_id", str(item.get("source_ad_id") or ""))
     report_ids = sorted({str(item.get("source_report_id") or "").strip() for item in matched})
     report_ids = [item for item in report_ids if item]
-    if not report_ids:
-        return {}
-    group_sql = f"""
-        SELECT experiment_id, account_id, source_report_id, source_campaign_id,
-               source_adset_id, source_ad_id, state, control_definition_json
-        FROM ad_experiment
-        WHERE source_report_id IN ({_placeholders(report_ids)})
-        ORDER BY source_report_id, experiment_id
-    """
     groups: dict[str, list[dict[str, Any]]] = {}
-    for row in conn.execute(group_sql, report_ids):
-        item = dict(row)
-        groups.setdefault(str(item.get("source_report_id") or ""), []).append(item)
+    if report_ids:
+        group_sql = f"""
+            SELECT experiment_id, account_id, source_report_id, source_campaign_id,
+                   source_adset_id, source_ad_id, state, control_definition_json
+            FROM ad_experiment
+            WHERE source_report_id IN ({_placeholders(report_ids)})
+            ORDER BY source_report_id, experiment_id
+        """
+        for row in conn.execute(group_sql, report_ids):
+            item = dict(row)
+            groups.setdefault(str(item.get("source_report_id") or ""), []).append(item)
     valid_groups: dict[str, dict[str, Any]] = {}
     for report_id, members in groups.items():
         if not 2 <= len(members) <= 4:
@@ -330,11 +372,39 @@ def _experiment_memberships(
         report_id = str(item.get("source_report_id") or "")
         group = valid_groups.get(report_id)
         if group:
-            result[str(item.get("source_ad_id") or "")] = {
+            result[str(item.get("original_source_ad_id") or "")] = {
                 **group,
+                "binding_type": "MULTI_CELL_EXPERIMENT",
                 "experiment_id": str(item.get("experiment_id") or ""),
                 "experiment_state": str(item.get("state") or ""),
             }
+    latest_single: dict[str, dict[str, Any]] = {}
+    for item in sorted(
+        matched,
+        key=lambda row: (
+            str(row.get("updated_at") or ""), str(row.get("experiment_id") or "")
+        ),
+        reverse=True,
+    ):
+        source_ad_id = str(item.get("original_source_ad_id") or "")
+        if (
+            not source_ad_id
+            or source_ad_id in result
+            or source_ad_id in latest_single
+            or str(item.get("state") or "").upper() == "ARCHIVED"
+        ):
+            continue
+        latest_single[source_ad_id] = {
+            "binding_type": "SINGLE_AD_REBUILD",
+            "source_report_id": str(item.get("source_report_id") or ""),
+            "source_recommendation_id": str(item.get("source_recommendation_id") or ""),
+            "source_ad_id": source_ad_id,
+            "member_count": 1,
+            "experiment_ids": [str(item.get("experiment_id") or "")],
+            "experiment_id": str(item.get("experiment_id") or ""),
+            "experiment_state": str(item.get("state") or ""),
+        }
+    result.update(latest_single)
     return result
 
 
@@ -427,6 +497,9 @@ def build_gle_ad_account_coverage(
             else:
                 monitoring_status = "WAITING_FOR_DASHBOARD_FACTS"
             membership = memberships.get(ad_id)
+            is_multi_cell = bool(
+                membership and membership.get("binding_type") == "MULTI_CELL_EXPERIMENT"
+            )
             is_experiment = membership is not None
             if is_experiment and zero_delivery_after_48h:
                 evaluation_status = "EXPERIMENT_ZERO_DELIVERY_AFTER_48H_REQUIRES_REBUILD"
@@ -453,12 +526,16 @@ def build_gle_ad_account_coverage(
                 blockers.insert(0, "NO_DELIVERY_IN_COMPLETE_WINDOW")
             elif not fact_bound:
                 blockers.insert(0, "DASHBOARD_FACTS_NOT_AVAILABLE_IN_WINDOW")
-            if not is_experiment:
+            if not is_multi_cell:
                 blockers.insert(0, "NOT_REGISTERED_AS_MULTI_CELL_EXPERIMENT")
             projected_item = {
                 **item,
                 "coverage_status": "COVERED_READ_ONLY",
-                "coverage_mode": "MULTI_CELL_EXPERIMENT" if is_experiment else "SINGLE_AD_OBSERVATION",
+                "coverage_mode": (
+                    "MULTI_CELL_EXPERIMENT" if is_multi_cell else
+                    "SINGLE_AD_REBUILD" if is_experiment else
+                    "SINGLE_AD_OBSERVATION"
+                ),
                 "monitoring_status": monitoring_status,
                 "evaluation_status": evaluation_status,
                 "experiment_binding": membership,

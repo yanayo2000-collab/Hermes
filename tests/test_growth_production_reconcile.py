@@ -11,6 +11,7 @@ from app.creative_image_generation import (
     CreativeImageGenerationBrief,
     archive_due_replaced_creatives,
     create_feed_image_generation,
+    create_chatgpt_pro_job,
     create_review_record,
     ensure_creative_image_generation_tables,
     latest_generated_images,
@@ -98,6 +99,28 @@ def test_reconciled_growth_import_graph_is_closed() -> None:
     assert callable(launch_meta_delete_status)
     assert callable(mark_replaced_creative_pending_cleanup)
     assert callable(archive_due_replaced_creatives)
+
+
+def test_creative_job_creation_is_idempotent_per_recommendation_and_source_ad() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    brief = CreativeImageGenerationBrief(country="BR", campaign="BR campaign", ad="source ad")
+    payload = {
+        "recommendation_id": "reco-one",
+        "source_ad_id": "source-ad-one",
+        "experiment_mode": "new_test",
+    }
+
+    first = create_chatgpt_pro_job(conn, brief=brief, payload=payload, created_by="operator")
+    second = create_chatgpt_pro_job(conn, brief=brief, payload=payload, created_by="operator")
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert second["deduplicated"] is True
+    assert second["job"]["job_id"] == first["job"]["job_id"]
+    assert second["experiment"]["experiment_id"] == first["experiment"]["experiment_id"]
+    assert conn.execute("SELECT COUNT(*) FROM creative_pro_work_queue").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM creative_experiment_suggestions").fetchone()[0] == 1
 
 
 def test_replaced_image_is_retained_then_archived(tmp_path: Path) -> None:

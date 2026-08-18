@@ -9534,7 +9534,7 @@ let currentGleWorkspaceView='recommendations';
 let currentGleTaskByExperiment=new Map();
 let currentGleTaskIndexLoaded=false;
 function gleCoverageMetric(label,value,tone=''){return `<article class="ad-gle-metric${tone?` ${tone}`:''}"><span>${esc(label)}</span><strong>${esc(String(value))}</strong></article>`;}
-function gleCoverageModeLabel(item){return String(item&&item.coverage_mode||'')==='MULTI_CELL_EXPERIMENT'?'多 Cell 实验':'单广告观察';}
+function gleCoverageModeLabel(item){const mode=String(item&&item.coverage_mode||'');return mode==='MULTI_CELL_EXPERIMENT'?'多 Cell 实验':mode==='SINGLE_AD_REBUILD'?'广告重建任务':'单广告观察';}
 function gleCoverageNoDelivery(item){return['NO_LIFETIME_DELIVERY_AFTER_48H','NO_DELIVERY_IN_COMPLETE_WINDOW'].includes(String(item&&item.monitoring_status||''));}
 function gleCoverageStatusLabel(item){const status=String(item&&item.monitoring_status||'');if(status==='METRIC_OBSERVATION_AVAILABLE')return'经营数据可读';if(status==='NO_LIFETIME_DELIVERY_AFTER_48H')return'新广告48小时零消耗';if(status==='NO_DELIVERY_IN_COMPLETE_WINDOW')return'近7天零交付';return'精确数据待就绪';}
 function gleCoverageTask(item){const experimentId=String(item&&item.experiment_binding&&item.experiment_binding.experiment_id||'');return experimentId?currentGleTaskByExperiment.get(experimentId)||null:null;}
@@ -9549,17 +9549,16 @@ function gleRecommendationActionLabel(row){const action=dailyRecoDisplayAction(r
 function gleCoverageNextStep(row,{active=true,ready=false,task=false,taskActionable=false,monitoringStatus='',deliveryDiagnosis=null}={}){
   if(task&&taskActionable)return{label:'处理任务',detail:'已有明确待确认事项',tone:'is-warning',action:'task',bucket:'confirm'};
   if(!active)return{label:'当前未投放',detail:'保留历史结论，不产生新的操作',tone:'',action:'',bucket:'history'};
+  if(task)return{label:'查看任务进度',detail:'系统正在执行或观察既有任务',tone:'is-safe',action:'task',bucket:'system'};
   if(String(monitoringStatus)==='NO_LIFETIME_DELIVERY_AFTER_48H'){const siblings=Number(deliveryDiagnosis&&deliveryDiagnosis.same_adset_delivering_ads||0);return{label:'48小时零消耗，确认重建',detail:siblings?`同广告组已有 ${siblings} 条广告获得交付，不能删除共享广告组；只重建这条零消耗广告`:'累计展示和消耗仍为0，直接重建受控投放，不再等待7天',tone:'is-warning',action:'rebuild',bucket:'confirm'};}
   if(String(monitoringStatus)==='NO_DELIVERY_IN_COMPLETE_WINDOW'){const siblings=Number(deliveryDiagnosis&&deliveryDiagnosis.same_adset_delivering_ads||0);return{label:'确认重建投放',detail:siblings?`完整7天零交付；同广告组已有 ${siblings} 条广告获得交付，直接重建该广告的受控投放配置`:'完整7天零交付；直接重建预算、成本上限、受众与排期配置，不再等待数据',tone:'is-warning',action:'rebuild',bucket:'confirm'};}
   if(!ready)return{label:'数据同步或初始窗口待就绪',detail:'完整7天同步窗口尚未形成，或广告仍在初始观察期；系统将在窗口完整后重新判定',tone:'is-waiting',action:'',bucket:'data'};
-  if(!row&&task)return{label:'查看任务进度',detail:'系统正在执行或观察既有任务',tone:'is-safe',action:'task',bucket:'system'};
   if(!row)return{label:'本轮未形成可评分样本',detail:'近7天事实没有形成可评分的消耗或入会；系统转为核对投放状态',tone:'',action:'',bucket:'system'};
   const action=dailyRecoDisplayAction(row),status=dailyRecoHumanStatus(row);
   if(dailyRecoNeedsOperator(row)){
     if(dailyRecoHasDecision(row))return{label:'查看处理状态',detail:`${dailyRecoDisplayActionZh(row)}方案已确认，系统继续跟踪`,tone:'is-warning',action:'decision',bucket:'system'};
     return{label:gleRecommendationActionLabel(row),detail:`${status} · 确认后才进入受控执行`,tone:'is-warning',action:'decision',bucket:'confirm'};
   }
-  if(task)return{label:'查看任务进度',detail:'系统正在执行或观察既有任务',tone:'is-safe',action:'task',bucket:'system'};
   const outcomes={manual_review:['系统核对低投放原因','近7天没有形成有效样本；核对投放状态、预算与受众交付，不再无限等待','system'],inspect_data_quality:['系统核对数据归属','保持当前投放，先排除数据质量问题','system'],inspect_post_im_funnel:['系统排查入会链路','广告前链路继续投放，系统核对后链路承接','system'],system_tracking:['系统补齐业务数据','当前不改广告，数据到齐后自动重算','data'],collect_sample:['样本未达强动作门槛','已有近期投放样本；达到安装 100、真实入会 10 后再判断强动作','system'],hold_scale:['保持投放，暂不放量','表现尚未稳定，维持当前配置并继续观察','maintain'],maintain_budget:['维持当前预算','表现达到当前经营标准，继续投放并监测变化','maintain'],prepare_scale:['保持投放，准备放量','表现较好；继续验证稳定性，达到门槛后再给出放量确认','maintain'],observe:['维持当前配置','本轮已经完成评分，当前没有触发暂停、降预算或放量护栏','maintain']};
   const outcome=outcomes[action]||[dailyRecoDisplayActionZh(row),`${status} · 数据更新后自动重算`,'system'];
   return{label:outcome[0],detail:outcome[1],tone:outcome[2]==='maintain'?'is-safe':'',action:'',bucket:outcome[2]};

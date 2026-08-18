@@ -1157,7 +1157,15 @@ class ExecutionTaskService:
         for experiment_id, values, image_id in bindings:
             if not experiment_id:
                 continue
-            update_values = {"account_id": target_account_id, **values}
+            # CREATE_PAUSED_AD produces a new Meta hierarchy, but the experiment's
+            # source_* columns are immutable lineage back to the ad that triggered
+            # the rebuild.  The newly created ids belong in the verified adoption
+            # record below, not over the source identity.
+            update_values = (
+                {"account_id": target_account_id}
+                if action_type == "CREATE_PAUSED_AD"
+                else {"account_id": target_account_id, **values}
+            )
             assignments = [f"{column}=CASE WHEN ?<>'' THEN ? ELSE {column} END" for column in update_values]
             params = []
             for value in update_values.values():

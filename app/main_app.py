@@ -4969,6 +4969,61 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
             decision = by_recommendation.get(str(item.get('recommendation_id') or ''))
             if decision:
                 item['decision_state'] = decision
+        source_ad_ids = sorted({
+            str(item.get('source_ad_id') or item.get('ad_id') or item.get('object_id') or '').strip()
+            for item in recommendations
+            if str(item.get('source_ad_id') or item.get('ad_id') or item.get('object_id') or '').strip()
+        })
+        if source_ad_ids:
+            source_placeholders = ','.join('?' for _ in source_ad_ids)
+            try:
+                workflow_rows = conn.execute(
+                    f"""
+                    SELECT d.recommendation_id, d.decision_id, d.selected_action, d.status,
+                           d.target_type, d.target_id, d.created_at, d.updated_at,
+                           e.episode_id, e.status AS episode_status,
+                           x.experiment_id, x.source_ad_id,
+                           r.payload_json AS recommendation_payload_json
+                    FROM ad_experiment x
+                    JOIN growth_decision d
+                      ON d.recommendation_id=x.source_recommendation_id
+                    LEFT JOIN growth_decision_episode e ON e.decision_id=d.decision_id
+                    LEFT JOIN ad_recommendation r
+                      ON r.recommendation_id=x.source_recommendation_id
+                    WHERE x.source_ad_id IN ({source_placeholders})
+                       OR json_extract(r.payload_json, '$.source_ad_id') IN ({source_placeholders})
+                    ORDER BY d.created_at DESC, e.created_at DESC
+                    """,
+                    [*source_ad_ids, *source_ad_ids],
+                ).fetchall()
+            except sqlite3.OperationalError:
+                workflow_rows = []
+            by_source_ad: Dict[str, Dict[str, Any]] = {}
+            for row in workflow_rows:
+                workflow = dict(row)
+                try:
+                    recommendation_payload = json.loads(
+                        str(workflow.pop('recommendation_payload_json', '') or '{}')
+                    )
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    recommendation_payload = {}
+                source_ad_id = str(
+                    recommendation_payload.get('source_ad_id')
+                    or workflow.get('source_ad_id') or ''
+                ).strip()
+                if source_ad_id and source_ad_id not in by_source_ad:
+                    workflow['target_type'] = 'EXPERIMENT'
+                    workflow['target_id'] = str(workflow.get('experiment_id') or '')
+                    by_source_ad[source_ad_id] = workflow
+            for item in recommendations:
+                if item.get('decision_state'):
+                    continue
+                source_ad_id = str(
+                    item.get('source_ad_id') or item.get('ad_id') or item.get('object_id') or ''
+                ).strip()
+                decision = by_source_ad.get(source_ad_id)
+                if decision:
+                    item['decision_state'] = decision
         from app.growth.recommendation_management import enrich_system_managed_recommendations
         enrich_system_managed_recommendations(conn, payload)
         return payload

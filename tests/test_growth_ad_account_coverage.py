@@ -150,6 +150,56 @@ def test_all_five_accounts_and_every_meta_ad_are_rostered_read_only() -> None:
     }
 
 
+def test_single_rebuild_task_is_bound_by_original_ad_even_after_legacy_overwrite() -> None:
+    account = GLE_AD_ACCOUNT_SCOPE_V1[0]
+    live = fetch_scoped_meta_ads(
+        _MetaSession({account["account_id"]: [_live_ad(account, "31")]}),
+        access_token="token",
+        graph_root="https://graph.example/v25.0",
+    )
+    conn = _database()
+    conn.execute("ALTER TABLE ad_experiment ADD COLUMN source_recommendation_id TEXT DEFAULT ''")
+    conn.execute("ALTER TABLE ad_experiment ADD COLUMN updated_at TEXT DEFAULT ''")
+    conn.execute(
+        "CREATE TABLE ad_recommendation (recommendation_id TEXT PRIMARY KEY, payload_json TEXT)"
+    )
+    original_ad_id = live[0]["ad_id"]
+    conn.execute(
+        "INSERT INTO ad_recommendation VALUES (?,?)",
+        ("reco-current", json.dumps({"source_ad_id": original_ad_id})),
+    )
+    conn.execute(
+        """
+        INSERT INTO ad_experiment
+        (experiment_id,account_id,source_report_id,source_campaign_id,
+         source_adset_id,source_ad_id,state,control_definition_json,
+         source_recommendation_id,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            "adexp-current", account["account_id"], "report-current",
+            live[0]["campaign_id"], live[0]["adset_id"], "new-meta-ad-id",
+            "META_REVIEW_PENDING", "{}", "reco-current", "2026-08-18T02:50:00+00:00",
+        ),
+    )
+    conn.commit()
+
+    result = build_gle_ad_account_coverage(conn, live)
+    item = result["accounts"][0]["items"][0]
+
+    assert item["coverage_mode"] == "SINGLE_AD_REBUILD"
+    assert item["experiment_binding"] == {
+        "binding_type": "SINGLE_AD_REBUILD",
+        "source_report_id": "report-current",
+        "source_recommendation_id": "reco-current",
+        "source_ad_id": original_ad_id,
+        "member_count": 1,
+        "experiment_ids": ["adexp-current"],
+        "experiment_id": "adexp-current",
+        "experiment_state": "META_REVIEW_PENDING",
+    }
+
+
 def test_meta_roster_rejects_cross_account_identity() -> None:
     rows_by_account = {
         account["account_id"]: [_live_ad(account, "1")]

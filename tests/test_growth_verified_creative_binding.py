@@ -150,6 +150,48 @@ def test_verified_creation_reconciliation_binds_frozen_image_once(tmp_path: Path
     }
 
 
+def test_verified_creation_preserves_original_source_lineage(tmp_path: Path) -> None:
+    conn = _connection(tmp_path / "growth-lineage.sqlite3")
+    _seed_experiment_and_image(conn)
+    conn.execute(
+        """
+        UPDATE ad_experiment
+        SET source_campaign_id='campaign-original',source_adset_id='adset-original',
+            source_creative_id='creative-original',source_ad_id='ad-original'
+        WHERE experiment_id='adexp-1'
+        """
+    )
+    conn.commit()
+    tasks, _action, _ = _verified_creation_action(conn)
+
+    tasks.reconcile_verified_replacement_bindings()
+
+    experiment = conn.execute(
+        """
+        SELECT source_campaign_id,source_adset_id,source_creative_id,source_ad_id
+        FROM ad_experiment WHERE experiment_id='adexp-1'
+        """
+    ).fetchone()
+    assert dict(experiment) == {
+        "source_campaign_id": "campaign-original",
+        "source_adset_id": "adset-original",
+        "source_creative_id": "creative-original",
+        "source_ad_id": "ad-original",
+    }
+    adoption = conn.execute(
+        """
+        SELECT campaign_id,adset_id,creative_id,ad_id
+        FROM creative_adoption_records WHERE experiment_id='adexp-1'
+        """
+    ).fetchone()
+    assert dict(adoption) == {
+        "campaign_id": "campaign-new",
+        "adset_id": "adset-new",
+        "creative_id": "creative-new",
+        "ad_id": "ad-new",
+    }
+
+
 def test_verified_creation_binding_fails_closed_without_frozen_image(tmp_path: Path) -> None:
     conn = _connection(tmp_path / "growth-missing.sqlite3")
     _seed_experiment_and_image(conn)

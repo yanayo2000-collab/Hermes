@@ -172,6 +172,7 @@ console.log(JSON.stringify({{
   scoring: gleCoverageNextStep(null, {{ready: true}}),
   inactive: gleCoverageNextStep(null, {{active: false, ready: false}}),
   task: gleCoverageNextStep(null, {{ready: true, task: true}}),
+  zeroDeliveryWithTask: gleCoverageNextStep(null, {{ready: false, task: true, monitoringStatus: 'NO_LIFETIME_DELIVERY_AFTER_48H'}}),
   actionableTask: gleCoverageNextStep(null, {{ready: true, task: true, taskActionable: true}}),
   taskWithPause: gleCoverageNextStep({{action: 'pause', status: '严重超阈值'}}, {{ready: true, task: true}}),
   actionableTaskWithPause: gleCoverageNextStep({{action: 'pause', status: '严重超阈值'}}, {{ready: true, task: true, taskActionable: true}})
@@ -201,10 +202,12 @@ console.log(JSON.stringify({{
     assert payload["scoring"]["label"] == "本轮未形成可评分样本"
     assert payload["inactive"]["label"] == "当前未投放"
     assert payload["task"]["label"] == "查看任务进度"
+    assert payload["zeroDeliveryWithTask"]["label"] == "查看任务进度"
+    assert payload["zeroDeliveryWithTask"]["action"] == "task"
     assert payload["actionableTask"]["label"] == "处理任务"
     assert payload["actionableTask"]["bucket"] == "confirm"
-    assert payload["taskWithPause"]["label"] == "确认暂停"
-    assert payload["taskWithPause"]["action"] == "decision"
+    assert payload["taskWithPause"]["label"] == "查看任务进度"
+    assert payload["taskWithPause"]["action"] == "task"
     assert payload["actionableTaskWithPause"]["label"] == "处理任务"
 
 
