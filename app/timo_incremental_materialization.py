@@ -957,6 +957,35 @@ def _quality_gate(
         old_data_status = 'mixed'
     new_data_status = 'provisional' if provisional else 'complete'
     comparable_population = old_data_status == new_data_status
+    historical_complete = conn.execute(
+        """
+        SELECT stat_date_bj, COUNT(*) AS row_count,
+               COALESCE(SUM(total_income), 0) AS total_income
+        FROM timo_external_revenue_daily
+        WHERE guild_executor_key=?
+          AND stat_date_bj < ?
+          AND stat_date_bj >= date(?, '-14 days')
+          AND provisional=0
+        GROUP BY stat_date_bj
+        ORDER BY stat_date_bj DESC
+        LIMIT 7
+        """,
+        (guild_executor_key, stat_date_bj, stat_date_bj),
+    ).fetchall()
+    historical_row_counts = sorted(int(row['row_count'] or 0) for row in historical_complete)
+    historical_income_totals = sorted(float(row['total_income'] or 0) for row in historical_complete)
+
+    def _median(values: Sequence[float]) -> Optional[float]:
+        if not values:
+            return None
+        midpoint = len(values) // 2
+        if len(values) % 2:
+            return float(values[midpoint])
+        return (float(values[midpoint - 1]) + float(values[midpoint])) / 2
+
+    historical_row_median = _median(historical_row_counts)
+    historical_income_median = _median(historical_income_totals)
+    historical_guard = not provisional and len(historical_complete) >= 2
     metrics = {
         'new_row_count': new_rows,
         'old_row_count': old_rows,
@@ -968,6 +997,9 @@ def _quality_gate(
         'old_data_status': old_data_status,
         'new_data_status': new_data_status,
         'comparable_population': comparable_population,
+        'historical_complete_days': len(historical_complete),
+        'historical_row_median': historical_row_median,
+        'historical_income_median': historical_income_median,
     }
     watermark = conn.execute(
         """
@@ -994,6 +1026,10 @@ def _quality_gate(
         error_code = 'quality_gate_mixed_current_status'
     elif watermark and str(watermark['data_status'] or '') == 'complete' and provisional:
         error_code = 'quality_gate_complete_downgrade'
+    elif historical_guard and historical_row_median and new_rows < historical_row_median * min_row_ratio:
+        error_code = 'quality_gate_historical_row_count_drop'
+    elif historical_guard and historical_income_median and new_income < historical_income_median * min_income_ratio:
+        error_code = 'quality_gate_historical_income_drop'
     elif baseline_guard and comparable_population and new_rows < old_rows * min_row_ratio:
         error_code = 'quality_gate_row_count_drop'
     elif baseline_guard and comparable_population and old_income > 0 and new_income < old_income * min_income_ratio:
@@ -1088,12 +1124,50 @@ def materialize_timo_revenue_snapshot(
     expected_data_status = 'provisional' if provisional else 'complete'
     preflight_watermark = conn.execute(
         """
-        SELECT checksum, row_count, revision_version, data_status
+        SELECT checksum, row_count, revision_version, data_status, last_success_sync_id,
+               total_income
         FROM timo_sync_watermark
         WHERE guild_executor_key=? AND stat_date_bj=?
         """,
         (guild_executor_key, stat_date_bj),
     ).fetchone()
+    preflight_fact_ready = False
+    if preflight_watermark:
+        preflight_fact = conn.execute(
+            """
+            SELECT COUNT(*) AS row_count, COALESCE(SUM(total_income), 0) AS total_income,
+                   MIN(revision_version) AS min_revision, MAX(revision_version) AS max_revision,
+                   COUNT(DISTINCT last_sync_id) AS sync_id_count,
+                   MIN(last_sync_id) AS fact_sync_id
+            FROM timo_external_revenue_daily
+            WHERE guild_executor_key=? AND stat_date_bj=?
+            """,
+            (guild_executor_key, stat_date_bj),
+        ).fetchone()
+        preflight_fact_rows = conn.execute(
+            """
+            SELECT timo_id, row_hash
+            FROM timo_external_revenue_daily
+            WHERE guild_executor_key=? AND stat_date_bj=?
+            ORDER BY timo_id
+            """,
+            (guild_executor_key, stat_date_bj),
+        ).fetchall()
+        preflight_digest = hashlib.sha256()
+        for fact_row in preflight_fact_rows:
+            preflight_digest.update(str(fact_row['timo_id']).encode('utf-8'))
+            preflight_digest.update(b'\x1f')
+            preflight_digest.update(str(fact_row['row_hash']).encode('ascii'))
+            preflight_digest.update(b'\n')
+        preflight_fact_ready = bool(
+            int(preflight_fact['row_count'] or 0) == int(preflight_watermark['row_count'] or 0)
+            and abs(float(preflight_fact['total_income'] or 0) - float(preflight_watermark['total_income'] or 0)) <= 0.000001
+            and preflight_digest.hexdigest() == str(preflight_watermark['checksum'] or '')
+            and int(preflight_fact['min_revision'] or 0) == int(preflight_watermark['revision_version'] or 0)
+            and int(preflight_fact['max_revision'] or 0) == int(preflight_watermark['revision_version'] or 0)
+            and int(preflight_fact['sync_id_count'] or 0) == 1
+            and str(preflight_fact['fact_sync_id'] or '') == str(preflight_watermark['last_success_sync_id'] or '')
+        )
     # The checksum is calculated from the complete canonical source snapshot.
     # If it matches the last accepted watermark with the same completeness
     # state, no staging/diff transaction is necessary.  Keeping the frequent
@@ -1101,6 +1175,7 @@ def materialize_timo_revenue_snapshot(
     # contending with unrelated online writes on the shared 13 GiB database.
     if (
         preflight_watermark
+        and preflight_fact_ready
         and str(preflight_watermark['checksum'] or '') == checksum
         and str(preflight_watermark['data_status'] or '') == expected_data_status
         and not (
@@ -1217,7 +1292,7 @@ def materialize_timo_revenue_snapshot(
             raise TimoIncrementalSyncError(gate.error_code, gate.error_code, evidence=gate_evidence)
         watermark = conn.execute(
             """
-            SELECT checksum, row_count, revision_version, data_status
+            SELECT checksum, row_count, revision_version, data_status, last_success_sync_id
             FROM timo_sync_watermark
             WHERE guild_executor_key=? AND stat_date_bj=?
             """,
@@ -1229,6 +1304,47 @@ def materialize_timo_revenue_snapshot(
             and str(watermark['data_status'] or '') == ('provisional' if provisional else 'complete')
         ):
             end_time = utc_now()
+            conn.execute(
+                """
+                UPDATE timo_external_revenue_daily
+                SET revision_version=?, last_sync_id=?
+                WHERE guild_executor_key=? AND stat_date_bj=?
+                """,
+                (
+                    int(watermark['revision_version'] or 1),
+                    str(watermark['last_success_sync_id'] or ''),
+                    guild_executor_key,
+                    stat_date_bj,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE timo_external_revenue_daily
+                SET row_hash=(
+                    SELECT staged.row_hash
+                    FROM timo_revenue_staging AS staged
+                    WHERE staged.sync_id=?
+                      AND staged.guild_executor_key=timo_external_revenue_daily.guild_executor_key
+                      AND staged.stat_date_bj=timo_external_revenue_daily.stat_date_bj
+                      AND staged.timo_id=timo_external_revenue_daily.timo_id
+                )
+                WHERE guild_executor_key=? AND stat_date_bj=?
+                  AND EXISTS (
+                    SELECT 1
+                    FROM timo_revenue_staging AS staged
+                    WHERE staged.sync_id=?
+                      AND staged.guild_executor_key=timo_external_revenue_daily.guild_executor_key
+                      AND staged.stat_date_bj=timo_external_revenue_daily.stat_date_bj
+                      AND staged.timo_id=timo_external_revenue_daily.timo_id
+                  )
+                """,
+                (
+                    sync_id,
+                    guild_executor_key,
+                    stat_date_bj,
+                    sync_id,
+                ),
+            )
             conn.execute(
                 """
                 UPDATE timo_sync_run_log
@@ -1663,6 +1779,17 @@ def _apply_sql_diff(
         """,
         (guild_executor_key, stat_date_bj, sync_id),
     )
+    # A published scope is one immutable row-set version. Even rows whose
+    # business values did not change must carry the revision/sync provenance
+    # of that exact accepted set; otherwise facts and watermark disagree.
+    conn.execute(
+        """
+        UPDATE timo_external_revenue_daily
+        SET revision_version=?, last_sync_id=?
+        WHERE guild_executor_key=? AND stat_date_bj=?
+        """,
+        (revision_version, sync_id, guild_executor_key, stat_date_bj),
+    )
 
 
 def rollback_timo_revenue_sync(
@@ -1893,13 +2020,98 @@ def timo_external_feed_status(
         params.append(str(guild_name).strip())
     rows = conn.execute(
         f"""
-        SELECT data_status, last_success_time, last_success_sync_id, revision_version
+        SELECT guild_executor_key, guild_name, country, data_status, checksum,
+               last_success_time, last_success_sync_id, row_count, total_income,
+               revision_version
         FROM timo_sync_watermark
         WHERE {' AND '.join(where)}
         """,
         tuple(params),
     ).fetchall()
     current = now or datetime.now(timezone.utc)
+    scope_manifests: List[Dict[str, Any]] = []
+    for watermark in rows:
+        scope_where = ['guild_executor_key=?', 'stat_date_bj=?']
+        scope_params: List[Any] = [str(watermark['guild_executor_key']), stat_date_bj]
+        fact = conn.execute(
+            """
+            SELECT COUNT(*) AS row_count, COALESCE(SUM(total_income), 0) AS total_income,
+                   MIN(revision_version) AS min_revision, MAX(revision_version) AS max_revision,
+                   COUNT(DISTINCT last_sync_id) AS sync_id_count,
+                   MIN(last_sync_id) AS fact_sync_id,
+                   SUM(CASE WHEN provisional<>0 THEN 1 ELSE 0 END) AS provisional_count
+            FROM timo_external_revenue_daily
+            WHERE guild_executor_key=? AND stat_date_bj=?
+            """,
+            tuple(scope_params),
+        ).fetchone()
+        fact_rows = conn.execute(
+            """
+            SELECT timo_id, row_hash
+            FROM timo_external_revenue_daily
+            WHERE guild_executor_key=? AND stat_date_bj=?
+            ORDER BY timo_id
+            """,
+            tuple(scope_params),
+        ).fetchall()
+        digest = hashlib.sha256()
+        for fact_row in fact_rows:
+            digest.update(str(fact_row['timo_id']).encode('utf-8'))
+            digest.update(b'\x1f')
+            digest.update(str(fact_row['row_hash']).encode('ascii'))
+            digest.update(b'\n')
+        fact_checksum = digest.hexdigest()
+        expected_rows = int(watermark['row_count'] or 0)
+        expected_total = float(watermark['total_income'] or 0)
+        revision = int(watermark['revision_version'] or 0)
+        last_sync_id = str(watermark['last_success_sync_id'] or '')
+        errors: List[str] = []
+        if int(fact['row_count'] or 0) != expected_rows:
+            errors.append('fact_row_count_mismatch')
+        if abs(float(fact['total_income'] or 0) - expected_total) > 0.000001:
+            errors.append('fact_total_income_mismatch')
+        if fact_checksum != str(watermark['checksum'] or ''):
+            errors.append('fact_checksum_mismatch')
+        if int(fact['min_revision'] or 0) != revision or int(fact['max_revision'] or 0) != revision:
+            errors.append('fact_revision_mismatch')
+        if int(fact['sync_id_count'] or 0) != 1 or str(fact['fact_sync_id'] or '') != last_sync_id:
+            errors.append('fact_sync_id_mismatch')
+        if int(fact['provisional_count'] or 0) != 0 or str(watermark['data_status'] or '') != 'complete':
+            errors.append('scope_not_complete')
+        observations = conn.execute(
+            """
+            SELECT COUNT(*) AS observation_count
+            FROM timo_sync_run_log
+            WHERE guild_executor_key=? AND stat_date_bj=? AND data_status='complete'
+              AND status IN ('success','no_op') AND checksum=?
+            """,
+            (str(watermark['guild_executor_key']), stat_date_bj, str(watermark['checksum'] or '')),
+        ).fetchone()
+        stability_age_seconds = max(
+            0,
+            int((current - _parse_utc(str(watermark['last_success_time']))).total_seconds()),
+        )
+        observation_count = int(observations['observation_count'] or 0)
+        if observation_count < 2:
+            errors.append('scope_not_reobserved')
+        if stability_age_seconds < 2700:
+            errors.append('scope_not_stable_45m')
+        scope_manifests.append({
+            'guild_executor_key': str(watermark['guild_executor_key']),
+            'guild_name': str(watermark['guild_name'] or ''),
+            'country': str(watermark['country'] or ''),
+            'stat_date_bj': stat_date_bj,
+            'data_status': str(watermark['data_status'] or ''),
+            'row_count': expected_rows,
+            'total_income': _decimal_text(expected_total),
+            'checksum': str(watermark['checksum'] or ''),
+            'revision_version': revision,
+            'last_success_sync_id': last_sync_id,
+            'observation_count': observation_count,
+            'stability_age_seconds': stability_age_seconds,
+            'publication_ready': not errors,
+            'integrity_errors': errors,
+        })
     snapshot_at = max((str(row['last_success_time']) for row in rows), default='')
     cache_age_seconds: Optional[int] = None
     if snapshot_at:
@@ -1907,9 +2119,19 @@ def timo_external_feed_status(
     if not rows:
         status = 'failed'
         data_status = 'failed'
-    elif all(str(row['data_status']) == 'complete' for row in rows):
+    elif scope_manifests and all(bool(item['publication_ready']) for item in scope_manifests):
         status = 'complete'
         data_status = 'complete'
+    elif any(
+        str(error).startswith('fact_')
+        for item in scope_manifests
+        for error in item['integrity_errors']
+    ):
+        status = 'failed'
+        data_status = 'failed'
+    elif scope_manifests:
+        status = 'stale'
+        data_status = 'provisional'
     else:
         data_status = 'provisional'
         status = 'stale' if cache_age_seconds is None or cache_age_seconds > stale_after_seconds else 'realtime'
@@ -1929,4 +2151,7 @@ def timo_external_feed_status(
         'revision_version': max((int(row['revision_version'] or 1) for row in rows), default=0),
         'last_success_sync_ids': sorted({str(row['last_success_sync_id']) for row in rows}),
         'scope_count': len(rows),
+        'publication_ready': bool(scope_manifests) and all(bool(item['publication_ready']) for item in scope_manifests),
+        'scope_manifests': scope_manifests,
+        'integrity_contract_version': 'timo_scope_manifest_v1',
     }
