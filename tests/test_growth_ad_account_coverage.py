@@ -500,6 +500,7 @@ def test_dashboard_coverage_flow_is_readonly_filterable_and_keyboard_visible() -
     assert "normalizeGleTaskDetail" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "currentGleTaskByExperiment" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "data-gle-open-task" in AD_DATA_DASHBOARD_PAGE_HTML
+    assert "if(currentGleRecommendationFilter==='system'){setGleWorkspaceView('tasks',{focus:true,resetTask:true});return;}" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "openGleExperimentTask" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "正在打开任务…" in AD_DATA_DASHBOARD_PAGE_HTML
     assert "button.setAttribute('aria-busy','true')" in AD_DATA_DASHBOARD_PAGE_HTML
