@@ -19,11 +19,21 @@ def _databases(tmp_path: Path) -> tuple[Path, Path, str]:
         conn.execute('INSERT INTO streamer_analytics_materialization_state VALUES(?,?,?,?)',
                      ('linky', 'ready', data_date, '2026-08-17T10:47:49+08:00'))
     with sqlite3.connect(source) as conn:
-        conn.execute('CREATE TABLE streamer_external_revenue_daily(app_name TEXT,guild_name TEXT,country TEXT,stat_date_bj TEXT,total_income REAL)')
-        conn.executemany('INSERT INTO streamer_external_revenue_daily VALUES(?,?,?,?,?)', [
-            ('linky', 'Nova', 'Indonesia', data_date, 100.5),
-            ('linky', 'Nova', 'Indonesia', data_date, 20.0),
-            ('linky', 'Carote', 'Indonesia', data_date, 30.0),
+        conn.execute('CREATE TABLE guild_executors(app_name TEXT,guild_name TEXT,enabled INTEGER)')
+        conn.execute('CREATE TABLE streamer_external_revenue_daily(app_name TEXT,guild_executor_key TEXT,guild_name TEXT,country TEXT,stat_date_bj TEXT,total_income REAL)')
+        conn.execute('CREATE TABLE streamer_external_guild_revenue_daily(app_name TEXT,guild_executor_key TEXT,guild_name TEXT,country TEXT,stat_date_bj TEXT,total_income REAL,source_row_count INTEGER,snapshot_at TEXT)')
+        conn.executemany('INSERT INTO guild_executors VALUES(?,?,?)', [
+            ('linky', 'Nova', 1),
+            ('linky', 'Carote', 1),
+        ])
+        conn.executemany('INSERT INTO streamer_external_revenue_daily VALUES(?,?,?,?,?,?)', [
+            ('linky', 'linky:nova', 'Nova', 'Indonesia', data_date, 100.5),
+            ('linky', 'linky:nova', 'Nova', 'Indonesia', data_date, 20.0),
+            ('linky', 'linky:carote', 'Carote', 'Indonesia', data_date, 30.0),
+        ])
+        conn.executemany('INSERT INTO streamer_external_guild_revenue_daily VALUES(?,?,?,?,?,?,?,?)', [
+            ('linky', 'linky:nova', 'Nova', 'Indonesia', data_date, 120.5, 40000, '2026-08-17T02:00:00+00:00'),
+            ('linky', 'linky:carote', 'Carote', 'Indonesia', data_date, 30.0, 33000, '2026-08-17T02:01:00+00:00'),
         ])
     return analytics, source, data_date
 
@@ -33,12 +43,25 @@ def test_load_event_requires_ready_d1_and_builds_stable_scope_checksum(tmp_path:
     event = load_event(analytics, source, expected_date=data_date)
     assert event['eventType'] == 'linky.materialization.completed'
     assert event['dataDate'] == data_date
+    assert event['businessDate'] == data_date
+    assert event['status'] == 'ready'
+    assert event['ready'] is True
+    assert event['scopeTotal'] == 2
+    assert event['scopeSucceeded'] == 2
+    assert event['scopeFailed'] == 0
+    assert event['failedScopes'] == []
+    assert event['materializedAt'] == '2026-08-17T10:47:49+08:00'
+    assert len(event['sourceGeneration']) == 20
     assert event['eventId'].startswith(f'linky:{data_date}:')
     assert len(event['checksum']) == 64
-    assert event['scopes'] == [
-        {'guildName': 'Carote', 'country': 'Indonesia', 'rowCount': 1, 'totalIncome': '30.000000', 'qualityStatus': 'passed', 'consumable': True},
-        {'guildName': 'Nova', 'country': 'Indonesia', 'rowCount': 2, 'totalIncome': '120.500000', 'qualityStatus': 'passed', 'consumable': True},
+    assert [(scope['guildName'], scope['rowCount'], scope['sourceRowCount'], scope['totalIncome']) for scope in event['scopes']] == [
+        ('Carote', 1, 33000, '30.000000'),
+        ('Nova', 2, 40000, '120.500000'),
     ]
+    assert all(scope['qualityStatus'] == 'passed' for scope in event['scopes'])
+    assert all(scope['consumable'] is True for scope in event['scopes'])
+    assert all(len(scope['checksum']) == 64 for scope in event['scopes'])
+    assert all(len(scope['sourceGeneration']) == 20 for scope in event['scopes'])
 
 
 def test_load_event_fails_closed_for_stale_analytics(tmp_path: Path) -> None:
@@ -52,9 +75,14 @@ def test_load_event_fails_closed_for_stale_analytics(tmp_path: Path) -> None:
 def test_load_event_rejects_complete_zero_income_scope(tmp_path: Path) -> None:
     analytics, source, data_date = _databases(tmp_path)
     with sqlite3.connect(source) as conn:
+        conn.execute('INSERT INTO guild_executors VALUES(?,?,?)', ('linky', 'Zero Day', 1))
         conn.execute(
-            'INSERT INTO streamer_external_revenue_daily VALUES(?,?,?,?,?)',
-            ('linky', 'Zero Day', 'Brazil', data_date, 0),
+            'INSERT INTO streamer_external_revenue_daily VALUES(?,?,?,?,?,?)',
+            ('linky', 'linky:zero', 'Zero Day', 'Brazil', data_date, 0),
+        )
+        conn.execute(
+            'INSERT INTO streamer_external_guild_revenue_daily VALUES(?,?,?,?,?,?,?,?)',
+            ('linky', 'linky:zero', 'Zero Day', 'Brazil', data_date, 0, 100, '2026-08-17T02:02:00+00:00'),
         )
     with pytest.raises(ValueError, match='materialization_scope_invalid'):
         load_event(analytics, source, expected_date=data_date)
@@ -63,11 +91,24 @@ def test_load_event_rejects_complete_zero_income_scope(tmp_path: Path) -> None:
 def test_load_event_rejects_negative_income_scope(tmp_path: Path) -> None:
     analytics, source, data_date = _databases(tmp_path)
     with sqlite3.connect(source) as conn:
+        conn.execute('INSERT INTO guild_executors VALUES(?,?,?)', ('linky', 'Invalid Negative', 1))
         conn.execute(
-            'INSERT INTO streamer_external_revenue_daily VALUES(?,?,?,?,?)',
-            ('linky', 'Invalid Negative', 'Brazil', data_date, -1),
+            'INSERT INTO streamer_external_revenue_daily VALUES(?,?,?,?,?,?)',
+            ('linky', 'linky:negative', 'Invalid Negative', 'Brazil', data_date, -1),
+        )
+        conn.execute(
+            'INSERT INTO streamer_external_guild_revenue_daily VALUES(?,?,?,?,?,?,?,?)',
+            ('linky', 'linky:negative', 'Invalid Negative', 'Brazil', data_date, -1, 100, '2026-08-17T02:03:00+00:00'),
         )
     with pytest.raises(ValueError, match='materialization_scope_invalid'):
+        load_event(analytics, source, expected_date=data_date)
+
+
+def test_load_event_rejects_missing_enabled_guild_scope(tmp_path: Path) -> None:
+    analytics, source, data_date = _databases(tmp_path)
+    with sqlite3.connect(source) as conn:
+        conn.execute('INSERT INTO guild_executors VALUES(?,?,?)', ('linky', 'Missing Guild', 1))
+    with pytest.raises(ValueError, match='materialization_scope_incomplete'):
         load_event(analytics, source, expected_date=data_date)
 
 

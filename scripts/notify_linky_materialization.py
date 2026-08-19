@@ -59,35 +59,85 @@ def load_event(
         conn.execute('PRAGMA query_only=ON')
         rows = conn.execute(
             """
-            SELECT guild_name, country, COUNT(*) AS row_count,
-                   ROUND(SUM(total_income), 6) AS total_income
-            FROM streamer_external_revenue_daily
-            WHERE app_name='linky' AND stat_date_bj=?
-            GROUP BY guild_name, country
-            ORDER BY country, guild_name
+            SELECT details.guild_executor_key,
+                   details.guild_name,
+                   details.country,
+                   details.row_count,
+                   details.total_income,
+                   guild.source_row_count,
+                   ROUND(guild.total_income, 6) AS source_total_income,
+                   guild.snapshot_at AS source_snapshot_at
+            FROM (
+                SELECT guild_executor_key, guild_name, country,
+                       COUNT(*) AS row_count,
+                       ROUND(SUM(total_income), 6) AS total_income
+                FROM streamer_external_revenue_daily
+                WHERE app_name='linky' AND stat_date_bj=?
+                GROUP BY guild_executor_key, guild_name, country
+            ) AS details
+            JOIN streamer_external_guild_revenue_daily AS guild
+              ON guild.app_name='linky'
+             AND guild.guild_executor_key=details.guild_executor_key
+             AND guild.stat_date_bj=?
+            ORDER BY details.country, details.guild_name
             """,
-            (data_date,),
+            (data_date, data_date),
         ).fetchall()
+        expected_guilds = {
+            str(row['guild_name']).strip()
+            for row in conn.execute(
+                """
+                SELECT guild_name
+                FROM guild_executors
+                WHERE enabled=1 AND lower(app_name)='linky'
+                """
+            ).fetchall()
+            if str(row['guild_name'] or '').strip()
+        }
     if not rows:
         raise ValueError('materialization_scope_missing')
+    observed_guilds = {str(row['guild_name'] or '').strip() for row in rows}
+    if observed_guilds != expected_guilds:
+        raise ValueError('materialization_scope_incomplete')
     scopes: list[dict[str, Any]] = []
+    scope_contents: list[dict[str, Any]] = []
     for row in rows:
         row_count = int(row['row_count'] or 0)
         total_income = float(row['total_income'] or 0)
+        source_row_count = int(row['source_row_count'] or 0)
+        source_total_income = float(row['source_total_income'] or 0)
         if not str(row['guild_name'] or '').strip() or not str(row['country'] or '').strip() \
-                or row_count <= 0 or total_income <= 0:
+                or row_count <= 0 or source_row_count <= 0 \
+                or total_income <= 0 or source_total_income <= 0 \
+                or abs(total_income - source_total_income) > 0.000001:
             raise ValueError('materialization_scope_invalid')
-        scopes.append({
+        scope_core = {
             'guildName': str(row['guild_name']).strip(),
             'country': str(row['country']).strip(),
             'rowCount': row_count,
             'totalIncome': f'{total_income:.6f}',
+            'sourceRowCount': source_row_count,
+            'sourceTotalIncome': f'{source_total_income:.6f}',
             'qualityStatus': 'passed',
             'consumable': True,
+        }
+        scope_checksum = hashlib.sha256(canonical_json(scope_core).encode('utf-8')).hexdigest()
+        source_generation = hashlib.sha256(
+            f"{data_date}:{row['guild_executor_key']}:{scope_checksum}".encode('utf-8')
+        ).hexdigest()[:20]
+        scope_contents.append(scope_core)
+        scopes.append({
+            **scope_core,
+            'materializedAt': str(state['materialized_at']),
+            'sourceGeneration': source_generation,
+            'checksum': scope_checksum,
         })
-    checksum = hashlib.sha256(canonical_json(scopes).encode('utf-8')).hexdigest()
+    checksum = hashlib.sha256(canonical_json(scope_contents).encode('utf-8')).hexdigest()
+    source_generation = hashlib.sha256(
+        f"{data_date}:{checksum}".encode('utf-8')
+    ).hexdigest()[:20]
     generation = hashlib.sha256(
-        f"{data_date}:{state['materialized_at']}:{checksum}".encode('utf-8')
+        f"{data_date}:{state['materialized_at']}:{source_generation}".encode('utf-8')
     ).hexdigest()[:20]
     event_id = f'linky:{data_date}:{generation}'
     return {
@@ -95,8 +145,17 @@ def load_event(
         'eventType': 'linky.materialization.completed',
         'eventId': event_id,
         'dataDate': data_date,
+        'businessDate': data_date,
+        'status': 'ready',
+        'ready': True,
         'runId': generation,
         'publishedAt': datetime.now(timezone.utc).isoformat(),
+        'materializedAt': str(state['materialized_at']),
+        'scopeTotal': len(scopes),
+        'scopeSucceeded': len(scopes),
+        'scopeFailed': 0,
+        'failedScopes': [],
+        'sourceGeneration': source_generation,
         'scopes': scopes,
         'checksum': checksum,
     }
