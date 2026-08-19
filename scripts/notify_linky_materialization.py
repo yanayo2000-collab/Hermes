@@ -57,6 +57,33 @@ def load_event(
     with sqlite3.connect(uri, uri=True, timeout=3) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA query_only=ON')
+        latest_run = conn.execute(
+            """
+            SELECT run_id, status
+            FROM streamer_external_sync_runs
+            WHERE app_name='linky'
+              AND run_scope='full'
+              AND date_from<=?
+              AND date_to>=?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (data_date, data_date),
+        ).fetchone()
+        if latest_run is None or str(latest_run['status'] or '') != 'success':
+            raise ValueError('materialization_source_run_not_complete')
+        source_newer_than_materialization = int(conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM streamer_external_guild_revenue_daily
+            WHERE app_name='linky'
+              AND stat_date_bj=?
+              AND datetime(snapshot_at)>datetime(?)
+            """,
+            (data_date, str(state['materialized_at'])),
+        ).fetchone()[0] or 0)
+        if source_newer_than_materialization:
+            raise ValueError('materialization_source_newer_than_analytics')
         rows = conn.execute(
             """
             SELECT details.guild_executor_key,

@@ -20,8 +20,13 @@ def _databases(tmp_path: Path) -> tuple[Path, Path, str]:
                      ('linky', 'ready', data_date, '2026-08-17T10:47:49+08:00'))
     with sqlite3.connect(source) as conn:
         conn.execute('CREATE TABLE guild_executors(app_name TEXT,guild_name TEXT,enabled INTEGER)')
+        conn.execute('CREATE TABLE streamer_external_sync_runs(run_id TEXT,app_name TEXT,date_from TEXT,date_to TEXT,status TEXT,run_scope TEXT,created_at TEXT)')
         conn.execute('CREATE TABLE streamer_external_revenue_daily(app_name TEXT,guild_executor_key TEXT,guild_name TEXT,country TEXT,stat_date_bj TEXT,total_income REAL)')
         conn.execute('CREATE TABLE streamer_external_guild_revenue_daily(app_name TEXT,guild_executor_key TEXT,guild_name TEXT,country TEXT,stat_date_bj TEXT,total_income REAL,source_row_count INTEGER,snapshot_at TEXT)')
+        conn.execute(
+            'INSERT INTO streamer_external_sync_runs VALUES(?,?,?,?,?,?,?)',
+            ('run-complete', 'linky', data_date, data_date, 'success', 'full', '2026-08-17T02:05:00+00:00'),
+        )
         conn.executemany('INSERT INTO guild_executors VALUES(?,?,?)', [
             ('linky', 'Nova', 1),
             ('linky', 'Carote', 1),
@@ -109,6 +114,28 @@ def test_load_event_rejects_missing_enabled_guild_scope(tmp_path: Path) -> None:
     with sqlite3.connect(source) as conn:
         conn.execute('INSERT INTO guild_executors VALUES(?,?,?)', ('linky', 'Missing Guild', 1))
     with pytest.raises(ValueError, match='materialization_scope_incomplete'):
+        load_event(analytics, source, expected_date=data_date)
+
+
+def test_load_event_rejects_latest_incomplete_full_source_run(tmp_path: Path) -> None:
+    analytics, source, data_date = _databases(tmp_path)
+    with sqlite3.connect(source) as conn:
+        conn.execute(
+            'INSERT INTO streamer_external_sync_runs VALUES(?,?,?,?,?,?,?)',
+            ('run-partial', 'linky', data_date, data_date, 'partial', 'full', '2026-08-17T02:10:00+00:00'),
+        )
+    with pytest.raises(ValueError, match='materialization_source_run_not_complete'):
+        load_event(analytics, source, expected_date=data_date)
+
+
+def test_load_event_rejects_source_snapshot_newer_than_analytics(tmp_path: Path) -> None:
+    analytics, source, data_date = _databases(tmp_path)
+    with sqlite3.connect(source) as conn:
+        conn.execute(
+            "UPDATE streamer_external_guild_revenue_daily SET snapshot_at='2026-08-17T03:00:00+00:00' "
+            "WHERE guild_name='Nova'",
+        )
+    with pytest.raises(ValueError, match='materialization_source_newer_than_analytics'):
         load_event(analytics, source, expected_date=data_date)
 
 
