@@ -62,7 +62,7 @@ def load_event(
             SELECT run_id, status
             FROM streamer_external_sync_runs
             WHERE app_name='linky'
-              AND run_scope='full'
+              AND run_scope IN ('full', 'composite')
               AND date_from<=?
               AND date_to>=?
             ORDER BY created_at DESC, rowid DESC

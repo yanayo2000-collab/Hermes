@@ -128,6 +128,23 @@ def test_load_event_rejects_latest_incomplete_full_source_run(tmp_path: Path) ->
         load_event(analytics, source, expected_date=data_date)
 
 
+def test_load_event_accepts_newer_complete_composite_after_partial_full_run(tmp_path: Path) -> None:
+    analytics, source, data_date = _databases(tmp_path)
+    with sqlite3.connect(source) as conn:
+        conn.execute(
+            'UPDATE streamer_external_sync_runs SET status=?, created_at=? WHERE run_id=?',
+            ('partial', '2026-08-17T02:10:00+00:00', 'run-complete'),
+        )
+        conn.execute(
+            'INSERT INTO streamer_external_sync_runs VALUES(?,?,?,?,?,?,?)',
+            ('run-composite', 'linky', data_date, data_date, 'success', 'composite',
+             '2026-08-17T02:20:00+00:00'),
+        )
+    event = load_event(analytics, source, expected_date=data_date)
+    assert event['ready'] is True
+    assert event['scopeTotal'] == 2
+
+
 def test_load_event_rejects_source_snapshot_newer_than_analytics(tmp_path: Path) -> None:
     analytics, source, data_date = _databases(tmp_path)
     with sqlite3.connect(source) as conn:
