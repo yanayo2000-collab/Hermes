@@ -1,0 +1,15 @@
+[Unit]
+Description=Reconcile P2 business work from durable completion evidence
+After=local-fs.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/mcn-ai-automation
+EnvironmentFile=-/etc/mcn-ai-automation.env
+Environment=MCN_DISABLE_GLOBAL_APP_BOOTSTRAP=1
+ExecStart=/opt/mcn-ai-automation/.venv/bin/python /opt/mcn-ai-automation/scripts/mcn_business_completion_reconcile.py
+User=root
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=45s
