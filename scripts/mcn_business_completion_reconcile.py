@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
+from mcn_streamer_noop_evidence import DEFAULT_RECEIPT as DEFAULT_STREAMER_NOOP_RECEIPT
+from mcn_streamer_noop_evidence import accept_noop_work, read_evidence
+
 
 DEFAULT_CONTROL_DB = Path("/data/mcn-data/control/mcn_control_plane.db")
 DEFAULT_AUTOMATION_DB = Path("/opt/mcn-ai-automation/data/automation.db")
@@ -22,10 +25,6 @@ DEFAULT_SNAPSHOT = Path(
 SUPPORTED_DAILY_PUBLICATIONS = {
     "linky-daily-incremental": "linky",
     "sugo-daily-incremental": "sugo",
-}
-SUPPORTED_NEWCOMER_PUBLICATIONS = {
-    "linky-daily-newcomers": "linky",
-    "timo-daily-newcomers": "timo",
 }
 
 
@@ -109,7 +108,6 @@ def collect_publication_evidence(
         if run_updated is None or materialized_at is None:
             continue
         record = {
-            "evidence_contract": "source_success_plus_ready_publication_v1",
             "task_id": task_for_app[app],
             "app": app,
             "target": target,
@@ -131,105 +129,6 @@ def collect_publication_evidence(
         ).hexdigest()
         evidence.append(record)
         seen.add(key)
-    return evidence
-
-
-def collect_newcomer_publication_evidence(
-    automation_db: Path,
-) -> list[dict[str, Any]]:
-    """Return exact, internally consistent terminal newcomer publications.
-
-    A publication is evidence only when its latest revision is complete, all
-    expected guild rows are present, aggregate counts match, and the durable
-    completion event carries the same checksum.  No service is started here.
-    """
-    task_for_app = {
-        app: task_id for task_id, app in SUPPORTED_NEWCOMER_PUBLICATIONS.items()
-    }
-    evidence: list[dict[str, Any]] = []
-    with _readonly(automation_db) as source:
-        publications = source.execute(
-            "SELECT p.* FROM newcomer_daily_publications p "
-            "JOIN (SELECT platform,business_date,MAX(revision) AS revision "
-            "FROM newcomer_daily_publications WHERE platform IN ('linky','timo') "
-            "GROUP BY platform,business_date) latest "
-            "ON latest.platform=p.platform AND latest.business_date=p.business_date "
-            "AND latest.revision=p.revision "
-            "WHERE p.status='complete' AND p.publication_type='complete' "
-            "ORDER BY p.completed_at DESC LIMIT 120"
-        ).fetchall()
-        for row in publications:
-            app = str(row["platform"] or "").lower()
-            target = str(row["business_date"] or "")
-            revision = int(row["revision"] or 0)
-            expected = int(row["expected_guild_count"] or 0)
-            completed = int(row["completed_guild_count"] or 0)
-            checksum = str(row["checksum"] or "")
-            completed_at = _parse_timestamp(row["completed_at"])
-            if (
-                app not in task_for_app
-                or not target
-                or revision < 1
-                or expected < 1
-                or completed != expected
-                or not checksum
-                or completed_at is None
-            ):
-                continue
-            aggregate = source.execute(
-                "SELECT COUNT(*) AS guild_rows,COUNT(DISTINCT guild_executor_key) AS guilds,"
-                "COALESCE(SUM(summary_count),0) AS summary_count,"
-                "COALESCE(SUM(member_count),0) AS member_count,"
-                "COALESCE(SUM(unique_member_count),0) AS unique_member_count "
-                "FROM newcomer_daily_publication_guilds "
-                "WHERE platform=? AND business_date=? AND revision=?",
-                (app, target, revision),
-            ).fetchone()
-            if (
-                aggregate is None
-                or int(aggregate["guild_rows"] or 0) != expected
-                or int(aggregate["guilds"] or 0) != expected
-                or int(aggregate["summary_count"] or 0) != int(row["summary_count"] or 0)
-                or int(aggregate["member_count"] or 0) != int(row["member_count"] or 0)
-                or int(aggregate["unique_member_count"] or 0)
-                != int(row["unique_member_count"] or 0)
-            ):
-                continue
-            event = source.execute(
-                "SELECT event_id,delivery_status,created_at,delivered_at FROM newcomer_publication_events "
-                "WHERE platform=? AND business_date=? AND revision=? AND checksum=? "
-                "AND event_type='mcn.newcomers.daily.completed' "
-                "ORDER BY created_at DESC LIMIT 1",
-                (app, target, revision, checksum),
-            ).fetchone()
-            if event is None:
-                continue
-            completed_at_utc = completed_at.astimezone(timezone.utc).isoformat()
-            record = {
-                "evidence_contract": "complete_newcomer_publication_v1",
-                "task_id": task_for_app[app],
-                "app": app,
-                "target": target,
-                "service_unit": f"mcn-{app}-daily-newcomers.service",
-                "source_run_id": f"newcomer:{app}:{target}:revision:{revision}",
-                "source_status": "success",
-                "source_updated_at_utc": completed_at_utc,
-                "guild_count": expected,
-                "publication_status": "complete",
-                "publication_data_as_of": target,
-                "publication_materialized_at_utc": completed_at_utc,
-                "publication_revision": revision,
-                "publication_checksum": checksum,
-                "publication_summary_count": int(row["summary_count"] or 0),
-                "publication_member_count": int(row["member_count"] or 0),
-                "publication_unique_member_count": int(row["unique_member_count"] or 0),
-                "completion_event_id": str(event["event_id"] or ""),
-                "completion_event_delivery_status": str(event["delivery_status"] or ""),
-            }
-            record["evidence_id"] = hashlib.sha256(
-                canonical_json(record).encode("utf-8")
-            ).hexdigest()
-            evidence.append(record)
     return evidence
 
 
@@ -303,23 +202,6 @@ def reconcile_control_plane(
             if str(stage["state"] or "") not in {"manual_review", "blocked_soft", "blocked_hard", "failed"}:
                 refused.append({"work_id": str(work["work_id"]), "reason": "stage_state_not_reconcilable"})
                 continue
-            service_unit = str(proof.get("service_unit") or "")
-            if service_unit:
-                try:
-                    dependency_units = json.loads(str(stage["dependency_units_json"] or "[]"))
-                    command = json.loads(str(stage["command_json"] or "[]"))
-                except (json.JSONDecodeError, TypeError):
-                    dependency_units, command = [], []
-                if (
-                    str(metadata.get("service_unit") or "") != service_unit
-                    or dependency_units != [service_unit]
-                    or service_unit not in command
-                ):
-                    refused.append({
-                        "work_id": str(work["work_id"]),
-                        "reason": "service_unit_evidence_mismatch",
-                    })
-                    continue
             deadline = _parse_timestamp(work["deadline_at_utc"])
             source_completed_at = _parse_timestamp(proof.get("source_updated_at_utc"))
             publication_completed_at = _parse_timestamp(
@@ -354,10 +236,7 @@ def reconcile_control_plane(
             except json.JSONDecodeError:
                 original_result = {"raw": original_result_text[:1000]}
             reconciliation = {
-                "contract": str(
-                    proof.get("evidence_contract")
-                    or "source_success_plus_ready_publication_v1"
-                ),
+                "contract": "source_success_plus_ready_publication_v1",
                 "evidence_id": proof["evidence_id"],
                 "source_run_id": proof["source_run_id"],
                 "source_updated_at_utc": proof["source_updated_at_utc"],
@@ -368,7 +247,6 @@ def reconcile_control_plane(
                 "original_work_state": str(work["state"]),
                 "original_stage_state": str(stage["state"]),
                 "original_stage_result": original_result,
-                "durable_evidence": proof,
             }
             changed.append({
                 "work_id": str(work["work_id"]),
@@ -484,7 +362,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         evidence = collect_publication_evidence(args.automation_db, args.analytics_db)
-        evidence.extend(collect_newcomer_publication_evidence(args.automation_db))
         snapshot = build_snapshot(evidence)
         if not args.dry_run:
             write_snapshot(args.snapshot, snapshot)
@@ -493,12 +370,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.snapshot_only
             else reconcile_control_plane(args.control_db, evidence, dry_run=args.dry_run)
         )
+        try:
+            streamer_noop_evidence = read_evidence(DEFAULT_STREAMER_NOOP_RECEIPT)
+            if args.dry_run or args.snapshot_only:
+                streamer_noop = {
+                    "ok": True,
+                    "available": True,
+                    "dry_run": True,
+                    "would_accept_evidence_id": streamer_noop_evidence["evidence_id"],
+                }
+            else:
+                streamer_noop = accept_noop_work(args.control_db, streamer_noop_evidence)
+        except FileNotFoundError:
+            streamer_noop = {"ok": True, "available": False, "changed": False}
         result = {
             "ok": True,
             "evidence_count": len(evidence),
             "snapshot": str(args.snapshot),
             "snapshot_written": not args.dry_run,
             "reconciliation": reconciliation,
+            "streamer_noop": streamer_noop,
         }
     except Exception as exc:  # noqa: BLE001 - timer must emit structured evidence
         result = {"ok": False, "error": f"{type(exc).__name__}:{str(exc)[:500]}"}
