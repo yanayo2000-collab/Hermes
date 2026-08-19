@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -23,6 +24,7 @@ os.environ.setdefault('MCN_DISABLE_GLOBAL_APP_BOOTSTRAP', '1')
 
 from app.streamer_external_sync import sync_streamer_external_data  # noqa: E402
 from app.linky_source_readiness import persisted_linky_scope_ready  # noqa: E402
+from app.linky_phase_admission import linky_compute_admission_command  # noqa: E402
 from app.streamer_data_foundation import record_ingestion_scope  # noqa: E402
 from app.streamer_analytics import (  # noqa: E402
     LINKY_STREAMER_ANALYTICS_SUPPORT_TABLES,
@@ -37,6 +39,15 @@ DEFAULT_PROGRESS_DIR = Path(
     os.getenv('MCN_TASK_PROGRESS_DIR')
     or '/var/lib/mcn-ai-automation/task-progress'
 )
+
+
+def _linky_candidate_build_admitted() -> bool:
+    completed = subprocess.run(
+        linky_compute_admission_command(ROOT),
+        cwd=str(ROOT),
+        check=False,
+    )
+    return completed.returncode == 0
 
 
 def _open_read_only_source(database: str | Path) -> sqlite3.Connection:
@@ -485,6 +496,13 @@ def _run(args: argparse.Namespace) -> int:
             results.append(result)
         successful_apps = tuple(result['app'] for result in results if result.get('ok'))
         if successful_apps:
+            if successful_apps == ('linky',) and not _linky_candidate_build_admitted():
+                progress.finish(
+                    'deferred',
+                    source_ready=True,
+                    reason='candidate_build_resource_deferred',
+                )
+                return 75
             phase_unit = {
                 'linky': 'mcn-linky-external-feed.service',
                 'sugo': 'mcn-sugo-external-feed.service',
