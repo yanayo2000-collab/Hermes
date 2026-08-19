@@ -20,6 +20,10 @@ from app.streamer_analytics import (
     ensure_streamer_analytics_views,
     normalize_streamer_app,
 )
+from app.linky_source_readiness import (
+    LINKY_MIN_PREVIOUS_SOURCE_ROW_RATIO,
+    is_linky_source_row_count_ready,
+)
 from app.streamer_data_foundation import (
     archive_raw_json,
     record_ingestion_scope,
@@ -803,7 +807,6 @@ def _linky_is_active(raw: Dict[str, Any]) -> bool:
 LINKY_EFFECTIVE_INCOME_BASIS = 'chat_earns_plus_live_room_receive_diamonds'
 LINKY_NON_INDONESIA_EFFECTIVE_INCOME_BASIS = 'chat_earns_only_voice_room_stored'
 LINKY_EFFECTIVE_INCOME_VERSION = 4
-LINKY_MIN_PREVIOUS_SOURCE_ROW_RATIO = 0.8
 
 
 def _assert_linky_streamer_stat_ready(
@@ -827,8 +830,10 @@ def _assert_linky_streamer_stat_ready(
     previous_count = int(previous[0] or 0)
     if previous_count <= 0:
         return
-    minimum_count = max(1, int(previous_count * LINKY_MIN_PREVIOUS_SOURCE_ROW_RATIO))
-    if source_row_count < minimum_count:
+    if not is_linky_source_row_count_ready(
+        current_count=source_row_count,
+        previous_count=previous_count,
+    ):
         raise RuntimeError(
             'linky_guild_source_not_ready:'
             f'current={source_row_count}:previous={previous_count}'
