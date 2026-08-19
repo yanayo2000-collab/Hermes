@@ -49,19 +49,15 @@ def test_load_event_fails_closed_for_stale_analytics(tmp_path: Path) -> None:
         load_event(analytics, source, expected_date=data_date)
 
 
-def test_load_event_accepts_complete_zero_income_scope(tmp_path: Path) -> None:
+def test_load_event_rejects_complete_zero_income_scope(tmp_path: Path) -> None:
     analytics, source, data_date = _databases(tmp_path)
     with sqlite3.connect(source) as conn:
         conn.execute(
             'INSERT INTO streamer_external_revenue_daily VALUES(?,?,?,?,?)',
             ('linky', 'Zero Day', 'Brazil', data_date, 0),
         )
-    event = load_event(analytics, source, expected_date=data_date)
-    zero_scope = next(scope for scope in event['scopes'] if scope['guildName'] == 'Zero Day')
-    assert zero_scope == {
-        'guildName': 'Zero Day', 'country': 'Brazil', 'rowCount': 1,
-        'totalIncome': '0.000000', 'qualityStatus': 'passed', 'consumable': True,
-    }
+    with pytest.raises(ValueError, match='materialization_scope_invalid'):
+        load_event(analytics, source, expected_date=data_date)
 
 
 def test_load_event_rejects_negative_income_scope(tmp_path: Path) -> None:

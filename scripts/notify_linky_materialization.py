@@ -75,7 +75,7 @@ def load_event(
         row_count = int(row['row_count'] or 0)
         total_income = float(row['total_income'] or 0)
         if not str(row['guild_name'] or '').strip() or not str(row['country'] or '').strip() \
-                or row_count <= 0 or total_income < 0:
+                or row_count <= 0 or total_income <= 0:
             raise ValueError('materialization_scope_invalid')
         scopes.append({
             'guildName': str(row['guild_name']).strip(),
