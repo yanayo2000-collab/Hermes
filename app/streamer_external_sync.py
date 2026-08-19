@@ -803,6 +803,36 @@ def _linky_is_active(raw: Dict[str, Any]) -> bool:
 LINKY_EFFECTIVE_INCOME_BASIS = 'chat_earns_plus_live_room_receive_diamonds'
 LINKY_NON_INDONESIA_EFFECTIVE_INCOME_BASIS = 'chat_earns_only_voice_room_stored'
 LINKY_EFFECTIVE_INCOME_VERSION = 4
+LINKY_MIN_PREVIOUS_SOURCE_ROW_RATIO = 0.8
+
+
+def _assert_linky_streamer_stat_ready(
+    conn: sqlite3.Connection,
+    executor_key: str,
+    business_date: date,
+    source_row_count: int,
+) -> None:
+    previous = conn.execute(
+        """
+        SELECT source_row_count
+        FROM streamer_external_guild_revenue_daily
+        WHERE app_name='linky' AND guild_executor_key=? AND stat_date_bj<?
+        ORDER BY stat_date_bj DESC
+        LIMIT 1
+        """,
+        (executor_key, business_date.isoformat()),
+    ).fetchone()
+    if previous is None:
+        return
+    previous_count = int(previous[0] or 0)
+    if previous_count <= 0:
+        return
+    minimum_count = max(1, int(previous_count * LINKY_MIN_PREVIOUS_SOURCE_ROW_RATIO))
+    if source_row_count < minimum_count:
+        raise RuntimeError(
+            'linky_guild_source_not_ready:'
+            f'current={source_row_count}:previous={previous_count}'
+        )
 
 
 def _linky_voice_room_included_in_analytics(country: object) -> bool:
@@ -1119,6 +1149,9 @@ def sync_linky(
                         raise RuntimeError('linky_guild_page_limit_exceeded')
                 if scanned_count != (total_rows or 0):
                     raise RuntimeError('linky_guild_row_count_mismatch')
+                _assert_linky_streamer_stat_ready(
+                    conn, executor_key, day, int(total_rows or 0),
+                )
                 # The page archive is independent of the derived daily rows.
                 # Release the writer lock before the optional live-room API.
                 conn.commit()
