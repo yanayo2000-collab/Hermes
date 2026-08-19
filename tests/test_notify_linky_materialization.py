@@ -1,13 +1,33 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
 
 import pytest
 
-from scripts.notify_linky_materialization import _read_state, _write_state, load_event
+from scripts.notify_linky_materialization import canonical_json, _read_state, _write_state, load_event
+
+
+def test_scope_checksum_matches_nova_node_canonical_contract() -> None:
+    scopes = [{
+        'guildName': 'BR-EVIAN',
+        'country': 'Brazil',
+        'rowCount': 37893,
+        'totalIncome': '826591.000000',
+        'sourceRowCount': 37893,
+        'sourceTotalIncome': '826591.000000',
+        'qualityStatus': 'passed',
+        'consumable': True,
+        'materializedAt': '2026-08-19T16:06:09+08:00',
+        'sourceGeneration': '0123456789abcdefabcd',
+        'checksum': 'a' * 64,
+    }]
+    assert hashlib.sha256(canonical_json(scopes).encode('utf-8')).hexdigest() == (
+        '3848ee5a67da1e8266c3cde02809aa1abbe5417bba9a4f376142cd668150b155'
+    )
 
 
 def _databases(tmp_path: Path) -> tuple[Path, Path, str]:
@@ -67,6 +87,9 @@ def test_load_event_requires_ready_d1_and_builds_stable_scope_checksum(tmp_path:
     assert all(scope['consumable'] is True for scope in event['scopes'])
     assert all(len(scope['checksum']) == 64 for scope in event['scopes'])
     assert all(len(scope['sourceGeneration']) == 20 for scope in event['scopes'])
+    assert event['checksum'] == hashlib.sha256(
+        canonical_json(event['scopes']).encode('utf-8')
+    ).hexdigest()
 
 
 def test_load_event_fails_closed_for_stale_analytics(tmp_path: Path) -> None:

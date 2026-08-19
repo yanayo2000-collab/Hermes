@@ -127,7 +127,6 @@ def load_event(
     if observed_guilds != expected_guilds:
         raise ValueError('materialization_scope_incomplete')
     scopes: list[dict[str, Any]] = []
-    scope_contents: list[dict[str, Any]] = []
     for row in rows:
         row_count = int(row['row_count'] or 0)
         total_income = float(row['total_income'] or 0)
@@ -152,14 +151,15 @@ def load_event(
         source_generation = hashlib.sha256(
             f"{data_date}:{row['guild_executor_key']}:{scope_checksum}".encode('utf-8')
         ).hexdigest()[:20]
-        scope_contents.append(scope_core)
         scopes.append({
             **scope_core,
             'materializedAt': str(state['materialized_at']),
             'sourceGeneration': source_generation,
             'checksum': scope_checksum,
         })
-    checksum = hashlib.sha256(canonical_json(scope_contents).encode('utf-8')).hexdigest()
+    # The receiver verifies the checksum against the exact scopes array carried
+    # by the event, including the publication-lineage fields added above.
+    checksum = hashlib.sha256(canonical_json(scopes).encode('utf-8')).hexdigest()
     source_generation = hashlib.sha256(
         f"{data_date}:{checksum}".encode('utf-8')
     ).hexdigest()[:20]
