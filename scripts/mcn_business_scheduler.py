@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
+ROOT = Path(os.getenv("MCN_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).resolve()
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from app.linky_phase_admission import linky_source_phase_soft_reasons
 
 from mcn_business_scheduler_shadow import _read_history, collect_telemetry, decide, load_contracts
@@ -30,7 +34,6 @@ from mcn_control_plane import (
 )
 
 
-ROOT = Path(os.getenv("MCN_PROJECT_ROOT") or Path(__file__).resolve().parents[1]).resolve()
 DEFAULT_CONTRACTS = ROOT / "config/mcn_business_task_contracts.json"
 DEFAULT_SHADOW_STATE = Path("/var/lib/mcn-ai-automation/business-scheduler-shadow")
 PYTHON = str(ROOT / ".venv/bin/python")

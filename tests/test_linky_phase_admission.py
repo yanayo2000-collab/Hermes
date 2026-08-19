@@ -41,3 +41,11 @@ def test_linky_source_and_compute_phases_have_separate_load_floors() -> None:
 
     assert source_command[source_command.index('--max-load1') + 1] == '12.0'
     assert compute_command[compute_command.index('--max-load1') + 1] == '2.5'
+
+
+def test_business_scheduler_bootstraps_repo_before_app_import() -> None:
+    script = Path(__file__).resolve().parents[1] / 'scripts' / 'mcn_business_scheduler.py'
+    source = script.read_text(encoding='utf-8')
+    assert source.index('sys.path.insert(0, str(ROOT))') < source.index(
+        'from app.linky_phase_admission import'
+    )
