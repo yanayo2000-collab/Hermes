@@ -13,6 +13,7 @@ import requests
 
 from app.growth.execution_service import ExecutionTaskService
 from app.growth.errors import GrowthValidationError
+from app.growth.approved_rebuild_autopilot import ApprovedRebuildAutopilot
 from app.growth.meta_execution_worker import MetaExecutionWorker
 from app.growth.meta_graph_adapter import MetaGraphExecutionAdapter, MetaGraphWritePolicy
 from app.growth.new_account_autopilot import NewAccountLaunchAutopilot
@@ -55,6 +56,14 @@ def _account_ids(value: str) -> FrozenSet[str]:
 def _action_types(value: str) -> FrozenSet[str]:
     return frozenset(
         item.strip().upper() for item in str(value or "").split(",") if item.strip()
+    )
+
+
+def _legacy_rebuild_batch_prefixes(value: str) -> FrozenSet[str]:
+    return frozenset(
+        item.strip().rstrip(":")
+        for item in str(value or "").split(",")
+        if item.strip()
     )
 
 
@@ -108,6 +117,16 @@ def run(args: argparse.Namespace) -> int:
         tasks, adapter, worker_id=args.worker_id, execution_mode=args.mode,
         heartbeat_interval_seconds=30.0,
     )
+    approved_rebuilds = ApprovedRebuildAutopilot(
+        conn,
+        session=requests,
+        base_url=str(os.getenv("GROWTH_INTERNAL_API_BASE_URL") or "http://127.0.0.1:8011"),
+        internal_token=str(os.getenv("AUTH_INTERNAL_TOKEN") or ""),
+        legacy_batch_prefixes=_legacy_rebuild_batch_prefixes(
+            os.getenv("GROWTH_APPROVED_REBUILD_RECOVERY_BATCH_PREFIXES", "")
+        ),
+        timeout_seconds=args.network_timeout_seconds,
+    )
     stopping = False
 
     def stop(_signum: int, _frame: Any) -> None:
@@ -123,10 +142,16 @@ def run(args: argparse.Namespace) -> int:
                     conn, meta_adapter=adapter if args.mode == "live" else None,
                 )
                 autopilot.reconcile_meta_reviews(limit=10)
+                tasks.reconcile_verified_replacement_bindings(limit=100)
+                autopilot.reconcile_creative_cleanup(limit=100)
+                autopilot.advance_rejected_repairs(limit=20)
                 autopilot.advance_ready_launches(
                     limit=20, allow_live=args.mode == "live",
                 )
                 autopilot.advance_approved_replacements(
+                    limit=20, allow_live=args.mode == "live",
+                )
+                approved_rebuilds.advance(
                     limit=20, allow_live=args.mode == "live",
                 )
                 tasks.move_expired_to_reconciliation(stale_after_seconds=args.stale_after_seconds)

@@ -36,7 +36,7 @@ _TOP_LEVEL_KEYS = {
     "copy_benchmark_versions", "frozen_creative_id", "study",
     "audience_preflight", "invariants", "delivery_guardrails",
     "max_write_requests", "execution_policy", "evaluation_window", "expires_at",
-    "compiler_receipt",
+    "market_profile", "compiler_receipt",
 }
 _CELL_KEYS = {
     "cell_key", "experiment_id", "experiment_code", "role", "creative_direction",
@@ -81,16 +81,30 @@ _BASE_CONDITION_KEYS = {
     "language", "language_label",
 }
 _GUARDRAIL_KEYS = {"version", "ctr_floor", "zero_install_spend", "high_cpi"}
+_OPERATING_GUARDRAIL_KEYS = {
+    "version", "cpi_target_usd", "ctr_floor", "zero_install_spend", "high_cpi",
+    "relative_loser", "spend_cap", "decision_scope", "requires_approval",
+    "causal_claim",
+}
 _CTR_RULE_KEYS = {"minimum_impressions", "minimum_ctr", "action"}
 _ZERO_INSTALL_RULE_KEYS = {
     "minimum_attribution_hours", "spend_limit_usd", "maximum_installs", "action",
 }
 _HIGH_CPI_RULE_KEYS = {"minimum_installs", "maximum_cpi_usd", "action"}
+_RELATIVE_LOSER_RULE_KEYS = {
+    "minimum_installs", "maximum_peer_cpi_ratio", "minimum_target_cpi_ratio",
+    "action",
+}
+_SPEND_CAP_RULE_KEYS = {"minimum_checkpoint", "maximum_spend_usd", "action"}
 _PREFLIGHT_KEYS = {
     "preflight_id", "launch_id", "source", "status", "account_id", "account_name",
     "business_id", "country", "test_variable", "strategy_keys", "targeting_ids",
     "delivery_estimates", "intersection_estimate", "overlap_ratio", "checked_at",
     "expires_at", "start_time", "end_time", "meta_writes_performed",
+}
+_MARKET_PROFILE_KEYS = {
+    "country", "creative_currency", "reporting_timezone", "target_app",
+    "creation_status",
 }
 
 # These fields identify a Cell or a Meta object but do not change its business
@@ -288,7 +302,9 @@ def compile_primary_text_only_plan(plan: Mapping[str, Any]) -> Dict[str, Any]:
         receipt = _base_receipt(plan)
         core = deepcopy(dict(plan or {}))
         core.pop("compiler_receipt", None)
-        _exact_keys(core, _TOP_LEVEL_KEYS - {"compiler_receipt"}, "UNKNOWN_OR_MISSING_PLAN_FIELD")
+        expected_top_level = _TOP_LEVEL_KEYS - {"compiler_receipt"}
+        if set(core) not in (expected_top_level, expected_top_level - {"market_profile"}):
+            _fail("UNKNOWN_OR_MISSING_PLAN_FIELD")
         if str(core.get("action_type") or "").upper() != "CREATE_PAUSED_AD":
             _fail("ACTION_TYPE_NOT_ALLOWED")
         if str(core.get("experiment_type") or "").upper() != "COPY_ONLY":
@@ -350,9 +366,15 @@ def compile_primary_text_only_plan(plan: Mapping[str, Any]) -> Dict[str, Any]:
             or str(invariants.get("randomization") or "") != "META_SPLIT_TEST_REQUIRED"
         ):
             _fail("INVARIANTS_INVALID")
+        guardrails_value = core.get("delivery_guardrails")
+        guardrail_keys = (
+            _OPERATING_GUARDRAIL_KEYS
+            if isinstance(guardrails_value, dict)
+            and str(guardrails_value.get("version") or "") == "cold_start_operating_v2"
+            else _GUARDRAIL_KEYS
+        )
         guardrails = _exact_keys(
-            core.get("delivery_guardrails"), _GUARDRAIL_KEYS,
-            "DELIVERY_GUARDRAILS_SCHEMA_INVALID",
+            guardrails_value, guardrail_keys, "DELIVERY_GUARDRAILS_SCHEMA_INVALID",
         )
         _exact_keys(guardrails.get("ctr_floor"), _CTR_RULE_KEYS, "CTR_RULE_SCHEMA_INVALID")
         _exact_keys(
@@ -360,7 +382,24 @@ def compile_primary_text_only_plan(plan: Mapping[str, Any]) -> Dict[str, Any]:
             "ZERO_INSTALL_RULE_SCHEMA_INVALID",
         )
         _exact_keys(guardrails.get("high_cpi"), _HIGH_CPI_RULE_KEYS, "HIGH_CPI_RULE_SCHEMA_INVALID")
+        if guardrail_keys == _OPERATING_GUARDRAIL_KEYS:
+            _exact_keys(
+                guardrails.get("relative_loser"), _RELATIVE_LOSER_RULE_KEYS,
+                "RELATIVE_LOSER_RULE_SCHEMA_INVALID",
+            )
+            _exact_keys(
+                guardrails.get("spend_cap"), _SPEND_CAP_RULE_KEYS,
+                "SPEND_CAP_RULE_SCHEMA_INVALID",
+            )
         _exact_keys(core.get("evaluation_window"), {"checkpoints"}, "EVALUATION_WINDOW_SCHEMA_INVALID")
+        market_profile = core.get("market_profile", {})
+        if market_profile:
+            _exact_keys(
+                market_profile, _MARKET_PROFILE_KEYS,
+                "MARKET_PROFILE_SCHEMA_INVALID",
+            )
+        elif market_profile != {}:
+            _fail("MARKET_PROFILE_SCHEMA_INVALID")
         preflight = _exact_keys(
             core.get("audience_preflight"), _PREFLIGHT_KEYS,
             "AUDIENCE_PREFLIGHT_SCHEMA_INVALID",

@@ -150,6 +150,7 @@ SUPPORTED_BRAND_MARKETS: Dict[str, Dict[str, Any]] = {
         'headline': 'Gana recompensas desde tu celular',
         'subheadline': 'Tareas simples, recompensas y guía en la app',
     },
+    'CO': {'brand': 'Recompa', 'market_label': 'Colombia', 'language_hint': 'Spanish (Colombia)', 'headline': 'Gana recompensas desde tu celular', 'subheadline': 'Tareas simples, recompensas y guía en la app'},
 }
 
 PUBLIC_AD_POSITIONING = {
@@ -223,6 +224,7 @@ SAFE_COMPLIANCE_HEADLINES = {
         'Tareas en la app.\nProgreso visible.',
         'Completa tareas.\nMira tus recompensas.',
     ],
+    'CO': ['Completa actividades.\nSigue tu progreso.', 'Tareas en la app.\nProgreso visible.', 'Completa tareas.\nMira tus recompensas.'],
 }
 
 SAFE_COMPLIANCE_SUBHEADLINES = {
@@ -242,6 +244,7 @@ SAFE_COMPLIANCE_SUBHEADLINES = {
         'Completa tareas en la app y mira las recompensas disponibles.',
         'Sigue actividades y recompensas disponibles en la app.',
     ],
+    'CO': ['Completa tareas en la app y mira las recompensas disponibles.', 'Sigue actividades y recompensas disponibles en la app.'],
 }
 
 SAFE_COMPLIANCE_PHONE_COPY = {
@@ -249,6 +252,7 @@ SAFE_COMPLIANCE_PHONE_COPY = {
     'ID': ['Progres hari ini', 'Aktivitas harian', 'Poin di aplikasi', 'Hadiah tersedia'],
     'ES_LATAM': ['Progreso de hoy', 'Actividades diarias', 'Puntos en la app', 'Recompensas disponibles'],
     'MX': ['Progreso de hoy', 'Actividades diarias', 'Recompensas en la app', 'Recompensas disponibles'],
+    'CO': ['Progreso de hoy', 'Actividades diarias', 'Recompensas en la app', 'Recompensas disponibles'],
 }
 
 SAFE_COMPLIANCE_BLUEPRINT_VERSION = 'safe_generation_blueprint_v4'
@@ -421,6 +425,7 @@ CURRENCY_REWARD_THRESHOLDS = {
         'daily_reward': {'pass_max': 100, 'manual_max': 200},
         'wallet_balance': {'pass_max': 0, 'manual_max': 0},
     },
+    'CO': {'currency': 'COP$', 'exact_task_reward': 1000, 'task_reward': {'pass_min': 500, 'pass_max': 2000, 'manual_max': 2000}, 'daily_reward': {'pass_min': 500, 'pass_max': 8000, 'manual_max': 15000}, 'wallet_balance': {'pass_max': 0, 'manual_max': 0}},
 }
 
 
@@ -445,6 +450,8 @@ def currency_reward_generation_contract(market: str) -> Dict[str, Any]:
         exact_visible_text = f'R$ {exact_amount:.2f}'.replace('.', ',')
     elif currency == 'MX$':
         exact_visible_text = f'MX$ {exact_display}'
+    elif currency == 'COP$':
+        exact_visible_text = f'$ {int(exact_amount):,} COP'.replace(',', '.')
     else:
         exact_visible_text = f'{exact_display} puntos'
     return {
@@ -523,6 +530,7 @@ BRAND_VISUAL_GUIDELINES_BY_MARKET = {
         'language': 'Spanish (Mexico)',
         'reward_copy_style': 'small MX$ task reward should be visually prominent and slightly larger than points labels; not guaranteed income',
     },
+    'CO': {'brand_footer': 'Recompa bottom lockup', 'language': 'Spanish (Colombia)', 'reward_copy_style': 'small COP task reward should be visually prominent and slightly larger than points labels; not guaranteed income'},
 }
 
 COUNTRY_MARKET_ALIASES = {
@@ -540,8 +548,8 @@ COUNTRY_MARKET_ALIASES = {
     'méxico': 'MX',
     've': 'ES_LATAM',
     'venezuela': 'ES_LATAM',
-    'co': 'ES_LATAM',
-    'colombia': 'ES_LATAM',
+    'co': 'CO',
+    'colombia': 'CO',
     'es_latam': 'ES_LATAM',
     'recompa': 'ES_LATAM',
 }
@@ -867,8 +875,8 @@ class CreativeImageGenerationBrief:
     ad_group: str = ''
     ad: str = ''
     objective: str = '真实入会'
-    audience: str = '想开始内容创作并需要本地支持的新用户'
-    core_offer: str = '公会支持、申请流程清晰、本地语言指导'
+    audience: str = '广泛受众'
+    core_offer: str = '网赚效率'
     source_performance: Dict[str, Any] = field(default_factory=dict)
     source_preview_url: str = ''
     source_preview_asset_id: str = ''
@@ -1098,7 +1106,7 @@ def _market_negative_constraint_key(market: str) -> str:
         return 'PT'
     if market == 'ID':
         return 'ID'
-    if market in {'ES_LATAM', 'MX'}:
+    if market in {'ES_LATAM', 'MX', 'CO'}:
         return 'ES'
     return 'EN'
 
@@ -1127,6 +1135,9 @@ def headline_candidates_for(market: str, direction_key: str) -> List[str]:
         ('MX', CREATIVE_DIRECTION_POINTS_REWARD): ['Gana recompensas desde tu celular', 'Tareas simples y recompensas', 'Completa tareas y mira tu progreso'],
         ('MX', CREATIVE_DIRECTION_EASY_START): ['Empieza desde tu celular', 'Tres pasos para empezar', 'Comienza con tareas simples'],
         ('MX', CREATIVE_DIRECTION_GUIDED_TRUST): ['Empieza con guía', 'Entiende las tareas en la app', 'Ayuda para el primer paso'],
+        ('CO', CREATIVE_DIRECTION_POINTS_REWARD): ['Gana recompensas desde tu celular', 'Tareas simples y recompensas', 'Completa tareas y mira tu progreso'],
+        ('CO', CREATIVE_DIRECTION_EASY_START): ['Empieza desde tu celular', 'Tres pasos para empezar', 'Comienza con tareas simples'],
+        ('CO', CREATIVE_DIRECTION_GUIDED_TRUST): ['Empieza con guía', 'Entiende las tareas en la app', 'Ayuda para el primer paso'],
     }
     market_profile = SUPPORTED_BRAND_MARKETS.get(market, {})
     return candidates.get((market, direction_key), [str(market_profile.get('headline') or 'Start with app tasks')])
@@ -3222,6 +3233,28 @@ def create_chatgpt_pro_job(
     source_creative_id = str(body.get('source_creative_id') or task.get('source_creative_id') or task.get('creative_id') or '').strip()
     source_campaign_id = str(body.get('source_campaign_id') or task.get('source_campaign_id') or task.get('campaign_id') or '').strip()
     source_adset_id = str(body.get('source_adset_id') or task.get('source_adset_id') or task.get('adset_id') or '').strip()
+    if recommendation_id and source_ad_id:
+        existing = conn.execute(
+            """
+            SELECT job_id, experiment_id
+            FROM creative_pro_work_queue
+            WHERE recommendation_id=? AND source_ad_ids_json=? AND status<>'deleted'
+            ORDER BY created_at DESC, job_id DESC
+            LIMIT 1
+            """,
+            (recommendation_id, json.dumps([source_ad_id], ensure_ascii=False)),
+        ).fetchone()
+        if existing:
+            return {
+                'ok': True,
+                'schema_version': CREATIVE_IMAGE_GENERATION_SCHEMA_VERSION,
+                'provider_mode': PROVIDER_CHATGPT_PRO_MANUAL,
+                'deduplicated': True,
+                'external_write_performed': False,
+                'job': get_chatgpt_pro_job(conn, str(existing['job_id'])),
+                'experiment': get_creative_experiment(conn, str(existing['experiment_id'])),
+                'image': None,
+            }
     metrics = dict(brief.source_performance or body.get('metrics_snapshot') or task.get('metrics_snapshot') or {})
     source_preview_url = str(body.get('source_preview_url') or task.get('source_preview_url') or task.get('creative_preview_url') or brief.source_preview_url or '').strip()
     source_preview_asset_id = str(body.get('source_preview_asset_id') or task.get('source_preview_asset_id') or task.get('creative_preview_asset_id') or brief.source_preview_asset_id or '').strip()
@@ -3358,8 +3391,8 @@ def create_chatgpt_pro_job(
         'source_diagnosis': source_diagnosis,
         'revision_goal': revision_goal,
         'audience': str(brief.audience or '').strip(),
-        'audience_strategy': str(task.get('audience_strategy') or body.get('audience_strategy') or '').strip(),
-        'audience_strategy_label': str(task.get('audience_strategy_label') or body.get('audience_strategy_label') or '').strip(),
+        'audience_strategy': str(task.get('audience_strategy') or body.get('audience_strategy') or 'BROAD').strip(),
+        'audience_strategy_label': str(task.get('audience_strategy_label') or body.get('audience_strategy_label') or '广泛受众').strip(),
         'base_targeting': dict(task.get('base_targeting') or body.get('base_targeting') or {}),
         'creative_angle': str(brief.core_offer or '').strip(),
         'creative_direction': direction.get('key') or creative_direction_key(brief.core_offer),
@@ -3375,6 +3408,12 @@ def create_chatgpt_pro_job(
         'meta_rejection': dict(task.get('meta_rejection') or body.get('meta_rejection') or {}),
         'meta_names': dict(task.get('meta_names') or body.get('meta_names') or {}),
         'initial_daily_budget': task.get('initial_daily_budget') or body.get('initial_daily_budget') or 0,
+        'source': str(task.get('source') or '').strip(),
+        'auto_rebuild_on_approval': task.get('auto_rebuild_on_approval') is True,
+        'rebuild_initial_status': str(task.get('rebuild_initial_status') or '').strip().upper(),
+        'rebuild_authorized_at': str(task.get('rebuild_authorized_at') or '').strip(),
+        'rebuild_batch_id': str(task.get('rebuild_batch_id') or '').strip(),
+        'rebuild_entry_point': str(task.get('rebuild_entry_point') or '').strip(),
     }
     if launch_name:
         material_refs['creative_name_version'] = 'launch_date_sequence_v1'
@@ -5013,6 +5052,8 @@ def _currency_reward_review(text: str, market: str) -> Dict[str, Any]:
         pattern = re.compile(r'Rp\s*([0-9][0-9.,]*)', re.I)
     elif market == 'MX':
         pattern = re.compile(r'(?:MX\$|MXN\s*\$?|\$)\s*([0-9][0-9.,]*)', re.I)
+    elif market == 'CO':
+        pattern = re.compile(r'(?:COP\s*\$?|\$)\s*([0-9][0-9.,]*)(?:\s*COP)?', re.I)
     else:
         pattern = re.compile(r'\b([0-9][0-9.,]*)\s*(?:pts|pontos|puntos|punto|points|poin)\b', re.I)
     for match in pattern.finditer(text or ''):

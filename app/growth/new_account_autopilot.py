@@ -230,6 +230,40 @@ class NewAccountLaunchAutopilot:
         ).fetchone()
         return dict(row) if row else {}
 
+    def _current_delivery_page_id(self, experiment: Dict[str, Any]) -> str:
+        """Return the Page from the latest verified creation, not stale draft input."""
+        experiment_id = str(experiment.get("experiment_id") or "")
+        rows = self.conn.execute(
+            """
+            SELECT payload_json FROM growth_operation_action
+            WHERE upper(action_type)='CREATE_PAUSED_AD'
+              AND upper(status)='VERIFIED'
+              AND (
+                json_extract(payload_json,'$.experiment_id')=?
+                OR EXISTS (
+                  SELECT 1 FROM json_each(payload_json,'$.plan.cells') cell
+                  WHERE json_extract(cell.value,'$.experiment_id')=?
+                )
+              )
+            ORDER BY created_at DESC,operation_action_id DESC
+            """,
+            (experiment_id, experiment_id),
+        ).fetchall()
+        for row in rows:
+            plan = dict(decode_json(row["payload_json"], {}).get("plan") or {})
+            candidates = [dict(plan.get("steps") or {})]
+            candidates.extend(
+                dict(dict(cell or {}).get("steps") or {})
+                for cell in list(plan.get("cells") or [])
+                if str(dict(cell or {}).get("experiment_id") or "") == experiment_id
+            )
+            for steps in candidates:
+                story = dict(dict(steps.get("CREATIVE_CREATE") or {}).get("object_story_spec") or {})
+                page_id = str(story.get("page_id") or "").strip()
+                if page_id:
+                    return page_id
+        return str(dict(experiment.get("hypothesis_json") or {}).get("page_id") or "").strip()
+
     def _ensure_rejection_repair(self, launch_id: str, experiment: Dict[str, Any]) -> Dict[str, Any]:
         experiment_id = str(experiment["experiment_id"])
         rejection = self._rejection_row(experiment_id)
@@ -249,6 +283,7 @@ class NewAccountLaunchAutopilot:
         hypothesis = dict(experiment.get("hypothesis_json") or {})
         names = dict(hypothesis.get("meta_names") or {})
         country = str(experiment.get("country") or "BR").upper()
+        delivery_page_id = self._current_delivery_page_id(experiment)
         if not job_row:
             feedback = decode_json(rejection.get("review_feedback_json"), {})
             audience = dict(hypothesis.get("audience") or {})
@@ -279,7 +314,7 @@ class NewAccountLaunchAutopilot:
                         "account_id": str(experiment.get("account_id") or ""),
                         "growth_experiment_id": experiment_id, "launch_id": launch_id,
                         "creative_angle": "安全合规", "creative_direction": {"key": "safe_compliance", "title": "安全合规"},
-                        "meta_names": names, "page_id": str(hypothesis.get("page_id") or ""),
+                        "meta_names": names, "page_id": delivery_page_id,
                         "audience_strategy": "BROAD", "base_targeting": base_targeting, "targeting": base_targeting,
                         "meta_rejection": {
                             "ad_id": ad_id, "policy_feedback": feedback,
@@ -343,7 +378,7 @@ class NewAccountLaunchAutopilot:
             return {"status": "PLAN_READY", "plan_id": existing_plan_id, "image_id": str(image["image_id"])}
 
         primary, headline, description = (_COPY.get(country) or _COPY["BR"])["safe_compliance"]
-        page_id = str(hypothesis.get("page_id") or "")
+        page_id = delivery_page_id
         if not page_id:
             return {"status": "FAILED", "reason": "meta_page_id_required"}
         episode = self.conn.execute(
@@ -375,7 +410,7 @@ class NewAccountLaunchAutopilot:
             },
             "asset_sha256": str(image["image_hash"] or ""), "max_write_requests": 3,
             "reason": "Meta 拒审后按原订单生成安全合规替代素材",
-            "evaluation_window": {"checkpoints": ["D1", "D3", "D7"], "reset_on_replacement": True},
+            "evaluation_window": {"checkpoints": ["D1", "D3", "D5"], "reset_on_replacement": True},
         }
         plan = self.experiments.preview_plan(
             experiment_id, request, actor="growth-meta-rejection-repair",
@@ -592,6 +627,43 @@ class NewAccountLaunchAutopilot:
                 results.append({"launch_id": str(row["source_report_id"]), "status": "DEFERRED", "reason": str(exc)[:180]})
         return {"processed": len(results), "results": results}
 
+    def advance_rejected_repairs(self, *, limit: int = 20) -> Dict[str, Any]:
+        """Advance every detected Meta rejection to an operator-reviewable Plan.
+
+        Rejection recovery used to run only as a side effect of a 2-4 cell
+        ``newacct_`` launch. Ads imported from the rebuild workflow have no
+        launch id, so they could remain DETECTED forever while the dashboard
+        incorrectly claimed that AI generation was running. This selector is
+        independent of launch topology and performs no Meta write: it only
+        creates or reuses the durable creative job and immutable Plan.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT e.*
+            FROM ad_experiment e
+            JOIN ad_meta_review_state r ON r.experiment_id=e.experiment_id
+            WHERE upper(e.state)='CREATIVE_REJECTED'
+              AND upper(r.effective_status)='DISAPPROVED'
+              AND upper(r.remediation_status) IN ('DETECTED','GENERATING')
+            ORDER BY r.updated_at,e.updated_at,e.experiment_id
+            LIMIT ?
+            """,
+            (max(1, min(int(limit or 20), 100)),),
+        ).fetchall()
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            experiment = self.experiments._serialize(row)
+            experiment_id = str(experiment["experiment_id"])
+            launch_id = str(experiment.get("source_report_id") or "").strip()
+            if not launch_id:
+                launch_id = f"rejection_{experiment_id}"
+            try:
+                result = self._ensure_rejection_repair(launch_id, experiment)
+            except Exception as exc:
+                result = {"status": "DEFERRED", "reason": str(exc)[:180]}
+            results.append({"experiment_id": experiment_id, **result})
+        return {"processed": len(results), "results": results}
+
     def advance_approved_replacements(self, *, limit: int = 20, allow_live: bool = True) -> Dict[str, Any]:
         """Resume only operator-approved rejection repairs after the exact lane opens."""
         if not allow_live:
@@ -695,7 +767,7 @@ class NewAccountLaunchAutopilot:
             for raw_cell in list(source_plan.get("cells") or []):
                 cell = dict(raw_cell or {}); steps = dict(cell.get("steps") or {}); creative = dict(steps.get("CREATIVE_CREATE") or {}); link_data = dict(dict(creative.get("object_story_spec") or {}).get("link_data") or {}); adset = dict(steps.get("ADSET_CREATE") or {}); ad = dict(steps.get("AD_CREATE") or {})
                 recovery_cells.append({"experiment_id": str(cell.get("experiment_id") or ""), "role": str(cell.get("role") or "CHALLENGER"), "adset_name": str(adset.get("name") or ""), "daily_budget_usd": float(adset.get("daily_budget") or 0) / 100, "ad_name": str(ad.get("name") or ""), "primary_text": str(link_data.get("message") or ""), "headline": str(link_data.get("name") or ""), "description": str(link_data.get("description") or ""), "call_to_action": str(dict(link_data.get("call_to_action") or {}).get("type") or "INSTALL_MOBILE_APP"), "audience_strategy": "BROAD", "copy_benchmark_version": str(cell.get("copy_benchmark_version") or ""), "copy_hypothesis": str(cell.get("copy_hypothesis") or "")})
-            plan_result = self.experiments.preview_launch_create_plan(launch_id, {"campaign_name": str(dict(source_plan.get("campaign") or {}).get("name") or ""), "audience_strategy": "BROAD", "test_variable": "creative_direction", "cells": recovery_cells, "evaluation_window": dict(source_plan.get("evaluation_window") or {"checkpoints": ["D1", "D3", "D7"]})}, actor="growth-autopilot-recovery", idempotency_key=f"autopilot:{launch_id}:account-recovery:v1", target_account_id_override=str(recovery["account_id"]), recovery=recovery)
+            plan_result = self.experiments.preview_launch_create_plan(launch_id, {"campaign_name": str(dict(source_plan.get("campaign") or {}).get("name") or ""), "audience_strategy": "BROAD", "test_variable": "creative_direction", "cells": recovery_cells, "evaluation_window": dict(source_plan.get("evaluation_window") or {"checkpoints": ["D1", "D3", "D5"]})}, actor="growth-autopilot-recovery", idempotency_key=f"autopilot:{launch_id}:account-recovery:v1", target_account_id_override=str(recovery["account_id"]), recovery=recovery)
         elif plan_row:
             plan_result = self.experiments.plan_detail(str(plan_row["operation_action_id"]))
         else:
@@ -731,7 +803,7 @@ class NewAccountLaunchAutopilot:
             campaign_name = str(dict(first_hypothesis.get("meta_names") or {}).get("campaign") or f"TG_{experiments[0]['country']}_INS_CS")
             plan_result = self.experiments.preview_launch_create_plan(
                 launch_id,
-                {"campaign_name": campaign_name, "audience_strategy": "BROAD", "test_variable": "creative_direction", "cells": cells, "evaluation_window": {"checkpoints": ["D1", "D3", "D7"]}},
+                {"campaign_name": campaign_name, "audience_strategy": "BROAD", "test_variable": "creative_direction", "cells": cells, "evaluation_window": {"checkpoints": ["D1", "D3", "D5"]}},
                 actor="growth-autopilot",
                 idempotency_key=f"autopilot:{launch_id}:plan:v1",
             )

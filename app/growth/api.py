@@ -5,6 +5,8 @@ import hashlib
 import os
 import re
 import sqlite3
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -22,7 +24,7 @@ from app.growth.adaptive_agent_service import AdaptiveGrowthAgentService
 from app.growth.ad_experiment_evaluator import AdExperimentEvaluator
 from app.growth.ad_experiment_cycle_service import AdExperimentCycleService
 from app.growth.ad_experiment_cycle_evaluator import AdExperimentCycleEvaluator
-from app.growth.ad_experiment_service import AdExperimentService
+from app.growth.ad_experiment_service import AdExperimentService, resolve_rebuild_source_budget
 from app.growth.audience_strategy import (
     AUDIENCE_DELIVERY_ESTIMATE_SNAPSHOT,
     INITIAL_AUDIENCE_EXPERIMENT_POLICY,
@@ -33,12 +35,18 @@ from app.growth.audience_strategy import (
 )
 from app.growth.audience_experiment_evaluator import AudienceExperimentEvaluator
 from app.growth.autonomy_service import GrowthAutonomyService
+from app.growth.checkpoints import ACTIVE_CHECKPOINTS, is_terminal_checkpoint
 from app.growth.meta_audience_preflight import MetaAudiencePreflightService
 from app.growth.approval_service import OperationApprovalService
 from app.growth.common import canonical_json, decode_json, payload_hash, utc_now
 from app.growth.creative_naming import compact_launch_ad_name
 from app.growth.decision_service import DecisionService
-from app.growth.delivery_guardrails import DEFAULT_CPI_TARGET_USD, new_account_delivery_guardrails
+from app.growth.delivery_guardrails import (
+    DEFAULT_CPI_TARGET_USD,
+    effective_delivery_guardrails,
+    new_account_delivery_guardrails,
+    operating_assessment,
+)
 from app.growth.episode_service import EpisodeService
 from app.growth.errors import GrowthError, GrowthNotFound, GrowthValidationError
 from app.growth.execution_service import ExecutionTaskService
@@ -60,7 +68,17 @@ from app.growth.new_account_launch_meta_delete import (
 )
 from app.growth.pattern_mining_service import PatternMiningService
 from app.growth.read_service import GrowthReadService
+from app.growth.rebuild_source_ad_cleanup import RebuildSourceAdCleanupService
 from app.growth.similar_episode_service import SimilarEpisodeService
+
+
+def _enabled(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _operator_principal(user: Dict[str, Any]) -> str:
+    principal = str(user.get("user_id") or user.get("username") or "").strip()
+    return f"operator:{principal}" if principal else ""
 
 
 _GLE_GOVERNANCE_BLOCKERS = (
@@ -86,7 +104,7 @@ _GLE_GOVERNANCE_BLOCKERS = (
 def _gle_governance_status_projection(
     *, account_id: str = "", experiment_id: str = "",
 ) -> Dict[str, Any]:
-    """Return a GET-only projection without live Meta or AppsFlyer calls."""
+    """Fail-closed, GET-only GLE status projection without live provider reads."""
     normalized_account = str(account_id or "").strip().removeprefix("act_")
     normalized_experiment = str(experiment_id or "").strip()
     historical = historical_cell_lineage_projection(
@@ -105,14 +123,10 @@ def _gle_governance_status_projection(
     reason_codes = [item[0] for item in _GLE_GOVERNANCE_BLOCKERS]
     return {
         "schema_version": "gle-governance-status-v1",
-        "subject": {
-            "account_id": normalized_account or None,
-            "experiment_id": normalized_experiment or None,
-        },
+        "subject": {"account_id": normalized_account or None, "experiment_id": normalized_experiment or None},
         "gate0": {
-            "status": "QUASI_ONLY", "ceiling": "QUASI_ONLY",
-            "result_effect": "UNCHANGED", "attestation_status": "NOT_AVAILABLE",
-            "checks": [], "blocking_reasons": reason_codes,
+            "status": "QUASI_ONLY", "ceiling": "QUASI_ONLY", "result_effect": "UNCHANGED",
+            "attestation_status": "NOT_AVAILABLE", "checks": [], "blocking_reasons": reason_codes,
             "data_cutoff_at": None, "evidence_ref": [], "not_gate_receipt": True,
         },
         "gate1": {
@@ -123,28 +137,21 @@ def _gle_governance_status_projection(
             ],
         },
         "power": {
-            "status": "NOT_AVAILABLE", "fixed_endpoint_status": "NOT_AVAILABLE",
-            "feasible": None, "information_fraction": None,
-            "obf_boundary_status": "UNFROZEN",
-            "reason_codes": ["OBF_BOUNDARY_UNFROZEN", "POWER_GOLDEN_VECTORS_UNAPPROVED"],
-            "evidence_ref": [],
+            "status": "NOT_AVAILABLE", "fixed_endpoint_status": "NOT_AVAILABLE", "feasible": None,
+            "information_fraction": None, "obf_boundary_status": "UNFROZEN",
+            "reason_codes": ["OBF_BOUNDARY_UNFROZEN", "POWER_GOLDEN_VECTORS_UNAPPROVED"], "evidence_ref": [],
         },
         "canonical_lineage": {
-            "status": "MISSING_EXACT_CELL_LINEAGE",
-            "status_scope": "CURRENT_NATURAL_WINDOW",
+            "status": "MISSING_EXACT_CELL_LINEAGE", "status_scope": "CURRENT_NATURAL_WINDOW",
             "natural_window_status": "PENDING_NATURAL_WINDOW",
-            "historical_status": (
-                historical["status"] if historical else "NOT_APPLICABLE_TO_SUBJECT"
-            ),
-            "historical_evidence": historical,
-            "denominator": None, "component_candidates": [],
+            "historical_status": historical["status"] if historical else "NOT_APPLICABLE_TO_SUBJECT",
+            "historical_evidence": historical, "denominator": None, "component_candidates": [],
             "unresolved": ["current_window_installs", "invalid_users", "duplicate_rate"],
             "b2a_status": "B2A_MISSING", "b2b_status": "B2B_BLOCKED",
             "dev_count": None, "validation_count": None, "evidence_ref": [],
         },
         "source_readiness": {
-            "status": "NOT_AVAILABLE",
-            "trust_status": "SOURCE_CONTENT_AUTHORITY_NOT_VERIFIED",
+            "status": "NOT_AVAILABLE", "trust_status": "SOURCE_CONTENT_AUTHORITY_NOT_VERIFIED",
             "missing_fields": ["natural_window_appsflyer_export", "invalid_users", "duplicate_rate"],
             "reason_codes": ["SOURCE_CONTENT_AUTHORITY_NOT_VERIFIED", "MISSING_EXACT_CELL_LINEAGE"],
             "snapshot_effect": "NONE", "partition_effect": "NONE",
@@ -152,42 +159,32 @@ def _gle_governance_status_projection(
             "golden_eligible": False, "gate1_effect": "NONE",
         },
         "shadow": {
-            "status": "NOT_AVAILABLE", "effective_mode": "DISABLED",
-            "allowed_actions": [], "effect": "NONE",
-            "reason_codes": ["SHADOW_NOT_IMPLEMENTED"],
+            "status": "NOT_AVAILABLE", "effective_mode": "DISABLED", "allowed_actions": [],
+            "effect": "NONE", "reason_codes": ["SHADOW_NOT_IMPLEMENTED"],
             "policy_triggered_meta_write_count": None,
         },
-        "gate_receipt": {
-            "status": "NOT_AVAILABLE", "receipt_ref": None,
-            "reason_code": "GATE_RECEIPT_MISSING",
-        },
+        "gate_receipt": {"status": "NOT_AVAILABLE", "receipt_ref": None, "reason_code": "GATE_RECEIPT_MISSING"},
         "blockers": blockers,
         "ceilings": {
-            "objective_effect": "NONE", "spec_effect": "NONE",
-            "source_effect": "NONE", "snapshot_effect": "NONE",
-            "partition_effect": "NONE", "replay_effect": "NONE",
-            "golden_effect": "NONE", "gate_effect": "UNCHANGED",
-            "causal_claim": False, "meta_write_allowed_by_gate": False,
+            "objective_effect": "NONE", "spec_effect": "NONE", "source_effect": "NONE",
+            "snapshot_effect": "NONE", "partition_effect": "NONE", "replay_effect": "NONE",
+            "golden_effect": "NONE", "gate_effect": "UNCHANGED", "causal_claim": False,
+            "meta_write_allowed_by_gate": False,
         },
         "safety": {
             "causal_claim": False, "simulation_is_shadow": False,
-            "execution_receipt_is_gate_receipt": False,
-            "missing_values_render_as_zero": False,
+            "execution_receipt_is_gate_receipt": False, "missing_values_render_as_zero": False,
             "uncertain_execution_auto_retry": False,
         },
     }
 
 
 def _gle_workflow_assurance(account_id: str = "", experiment_id: str = "") -> Dict[str, Any]:
-    status = _gle_governance_status_projection(
-        account_id=account_id, experiment_id=experiment_id,
-    )
+    status = _gle_governance_status_projection(account_id=account_id, experiment_id=experiment_id)
     historical = status["canonical_lineage"]["historical_evidence"]
     return {
-        "schema_version": status["schema_version"],
-        "gate_status": status["gate0"]["status"],
-        "gate1_status": status["gate1"]["status"],
-        "causal_claim": False,
+        "schema_version": status["schema_version"], "gate_status": status["gate0"]["status"],
+        "gate1_status": status["gate1"]["status"], "causal_claim": False,
         "exact_cell_lineage_status": status["canonical_lineage"]["status"],
         "natural_lineage_status": status["canonical_lineage"]["natural_window_status"],
         "historical_lineage": historical,
@@ -195,20 +192,10 @@ def _gle_workflow_assurance(account_id: str = "", experiment_id: str = "") -> Di
         "power_assessment_status": status["power"]["status"],
         "offline_validation_status": status["gate1"]["status"],
         "holdout_status": status["source_readiness"]["holdout_status"],
-        "shadow_policy_write_enabled": False,
-        "lineage_transfer_status": "NOT_READY",
+        "shadow_policy_write_enabled": False, "lineage_transfer_status": "NOT_READY",
         "blocking_reason_codes": [item["code"] for item in status["blockers"]],
         "meta_write_allowed_by_gate": False,
     }
-
-
-def _enabled(value: Any) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _operator_principal(user: Dict[str, Any]) -> str:
-    principal = str(user.get("user_id") or user.get("username") or "").strip()
-    return f"operator:{principal}" if principal else ""
 
 
 def _read_meta_delivery_status(
@@ -487,6 +474,17 @@ class AdExperimentPlanRequest(StrictAdExperimentRequest):
     expires_at: str = ""
 
 
+class RebuildPlanPrepareRequest(StrictAdExperimentRequest):
+    creation_scope: str = "REUSE_CAMPAIGN_NEW_ADSET"
+    initial_status: str = "PAUSED"
+    approved_image_id: str = ""
+
+
+class RebuildSourceAdDeleteRequest(StrictAdExperimentRequest):
+    plan_id: str
+    confirmation: str = ""
+
+
 class NewAccountBatchCellRequest(StrictAdExperimentRequest):
     experiment_id: str
     role: str
@@ -509,7 +507,7 @@ class NewAccountBatchPlanRequest(StrictAdExperimentRequest):
     frozen_creative_id: str = ""
     cells: List[NewAccountBatchCellRequest]
     audience_preflight_id: str = ""
-    evaluation_window: Dict[str, Any] = Field(default_factory=lambda: {"checkpoints": ["D1", "D3", "D7"]})
+    evaluation_window: Dict[str, Any] = Field(default_factory=lambda: {"checkpoints": list(ACTIVE_CHECKPOINTS)})
 
 
 class AdExperimentExecuteRequest(StrictAdExperimentRequest):
@@ -518,6 +516,12 @@ class AdExperimentExecuteRequest(StrictAdExperimentRequest):
 
 
 class AdExperimentActivateRequest(StrictAdExperimentRequest):
+    decision_id: str
+    episode_id: str = ""
+    confirmation: str
+
+
+class AdExperimentPauseRequest(StrictAdExperimentRequest):
     decision_id: str
     episode_id: str = ""
     confirmation: str
@@ -1343,6 +1347,13 @@ def create_ad_experiment_router(
 ) -> APIRouter:
     """Dashboard-facing aliases backed by the canonical Growth services."""
     router = APIRouter(prefix="/api/ops/ad-data-dashboard", tags=["ad-experiment-closed-loop"])
+    gle_coverage_cache_ttl_seconds = 300.0
+    gle_coverage_cache: Dict[str, Any] = {
+        "payload": None,
+        "updated_monotonic": 0.0,
+        "refreshing": False,
+    }
+    gle_coverage_cache_lock = threading.Lock()
 
     def operator(request: Request) -> Dict[str, Any]:
         return dict(require_admin(request) or {})
@@ -1350,25 +1361,15 @@ def create_ad_experiment_router(
     def actor(user: Dict[str, Any]) -> str:
         return _operator_principal(user)
 
-    def resolve_rebuild_source_binding(
-        conn: sqlite3.Connection, experiment: Dict[str, Any], recommendation: Dict[str, Any],
-    ) -> Dict[str, str]:
+    def resolve_rebuild_source_binding(conn: sqlite3.Connection, experiment: Dict[str, Any], recommendation: Dict[str, Any]) -> Dict[str, str]:
         source_ad_id = str(experiment.get("source_ad_id") or "").strip()
         if source_ad_id.isdigit():
-            return {
-                "ad_id": source_ad_id,
-                "account_id": str(experiment.get("account_id") or "").strip().removeprefix("act_"),
-            }
+            return {"ad_id": source_ad_id}
         report_id = str(recommendation.get("report_id") or experiment.get("source_report_id") or "").strip()
         recommendation_object_id = str(recommendation.get("object_id") or "").strip()
-        report = conn.execute(
-            "SELECT payload_json FROM ad_daily_report WHERE report_id=?", (report_id,),
-        ).fetchone() if report_id else None
+        report = conn.execute("SELECT payload_json FROM ad_daily_report WHERE report_id=?", (report_id,)).fetchone() if report_id else None
         report_payload = decode_json(report["payload_json"], {}) if report else {}
-        observed = next((
-            dict(item) for item in list(report_payload.get("ad_objects") or [])
-            if str(dict(item).get("object_id") or "") == recommendation_object_id
-        ), {})
+        observed = next((dict(item) for item in list(report_payload.get("ad_objects") or []) if str(dict(item).get("object_id") or "") == recommendation_object_id), {})
         account_id = str(observed.get("account_id") or experiment.get("account_id") or "").strip().removeprefix("act_")
         ad_name = str(observed.get("ad") or "").strip()
         if not account_id or not ad_name:
@@ -1382,19 +1383,11 @@ def create_ad_experiment_router(
             FROM ad_creative_asset WHERE account_id=? AND ad_name=? AND ad_id<>''
             ORDER BY last_seen_at DESC""", (account_id, ad_name),
         ).fetchall()
-        identities = {(
-            str(row["account_id"] or ""), str(row["campaign_id"] or ""),
-            str(row["adset_id"] or ""), str(row["ad_id"] or ""), str(row["creative_id"] or ""),
-        ) for row in rows}
+        identities = {(str(row["account_id"] or ""), str(row["campaign_id"] or ""), str(row["adset_id"] or ""), str(row["ad_id"] or ""), str(row["creative_id"] or "")) for row in rows}
         if len(identities) != 1:
-            raise GrowthValidationError(
-                "rebuild_source_binding_ambiguous" if identities else "rebuild_source_binding_not_found"
-            )
+            raise GrowthValidationError("rebuild_source_binding_ambiguous" if identities else "rebuild_source_binding_not_found")
         account, campaign_id, adset_id, ad_id, creative_id = next(iter(identities))
-        return {
-            "account_id": account, "campaign_id": campaign_id, "adset_id": adset_id,
-            "ad_id": ad_id, "creative_id": creative_id, "report_id": report_id,
-        }
+        return {"account_id": account, "campaign_id": campaign_id, "adset_id": adset_id, "ad_id": ad_id, "creative_id": creative_id, "report_id": report_id}
 
     def compact_rebuild_name(value: Any, suffix: str) -> str:
         base = re.sub(r"\s+", " ", str(value or "").strip()) or "Tugao"
@@ -1407,6 +1400,42 @@ def create_ad_experiment_router(
             raise HTTPException(status_code=exc.http_status, detail={"code": exc.code, "message": str(exc)}) from exc
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail={"code": "STATE_CONFLICT", "message": "database_constraint_conflict"}) from exc
+
+    def refresh_gle_ad_coverage() -> Dict[str, Any]:
+        try:
+            live_ads = fetch_scoped_meta_ads(
+                meta_session,
+                access_token=meta_access_token,
+                graph_root=meta_graph_root,
+            )
+            payload = _with_connection(
+                db,
+                lambda conn: build_gle_ad_account_coverage(conn, live_ads),
+            )
+            with gle_coverage_cache_lock:
+                gle_coverage_cache["payload"] = copy.deepcopy(payload)
+                gle_coverage_cache["updated_monotonic"] = time.monotonic()
+            return payload
+        finally:
+            with gle_coverage_cache_lock:
+                gle_coverage_cache["refreshing"] = False
+
+    def refresh_gle_ad_coverage_in_background() -> None:
+        try:
+            refresh_gle_ad_coverage()
+        except Exception:
+            return
+
+    def gle_ad_coverage_response(
+        payload: Dict[str, Any], *, state: str, age_seconds: float,
+    ) -> Dict[str, Any]:
+        result = copy.deepcopy(payload)
+        result["cache"] = {
+            "state": state,
+            "age_seconds": max(0, int(age_seconds)),
+            "ttl_seconds": int(gle_coverage_cache_ttl_seconds),
+        }
+        return result
 
     def run_meta_delete_in_background(
         delete_id: str, launch_id: str, account_id: str, requested_by: str,
@@ -1467,6 +1496,38 @@ def create_ad_experiment_router(
                 break
             after = next_after
         return matches
+
+    def exact_campaign_id_matches(account_id: str, campaign_id: str) -> List[Dict[str, Any]]:
+        normalized_account = str(account_id or "").strip().removeprefix("act_")
+        normalized_campaign = str(campaign_id or "").strip()
+        if (
+            not meta_session or not meta_access_token or not meta_graph_root
+            or not normalized_account or not normalized_campaign
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "EXECUTION_UNAVAILABLE", "message": "meta_campaign_reconciliation_unavailable"},
+            )
+        response = meta_session.get(
+            f"{str(meta_graph_root).rstrip('/')}/{normalized_campaign}",
+            params={
+                "access_token": meta_access_token,
+                "fields": "id,name,status,effective_status,account_id,created_time,updated_time",
+            },
+            timeout=25,
+        )
+        if hasattr(response, "raise_for_status"):
+            response.raise_for_status()
+        body = response.json() if hasattr(response, "json") else {}
+        if not isinstance(body, dict) or body.get("error"):
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "EXECUTION_UNAVAILABLE", "message": "meta_campaign_reconciliation_failed"},
+            )
+        returned_account = str(body.get("account_id") or "").strip().removeprefix("act_")
+        if str(body.get("id") or "").strip() != normalized_campaign or returned_account != normalized_account:
+            return []
+        return [dict(body)]
 
     def exact_study_matches(business_id: str, study_name: str) -> List[Dict[str, Any]]:
         normalized_business = str(business_id or "").strip()
@@ -1572,18 +1633,40 @@ def create_ad_experiment_router(
         }
 
     @router.get("/gle-ad-coverage")
-    def get_gle_ad_coverage(request: Request) -> Dict[str, Any]:
-        """Cover every current ad in the five operator-selected accounts, read-only."""
+    def get_gle_ad_coverage(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        force: bool = Query(False),
+    ) -> Dict[str, Any]:
+        """Cover every current ad in the operator-selected accounts, read-only."""
         operator(request)
         try:
-            live_ads = fetch_scoped_meta_ads(
-                meta_session,
-                access_token=meta_access_token,
-                graph_root=meta_graph_root,
-            )
-            return _with_connection(
-                db,
-                lambda conn: build_gle_ad_account_coverage(conn, live_ads),
+            if force:
+                with gle_coverage_cache_lock:
+                    gle_coverage_cache["refreshing"] = True
+                return gle_ad_coverage_response(
+                    refresh_gle_ad_coverage(), state="fresh", age_seconds=0,
+                )
+            with gle_coverage_cache_lock:
+                cached = copy.deepcopy(gle_coverage_cache.get("payload"))
+                updated = float(gle_coverage_cache.get("updated_monotonic") or 0.0)
+                age_seconds = max(0.0, time.monotonic() - updated) if updated else 0.0
+                stale = bool(cached) and age_seconds >= gle_coverage_cache_ttl_seconds
+                schedule_refresh = stale and not bool(gle_coverage_cache.get("refreshing"))
+                if schedule_refresh:
+                    gle_coverage_cache["refreshing"] = True
+            if cached:
+                if schedule_refresh:
+                    background_tasks.add_task(refresh_gle_ad_coverage_in_background)
+                return gle_ad_coverage_response(
+                    cached,
+                    state="refreshing" if stale else "fresh",
+                    age_seconds=age_seconds,
+                )
+            with gle_coverage_cache_lock:
+                gle_coverage_cache["refreshing"] = True
+            return gle_ad_coverage_response(
+                refresh_gle_ad_coverage(), state="fresh", age_seconds=0,
             )
         except AdAccountCoverageError as exc:
             raise HTTPException(
@@ -1758,14 +1841,17 @@ def create_ad_experiment_router(
 
     def validate_rejected_adset(plan: Dict[str, Any], task: Dict[str, Any]) -> str:
         current_step = str(task.get("current_step") or "").upper()
-        if not current_step.endswith("_ADSET_CREATE"):
+        if current_step != "ADSET_CREATE" and not current_step.endswith("_ADSET_CREATE"):
             return ""
-        cell_key = current_step.removesuffix("_ADSET_CREATE")
-        cell = next((
-            dict(item or {}) for item in list(plan.get("cells") or [])
-            if str(dict(item or {}).get("cell_key") or "").upper() == cell_key
-        ), {})
-        body = dict(dict(cell.get("steps") or {}).get("ADSET_CREATE") or {})
+        if current_step == "ADSET_CREATE":
+            body = dict(dict(plan.get("steps") or {}).get("ADSET_CREATE") or {})
+        else:
+            cell_key = current_step.removesuffix("_ADSET_CREATE")
+            cell = next((
+                dict(item or {}) for item in list(plan.get("cells") or [])
+                if str(dict(item or {}).get("cell_key") or "").upper() == cell_key
+            ), {})
+            body = dict(dict(cell.get("steps") or {}).get("ADSET_CREATE") or {})
         object_ids = dict(decode_json(task.get("meta_object_ids_json"), {}))
         campaign_id = str(object_ids.get("campaign_id") or "").strip()
         if not body or not campaign_id:
@@ -2178,6 +2264,75 @@ def create_ad_experiment_router(
                 str(experiment["ad_id"] or ""), ad_performance_rows,
             )
 
+        latest_group_row = conn.execute(
+            """SELECT checkpoint,evidence_json FROM ad_creative_group_evaluation
+               WHERE launch_id=?
+               ORDER BY CASE checkpoint WHEN 'D7' THEN 7 WHEN 'D5' THEN 5 WHEN 'D3' THEN 3 ELSE 1 END DESC,
+                        evaluated_at DESC LIMIT 1""",
+            (normalized_launch_id,),
+        ).fetchone()
+        operating_checkpoint = str(latest_group_row["checkpoint"] or "D1") if latest_group_row else "D1"
+        row_by_experiment = {str(row["experiment_id"]): row for row in rows}
+        peer_cpis = [
+            float(item["performance"]["cpi"])
+            for item in experiments
+            if item["performance"].get("cpi") is not None
+            and float(item["performance"].get("installs") or 0) >= 2
+        ]
+        peer_best_cpi = min(peer_cpis) if peer_cpis else None
+        for experiment in experiments:
+            source_row = row_by_experiment[str(experiment["experiment_id"])]
+            hypothesis = decode_json(source_row["hypothesis_json"], {})
+            target_cpi = float(hypothesis.get("cpi_target") or 0)
+            persisted = dict(decode_json(source_row["stop_rule_json"], {}).get("delivery_guardrails") or {})
+            rules = effective_delivery_guardrails(persisted, cpi_target_usd=target_cpi)
+            assessment = operating_assessment(
+                dict(experiment["performance"]), rules,
+                checkpoint=operating_checkpoint, peer_best_cpi=peer_best_cpi,
+            )
+            assessment.update({
+                "checkpoint": operating_checkpoint,
+                "guardrail_version": str(rules.get("version") or ""),
+                "target_cpi_usd": target_cpi or None,
+            })
+            experiment["operating_assessment"] = assessment
+
+        actionable = [item for item in experiments if item["operating_assessment"]["status"] == "ACTION_REQUIRED"]
+        positive_join_cells = [item for item in experiments if float(item["performance"].get("real_bind_count") or 0) > 0]
+        protected_ids: set[str] = set()
+        if len(positive_join_cells) == 1:
+            protected_ids.add(str(positive_join_cells[0]["experiment_id"]))
+        pause_candidates = [item for item in actionable if str(item["experiment_id"]) not in protected_ids]
+        if len(pause_candidates) == len(experiments) and pause_candidates:
+            keep = min(
+                pause_candidates,
+                key=lambda item: (item["performance"].get("cpi") is None, float(item["performance"].get("cpi") or float("inf"))),
+            )
+            pause_candidates = [item for item in pause_candidates if item is not keep]
+            protected_ids.add(str(keep["experiment_id"]))
+        pause_ids = {str(item["experiment_id"]) for item in pause_candidates}
+        for experiment in experiments:
+            assessment = experiment["operating_assessment"]
+            experiment_id = str(experiment["experiment_id"])
+            if experiment_id in protected_ids and assessment["status"] == "ACTION_REQUIRED":
+                assessment["status"] = "PROVISIONAL_KEEP"
+                assessment["recommended_action"] = "OBSERVE"
+                assessment["requires_approval"] = False
+                assessment["protected_reason"] = (
+                    "唯一已有真实入会的广告，先保留至下一检查点"
+                    if float(experiment["performance"].get("real_bind_count") or 0) > 0
+                    else "组内至少保留一个当前较优候选"
+                )
+        operating_plan = {
+            "status": "ACTION_REQUIRED" if pause_ids else "COLLECTING",
+            "checkpoint": operating_checkpoint,
+            "pause_experiment_ids": sorted(pause_ids),
+            "keep_experiment_ids": sorted(str(item["experiment_id"]) for item in experiments if str(item["experiment_id"]) not in pause_ids),
+            "requires_approval": bool(pause_ids),
+            "causal_claim": False,
+            "meta_writes_performed": False,
+        }
+
         delivery_performance = aggregate_performance(performance_rows)
         performance_data_updated_at = ""
         fact_table = conn.execute(
@@ -2236,7 +2391,7 @@ def create_ad_experiment_router(
             next_step = "保持当前状态，等待广告数据完成首轮同步。"
         elif not sample_mature:
             conclusion = "样本不足，暂不判断优胜素材"
-            next_step = f"继续采集；达到 {minimum_installs} 次安装和 {minimum_real_joins} 次真实入会，或到 D1 / D3 / D7 检查点后再评估。"
+            next_step = f"继续采集；达到 {minimum_installs} 次安装和 {minimum_real_joins} 次真实入会，或到 D1 / D3 / D5 检查点后再评估。"
         elif cpi_status == "ON_TARGET":
             conclusion = "样本已成熟，当前 CPI 达标"
             next_step = "结合真实入会成本比较三条广告，保留优胜素材并逐步放量。"
@@ -2252,6 +2407,26 @@ def create_ad_experiment_router(
             "minimum_real_joins": minimum_real_joins,
             "conclusion_zh": conclusion,
             "next_step_zh": next_step,
+            "operating_evaluation": {
+                **operating_plan,
+                "action_required_count": len(pause_ids),
+                "conclusion_zh": (
+                    f"已有 {len(pause_ids)} 组触发阶段性止损条件"
+                    if pause_ids else "成熟样本尚未达到，但经营护栏正在独立判断"
+                ),
+                "next_step_zh": (
+                    "查看暂停建议；确认后才会进入受控执行，未确认不会改动 Meta。"
+                    if pause_ids else "按每组剩余经营预算继续采集，到下一检查点重新判断。"
+                ),
+            },
+            "maturity_evaluation": {
+                "status": "READY" if sample_mature else "NOT_READY",
+                "current_installs": current_installs,
+                "minimum_installs": minimum_installs,
+                "current_real_joins": current_real_joins,
+                "minimum_real_joins": minimum_real_joins,
+                "causal_claim": False,
+            },
         })
 
         jobs: List[Dict[str, Any]] = []
@@ -2513,7 +2688,12 @@ def create_ad_experiment_router(
         operator(request)
         country_code = str(country or "BR").strip().upper()
         policy = country_audience_policy(country_code)
-        rounds = list(INITIAL_AUDIENCE_EXPERIMENT_POLICY.get("initial_br_rounds") or []) if country_code == "BR" else []
+        rounds = list(
+            dict(INITIAL_AUDIENCE_EXPERIMENT_POLICY.get("initial_rounds_by_country") or {}).get(country_code) or []
+        )
+        held_strategies = dict(
+            dict(INITIAL_AUDIENCE_EXPERIMENT_POLICY.get("held_strategies_by_country") or {}).get(country_code) or {}
+        )
         strategies = []
         for key in ("BROAD", "DIGITAL_SELLER", "FAMILY_HOME", "SIDE_HUSTLE"):
             strategy = audience_strategy(key)
@@ -2521,12 +2701,12 @@ def create_ad_experiment_router(
                 **strategy,
                 "delivery_estimate": dict(AUDIENCE_DELIVERY_ESTIMATE_SNAPSHOT.get(country_code, {}).get(key) or {}),
                 "selectable": any(key in {str(item.get("baseline")), str(item.get("challenger"))} for item in rounds),
-                "disabled_reason": str(dict(INITIAL_AUDIENCE_EXPERIMENT_POLICY.get("held_strategies") or {}).get(key) or ""),
+                "disabled_reason": str(held_strategies.get(key) or ""),
             })
         return {
             "country": country_code,
             "base_conditions": audience_contract(country_code, "BROAD")["base_conditions"],
-            "experiment_policy": {**INITIAL_AUDIENCE_EXPERIMENT_POLICY, "rounds": rounds},
+            "experiment_policy": {**INITIAL_AUDIENCE_EXPERIMENT_POLICY, "held_strategies": held_strategies, "rounds": rounds},
             "strategies": strategies,
             "meta_writes_performed": False,
             "policy_note": "同一张已审核素材；每轮仅比较一组广泛受众和一组挑战受众。",
@@ -2544,14 +2724,16 @@ def create_ad_experiment_router(
         if not account_id.isdigit():
             raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "meta_account_id_must_be_numeric"})
         country = str(body.country or "BR").strip().upper()
-        if country != "BR":
-            raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "initial_audience_experiment_country_must_be_br"})
+        rounds_by_country = dict(INITIAL_AUDIENCE_EXPERIMENT_POLICY.get("initial_rounds_by_country") or {})
+        country_rounds = list(rounds_by_country.get(country) or [])
+        if not country_rounds:
+            raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "initial_audience_experiment_country_not_configured"})
         requested_keys = [str(item or "").strip().upper() for item in body.audience_strategies]
         if len(requested_keys) != 2 or len(set(requested_keys)) != 2:
             raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "audience_experiment_requires_two_distinct_strategies"})
         allowed_rounds = [
             [str(item.get("baseline") or "").upper(), str(item.get("challenger") or "").upper()]
-            for item in INITIAL_AUDIENCE_EXPERIMENT_POLICY.get("initial_br_rounds") or []
+            for item in country_rounds
         ]
         matching_round = next((item for item in allowed_rounds if set(item) == set(requested_keys)), None)
         if not matching_round:
@@ -2651,13 +2833,13 @@ def create_ad_experiment_router(
                             },
                             "primary_metric": "cpi",
                             "guardrail_metrics_json": ["installs", "cpi", "ctr", "real_bind_count", "real_bind_cpa"],
-                            "maturity_rule_json": {"minimum_installs": 100, "minimum_real_joins": 10, "checkpoints": ["D1", "D3", "D7"]},
+                            "maturity_rule_json": {"minimum_installs": 100, "minimum_real_joins": 10, "checkpoints": list(ACTIVE_CHECKPOINTS)},
                             "stop_rule_json": {
                                 "order_confirmed_auto_create_paused": True,
                                 "requires_manual_approval": False,
                                 "activation_requires_manual_approval": True,
                                 "meta_objects_initial_status": "PAUSED",
-                                "delivery_guardrails": new_account_delivery_guardrails(),
+                                "delivery_guardrails": new_account_delivery_guardrails(float(body.cpi_target)),
                             },
                             "variant_definition_json": {
                                 "test_variable": "audience_strategy", "role": role,
@@ -2807,13 +2989,13 @@ def create_ad_experiment_router(
                             },
                             "primary_metric": "real_bind_cpa",
                             "guardrail_metrics_json": ["installs", "cpi", "ctr", "real_bind_count", "real_bind_cpa"],
-                            "maturity_rule_json": {"minimum_installs": 100, "minimum_real_joins": 10, "checkpoints": ["D1", "D3", "D7"]},
+                            "maturity_rule_json": {"minimum_installs": 100, "minimum_real_joins": 10, "checkpoints": list(ACTIVE_CHECKPOINTS)},
                             "stop_rule_json": {
                                 "order_confirmed_auto_create_paused": True,
                                 "requires_manual_approval": False,
                                 "activation_requires_manual_approval": True,
                                 "meta_objects_initial_status": "PAUSED",
-                                "delivery_guardrails": new_account_delivery_guardrails(),
+                                "delivery_guardrails": new_account_delivery_guardrails(float(body.cpi_target)),
                             },
                             "variant_definition_json": {
                                 "test_variable": "copy_variant", "role": role, "copy_variant": copy_item,
@@ -3049,7 +3231,7 @@ def create_ad_experiment_router(
                                 "requires_manual_approval": False,
                                 "activation_requires_manual_approval": True,
                                 "meta_objects_initial_status": "PAUSED",
-                                "delivery_guardrails": new_account_delivery_guardrails(),
+                                "delivery_guardrails": new_account_delivery_guardrails(float(body.cpi_target)),
                             },
                             "variant_definition_json": {
                                 "creative_angle": creative_angle,
@@ -3270,7 +3452,7 @@ def create_ad_experiment_router(
                         "delivery_paths": delivery_paths,
                         "before_json": {"status": "PAUSED"},
                         "after_json": {"status": "ACTIVE"},
-                        "evaluation_window": {"checkpoints": ["D1", "D3", "D7"]},
+                        "evaluation_window": {"checkpoints": list(ACTIVE_CHECKPOINTS)},
                     },
                     actor=actor(user), idempotency_key=f"{idempotency_key}:plan",
                 )
@@ -3500,27 +3682,75 @@ def create_ad_experiment_router(
         state: str = Query(""),
         limit: int = Query(50, ge=1, le=200),
         task_index: bool = Query(False),
+        experiment_ids: str = Query(""),
     ) -> Dict[str, Any]:
         operator(request)
         def action(conn: sqlite3.Connection) -> Dict[str, Any]:
-            excluded_states = (
-                ["META_REVIEW_PENDING", "RUNNING", "MATURING", "EVALUATING_ADJUSTMENT", "ARCHIVED"]
-                if task_index and not str(state or "").strip()
-                else None
-            )
-            result = AdExperimentService(conn).list(
-                state=state, limit=limit, exclude_states=excluded_states,
-            )
+            requested_ids = list(dict.fromkeys(
+                value.strip() for value in str(experiment_ids or "").split(",") if value.strip()
+            ))
+            if len(requested_ids) > 200:
+                raise GrowthValidationError("too_many_experiment_ids")
+            service = AdExperimentService(conn)
+            if task_index and requested_ids:
+                items: List[Dict[str, Any]] = []
+                for experiment_id in requested_ids:
+                    try:
+                        items.append(service.get(experiment_id))
+                    except GrowthNotFound:
+                        continue
+                result = {"items": items, "count": len(items), "state": ""}
+            else:
+                excluded_states = (
+                    ["META_REVIEW_PENDING", "RUNNING", "MATURING", "EVALUATING_ADJUSTMENT", "ARCHIVED"]
+                    if task_index and not str(state or "").strip()
+                    else None
+                )
+                result = service.list(
+                    state=state, limit=limit, exclude_states=excluded_states,
+                )
             result["items"] = [
                 {**item, "workflow": _ad_experiment_workflow(conn, item)}
                 for item in result["items"]
             ]
+            if task_index and requested_ids:
+                recommendation_ids = list(dict.fromkeys(
+                    str(item.get("source_recommendation_id") or "")
+                    for item in result["items"]
+                    if str(item.get("source_recommendation_id") or "")
+                    and (
+                        str(item.get("state") or "").upper()
+                        in {"WAITING_CREATE_APPROVAL", "CREATION_PARTIAL_FAILURE"}
+                        or str(dict(item.get("workflow") or {}).get("plan_action_type") or "").upper()
+                        in {"CREATE_PAUSED_AD", "CREATE_EXPERIMENT"}
+                    )
+                ))
+                recommendation_map: Dict[str, Dict[str, Any]] = {}
+                if recommendation_ids:
+                    placeholders = ",".join("?" for _ in recommendation_ids)
+                    rows = conn.execute(
+                        f"SELECT recommendation_id,payload_json FROM ad_recommendation "
+                        f"WHERE recommendation_id IN ({placeholders})",
+                        recommendation_ids,
+                    ).fetchall()
+                    recommendation_map = {
+                        str(row["recommendation_id"]): {
+                            **decode_json(row["payload_json"], {}),
+                            "recommendation_id": str(row["recommendation_id"]),
+                        }
+                        for row in rows
+                    }
+                for item in result["items"]:
+                    item["source_recommendation"] = recommendation_map.get(
+                        str(item.get("source_recommendation_id") or ""), {}
+                    )
             buckets: Dict[str, int] = {}
             for item in result["items"]:
                 bucket = str(item["workflow"].get("bucket") or "all")
                 buckets[bucket] = buckets.get(bucket, 0) + 1
             result["work_queue"] = buckets
             result["task_index"] = bool(task_index)
+            result["requested_experiment_count"] = len(requested_ids) if task_index else 0
             return result
         return execute(lambda: _with_connection(db, action))
 
@@ -3679,7 +3909,7 @@ def create_ad_experiment_router(
 
     @router.post("/experiments/{experiment_id}/rebuild-plan/prepare", status_code=201)
     def prepare_rebuild_plan(
-        experiment_id: str, request: Request,
+        experiment_id: str, body: RebuildPlanPrepareRequest, request: Request,
         idempotency_key: str = Header(..., alias="Idempotency-Key"),
         request_id: str = Header(..., alias="X-Request-ID"),
     ) -> Dict[str, Any]:
@@ -3687,34 +3917,47 @@ def create_ad_experiment_router(
 
         def action() -> Dict[str, Any]:
             if not meta_session or not meta_access_token or not meta_graph_root:
-                raise HTTPException(status_code=503, detail={
-                    "code": "EXECUTION_UNAVAILABLE", "message": "meta_rebuild_readback_unavailable",
-                })
+                raise HTTPException(status_code=503, detail={"code": "EXECUTION_UNAVAILABLE", "message": "meta_rebuild_readback_unavailable"})
             with db.connect() as conn:
                 service = AdExperimentService(conn)
                 experiment = service.get(experiment_id)
+                creation_scope = str(body.creation_scope or "").strip().upper()
+                initial_status = str(body.initial_status or "").strip().upper()
+                approved_image_id = str(body.approved_image_id or "").strip()
+                if creation_scope != "REUSE_CAMPAIGN_NEW_ADSET":
+                    raise GrowthValidationError("unsupported_rebuild_creation_scope")
+                if initial_status not in {"PAUSED", "ACTIVE"}:
+                    raise GrowthValidationError("invalid_rebuild_initial_status")
+                if not approved_image_id:
+                    raise GrowthValidationError("approved_rebuild_creative_required")
+                approved_creative = service.latest_approved_creative(experiment_id)
+                if str(approved_creative.get("image_id") or "").strip() != approved_image_id:
+                    raise GrowthValidationError("approved_rebuild_creative_not_linked_to_experiment")
                 existing = conn.execute(
                     """SELECT operation_action_id FROM growth_operation_action
                     WHERE action_type='CREATE_PAUSED_AD' AND json_extract(payload_json,'$.experiment_id')=?
-                      AND status IN ('CREATED','QUEUED','EXECUTING','VERIFIED')
-                    ORDER BY created_at DESC LIMIT 1""", (experiment_id,),
+                      AND status IN ('CREATED','QUEUED','EXECUTING','VERIFIED') ORDER BY created_at DESC LIMIT 1""",
+                    (experiment_id,),
                 ).fetchone()
                 if existing:
                     result = service.plan_detail(str(existing["operation_action_id"]))
-                    result.update({"request_id": request_id, "reused": True})
-                    return result
-                recommendation = conn.execute(
-                    "SELECT * FROM ad_recommendation WHERE recommendation_id=?",
-                    (str(experiment.get("source_recommendation_id") or ""),),
-                ).fetchone()
+                    existing_plan = dict(result.get("plan") or {})
+                    existing_image_id = str(dict(dict(existing_plan.get("after_json") or {}).get("creative") or {}).get("image_id") or dict(dict(existing_plan.get("steps") or {}).get("IMAGE_UPLOAD") or {}).get("image_id") or "")
+                    if (
+                        str(existing_plan.get("reuse_campaign_id") or "").strip()
+                        and str(existing_plan.get("initial_status") or "PAUSED").upper() == initial_status
+                        and existing_image_id == approved_image_id
+                    ):
+                        result.update({"request_id": request_id, "reused": True})
+                        return result
+                recommendation = conn.execute("SELECT * FROM ad_recommendation WHERE recommendation_id=?", (str(experiment.get("source_recommendation_id") or ""),)).fetchone()
                 if not recommendation:
                     raise GrowthValidationError("rebuild_source_recommendation_missing")
                 recommendation_dict = dict(recommendation)
                 binding = resolve_rebuild_source_binding(conn, experiment, recommendation_dict)
                 source = MetaGraphReadService(
                     session=meta_session, access_token=meta_access_token,
-                    base_url="https://graph.facebook.com",
-                    api_version=str(meta_graph_root).rstrip("/").rsplit("/", 1)[-1],
+                    base_url="https://graph.facebook.com", api_version=str(meta_graph_root).rstrip("/").rsplit("/", 1)[-1],
                 ).read_ad_rebuild_source(ad_id=binding["ad_id"])
                 ids = dict(source["source_ids"])
                 if binding.get("account_id") and binding["account_id"] != str(source["account_id"]):
@@ -3723,100 +3966,114 @@ def create_ad_experiment_router(
                     raise GrowthValidationError("rebuild_source_creative_mismatch")
                 adset, campaign, ad = dict(source["adset"]), dict(source["campaign"]), dict(source["ad"])
                 creative_contract = dict(source["creative_contract"])
+                source_targeting = dict(adset.get("targeting") or {})
+                rebuild_targeting = dict(source_targeting)
+                targeting_normalizations: List[str] = []
+                instagram_positions = list(rebuild_targeting.get("instagram_positions") or [])
+                if "explore_home" in instagram_positions and "explore" not in instagram_positions:
+                    rebuild_targeting["instagram_positions"] = [
+                        value for value in instagram_positions if value != "explore_home"
+                    ]
+                    targeting_normalizations.append("removed_legacy_instagram_explore_home_without_explore")
+                regional_identities = dict(adset.get("regional_regulation_identities") or {})
                 promoted = dict(adset.get("promoted_object") or {})
                 if str(promoted.get("application_id") or "") != str(meta_application_id):
                     raise GrowthValidationError("rebuild_source_not_tugao")
-                daily_budget_usd = float(adset.get("daily_budget") or 0) / 100.0
-                if not 5 <= daily_budget_usd <= 100:
-                    raise GrowthValidationError("rebuild_source_daily_budget_out_of_range")
+                budget_contract = resolve_rebuild_source_budget(adset, campaign)
+                budget_mode = str(budget_contract["budget_mode"])
+                daily_budget_usd = float(budget_contract["daily_budget_usd"])
+                if initial_status == "ACTIVE" and str(campaign.get("status") or "").upper() != "ACTIVE":
+                    raise GrowthValidationError("active_rebuild_requires_active_source_campaign")
                 hypothesis = dict(experiment.get("hypothesis_json") or {})
                 cpi_target = float(hypothesis.get("cpi_target") or DEFAULT_CPI_TARGET_USD)
                 suffix = f"_CC{int(round(cpi_target * 100)):02d}_R{datetime.now().strftime('%y%m%d')}_{experiment_id[-4:]}"
-                names = {
-                    "campaign": compact_rebuild_name(campaign.get("name"), suffix),
-                    "adset": compact_rebuild_name(adset.get("name"), suffix),
-                    "ad": compact_rebuild_name(ad.get("name"), suffix),
-                }
+                names = {"campaign": compact_rebuild_name(campaign.get("name"), suffix), "adset": compact_rebuild_name(adset.get("name"), suffix), "ad": compact_rebuild_name(ad.get("name"), suffix)}
                 source_snapshot = {
                     "source": "meta_graph_read_only", "read_at": source["read_at"], "source_ids": ids,
-                    "source_statuses": {
-                        "campaign": campaign.get("status"), "adset": adset.get("status"), "ad": ad.get("status"),
-                    },
+                    "source_statuses": {"campaign": campaign.get("status"), "adset": adset.get("status"), "ad": ad.get("status")},
                     "source_config": {
-                        "daily_budget": adset.get("daily_budget"), "bid_strategy": adset.get("bid_strategy"),
+                        "budget_mode": budget_mode,
+                        "adset_daily_budget": budget_contract["adset_daily_budget"],
+                        "campaign_daily_budget": budget_contract["campaign_daily_budget"],
+                        "controlling_daily_budget_usd": daily_budget_usd,
+                        "bid_strategy": adset.get("bid_strategy"),
                         "bid_amount": adset.get("bid_amount"), "billing_event": adset.get("billing_event"),
-                        "optimization_goal": adset.get("optimization_goal"), "targeting": adset.get("targeting"),
+                        "optimization_goal": adset.get("optimization_goal"), "targeting": source_targeting,
                         "promoted_object": promoted, "attribution_spec": adset.get("attribution_spec"),
+                        "regional_regulation_identities": regional_identities,
                         "page_id": creative_contract["page_id"], "image_hash": creative_contract["image_hash"],
+                        "creative_source_format": creative_contract.get("source_format"),
                     },
+                    "normalizations": targeting_normalizations,
                 }
                 source_snapshot["snapshot_hash"] = payload_hash(source_snapshot)
                 decision = conn.execute(
                     """SELECT d.decision_id,e.episode_id FROM growth_decision d
                     LEFT JOIN growth_decision_episode e ON e.decision_id=d.decision_id
-                    WHERE d.target_type='EXPERIMENT' AND d.target_id=?
-                    ORDER BY d.created_at DESC LIMIT 1""", (experiment_id,),
+                    WHERE d.target_type='EXPERIMENT' AND d.target_id=? ORDER BY d.created_at DESC LIMIT 1""",
+                    (experiment_id,),
                 ).fetchone()
                 if not decision:
                     raise GrowthValidationError("rebuild_decision_missing")
-                updated_hypothesis = {
-                    **hypothesis, "cpi_target": cpi_target, "initial_daily_budget": daily_budget_usd,
-                    "page_id": creative_contract["page_id"], "meta_names": names,
-                    "rebuild_source": source_snapshot,
-                }
+                updated_hypothesis = {**hypothesis, "cpi_target": cpi_target, "initial_daily_budget": daily_budget_usd, "budget_mode": budget_mode, "page_id": creative_contract["page_id"], "meta_names": names, "rebuild_source": source_snapshot}
                 with conn:
                     conn.execute(
-                        """UPDATE ad_experiment SET target_app='tugao',account_id=?,source_report_id=?,
-                        source_campaign_id=?,source_adset_id=?,source_ad_id=?,source_creative_id=?,
-                        hypothesis_json=?,updated_at=? WHERE experiment_id=?""",
-                        (str(source["account_id"]), binding.get("report_id", ""), ids["campaign_id"],
-                         ids["adset_id"], ids["ad_id"], ids["creative_id"],
-                         canonical_json(updated_hypothesis), utc_now(), experiment_id),
+                        """UPDATE ad_experiment SET target_app='tugao',account_id=?,source_report_id=?,source_campaign_id=?,source_adset_id=?,source_ad_id=?,source_creative_id=?,hypothesis_json=?,updated_at=? WHERE experiment_id=?""",
+                        (str(source["account_id"]), binding.get("report_id", ""), ids["campaign_id"], ids["adset_id"], ids["ad_id"], ids["creative_id"], canonical_json(updated_hypothesis), utc_now(), experiment_id),
                     )
                 plan_request = {
                     "decision_id": str(decision["decision_id"]), "episode_id": str(decision["episode_id"] or ""),
                     "action_type": "CREATE_PAUSED_AD", "target_account_id": str(source["account_id"]),
-                    "target_object_type": "AD", "target_object_id": "",
-                    "recommendation_id": str(experiment.get("source_recommendation_id") or ""),
+                    "target_object_type": "AD", "target_object_id": "", "recommendation_id": str(experiment.get("source_recommendation_id") or ""),
                     "before_json": source_snapshot,
                     "after_json": {
-                        "status": "PAUSED", "campaign": {"name": names["campaign"]},
-                        "adset": {
-                            "name": names["adset"], "daily_budget_usd": daily_budget_usd,
-                            "cost_cap_usd": cpi_target, "targeting": dict(adset.get("targeting") or {}),
-                        },
-                        "ad": {
-                            "name": names["ad"], "primary_text": creative_contract["primary_text"],
-                            "headline": creative_contract["headline"], "description": creative_contract["description"],
-                            "call_to_action": creative_contract["call_to_action"],
-                        },
-                        "creative": {
-                            "page_id": creative_contract["page_id"],
-                            "source_image_hash": creative_contract["image_hash"],
-                        },
+                        "status": initial_status, "initial_status": initial_status,
+                        "budget_mode": budget_mode,
+                        "reuse_campaign_id": ids["campaign_id"],
+                        "campaign": {"id": ids["campaign_id"], "name": campaign.get("name"), "reused": True, "daily_budget_usd": daily_budget_usd if budget_mode == "CBO" else None},
+                        "adset": {"name": names["adset"], "cost_cap_usd": cpi_target, "targeting": rebuild_targeting, "regional_regulation_identities": regional_identities},
+                        "ad": {"name": names["ad"], "primary_text": creative_contract["primary_text"], "headline": creative_contract["headline"], "description": creative_contract["description"], "call_to_action": creative_contract["call_to_action"]},
+                        "creative": {"page_id": creative_contract["page_id"], "image_id": approved_image_id},
+                        "source_ad_id_to_delete": ids["ad_id"],
+                        "delete_source_ad_after_success": True,
                     },
                     "steps": {
-                        "CAMPAIGN_CREATE": {"name": names["campaign"]},
-                        "ADSET_CREATE": {"name": names["adset"]},
-                        "IMAGE_UPLOAD": {
-                            "reuse_image_hash": creative_contract["image_hash"],
-                            "source": "verified_meta_source_creative",
-                        },
-                        "CREATIVE_CREATE": {"name": f"{names['ad']}_CR"},
-                        "AD_CREATE": {"name": names["ad"]},
+                        "ADSET_CREATE": {"name": names["adset"], "status": initial_status},
+                        "IMAGE_UPLOAD": {"image_id": approved_image_id, "source": "operator_approved_new_creative"},
+                        "CREATIVE_CREATE": {"name": f"{names['ad']}_CR"}, "AD_CREATE": {"name": names["ad"], "status": initial_status},
                     },
-                    "max_write_requests": 5, "preflight_snapshot_json": source_snapshot,
-                    "reason": "REBUILD_WITH_COST_CAP_FROM_VERIFIED_META_SOURCE",
-                    "evaluation_window": {"checkpoints": ["D1", "D3", "D7"]},
+                    "max_write_requests": 4, "preflight_snapshot_json": source_snapshot,
+                    "reason": "NEW_CREATIVE_WITH_NEW_COST_CAP_ADSET_THEN_DELETE_SOURCE_AD", "evaluation_window": {"checkpoints": list(ACTIVE_CHECKPOINTS)},
                 }
-                result = service.preview_plan(
-                    experiment_id, plan_request, actor=actor(user),
-                    idempotency_key=f"rebuild:{idempotency_key}",
-                )
-                result.update({
-                    "request_id": request_id, "source_readback": source_snapshot, "meta_object_writes": 0,
-                })
+                if budget_mode == "ABO":
+                    plan_request["after_json"]["adset"]["daily_budget_usd"] = daily_budget_usd
+                result = service.preview_plan(experiment_id, plan_request, actor=actor(user), idempotency_key=f"rebuild:{idempotency_key}")
+                result.update({"request_id": request_id, "source_readback": source_snapshot, "approved_creative": approved_creative, "meta_object_writes": 0})
                 return result
+
+        return execute(action)
+
+    @router.post("/experiments/{experiment_id}/rebuild-source-ad/delete")
+    def delete_rebuild_source_ad(
+        experiment_id: str, body: RebuildSourceAdDeleteRequest, request: Request,
+        idempotency_key: str = Header(..., alias="Idempotency-Key"),
+        request_id: str = Header(..., alias="X-Request-ID"),
+    ) -> Dict[str, Any]:
+        user = operator(request)
+        if str(body.confirmation or "").strip().upper() != "DELETE_SOURCE_AD_AFTER_VERIFIED_REBUILD":
+            raise HTTPException(status_code=409, detail={"code": "STATE_CONFLICT", "message": "rebuild_source_ad_delete_confirmation_required"})
+
+        def action() -> Dict[str, Any]:
+            if not meta_session or not meta_access_token or not meta_graph_root:
+                raise HTTPException(status_code=503, detail={"code": "EXECUTION_UNAVAILABLE", "message": "meta_rebuild_delete_unavailable"})
+            with db.connect() as conn:
+                return RebuildSourceAdCleanupService(
+                    conn, session=meta_session, access_token=meta_access_token,
+                    graph_root=meta_graph_root,
+                ).execute(
+                    experiment_id, plan_id=str(body.plan_id or ""),
+                    idempotency_key=idempotency_key, request_id=request_id,
+                )
 
         return execute(action)
 
@@ -3928,7 +4185,7 @@ def create_ad_experiment_router(
                                 "AD_STATUS_UPDATE": {"target_id": required_ids["ad"], "status": "ACTIVE"},
                             },
                             "max_write_requests": 3,
-                            "evaluation_window": {"checkpoints": ["D1", "D3", "D7"]},
+                    "evaluation_window": {"checkpoints": list(ACTIVE_CHECKPOINTS)},
                         },
                         actor=actor(user), idempotency_key=f"{idempotency_key}:plan",
                     )
@@ -3975,6 +4232,163 @@ def create_ad_experiment_router(
         if str(body.action_type).upper() == "CREATE_PAUSED_AD":
             raise HTTPException(status_code=400, detail={"code": "VALIDATION_ERROR", "message": "adjustment_plan_cannot_create_ad"})
         return preview_plan(experiment_id, body, request, idempotency_key, request_id)
+
+    @router.post("/experiments/{experiment_id}/pause", status_code=201)
+    def pause_experiment(
+        experiment_id: str, body: AdExperimentPauseRequest, request: Request,
+        idempotency_key: str = Header(..., alias="Idempotency-Key"),
+        request_id: str = Header(..., alias="X-Request-ID"),
+    ) -> Dict[str, Any]:
+        """One operator confirmation owns plan, approval, dry-run, queue and readback."""
+        user = operator(request)
+        if str(body.confirmation or "").strip().upper() != "PAUSE_DELIVERY":
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "STATE_CONFLICT", "message": "pause_delivery_confirmation_required"},
+            )
+
+        def action() -> Dict[str, Any]:
+            with db.connect() as conn:
+                service = AdExperimentService(conn)
+                experiment = service.get(experiment_id)
+                account_id = str(experiment.get("account_id") or "").removeprefix("act_")
+                ad_id = str(experiment.get("source_ad_id") or "")
+                if not _meta_live_execution_available("PAUSE_AD", account_id):
+                    raise HTTPException(
+                        status_code=503,
+                        detail={"code": "EXECUTION_UNAVAILABLE", "message": "meta_pause_ad_not_available"},
+                    )
+                if not account_id or not ad_id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"code": "STATE_CONFLICT", "message": "pause_ad_readback_required"},
+                    )
+
+                replay_task = conn.execute(
+                    "SELECT * FROM meta_execution_task WHERE idempotency_key=?",
+                    (f"{idempotency_key}:live",),
+                ).fetchone()
+                if replay_task:
+                    replay_action = ExecutionTaskService(conn).get_operation_action(
+                        str(replay_task["operation_action_id"])
+                    )
+                    replay_payload = dict(replay_action.get("payload_json") or {})
+                    if str(replay_payload.get("experiment_id") or "") != experiment_id:
+                        raise HTTPException(
+                            status_code=409,
+                            detail={"code": "STATE_CONFLICT", "message": "idempotency_key_payload_conflict"},
+                        )
+                    return {
+                        "experiment_id": experiment_id,
+                        "plan_id": str(replay_task["operation_action_id"]),
+                        "execution_task": ExecutionTaskService._serialize_task(replay_task),
+                        "dry_run_verified": True,
+                        "meta_writes_performed": False,
+                        "request_id": request_id,
+                    }
+
+                pending_task = conn.execute(
+                    """
+                    SELECT task.* FROM meta_execution_task task
+                    JOIN growth_operation_action action
+                      ON action.operation_action_id=task.operation_action_id
+                    WHERE action.action_type='PAUSE_AD'
+                      AND json_extract(action.payload_json,'$.experiment_id')=?
+                    ORDER BY task.created_at DESC,task.execution_task_id DESC LIMIT 1
+                    """,
+                    (experiment_id,),
+                ).fetchone()
+                if pending_task:
+                    pending_status = str(pending_task["status"] or "").upper()
+                    if pending_status == "MANUAL_REVIEW":
+                        raise HTTPException(
+                            status_code=409,
+                            detail={"code": "STATE_CONFLICT", "message": "pause_result_unknown_manual_review"},
+                        )
+                    if pending_status in {"QUEUED", "RUNNING", "VERIFYING", "SUCCESS"}:
+                        return {
+                            "experiment_id": experiment_id,
+                            "plan_id": str(pending_task["operation_action_id"]),
+                            "execution_task": ExecutionTaskService._serialize_task(pending_task),
+                            "dry_run_verified": True,
+                            "already_submitted": True,
+                            "meta_writes_performed": False,
+                            "request_id": request_id,
+                        }
+
+                existing_detail: Dict[str, Any] = {}
+                rows = conn.execute(
+                    "SELECT operation_action_id,payload_json,status FROM growth_operation_action "
+                    "WHERE action_type='PAUSE_AD' ORDER BY created_at DESC"
+                ).fetchall()
+                for row in rows:
+                    payload = decode_json(row["payload_json"], {})
+                    if (
+                        str(payload.get("experiment_id") or "") == experiment_id
+                        and str(row["status"] or "") == "CREATED"
+                    ):
+                        candidate = service.plan_detail(str(row["operation_action_id"]))
+                        approval = dict(candidate.get("approval") or {})
+                        if not str(approval.get("consumed_at") or "").strip():
+                            existing_detail = candidate
+                            break
+
+                if existing_detail:
+                    plan_result = {
+                        "plan_id": str(existing_detail["plan_id"]),
+                        "plan": dict(existing_detail["plan"]),
+                    }
+                else:
+                    plan_result = service.preview_plan(
+                        experiment_id,
+                        {
+                            "decision_id": body.decision_id,
+                            "episode_id": body.episode_id,
+                            "action_type": "PAUSE_AD",
+                            "target_account_id": account_id,
+                            "target_object_type": "AD",
+                            "target_object_id": ad_id,
+                            "before_json": {"status": "ACTIVE"},
+                            "after_json": {"status": "PAUSED"},
+                            "steps": {"STATUS_UPDATE": {"target_id": ad_id, "status": "PAUSED"}},
+                            "max_write_requests": 1,
+                        "evaluation_window": {"checkpoints": list(ACTIVE_CHECKPOINTS)},
+                        },
+                        actor=actor(user), idempotency_key=f"{idempotency_key}:plan",
+                    )
+
+                plan_id = str(plan_result["plan_id"])
+                current_detail = service.plan_detail(plan_id)
+                plan = dict(current_detail["plan"])
+                approval = dict(current_detail.get("approval") or {})
+                approval_id = str(approval.get("approval_id") or "")
+                if str(approval.get("status") or "") == "PROPOSED":
+                    approval = OperationApprovalService(conn).transition(
+                        approval_id, "APPROVED", actor=actor(user),
+                        single_operator_confirmation="APPROVE_EXACT_PLAN",
+                    )
+                dry_run = _idempotent_api_mutation(
+                    conn, "ad_experiment.plan_dry_run", f"{idempotency_key}:dry-run",
+                    {"plan_id": plan_id, "execution_mode": "dry_run", "plan_hash": payload_hash(plan)},
+                    lambda: _build_dry_run_receipt(plan_id, plan, approval, "dry_run"),
+                )
+                task = ExecutionTaskService(conn).enqueue_task(
+                    plan_id, idempotency_key=f"{idempotency_key}:live",
+                    payload={
+                        "execution_mode": "live", "approval_id": approval_id,
+                        "account_id": account_id, "plan": plan, "experiment_id": experiment_id,
+                    },
+                )
+                return {
+                    "experiment_id": experiment_id,
+                    "plan_id": plan_id,
+                    "execution_task": task,
+                    "dry_run_verified": dry_run.get("status") == "DRY_RUN_VERIFIED",
+                    "meta_writes_performed": False,
+                    "request_id": request_id,
+                }
+
+        return execute(action)
 
     @router.post("/meta-plans/{plan_id}/approve")
     def approve_plan(
@@ -4118,21 +4532,35 @@ def create_ad_experiment_router(
                         status_code=503,
                         detail={"code": "EXECUTION_UNAVAILABLE", "message": "meta_live_execution_not_available"},
                     )
-                campaign = dict(plan.get("campaign") or dict(plan.get("steps") or {}).get("CAMPAIGN_CREATE") or {})
-                matches = exact_campaign_matches(
-                    str(plan.get("target_account_id") or ""),
-                    str(campaign.get("name") or ""),
-                )
                 task_row = conn.execute(
                     "SELECT * FROM meta_execution_task WHERE operation_action_id=?",
                     (plan_id,),
                 ).fetchone()
                 source_task = dict(task_row) if task_row else {}
+                reuse_campaign_allowlist_retry = bool(
+                    str(plan.get("reuse_campaign_id") or "").strip()
+                    and str(source_task.get("current_step") or "").upper() == "ADSET_CREATE"
+                    and str(source_task.get("error_message") or "") == "meta_account_not_allowlisted"
+                )
+                reuse_campaign_guard_retry = bool(
+                    str(plan.get("reuse_campaign_id") or "").strip()
+                    and str(source_task.get("current_step") or "").upper() == "CAMPAIGN_CREATE"
+                    and str(source_task.get("error_message") or "") == "meta_write_request_limit_invalid"
+                )
+                campaign = dict(plan.get("campaign") or dict(plan.get("steps") or {}).get("CAMPAIGN_CREATE") or {})
+                matches = [] if (reuse_campaign_allowlist_retry or reuse_campaign_guard_retry) else exact_campaign_matches(
+                    str(plan.get("target_account_id") or ""),
+                    str(campaign.get("name") or ""),
+                )
                 validated_rejected_step = ""
                 validated_missing_study = False
                 if (
                     matches
-                    and str(source_task.get("error_message") or "").startswith("meta_graph_error:")
+                    and (
+                        str(source_task.get("error_message") or "").startswith("meta_graph_error:")
+                        or str(source_task.get("error_message") or "")
+                        == "meta_regional_regulation_identity_required_for_br"
+                    )
                 ):
                     if str(source_task.get("current_step") or "").upper() == "STUDY_CREATE":
                         study = dict(plan.get("study") or {})
@@ -4150,6 +4578,15 @@ def create_ad_experiment_router(
                         "campaign_match_count": len(matches),
                     },
                     lambda: (
+                        _resume_reuse_plan_after_local_preflight_failure(
+                            conn, plan_id, confirmed_by=actor(user),
+                        )
+                        if reuse_campaign_allowlist_retry else
+                        _resume_same_plan_execution(
+                            conn, plan_id, confirmed_by=actor(user),
+                            recovery_key=idempotency_key,
+                        )
+                        if reuse_campaign_guard_retry else
                         _continue_same_plan_after_created_campaign(
                             conn, plan_id, confirmed_by=actor(user),
                             recovery_key=idempotency_key, campaign_matches=matches,
@@ -4255,9 +4692,16 @@ def create_ad_experiment_router(
                     lambda: _repair_plan_after_page_rejection(
                         conn, plan_id, target_page_id=body.target_page_id,
                         confirmed_by=actor(user), repair_key=idempotency_key,
-                        campaign_matches=exact_campaign_matches(
-                            str(plan.get("target_account_id") or ""),
-                            str(dict(plan.get("campaign") or {}).get("name") or ""),
+                        campaign_matches=(
+                            exact_campaign_matches(
+                                str(plan.get("target_account_id") or ""),
+                                str(dict(plan.get("campaign") or {}).get("name") or ""),
+                            )
+                            if str(dict(plan.get("campaign") or {}).get("name") or "").strip()
+                            else exact_campaign_id_matches(
+                                str(plan.get("target_account_id") or ""),
+                                str(plan.get("reuse_campaign_id") or dict(plan.get("campaign") or {}).get("id") or ""),
+                            )
                         ),
                     ),
                 )
@@ -4364,8 +4808,15 @@ def create_ad_experiment_router(
             can_recheck_external_prerequisite = bool(
                 task_status == "MANUAL_REVIEW"
                 and task_error == "meta_result_uncertain"
-                and str(task["error_message"] or "").startswith("meta_graph_error:")
-                and str(task["current_step"] or "").upper().endswith("_ADSET_CREATE")
+                and (
+                    str(task["error_message"] or "").startswith("meta_graph_error:")
+                    or str(task["error_message"] or "")
+                    == "meta_regional_regulation_identity_required_for_br"
+                )
+                and (
+                    str(task["current_step"] or "").upper() == "ADSET_CREATE"
+                    or str(task["current_step"] or "").upper().endswith("_ADSET_CREATE")
+                )
                 and int(prior_continuation.get("write_rejection_retry_count") or 0) < 1
             )
             successful_prefix = [
@@ -4762,9 +5213,28 @@ def _creation_incident_resolution(
         return {}
     current_step = str(task.get("current_step") or "").upper()
     error_message = str(task.get("error_message") or "")
+    failed_step_zh = {
+        "CAMPAIGN_CREATE": "创建前安全校验",
+        "ADSET_CREATE": "创建广告组",
+        "IMAGE_UPLOAD": "上传广告素材",
+        "CREATIVE_CREATE": "创建广告素材",
+        "AD_CREATE": "创建广告",
+        "VERIFY": "回读创建结果",
+    }.get(current_step, "核对创建结果")
+    if current_step.endswith("_ADSET_CREATE"):
+        failed_step_zh = "创建广告组"
+    elif current_step.endswith("_CREATIVE_CREATE"):
+        failed_step_zh = "创建广告素材"
+    elif current_step.endswith("_AD_CREATE"):
+        failed_step_zh = "创建广告"
+    elif current_step.endswith("_IMAGE_UPLOAD"):
+        failed_step_zh = "上传广告素材"
     page_rejected = bool(
-        current_step.endswith("_CREATIVE_CREATE")
-        and error_message.startswith("meta_graph_error:10:1341012")
+        (current_step == "CREATIVE_CREATE" or current_step.endswith("_CREATIVE_CREATE"))
+        and (
+            error_message.startswith("meta_graph_error:10:1341012")
+            or error_message.startswith("meta_graph_error:10:3858749")
+        )
     )
     object_ids = dict(task.get("meta_object_ids_json") or {})
     cells = [dict(item or {}) for item in list(plan.get("cells") or [])]
@@ -4773,23 +5243,40 @@ def _creation_incident_resolution(
             .get("object_story_spec", {}).get("page_id") or "").strip()
         for cell in cells
     }
+    if not cells:
+        creative = dict(dict(plan.get("steps") or {}).get("CREATIVE_CREATE") or {})
+        current_page_ids.add(
+            str(dict(creative.get("object_story_spec") or {}).get("page_id") or "").strip()
+        )
     current_page_ids.discard("")
+    expected_items = max(1, len(cells))
+
+    def object_count(kind: str) -> int:
+        key_name = f"{kind}_id"
+        return sum(
+            1 for key, value in object_ids.items()
+            if value and (str(key) == key_name or str(key).endswith(f"_{key_name}"))
+        )
     completed: List[str] = []
     if object_ids.get("campaign_id"):
-        completed.append("广告系列（已暂停）")
-    completed_adsets = sum(1 for key, value in object_ids.items() if key.endswith("_adset_id") and value)
+        completed.append(
+            "广告系列（已确认）"
+            if str(plan.get("reuse_campaign_id") or "").strip()
+            else "广告系列（已暂停）"
+        )
+    completed_adsets = object_count("adset")
     if completed_adsets:
         completed.append(f"{completed_adsets} 个广告组（已暂停）")
-    completed_ads = sum(1 for key, value in object_ids.items() if key.endswith("_ad_id") and value)
+    completed_ads = object_count("ad")
     if completed_ads:
         completed.append(f"{completed_ads} 条广告（已暂停）")
-    completed_creatives = sum(1 for key, value in object_ids.items() if key.endswith("_creative_id") and value)
+    completed_creatives = object_count("creative")
     if completed_creatives:
         completed.append(f"{completed_creatives} 个广告素材")
     incomplete: List[str] = []
-    missing_creatives = max(0, len(cells) - completed_creatives)
-    missing_adsets = max(0, len(cells) - completed_adsets)
-    missing_ads = max(0, len(cells) - completed_ads)
+    missing_creatives = max(0, expected_items - completed_creatives)
+    missing_adsets = max(0, expected_items - completed_adsets)
+    missing_ads = max(0, expected_items - completed_ads)
     if missing_creatives:
         incomplete.append(f"{missing_creatives} 个广告素材")
     if missing_adsets:
@@ -4802,13 +5289,20 @@ def _creation_incident_resolution(
         if str(receipt.get("step_status") or "").upper() not in {"SUCCESS", "VERIFIED"}:
             break
         successful_prefix.append(step)
-    planned_steps = ["CAMPAIGN_CREATE"]
-    for index, cell in enumerate(cells, start=1):
-        cell_key = str(cell.get("cell_key") or f"C{index}").upper()
-        planned_steps.extend([
-            f"{cell_key}_IMAGE_UPLOAD", f"{cell_key}_CREATIVE_CREATE",
-            f"{cell_key}_ADSET_CREATE", f"{cell_key}_AD_CREATE",
-        ])
+    if cells:
+        planned_steps = ["CAMPAIGN_CREATE"]
+        for index, cell in enumerate(cells, start=1):
+            cell_key = str(cell.get("cell_key") or f"C{index}").upper()
+            planned_steps.extend([
+                f"{cell_key}_IMAGE_UPLOAD", f"{cell_key}_CREATIVE_CREATE",
+                f"{cell_key}_ADSET_CREATE", f"{cell_key}_AD_CREATE",
+            ])
+    else:
+        planned_steps = (
+            [] if str(plan.get("reuse_campaign_id") or "").strip()
+            else ["CAMPAIGN_CREATE"]
+        )
+        planned_steps.extend(["ADSET_CREATE", "IMAGE_UPLOAD", "CREATIVE_CREATE", "AD_CREATE"])
     prefix_is_exact = bool(
         successful_prefix
         and successful_prefix == planned_steps[:len(successful_prefix)]
@@ -4820,13 +5314,36 @@ def _creation_incident_resolution(
         and not can_resume_same_plan
         and prefix_is_exact
         and str(object_ids.get("campaign_id") or "").strip()
+        and not object_ids.get("ad_id")
     )
+    guard_contract_mismatch = error_message == "meta_write_request_limit_invalid"
+    regional_identity_missing = error_message == "meta_regional_regulation_identity_required_for_br"
+    if page_rejected:
+        root_cause_zh = "当前公共主页没有为这个广告账户创建广告素材的权限。"
+    elif guard_contract_mismatch:
+        root_cause_zh = "旧方案的执行约束与当前重建结构不一致；系统在写入 Meta 前已停止。"
+    elif regional_identity_missing:
+        root_cause_zh = "BR 广告组没有带入已验证的广告受益方和付款方身份。"
+    else:
+        root_cause_zh = "系统无法确认本次创建的完整结果。"
+    after_adset = dict(dict(plan.get("after_json") or {}).get("adset") or {})
+    step_adset = dict(dict(plan.get("steps") or {}).get("ADSET_CREATE") or {})
+    daily_budget_usd = after_adset.get("daily_budget_usd")
+    if daily_budget_usd is None and step_adset.get("daily_budget") is not None:
+        daily_budget_usd = float(step_adset.get("daily_budget") or 0) / 100.0
+    cost_cap_usd = after_adset.get("cost_cap_usd")
+    if cost_cap_usd is None and step_adset.get("bid_amount") is not None:
+        cost_cap_usd = float(step_adset.get("bid_amount") or 0) / 100.0
     return {
         "status": "REPAIR_PLAN_REQUIRED" if repair_supported else "MANUAL_REVIEW_REQUIRED",
         "title": "广告创建未完成",
-        "root_cause_zh": (
-            "当前广告账户与公共主页的组合没有创建广告素材的权限。"
-            if page_rejected else "系统无法确认本次创建的完整结果。"
+        "root_cause_zh": root_cause_zh,
+        "failed_step": current_step,
+        "failed_step_zh": failed_step_zh,
+        "error_class": (
+            "EXECUTION_GUARD" if guard_contract_mismatch else
+            "REGIONAL_IDENTITY" if regional_identity_missing else
+            "PAGE_PERMISSION" if page_rejected else "UNCERTAIN_RESULT"
         ),
         "completed": completed,
         "incomplete": incomplete,
@@ -4834,11 +5351,19 @@ def _creation_incident_resolution(
         "old_plan_replay_allowed": False,
         "requires_new_plan": repair_supported,
         "repair_supported": repair_supported,
+        "parameter_summary": {
+            "repair_scope": "MISSING_STEPS_ONLY",
+            "initial_status": str(plan.get("initial_status") or "PAUSED").upper(),
+            "daily_budget_usd": daily_budget_usd,
+            "cost_cap_usd": cost_cap_usd,
+            "page_id": next(iter(current_page_ids), "") if len(current_page_ids) == 1 else "",
+            "regional_identity_mode": "SOURCE_VERIFIED" if regional_identity_missing else "",
+        },
         "completed_steps": successful_prefix,
-        "primary_action_zh": "确认修复方案并继续" if repair_supported else "刷新核对结果",
+        "primary_action_zh": "更换可用主页并继续" if repair_supported else "查看人工处理说明",
         "guidance_zh": (
             "系统将改用已验证的公共主页生成新方案，只复用已回读确认的对象；旧失败任务不会重放。"
-            if repair_supported else "系统会先自动核对；只有结果仍不确定时，才需要你在 Meta 确认同名对象是否存在且保持暂停。"
+            if repair_supported else "系统已停止且不会自动重试；请按页面显示的唯一处理方式继续。"
         ),
     }
 
@@ -4889,15 +5414,30 @@ def _repair_plan_after_page_rejection(
     source_ids = dict(source_task.get("meta_object_ids_json") or {})
     campaign_id = str(source_ids.get("campaign_id") or "").strip()
     matches = [dict(item or {}) for item in campaign_matches]
+    reused_campaign = str(source_plan.get("reuse_campaign_id") or "").strip() == campaign_id
+    allowed_campaign_statuses = {"ACTIVE", "PAUSED"} if reused_campaign else {"PAUSED"}
     if not (
         len(matches) == 1
         and str(matches[0].get("id") or "").strip() == campaign_id
-        and str(matches[0].get("status") or matches[0].get("effective_status") or "").upper() == "PAUSED"
+        and str(matches[0].get("status") or matches[0].get("effective_status") or "").upper()
+        in allowed_campaign_statuses
     ):
         raise GrowthStateConflict("repair_campaign_not_uniquely_confirmed_paused")
 
+    # The durable worker and an open browser may discover the same Page repair
+    # at the same time.  All persisted repair objects must share one identity
+    # derived from the rejected source plan, never from the caller request key.
+    repair_identity = f"{source_plan_id}:{normalized_page_id}"
+
     repaired_plan = copy.deepcopy(source_plan)
-    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+    repair_anchor_raw = str(source_task.get("finished_at") or source_task.get("updated_at") or "")
+    try:
+        repair_anchor = datetime.fromisoformat(repair_anchor_raw.replace("Z", "+00:00"))
+        if repair_anchor.tzinfo is None:
+            repair_anchor = repair_anchor.replace(tzinfo=timezone.utc)
+    except ValueError:
+        repair_anchor = datetime.now(timezone.utc)
+    expires_at = (repair_anchor + timedelta(minutes=30)).isoformat()
     repaired_plan["expires_at"] = expires_at
     repaired_plan["repair"] = {
         "source_plan_id": source_plan_id,
@@ -4912,6 +5452,14 @@ def _repair_plan_after_page_rejection(
         story["page_id"] = normalized_page_id
         creative["object_story_spec"] = story
         raw_cell["steps"]["CREATIVE_CREATE"] = creative
+    if not list(repaired_plan.get("cells") or []):
+        steps = dict(repaired_plan.get("steps") or {})
+        creative = dict(steps.get("CREATIVE_CREATE") or {})
+        story = dict(creative.get("object_story_spec") or {})
+        story["page_id"] = normalized_page_id
+        creative["object_story_spec"] = story
+        steps["CREATIVE_CREATE"] = creative
+        repaired_plan["steps"] = steps
 
     new_action_payload = copy.deepcopy(source_action.get("payload_json") or {})
     new_action_payload["plan"] = repaired_plan
@@ -4927,13 +5475,13 @@ def _repair_plan_after_page_rejection(
         target_id=str(source_action.get("target_id") or ""),
         payload=new_action_payload,
         created_by=confirmed_by,
-        idempotency_key=f"page-repair-action:{repair_key}",
+        idempotency_key=f"page-repair-action:{repair_identity}",
     )
     new_plan_id = str(new_action["operation_action_id"])
     approvals = OperationApprovalService(conn)
     approval = approvals.propose(
         new_plan_id, repaired_plan, proposed_by=confirmed_by,
-        idempotency_key=f"page-repair-approval:{repair_key}", expires_at=expires_at,
+        idempotency_key=f"page-repair-approval:{repair_identity}", expires_at=expires_at,
     )
     if approval["status"] == "PROPOSED":
         approval = approvals.transition(
@@ -4947,7 +5495,7 @@ def _repair_plan_after_page_rejection(
             (route_key,idempotency_key,request_hash,response_status,response_json,created_at)
             VALUES ('ad_experiment.plan_dry_run',?,?,200,?,?)""",
             (
-                f"page-repair-dry:{repair_key}",
+                f"page-repair-dry:{repair_identity}",
                 payload_hash({"source_plan_id": source_plan_id, "plan_hash": payload_hash(repaired_plan)}),
                 canonical_json(dry_run), utc_now(),
             ),
@@ -4964,6 +5512,8 @@ def _repair_plan_after_page_rejection(
     experiment_ids = list(repaired_plan.get("experiment_ids") or []) or [
         str(cell.get("experiment_id") or "") for cell in list(repaired_plan.get("cells") or [])
     ]
+    if not experiment_ids and str(repaired_plan.get("experiment_id") or "").strip():
+        experiment_ids = [str(repaired_plan.get("experiment_id"))]
     for experiment_id in [str(item) for item in experiment_ids if str(item)]:
         current = experiments.get(experiment_id)
         if str(current.get("state") or "") == "CREATION_PARTIAL_FAILURE":
@@ -4974,7 +5524,7 @@ def _repair_plan_after_page_rejection(
             )
     task = actions.enqueue_task(
         new_plan_id,
-        idempotency_key=f"page-repair-live:{repair_key}",
+        idempotency_key=f"page-repair-live:{repair_identity}",
         payload={
             "execution_mode": "live", "approval_id": str(approval["approval_id"]),
             "account_id": repaired_plan.get("target_account_id"), "plan": repaired_plan,
@@ -5231,6 +5781,174 @@ def _repair_page_and_continue_order(
     }
 
 
+def _resume_reuse_plan_after_local_preflight_failure(
+    conn: sqlite3.Connection,
+    source_plan_id: str,
+    *,
+    confirmed_by: str,
+) -> Dict[str, Any]:
+    """Retry a reused-Campaign plan only when the worker failed before a Meta write."""
+    from app.growth.errors import GrowthStateConflict
+
+    experiments = AdExperimentService(conn)
+    detail = experiments.plan_detail(source_plan_id)
+    source_action = dict(detail.get("operation_action") or {})
+    plan = dict(detail.get("plan") or {})
+    source_task_row = conn.execute(
+        "SELECT * FROM meta_execution_task WHERE operation_action_id=?",
+        (source_plan_id,),
+    ).fetchone()
+    if not source_task_row:
+        raise GrowthStateConflict("reuse_preflight_source_task_missing")
+    source_task = GrowthReadService._decode_row(dict(source_task_row))
+    receipts = [GrowthReadService._decode_row(dict(row)) for row in conn.execute(
+        "SELECT * FROM meta_execution_task_receipt WHERE execution_task_id=? ORDER BY created_at,receipt_id",
+        (source_task["execution_task_id"],),
+    ).fetchall()]
+    source_ids = dict(source_task.get("meta_object_ids_json") or {})
+    reuse_campaign_id = str(plan.get("reuse_campaign_id") or "").strip()
+    receipt_result = dict(receipts[0].get("step_result_json") or {}) if len(receipts) == 1 else {}
+    recovery_generation = int(
+        dict(source_action.get("payload_json") or {}).get("local_preflight_recovery_generation") or 0
+    )
+    recoverable = bool(
+        source_action.get("action_type") == "CREATE_PAUSED_AD"
+        and source_action.get("status") == "MANUAL_REVIEW"
+        and source_task.get("status") == "MANUAL_REVIEW"
+        and source_task.get("error_code") == "meta_result_uncertain"
+        and source_task.get("current_step") == "ADSET_CREATE"
+        and source_task.get("error_message") == "meta_account_not_allowlisted"
+        and reuse_campaign_id
+        and source_ids == {"campaign_id": reuse_campaign_id}
+        and len(receipts) == 1
+        and receipts[0].get("step_name") == "ADSET_CREATE"
+        and receipts[0].get("step_status") == "UNKNOWN"
+        and receipt_result.get("error") == "adapter_execute_exception"
+        and receipt_result.get("error_detail") == "meta_account_not_allowlisted"
+        and recovery_generation == 0
+    )
+    if not recoverable:
+        raise GrowthStateConflict("reuse_preflight_result_not_safely_resumable")
+    dry_run = _latest_dry_run_receipt(conn, source_plan_id)
+    if (
+        str(dry_run.get("status") or "") != "DRY_RUN_VERIFIED"
+        or str(dry_run.get("plan_hash") or "") != payload_hash(plan)
+    ):
+        raise GrowthStateConflict("matching_dry_run_required_before_reuse_preflight_resume")
+
+    new_action_payload = copy.deepcopy(source_action.get("payload_json") or {})
+    new_action_payload.update({
+        "local_preflight_recovery_of_operation_action_id": source_plan_id,
+        "local_preflight_recovery_of_execution_task_id": source_task["execution_task_id"],
+        "local_preflight_recovery_generation": 1,
+    })
+    actions = ExecutionTaskService(conn)
+    new_action = actions.create_operation_action(
+        decision_id=str(source_action.get("decision_id") or ""),
+        episode_id=str(source_action.get("episode_id") or ""),
+        action_type="CREATE_PAUSED_AD",
+        action_scope=str(source_action.get("action_scope") or "EXPERIMENT"),
+        target_type=str(source_action.get("target_type") or "AD"),
+        target_id=str(source_action.get("target_id") or ""),
+        payload=new_action_payload,
+        created_by=confirmed_by,
+        idempotency_key=f"reuse-preflight-recovery-action:{source_plan_id}",
+    )
+    new_plan_id = str(new_action["operation_action_id"])
+    new_action = actions.get_operation_action(new_plan_id)
+    approvals = OperationApprovalService(conn)
+    if str(new_action.get("status") or "") == "CREATED":
+        approval = approvals.propose(
+            new_plan_id, plan, proposed_by=confirmed_by,
+            idempotency_key=f"reuse-preflight-recovery-approval:{source_plan_id}",
+        )
+    else:
+        approval_row = conn.execute(
+            """SELECT * FROM growth_operation_approval
+            WHERE operation_action_id=? ORDER BY created_at DESC LIMIT 1""",
+            (new_plan_id,),
+        ).fetchone()
+        if not approval_row:
+            raise GrowthStateConflict("reuse_preflight_recovery_approval_missing")
+        approval = approvals.get(str(approval_row["approval_id"]))
+    if approval["status"] == "PROPOSED":
+        approval = approvals.transition(
+            str(approval["approval_id"]), "APPROVED", actor=confirmed_by,
+            single_operator_confirmation="APPROVE_EXACT_PLAN",
+        )
+    cloned_dry_run = dict(dry_run)
+    cloned_dry_run.update({
+        "plan_id": new_plan_id,
+        "recovery_source_plan_id": source_plan_id,
+        "verified_at": utc_now(),
+    })
+    with conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO growth_idempotency_record
+            (route_key,idempotency_key,request_hash,response_status,response_json,created_at)
+            VALUES ('ad_experiment.plan_dry_run',?,?,200,?,?)""",
+            (
+                f"reuse-preflight-recovery-dry:{source_plan_id}",
+                payload_hash({"source_plan_id": source_plan_id, "plan_hash": payload_hash(plan)}),
+                canonical_json(cloned_dry_run), utc_now(),
+            ),
+        )
+    experiment_ids = list(plan.get("experiment_ids") or []) or [str(plan.get("experiment_id") or "")]
+    for experiment_id in [str(item) for item in experiment_ids if str(item)]:
+        current = experiments.get(experiment_id)
+        if str(current.get("state") or "") == "CREATION_PARTIAL_FAILURE":
+            experiments.transition(
+                experiment_id, "WAITING_CREATE_APPROVAL", actor=confirmed_by,
+                reason="reuse_plan_local_preflight_recovered",
+                event_type="LOCAL_PREFLIGHT_RECOVERY_CONFIRMED",
+                evidence={"source_plan_id": source_plan_id, "resumed_plan_id": new_plan_id},
+            )
+    task = actions.enqueue_task(
+        new_plan_id,
+        idempotency_key=f"reuse-preflight-recovery-live:{source_plan_id}",
+        payload={
+            "execution_mode": "live",
+            "approval_id": str(approval["approval_id"]),
+            "account_id": plan.get("target_account_id"),
+            "plan": plan,
+            "experiment_id": str(plan.get("experiment_id") or ""),
+            "experiment_ids": experiment_ids,
+            "launch_id": str(plan.get("launch_id") or ""),
+            "recovery_approval": {
+                "status": "APPROVED",
+                "source_plan_id": source_plan_id,
+                "source_execution_task_id": source_task["execution_task_id"],
+                "plan_hash": payload_hash(plan),
+                "confirmed_by": confirmed_by,
+                "confirmed_at": str(approval.get("approved_at") or utc_now()),
+                "recovery_generation": 1,
+                "reason": "LOCAL_ALLOWLIST_PREFLIGHT_FIXED",
+            },
+        },
+    )
+    for experiment_id in [str(item) for item in experiment_ids if str(item)]:
+        current = experiments.get(experiment_id)
+        if str(current.get("state") or "") == "WAITING_CREATE_APPROVAL":
+            experiments.transition(
+                experiment_id, "CREATING_PAUSED_OBJECTS", actor=confirmed_by,
+                reason="reuse_plan_local_preflight_requeued",
+                event_type="LIVE_EXECUTION_RECOVERED",
+                evidence={"source_plan_id": source_plan_id, "resumed_plan_id": new_plan_id,
+                          "execution_task_id": task["execution_task_id"]},
+            )
+    return {
+        "ok": True,
+        "source_plan_id": source_plan_id,
+        "resumed_plan_id": new_plan_id,
+        "execution_task_id": task["execution_task_id"],
+        "plan_hash": payload_hash(plan),
+        "plan_reused": True,
+        "local_preflight_recovered": True,
+        "meta_writes_performed": False,
+        "status": task["status"],
+    }
+
+
 def _resume_same_plan_execution(
     conn: sqlite3.Connection,
     source_plan_id: str,
@@ -5484,8 +6202,12 @@ def _continue_same_plan_after_created_campaign(
         and source_action.get("status") == "MANUAL_REVIEW"
         and source_task.get("status") == "MANUAL_REVIEW"
         and source_task.get("error_code") == "meta_result_uncertain"
-        and str(source_task.get("error_message") or "").startswith("meta_graph_error:")
-        and current_step.endswith("_ADSET_CREATE")
+        and (
+            str(source_task.get("error_message") or "").startswith("meta_graph_error:")
+            or str(source_task.get("error_message") or "")
+            == "meta_regional_regulation_identity_required_for_br"
+        )
+        and (current_step == "ADSET_CREATE" or current_step.endswith("_ADSET_CREATE"))
         and validated_rejected_step == current_step
         and receipts
         and str(receipts[-1].get("step_name") or "").upper() == current_step
@@ -5727,6 +6449,7 @@ def _ad_experiment_detail(conn: sqlite3.Connection, experiment_id: str) -> Dict[
         lineage = {}
     performance = AdExperimentEvaluator(conn).list(experiment_id)
     timeline = service.timeline(experiment_id)
+    creative_generation = _latest_experiment_creative_generation(conn, experiment_id)
     cycles = AdExperimentCycleService(conn).list_for_experiment(experiment_id)
     latest_closed_loop = (
         AdExperimentCycleEvaluator(conn).detail(cycles["items"][-1]["cycle_id"])
@@ -5742,12 +6465,72 @@ def _ad_experiment_detail(conn: sqlite3.Connection, experiment_id: str) -> Dict[
     return {
         "experiment": experiment,
         "approved_creative": service.latest_approved_creative(experiment_id),
+        "creative_generation": creative_generation,
         "timeline": timeline,
         "performance": performance,
         "growth_lineage": lineage,
         "cycles": cycles,
         "latest_closed_loop": latest_closed_loop,
         "workflow": workflow,
+    }
+
+
+def _latest_experiment_creative_generation(
+    conn: sqlite3.Connection, experiment_id: str,
+) -> Dict[str, Any]:
+    """Expose the durable generation job and latest reviewable image to the rebuild UI."""
+    queue_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='creative_pro_work_queue'",
+    ).fetchone()
+    image_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='creative_generated_images'",
+    ).fetchone()
+    if not queue_exists or not image_table_exists:
+        return {}
+    job = conn.execute(
+        """
+        SELECT job_id,status,generation_plan_json,created_at,completed_at,error_code,error_message
+        FROM creative_pro_work_queue
+        WHERE experiment_id=?
+           OR json_extract(material_refs_json,'$.growth_experiment_id')=?
+        ORDER BY created_at DESC,job_id DESC
+        LIMIT 1
+        """,
+        (experiment_id, experiment_id),
+    ).fetchone()
+    if not job:
+        return {}
+    generation_plan = decode_json(job["generation_plan_json"], {})
+    generation_request_id = str(generation_plan.get("generation_request_id") or "").strip()
+    image = conn.execute(
+        """
+        SELECT image_id,request_id,review_status,created_at
+        FROM creative_generated_images
+        WHERE COALESCE(LOWER(review_status),'') NOT IN ('deleted','archived')
+          AND (
+            json_extract(metadata_json,'$.job_id')=?
+            OR (? != '' AND request_id=?)
+          )
+        ORDER BY created_at DESC,image_id DESC
+        LIMIT 1
+        """,
+        (str(job["job_id"]), generation_request_id, generation_request_id),
+    ).fetchone()
+    latest_image = {
+        "image_id": str(image["image_id"]),
+        "request_id": str(image["request_id"] or ""),
+        "review_status": str(image["review_status"] or ""),
+        "created_at": str(image["created_at"] or ""),
+        "preview_url": f"/api/ops/ad-data-dashboard/creative-images/{str(image['image_id'])}",
+    } if image else {}
+    return {
+        "job_id": str(job["job_id"]),
+        "status": str(job["status"] or ""),
+        "created_at": str(job["created_at"] or ""),
+        "completed_at": str(job["completed_at"] or ""),
+        "error_code": str(job["error_code"] or ""),
+        "error_message": str(job["error_message"] or ""),
+        "latest_image": latest_image,
     }
 
 
@@ -5929,6 +6712,21 @@ def _ad_experiment_workflow(
     )
     evaluations = list((performance or {}).get("items") or [])
     latest = evaluations[-1] if evaluations else {}
+    group_rows: List[sqlite3.Row] = []
+    if launch_id:
+        group_rows = conn.execute(
+            """SELECT checkpoint,metrics_by_experiment_json,decision_status,
+                      data_quality_status,evidence_json,evaluated_at
+               FROM ad_creative_group_evaluation WHERE launch_id=?
+               ORDER BY CASE checkpoint WHEN 'D1' THEN 1 WHEN 'D3' THEN 3 WHEN 'D5' THEN 5 ELSE 7 END""",
+            (launch_id,),
+        ).fetchall()
+    latest_group = dict(group_rows[-1]) if group_rows else {}
+    latest_group_evidence = decode_json(latest_group.get("evidence_json"), {}) if latest_group else {}
+    group_metrics = decode_json(latest_group.get("metrics_by_experiment_json"), {}) if latest_group else {}
+    current_group_metrics = dict(group_metrics.get(str(experiment.get("experiment_id") or "")) or {})
+    operating_evaluation = dict(latest_group_evidence.get("operating_evaluation") or {})
+    maturity_evaluation = dict(latest_group_evidence.get("maturity_evaluation") or {})
     maturity_rule = dict(experiment.get("maturity_rule_json") or {})
     minimum = max(1, int(maturity_rule.get("minimum_conversions") or 10))
     baseline = dict(latest.get("baseline_metrics_json") or {})
@@ -5940,7 +6738,7 @@ def _ad_experiment_workflow(
     sample_pct = min(100, round(sample_count * 100 / minimum)) if quality_status == "PASS" else 0
     status = str(latest.get("evaluation_status") or "PENDING").upper()
     evidence_mature = bool(
-        latest.get("checkpoint") == "D7"
+        is_terminal_checkpoint(latest.get("checkpoint"))
         and quality_status == "PASS"
         and sample_count >= minimum
         and status not in {"DATA_INCOMPLETE", "INSUFFICIENT_SAMPLE", "MIXED_CHANGE", "NOT_ATTRIBUTABLE"}
@@ -5958,6 +6756,50 @@ def _ad_experiment_workflow(
     if meta_review:
         meta_review["review_feedback_json"] = decode_json(meta_review.get("review_feedback_json"), {})
     remediation_status = str(meta_review.get("remediation_status") or "NONE").upper()
+    try:
+        creative_work_row = conn.execute(
+            """
+            SELECT q.job_id,q.status AS job_status,q.created_at,q.completed_at,
+                   q.error_code,q.error_message,
+                   (SELECT t.task_id FROM creative_generation_tasks t
+                    WHERE t.job_id=q.job_id ORDER BY t.created_at DESC,t.task_id DESC LIMIT 1) AS generation_task_id,
+                   (SELECT t.status FROM creative_generation_tasks t
+                    WHERE t.job_id=q.job_id ORDER BY t.created_at DESC,t.task_id DESC LIMIT 1) AS generation_status,
+                   (SELECT t.updated_at FROM creative_generation_tasks t
+                    WHERE t.job_id=q.job_id ORDER BY t.created_at DESC,t.task_id DESC LIMIT 1) AS generation_updated_at,
+                   (SELECT i.image_id FROM creative_generated_images i
+                    WHERE json_extract(i.metadata_json,'$.job_id')=q.job_id
+                    ORDER BY i.created_at DESC,i.image_id DESC LIMIT 1) AS image_id,
+                   (SELECT i.review_status FROM creative_generated_images i
+                    WHERE json_extract(i.metadata_json,'$.job_id')=q.job_id
+                    ORDER BY i.created_at DESC,i.image_id DESC LIMIT 1) AS image_review_status
+            FROM creative_pro_work_queue q
+            WHERE json_extract(q.material_refs_json,'$.growth_experiment_id')=?
+              AND (
+                ?!='CREATIVE_REJECTED'
+                OR json_extract(q.material_refs_json,'$.meta_rejection.ad_id')=?
+              )
+            ORDER BY q.created_at DESC,q.job_id DESC LIMIT 1
+            """,
+            (
+                str(experiment.get("experiment_id") or ""), state,
+                str(meta_review.get("ad_id") or experiment.get("source_ad_id") or ""),
+            ),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        creative_work_row = None
+    creative_work = dict(creative_work_row) if creative_work_row else {}
+    creative_job_status = str(creative_work.get("job_status") or "").lower()
+    generation_status = str(creative_work.get("generation_status") or "").lower()
+    image_review_status = str(creative_work.get("image_review_status") or "").lower()
+    creative_generation_active = bool(
+        creative_job_status in {"pending", "claimed", "generating"}
+        or generation_status in {"queued", "claimed", "running"}
+    )
+    creative_waiting_review = bool(
+        creative_job_status == "pending_review"
+        or image_review_status in {"pending_review", "manual_review_required"}
+    )
     incident_reconciled = str(experiment.get("state_reason") or "").startswith("incident_reconciled_")
     activation_readback_pending = bool(
         str(plan_payload.get("action_type") or "").upper() == "REACTIVATE_AD"
@@ -5966,23 +6808,65 @@ def _ad_experiment_workflow(
             or bool(failure_guidance.get("auto_reconcilable"))
         )
     )
+    pause_readback_pending = bool(
+        str(plan_payload.get("action_type") or "").upper() in {"PAUSE_AD", "PAUSE_ADSET"}
+        and str(latest_task.get("status") or "").upper() in {"QUEUED", "RUNNING", "VERIFYING"}
+    )
+    pause_result_unknown = bool(
+        str(plan_payload.get("action_type") or "").upper() in {"PAUSE_AD", "PAUSE_ADSET"}
+        and str(latest_task.get("status") or "").upper() == "MANUAL_REVIEW"
+    )
+    pause_completed = bool(
+        str(plan_payload.get("action_type") or "").upper() in {"PAUSE_AD", "PAUSE_ADSET"}
+        and str(latest_task.get("status") or "").upper() == "SUCCESS"
+    )
     error_states = {"CREATION_PARTIAL_FAILURE", "DATA_INCOMPLETE", "MIXED_CHANGE", "CREATIVE_REJECTED"}
     system_work_states = {
         "DRAFT", "CREATIVE_GENERATING", "CREATIVE_REVIEW", "CREATIVE_APPROVED",
-        "WAITING_CREATE_APPROVAL", "CREATING_PAUSED_OBJECTS",
+        "CREATING_PAUSED_OBJECTS",
     }
     observing_states = {"META_REVIEW_PENDING", "RUNNING", "MATURING", "EVALUATING_ADJUSTMENT"}
     completed_states = {"ARCHIVED"}
-    if activation_readback_pending:
+    if pause_readback_pending:
+        bucket, current_action = "system_work", "正在暂停广告并核对 Meta 状态"
+    elif pause_result_unknown:
+        bucket, current_action = "exception", "暂停结果待核对"
+    elif pause_completed:
+        bucket, current_action = "observing", "广告已暂停，无需再次处理"
+    elif activation_readback_pending:
         bucket, current_action = "system_work", "系统正在核对开启状态"
     elif plan_expired and str(plan_payload.get("action_type") or "") == "CREATE_PAUSED_AD" and not receipts:
         bucket, current_action = "system_work", "AI 正在重新生成创建方案"
-    elif state == "CREATIVE_REJECTED" and remediation_status in {"DETECTED", "GENERATING"}:
-        bucket, current_action = "system_work", "AI 正在根据 Meta 拒审原因生成合规替代素材"
+    elif (
+        remediation_status == "PLAN_READY"
+        and str(plan_action.get("action_type") or "").upper() == "REPLACE_CREATIVE"
+    ):
+        if str(approval.get("status") or "").upper() == "APPROVED" and dry_run_verified:
+            bucket, current_action = "system_work", (
+                "你已审核通过，系统正在自动替换并回读广告"
+                if latest_task else "你已审核通过，等待系统自动替换广告"
+            )
+        else:
+            bucket, current_action = "action_required", "替代素材已生成，等待你审核"
+    elif state == "CREATIVE_REJECTED" and remediation_status == "GENERATING":
+        if creative_waiting_review:
+            bucket, current_action = "system_work", "替代素材已生成，系统正在准备审核方案"
+        elif creative_generation_active:
+            bucket, current_action = "system_work", "AI 正在生成合规替代素材"
+        else:
+            bucket, current_action = "exception", "替代素材生成任务未运行"
+    elif state == "CREATIVE_REJECTED" and remediation_status == "DETECTED":
+        bucket, current_action = "system_work", "已发现 Meta 拒审，等待生成任务领取"
     elif state in error_states or (str(latest_task.get("status") or "") == "MANUAL_REVIEW" and not incident_reconciled):
         bucket, current_action = "exception", "处理异常并核对回执"
     elif state in observing_states:
         bucket, current_action = "observing", "查看观察进度"
+    elif state == "DRAFT" and creative_waiting_review:
+        bucket, current_action = "action_required", "素材已生成，等待你审核"
+    elif state == "DRAFT" and not creative_generation_active and not plan_id:
+        bucket, current_action = "action_required", "尚未开始生成，等待确认"
+    elif state == "CREATIVE_GENERATING" and not creative_generation_active and not creative_waiting_review:
+        bucket, current_action = "exception", "未发现正在运行的素材生成任务"
     elif state in system_work_states:
         bucket = "system_work"
         current_action = {
@@ -5990,7 +6874,6 @@ def _ad_experiment_workflow(
             "CREATIVE_GENERATING": "AI 正在生成素材",
             "CREATIVE_REVIEW": "AI 正在审核素材",
             "CREATIVE_APPROVED": "AI 正在生成创建方案",
-            "WAITING_CREATE_APPROVAL": "AI 正在完成安全演练",
             "CREATING_PAUSED_OBJECTS": "AI 正在创建并回读暂停态广告",
         }.get(state, "AI 正在继续订单")
     elif state in completed_states:
@@ -6017,8 +6900,9 @@ def _ad_experiment_workflow(
             current_action = "确认创建暂停态广告"
     if incident_reconciled and state == "PAUSED":
         bucket, current_action = "action_required", "真实状态已核对为暂停，可重新开启广告"
-    required = ["D1", "D3", "D7"]
+    required = list(ACTIVE_CHECKPOINTS)
     completed = {str(item.get("checkpoint") or "") for item in evaluations}
+    completed.update(str(item["checkpoint"] or "") for item in group_rows)
     next_checkpoint = next((item for item in required if item not in completed), "")
     blockers = []
     passive_observation = dict(experiment.get("hypothesis_json") or {}).get("mode") == "passive_observation"
@@ -6038,19 +6922,27 @@ def _ad_experiment_workflow(
         )
         maturity_pct = round(mature_count * 100 / len(core_maturity)) if core_maturity else 0
         evidence_mature = bool(
-            latest.get("checkpoint") == "D7"
+            is_terminal_checkpoint(latest.get("checkpoint"))
             and core_maturity
             and mature_count == len(core_maturity)
             and quality_status == "PASS"
         )
-    if passive_observation and state == "MATURING" and latest.get("checkpoint") == "D7" and not evidence_mature:
+    if group_rows:
+        group_installs = float(current_group_metrics.get("installs") or 0)
+        group_joins = float(current_group_metrics.get("real_bind_count") or 0)
+        maturity_pct = min(100, round(min(group_installs, group_joins * 10)))
+        evidence_mature = str(maturity_evaluation.get("status") or "") == "READY"
+        quality_status = str(latest_group.get("data_quality_status") or "PENDING").upper()
+        sample_count = group_installs
+    if passive_observation and is_terminal_checkpoint(latest.get("checkpoint")) and not evidence_mature:
         maturity = core_maturity
         pending = [name for name, detail in maturity.items() if dict(detail or {}).get("state") not in {"strong", "high_confidence"}]
         labels = {
             "installs": "安装数", "cpi": "安装单价",
             "ctr": "CTR", "real_joins": "真实入会", "real_join_cpa": "入会单价",
         }
-        current_action = "继续积累未成熟维度" + (f"：{'、'.join(labels.get(name, name) for name in pending)}" if pending else "")
+        current_action = "D5 已收口：成熟证据不足，自动生成下一轮小预算实验" + (f"（未成熟：{'、'.join(labels.get(name, name) for name in pending)}）" if pending else "")
+        bucket = "action_required"
     if launch_archived:
         bucket, current_action = "completed", "查看已归档订单"
     if launch_purged:
@@ -6096,7 +6988,12 @@ def _ad_experiment_workflow(
         "execution_failed_step": "" if incident_reconciled else str(latest_task.get("current_step") or ""),
         "failure": {} if incident_reconciled else failure_guidance,
         "activation_readback_pending": False if incident_reconciled else activation_readback_pending,
+        "pause_readback_pending": False if incident_reconciled else pause_readback_pending,
+        "pause_result_unknown": False if incident_reconciled else pause_result_unknown,
+        "pause_completed": pause_completed,
+        "delivery_status": "PAUSED" if pause_completed or state == "PAUSED" else "",
         "meta_review": meta_review,
+        "creative_work": creative_work,
         "dry_run_verified": dry_run_verified,
         "dry_run_verified_at": str(dry_run_receipt.get("verified_at") or ""),
         "dry_run_receipt_count": len(list(dry_run_receipt.get("receipts") or [])),
@@ -6109,6 +7006,9 @@ def _ad_experiment_workflow(
         "sample_count": sample_count,
         "maturity_pct": maturity_pct,
         "evidence_mature": evidence_mature,
+        "operating_evaluation": operating_evaluation,
+        "maturity_evaluation": maturity_evaluation,
+        "group_cell_metrics": current_group_metrics,
         "data_quality_status": quality_status,
         "next_checkpoint": next_checkpoint,
         "completed_checkpoints": sorted(completed, key=lambda item: required.index(item) if item in required else 99),
@@ -6168,7 +7068,6 @@ def _get_experiment_detail(db: Any, experiment_id: str) -> Dict[str, Any]:
 def _get_gle_governance_status(
     db: Any, *, account_id: str = "", experiment_id: str = "",
 ) -> Dict[str, Any]:
-    """Resolve a local subject, then return the read-only projection."""
     normalized_account = str(account_id or "").strip().removeprefix("act_")
     normalized_experiment = str(experiment_id or "").strip()
     if normalized_experiment:

@@ -68,16 +68,19 @@ def test_exact_rebuild_source_is_get_only_and_freezes_hierarchy() -> None:
     assert session.posts == []
 
 
-def test_bulk_rebuild_ui_is_scoped_persistent_and_never_enables_delivery() -> None:
+def test_bulk_rebuild_ui_is_scoped_persistent_and_keeps_delivery_explicit() -> None:
     page = (ROOT / "app/main_pages.py").read_text()
     workspace = (ROOT / "app/static/ops/growth-workspace.js").read_text()
 
     assert "批量审批重建投放" in page
     assert "dailyRecoDisplayAction(work.recommendation)==='repair_delivery_config'" in page
-    assert "growth-bulk-rebuild-approval-v1" in workspace
+    assert "growth-bulk-rebuild-approval-v2" in workspace
+    assert "NEW_CREATIVE_SWAP_V2" in workspace
     assert "gle-bulk-rebuild:${batchId}:${recommendationId}:${phase}" in workspace
     assert "confirmation:'CREATE_PAUSED_OBJECTS'" in workspace
-    bulk_block = workspace[workspace.index("async function executeBulkRebuildItem"):workspace.index("async function runBulkRebuildBatch")]
+    assert "auto_rebuild_on_approval:true" in workspace
+    assert "rebuild_initial_status:initialStatus" in workspace
+    bulk_block = workspace[workspace.index("function bulkRebuildCreativePayload"):workspace.index("async function openBulkRebuildApproval")]
     assert "ENABLE_DELIVERY" not in bulk_block
     assert "MANUAL_REVIEW" in workspace
 
@@ -92,7 +95,8 @@ def test_bulk_rebuild_opens_a_top_level_modal_without_switching_tabs() -> None:
     assert "setGleWorkspaceView('tasks'" not in helper
     assert "window.GrowthWorkspace.openBulkRebuildApproval(prepared)" in helper
     assert "/gle-ad-coverage/rebuild-recommendations" in helper
-    assert "node.id='growthBulkRebuildModal'" in workspace
+    assert "document.getElementById('growthGlobalModal')" in workspace
+    assert "stableViewport:true,bulkModal:true" in workspace
     assert "document.body.appendChild(node)" in workspace
     assert ".growth-bulk-modal-layer" in workspace
     assert "position:fixed;z-index:1900" in workspace
@@ -106,8 +110,8 @@ def test_bulk_rebuild_storage_is_compact_and_fails_closed() -> None:
     assert "snapshot.objective={cpi_target:source.objective.cpi_target}" in workspace
     assert "window.sessionStorage.setItem(BULK_REBUILD_STORAGE_KEY,serialized)" in workspace
     assert "showBulkRebuildModal(batch,{allowPending:true,persisted})" in workspace
-    assert "persisted&&allowPending&&pending" in workspace
-    assert "本条尚未发起，批次已安全停止" in workspace
+    assert "persisted&&allowPending&&bulkRebuildHasActiveAuthorizedWork(batch)" in workspace
+    assert "浏览器无法保存批次进度，本次尚未执行任何广告操作" in workspace
 
 
 def test_bulk_rebuild_modal_separates_confirmation_from_progress() -> None:
@@ -115,22 +119,22 @@ def test_bulk_rebuild_modal_separates_confirmation_from_progress() -> None:
 
     assert "确认批量重建" in workspace
     assert "批量重建进度" in workspace
-    assert "确认后系统会做什么" in workspace
-    assert "开始重建 ${pending} 条广告" in workspace
-    assert "总体进度 ${progress}%" in workspace
+    assert "确认后执行的完整流程" in workspace
+    assert "确认并开始重建" in workspace
+    assert "闭环进度 ${progress}%" in workspace
     assert "优先处理" in workspace
-    assert "等待处理的广告" in workspace
+    assert "等待自动生成新素材" in workspace
     assert "role=\"progressbar\"" in workspace
     assert "role=\"status\" aria-live=\"polite\"" in workspace
 
 
-def test_bulk_rebuild_modal_humanizes_exceptions_and_keeps_raw_detail_collapsed() -> None:
+def test_bulk_rebuild_modal_humanizes_exceptions_without_raw_technical_dead_end() -> None:
     workspace = (ROOT / "app/static/ops/growth-workspace.js").read_text()
 
     assert "function bulkRebuildErrorGuidance" in workspace
     assert "语言定向需要核对" in workspace
     assert "系统已停止该条，不会自动重试" in workspace
-    assert "<summary>技术详情</summary>" in workspace
+    assert "<summary>技术详情</summary>" not in workspace
     assert "查看并处理" in workspace
     assert "查看重建结果" in workspace
     assert "growth-bulk-priority" in workspace
@@ -143,4 +147,4 @@ def test_bulk_rebuild_modal_is_bounded_and_keeps_actions_visible() -> None:
     assert ".growth-bulk-modal-layer .growth-modal-body{min-height:0;overflow:auto" in workspace
     assert ".growth-bulk-modal-layer .growth-modal-foot{flex:0 0 auto" in workspace
     assert "growth-bulk-group-list{max-height:250px;overflow:auto" in workspace
-    assert "requestAnimationFrame(()=>{const target=node.querySelector('#growthConfirmBulkRebuild:not([hidden])')" in workspace
+    assert "modal?.querySelector('[data-modal-close]')?.focus()" in workspace

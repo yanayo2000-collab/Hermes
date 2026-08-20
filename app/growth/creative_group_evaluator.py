@@ -5,14 +5,19 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from app.growth.ad_experiment_evaluator import AdExperimentEvaluator
+from app.growth.checkpoints import ACTIVE_CHECKPOINT_DAYS, FINAL_CHECKPOINT
 from app.growth.ad_experiment_service import AdExperimentService
 from app.growth.common import canonical_json, decode_json, new_id, payload_hash, utc_now
 from app.growth.creative_reference_service import resolve_creative_reference
+from app.growth.delivery_guardrails import (
+    effective_delivery_guardrails,
+    operating_assessment,
+)
 from app.growth.errors import GrowthStateConflict, GrowthValidationError
 from app.growth.schema import ensure_growth_schema
 
 
-CHECKPOINT_DAYS = {"D1": 1, "D3": 3, "D7": 7}
+CHECKPOINT_DAYS = ACTIVE_CHECKPOINT_DAYS
 
 
 class CreativeGroupEvaluator:
@@ -59,19 +64,21 @@ class CreativeGroupEvaluator:
         winner_id, decision_status, reason, ranking = self._decision(
             checkpoint, metrics, quality, actual_days=actual_days,
         )
-        if checkpoint == "D7" and decision_status == "DEFER":
-            raise GrowthValidationError("creative_group_d7_not_mature")
-
         evaluation_id = new_id("cregroup")
         now = utc_now()
         confidence_tier = self._confidence_tier(metrics) if winner_id else "NONE"
+        operating_evaluation, maturity_evaluation = self._evaluation_layers(
+            experiments, metrics, checkpoint, quality,
+        )
         evidence = {
             "single_variable": "creative_direction",
             "comparison_method": "same_launch_shared_post_window",
             "causal_claim": False,
             "reason": reason,
             "confidence_tier": confidence_tier,
-            "strong_action_sample_eligible": confidence_tier == "HIGH",
+            "strong_action_sample_eligible": maturity_evaluation["status"] == "READY",
+            "operating_evaluation": operating_evaluation,
+            "maturity_evaluation": maturity_evaluation,
             "requires_operator_approval": True,
             "meta_writes_performed": False,
             "actor": actor,
@@ -104,7 +111,7 @@ class CreativeGroupEvaluator:
                     decision_status, actual_days, quality, canonical_json(evidence), now,
                 ),
             )
-            if checkpoint == "D7" and decision_status == "WINNER":
+            if checkpoint == FINAL_CHECKPOINT and decision_status == "WINNER":
                 result["next_generation"] = self._propose_next_generation(
                     launch_id, evaluation_id, winner_id, experiments, metrics, evidence, now,
                 )
@@ -155,7 +162,11 @@ class CreativeGroupEvaluator:
             launch_id = str(launch_row["source_report_id"] or "")
             try:
                 experiments = self._group(launch_id)
-            except GrowthValidationError:
+            except GrowthValidationError as exc:
+                deferred.append({
+                    "launch_id": launch_id, "checkpoint": "GROUP",
+                    "reason": str(exc), "actual_days": 0,
+                })
                 continue
             boundary = self._first_complete_day(experiments)
             for checkpoint, required_days in CHECKPOINT_DAYS.items():
@@ -168,36 +179,32 @@ class CreativeGroupEvaluator:
                 if elapsed_days < required_days:
                     continue
                 actual_days = required_days
-                if checkpoint == "D7":
-                    actual_days = min(14, max(7, elapsed_days))
                 window_end = boundary + timedelta(days=actual_days - 1)
                 metrics: Dict[str, Dict[str, Any]] = {}
                 quality_pass = True
+                shared_window_incomplete = False
                 for experiment in experiments:
                     aggregate = metrics_reader._aggregate_daily(
                         str(experiment["source_ad_id"]), boundary, window_end,
                     )
                     if int(aggregate.get("day_count") or 0) < actual_days:
-                        metrics = {}
-                        break
+                        shared_window_incomplete = True
                     quality_pass = quality_pass and bool(aggregate.get("quality_pass"))
-                    metrics[str(experiment["experiment_id"])] = self._core_metrics(aggregate)
-                if len(metrics) != len(experiments):
+                    metrics[str(experiment["experiment_id"])] = (
+                        self._core_metrics(aggregate)
+                        if int(aggregate.get("day_count") or 0) > 0
+                        else self._unavailable_metrics()
+                    )
+                if shared_window_incomplete and not (checkpoint == FINAL_CHECKPOINT and elapsed_days >= 10):
                     deferred.append({
                         "launch_id": launch_id, "checkpoint": checkpoint,
                         "reason": "shared_window_incomplete", "actual_days": actual_days,
                     })
                     continue
-                quality = "PASS" if quality_pass else "DATA_INCOMPLETE"
+                quality = "PASS" if quality_pass and not shared_window_incomplete else "DATA_INCOMPLETE"
                 _, status, reason, _ = self._decision(
                     checkpoint, metrics, quality, actual_days=actual_days,
                 )
-                if checkpoint == "D7" and status == "DEFER":
-                    deferred.append({
-                        "launch_id": launch_id, "checkpoint": checkpoint,
-                        "reason": reason, "actual_days": actual_days,
-                    })
-                    continue
                 created.append(self.record_checkpoint(
                     launch_id,
                     {
@@ -222,6 +229,16 @@ class CreativeGroupEvaluator:
         ).fetchall()
         if not 2 <= len(rows) <= 4:
             raise GrowthValidationError("creative_experiment_group_must_have_2_to_4_cells")
+        not_ready = sorted({
+            str(row["state"] or "").upper()
+            for row in rows
+            if str(row["state"] or "").upper()
+            not in {"RUNNING", "MATURING", "EVALUATING_ADJUSTMENT"}
+        })
+        if not_ready:
+            raise GrowthValidationError(
+                f"creative_experiment_group_not_ready:{','.join(not_ready)}"
+            )
         result: List[Dict[str, Any]] = []
         roles: List[str] = []
         directions: set[str] = set()
@@ -330,14 +347,21 @@ class CreativeGroupEvaluator:
             "real_bind_cpa": aggregate.get("real_bind_cpa"),
         }
 
+    @staticmethod
+    def _unavailable_metrics() -> Dict[str, Any]:
+        return {
+            "spend": None, "impressions": None, "clicks": None,
+            "installs": None, "real_bind_count": None, "cpi": None,
+            "ctr": None, "real_bind_cpa": None,
+        }
+
     @classmethod
     def _decision(
         cls, checkpoint: str, metrics: Dict[str, Dict[str, Any]], quality: str, *, actual_days: int,
     ) -> tuple[str, str, str, List[Dict[str, Any]]]:
         ranking = cls._ranking(metrics)
         if quality != "PASS":
-            status = "DATA_INCOMPLETE" if checkpoint != "D7" or actual_days >= 14 else "DEFER"
-            return "", status, "data_quality_not_pass", ranking
+            return "", "DATA_INCOMPLETE", "data_quality_not_pass_terminal", ranking
         if checkpoint == "D1":
             return "", "OBSERVE", "d1_observation_only", ranking
         if checkpoint == "D3":
@@ -350,16 +374,15 @@ class CreativeGroupEvaluator:
                 return "", "TIE", "d3_difference_not_material", ranking
             return "", "INCONCLUSIVE", "d3_sample_not_mature", ranking
         mature = all(
-            int(item.get("installs") or 0) >= 50
-            and int(item.get("real_bind_count") or 0) >= 3
+            int(item.get("installs") or 0) >= 100
+            and int(item.get("real_bind_count") or 0) >= 10
             and item.get("cpi") not in (None, "")
             and item.get("ctr") not in (None, "")
             and item.get("real_bind_cpa") not in (None, "")
             for item in metrics.values()
         )
         if not mature:
-            status = "INCONCLUSIVE" if actual_days >= 14 else "DEFER"
-            return "", status, "group_sample_not_mature", ranking
+            return "", "INCONCLUSIVE", "group_sample_not_mature_d5_closed", ranking
         first, second = ranking[0], ranking[1]
         cpa_lead = (float(second["real_bind_cpa"]) - float(first["real_bind_cpa"])) / float(second["real_bind_cpa"])
         cpi_ok = float(first["cpi"]) <= float(second["cpi"]) * 1.2
@@ -390,6 +413,73 @@ class CreativeGroupEvaluator:
         if all(int(item.get("real_bind_count") or 0) >= 5 for item in metrics.values()):
             return "TRUSTED"
         return "DIRECTIONAL"
+
+    @staticmethod
+    def _evaluation_layers(
+        experiments: List[Dict[str, Any]], metrics: Dict[str, Dict[str, Any]], checkpoint: str,
+        quality: str,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        peer_cpis = [
+            float(item.get("cpi")) for item in metrics.values()
+            if item.get("cpi") not in (None, "") and int(item.get("installs") or 0) >= 2
+        ]
+        peer_best_cpi = min(peer_cpis) if peer_cpis else None
+        assessments: Dict[str, Dict[str, Any]] = {}
+        for experiment in experiments:
+            experiment_id = str(experiment["experiment_id"])
+            hypothesis = dict(experiment.get("hypothesis") or experiment.get("hypothesis_json") or {})
+            target = float(hypothesis.get("cpi_target") or 0)
+            persisted = dict(dict(experiment.get("stop_rule_json") or {}).get("delivery_guardrails") or {})
+            rules = effective_delivery_guardrails(persisted, cpi_target_usd=target)
+            assessments[experiment_id] = operating_assessment(
+                dict(metrics.get(experiment_id) or {}), rules,
+                checkpoint=checkpoint, peer_best_cpi=peer_best_cpi,
+            )
+        pause_ids = [
+            experiment_id for experiment_id, assessment in assessments.items()
+            if assessment["status"] == "ACTION_REQUIRED"
+        ]
+        positive_join_ids = [
+            experiment_id for experiment_id, item in metrics.items()
+            if float(dict(item or {}).get("real_bind_count") or 0) > 0
+        ]
+        protected_ids = set(positive_join_ids if len(positive_join_ids) == 1 else [])
+        pause_ids = [item for item in pause_ids if item not in protected_ids]
+        if len(pause_ids) == len(experiments) and pause_ids:
+            keep_id = min(
+                pause_ids,
+                key=lambda item: (
+                    dict(metrics.get(item) or {}).get("cpi") is None,
+                    float(dict(metrics.get(item) or {}).get("cpi") or float("inf")),
+                ),
+            )
+            pause_ids.remove(keep_id)
+            protected_ids.add(keep_id)
+        keep_ids = [str(item["experiment_id"]) for item in experiments if str(item["experiment_id"]) not in pause_ids]
+        maturity_ready = quality == "PASS" and all(
+            int(dict(metrics.get(str(item["experiment_id"])) or {}).get("installs") or 0) >= 100
+            and int(dict(metrics.get(str(item["experiment_id"])) or {}).get("real_bind_count") or 0) >= 10
+            for item in experiments
+        )
+        return ({
+            "status": "ACTION_REQUIRED" if pause_ids else ("FORCED_CLOSED" if checkpoint == FINAL_CHECKPOINT else "COLLECTING"),
+            "checkpoint": checkpoint,
+            "pause_experiment_ids": sorted(pause_ids),
+            "keep_experiment_ids": sorted(keep_ids),
+            "protected_experiment_ids": sorted(protected_ids),
+            "assessments": assessments,
+            "deadline": checkpoint,
+            "requires_operator_approval": bool(pause_ids),
+            "causal_claim": False,
+            "meta_writes_performed": False,
+        }, {
+            "status": "READY" if maturity_ready else "NOT_READY",
+            "minimum_installs_per_cell": 100,
+            "minimum_real_joins_per_cell": 10,
+            "data_quality_status": quality,
+            "strong_action_sample_eligible": maturity_ready,
+            "causal_claim": False,
+        })
 
     @staticmethod
     def _ranking(metrics: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 import time
@@ -258,7 +259,7 @@ CREATE TABLE IF NOT EXISTS ad_experiment_evaluation (
     evaluation_id TEXT PRIMARY KEY,
     experiment_id TEXT NOT NULL,
     episode_id TEXT NOT NULL DEFAULT '',
-    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D7')),
+    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D5','D7')),
     baseline_window_json TEXT NOT NULL DEFAULT '{}',
     post_window_json TEXT NOT NULL DEFAULT '{}',
     baseline_metrics_json TEXT NOT NULL DEFAULT '{}',
@@ -297,7 +298,7 @@ CREATE TABLE IF NOT EXISTS ad_experiment_cycle (
         'WAITING_EVIDENCE','EVALUATING','EVALUATED','NEXT_PLAN_READY','BLOCKED'
     )),
     latest_checkpoint TEXT NOT NULL DEFAULT '' CHECK (
-        latest_checkpoint IN ('','D1','D3','D7')
+        latest_checkpoint IN ('','D1','D3','D5','D7')
     ),
     latest_evaluation_status TEXT NOT NULL DEFAULT '',
     causal_claim INTEGER NOT NULL DEFAULT 0 CHECK (causal_claim = 0),
@@ -312,7 +313,7 @@ CREATE TABLE IF NOT EXISTS ad_experiment_cycle (
 CREATE TABLE IF NOT EXISTS ad_experiment_cycle_evaluation (
     cycle_evaluation_id TEXT PRIMARY KEY,
     cycle_id TEXT NOT NULL,
-    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D7')),
+    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D5','D7')),
     window_json TEXT NOT NULL,
     metrics_by_experiment_json TEXT NOT NULL,
     action_candidates_json TEXT NOT NULL DEFAULT '[]',
@@ -333,7 +334,7 @@ CREATE TABLE IF NOT EXISTS ad_experiment_cycle_next_plan (
     cycle_plan_id TEXT PRIMARY KEY,
     cycle_id TEXT NOT NULL,
     cycle_evaluation_id TEXT NOT NULL UNIQUE,
-    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D7')),
+    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D5','D7')),
     action_type TEXT NOT NULL CHECK (action_type IN ('OBSERVE','PAUSE_AD')),
     target_experiment_id TEXT NOT NULL DEFAULT '',
     target_id TEXT NOT NULL DEFAULT '',
@@ -412,7 +413,7 @@ CREATE TABLE IF NOT EXISTS growth_next_action (
     account_id TEXT NOT NULL,
     launch_id TEXT NOT NULL DEFAULT '',
     experiment_id TEXT NOT NULL DEFAULT '',
-    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D7')),
+    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D5','D7')),
     action_type TEXT NOT NULL,
     summary TEXT NOT NULL,
     evidence_json TEXT NOT NULL DEFAULT '{}',
@@ -430,7 +431,7 @@ CREATE TABLE IF NOT EXISTS growth_next_action (
 CREATE TABLE IF NOT EXISTS ad_audience_pair_evaluation (
     pair_evaluation_id TEXT PRIMARY KEY,
     launch_id TEXT NOT NULL,
-    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D7')),
+    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D5','D7')),
     baseline_experiment_id TEXT NOT NULL,
     challenger_experiment_id TEXT NOT NULL,
     metrics_json TEXT NOT NULL DEFAULT '{}',
@@ -476,7 +477,7 @@ CREATE TABLE IF NOT EXISTS ad_audience_generation (
 CREATE TABLE IF NOT EXISTS ad_creative_group_evaluation (
     group_evaluation_id TEXT PRIMARY KEY,
     launch_id TEXT NOT NULL,
-    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D7')),
+    checkpoint TEXT NOT NULL CHECK (checkpoint IN ('D1','D3','D5','D7')),
     window_json TEXT NOT NULL DEFAULT '{}',
     metrics_by_experiment_json TEXT NOT NULL DEFAULT '{}',
     ranking_json TEXT NOT NULL DEFAULT '[]',
@@ -777,15 +778,96 @@ def _growth_schema_is_current(conn: sqlite3.Connection) -> bool:
     return bool(row and str(row[0]) == GROWTH_SCHEMA_VERSION)
 
 
+_CHECKPOINT_CONTRACT_TABLES = (
+    "ad_experiment_evaluation",
+    "ad_experiment_cycle",
+    "ad_experiment_cycle_evaluation",
+    "ad_experiment_cycle_next_plan",
+    "growth_next_action",
+    "ad_audience_pair_evaluation",
+    "ad_creative_group_evaluation",
+)
+
+
+def _migrate_checkpoint_contract(conn: sqlite3.Connection) -> None:
+    """Expand checkpoint storage to D5 while retaining historical D7 rows."""
+    for table in _CHECKPOINT_CONTRACT_TABLES:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        original_sql = str(row[0] or "") if row else ""
+        if not original_sql or "'D5'" in original_sql:
+            continue
+        temp_table = f"{table}__checkpoint_v2"
+        create_sql = re.sub(
+            rf"^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?{re.escape(table)}",
+            f"CREATE TABLE {temp_table}",
+            original_sql,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        create_sql = re.sub(
+            r"CHECK\s*\(\s*checkpoint\s+IN\s*\(\s*'D1'\s*,\s*'D3'\s*,\s*'D7'\s*\)\s*\)",
+            "CHECK (checkpoint IN ('D1','D3','D5','D7'))",
+            create_sql,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        create_sql = re.sub(
+            r"CHECK\s*\(\s*latest_checkpoint\s+IN\s*\(\s*''\s*,\s*'D1'\s*,\s*'D3'\s*,\s*'D7'\s*\)\s*\)",
+            "CHECK (latest_checkpoint IN ('','D1','D3','D5','D7'))",
+            create_sql,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if temp_table not in create_sql or "'D5'" not in create_sql:
+            raise RuntimeError(f"growth_checkpoint_contract_migration_unsupported:{table}")
+        columns = [str(item[1]) for item in conn.execute(f'PRAGMA table_info("{table}")')]
+        quoted_columns = ",".join(f'"{column}"' for column in columns)
+        before_count = int(conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
+        savepoint = f"migrate_{table}_checkpoint_v2"
+        conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            conn.execute(f'DROP TABLE IF EXISTS "{temp_table}"')
+            conn.execute(create_sql)
+            conn.execute(
+                f'INSERT INTO "{temp_table}" ({quoted_columns}) '
+                f'SELECT {quoted_columns} FROM "{table}"'
+            )
+            after_count = int(conn.execute(f'SELECT COUNT(*) FROM "{temp_table}"').fetchone()[0])
+            if after_count != before_count:
+                raise RuntimeError(f"growth_checkpoint_contract_count_mismatch:{table}")
+            conn.execute(f'DROP TABLE "{table}"')
+            conn.execute(f'ALTER TABLE "{temp_table}" RENAME TO "{table}"')
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+
+
+def _checkpoint_contract_is_current(conn: sqlite3.Connection) -> bool:
+    for table in _CHECKPOINT_CONTRACT_TABLES:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if row and "'D5'" not in str(row[0] or ""):
+            return False
+    return True
+
+
 def ensure_growth_schema(conn: sqlite3.Connection) -> None:
     # Request-time Growth readers share the same SQLite database.  Once startup
     # has applied this exact schema version they must not execute DDL again: a
     # concurrent DROP/CREATE trigger invalidates other readers with
     # ``database schema has changed``.
-    if _growth_schema_is_current(conn):
+    if _growth_schema_is_current(conn) and _checkpoint_contract_is_current(conn):
         return
     with _GROWTH_SCHEMA_LOCK:
         if _growth_schema_is_current(conn):
+            _migrate_checkpoint_contract(conn)
             return
         _apply_growth_schema(conn)
 
@@ -803,6 +885,7 @@ def _apply_growth_schema(conn: sqlite3.Connection) -> None:
                 raise
             conn.rollback()
             time.sleep(0.05 * (attempt + 1))
+    _migrate_checkpoint_contract(conn)
     approval_columns = {
         str(row[1]) for row in conn.execute("PRAGMA table_info(growth_operation_approval)").fetchall()
     }

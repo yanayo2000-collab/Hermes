@@ -43,6 +43,49 @@ def _cost_cap_bid_amount(value: Any) -> int:
         raise GrowthValidationError("cpi_cost_cap_required")
     return amount
 
+
+def resolve_rebuild_source_budget(
+    adset: Dict[str, Any], campaign: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Resolve the authoritative daily-budget owner for a rebuild source."""
+
+    def minor_units(value: Any) -> int:
+        if value in (None, ""):
+            return 0
+        try:
+            amount = int(str(value))
+        except (TypeError, ValueError) as exc:
+            raise GrowthValidationError("rebuild_source_budget_invalid") from exc
+        if amount < 0:
+            raise GrowthValidationError("rebuild_source_budget_invalid")
+        return amount
+
+    adset_daily = minor_units(adset.get("daily_budget"))
+    campaign_daily = minor_units(campaign.get("daily_budget"))
+    adset_lifetime = minor_units(adset.get("lifetime_budget"))
+    campaign_lifetime = minor_units(campaign.get("lifetime_budget"))
+    if adset_daily and campaign_daily:
+        raise GrowthValidationError("rebuild_source_budget_owner_ambiguous")
+    if adset_daily:
+        budget_mode = "ABO"
+        daily_budget_minor = adset_daily
+    elif campaign_daily:
+        budget_mode = "CBO"
+        daily_budget_minor = campaign_daily
+    elif adset_lifetime or campaign_lifetime:
+        raise GrowthValidationError("rebuild_source_lifetime_budget_not_supported")
+    else:
+        raise GrowthValidationError("rebuild_source_daily_budget_missing")
+    daily_budget_usd = daily_budget_minor / 100.0
+    if not 5 <= daily_budget_usd <= 100:
+        raise GrowthValidationError("rebuild_source_daily_budget_out_of_range")
+    return {
+        "budget_mode": budget_mode,
+        "daily_budget_usd": daily_budget_usd,
+        "adset_daily_budget": adset_daily or None,
+        "campaign_daily_budget": campaign_daily or None,
+    }
+
 EXPERIMENT_TRANSITIONS = {
     "DRAFT": {"CREATIVE_GENERATING", "CREATIVE_REVIEW", "WAITING_CREATE_APPROVAL", "ARCHIVED"},
     "CREATIVE_GENERATING": {"CREATIVE_REVIEW", "DATA_INCOMPLETE"},
@@ -507,7 +550,7 @@ class AdExperimentService:
             canonical_json(dict(dict(item.get("stop_rule_json") or {}).get("delivery_guardrails") or {}))
             for item in experiments
         }
-        expected_guardrails = new_account_delivery_guardrails()
+        expected_guardrails = new_account_delivery_guardrails(cost_cap_usd)
         if guardrails != {canonical_json(expected_guardrails)}:
             raise GrowthValidationError("launch_delivery_guardrails_required")
         application_id = str(os.getenv("GROWTH_META_TUGAO_APPLICATION_ID") or "1684703062404662").strip()
@@ -736,7 +779,8 @@ class AdExperimentService:
                 "blocked_reason": audience_blocked_reason,
                 "required_readback": ["study_id", "cell_ids", "adset_ids", "ads", "strict_targeting"],
             },
-            "evaluation_window": dict(request.get("evaluation_window") or {"checkpoints": ["D1", "D3", "D7"]}),
+            "evaluation_window": dict(request.get("evaluation_window") or {"checkpoints": ["D1", "D3", "D5"]}),
+            "market_profile": ({"country": "CO", "creative_currency": "COP", "reporting_timezone": "America/Bogota", "target_app": "Tugao", "creation_status": "PAUSED"} if country == "CO" else {}),
             "expires_at": expires_at,
         }
         if recovery_evidence:
@@ -837,17 +881,11 @@ class AdExperimentService:
         steps = dict(resolved.get("steps") or {})
         image_step = dict(steps.get("IMAGE_UPLOAD") or {})
         verified_reuse_hash = str(image_step.get("reuse_image_hash") or "").strip()
-        verified_source = (
-            str(dict(resolved.get("preflight_snapshot_json") or {}).get("source") or "")
-            == "meta_graph_read_only"
-        )
+        verified_source = str(dict(resolved.get("preflight_snapshot_json") or {}).get("source") or "") == "meta_graph_read_only"
         image_id = str(image_step.get("image_id") or "").strip()
         current_creative = self.latest_approved_creative(str(experiment["experiment_id"]))
         if verified_reuse_hash and verified_source:
-            image_step = {
-                "reuse_image_hash": verified_reuse_hash,
-                "source": "verified_meta_source_creative",
-            }
+            image_step = {"reuse_image_hash": verified_reuse_hash, "source": "verified_meta_source_creative"}
             resolved["asset_sha256"] = ""
         elif self._creative_linkage_tables_available():
             if not current_creative:
@@ -883,6 +921,10 @@ class AdExperimentService:
         adset = dict(after.get("adset") or {})
         ad = dict(after.get("ad") or {})
         creative = dict(after.get("creative") or {})
+        reuse_campaign_id = str(after.get("reuse_campaign_id") or "").strip()
+        initial_status = str(after.get("initial_status") or after.get("status") or "PAUSED").upper()
+        if initial_status not in {"PAUSED", "ACTIVE"}:
+            raise GrowthValidationError("invalid_create_initial_status")
         if image_id:
             creative["image_id"] = image_id
         if verified_reuse_hash:
@@ -899,11 +941,7 @@ class AdExperimentService:
         bid_amount = _cost_cap_bid_amount(cost_cap_usd)
         audience = dict(hypothesis.get("audience") or {})
         country = str(experiment.get("country") or audience.get("country") or "").upper()
-        targeting = (
-            dict(adset.get("targeting") or {})
-            if verified_reuse_hash and verified_source
-            else strict_meta_targeting(country, "BROAD")
-        )
+        targeting = dict(adset.get("targeting") or {}) if verified_reuse_hash and verified_source else strict_meta_targeting(country, "BROAD")
         assert_strict_targeting(targeting, country)
 
         application_id = str(os.getenv("GROWTH_META_TUGAO_APPLICATION_ID") or "1684703062404662").strip()
@@ -914,20 +952,32 @@ class AdExperimentService:
         page_id = str(creative.get("page_id") or hypothesis.get("page_id") or "").strip()
         if not page_id:
             raise GrowthValidationError("meta_page_id_required")
-        daily_budget_usd = float(adset.get("daily_budget_usd") or adset.get("daily_budget") or 0)
-        if daily_budget_usd < 5 or daily_budget_usd > 100:
-            raise GrowthValidationError("adset_daily_budget_out_of_range")
+        budget_mode = str(after.get("budget_mode") or "ABO").strip().upper()
+        if budget_mode not in {"ABO", "CBO"}:
+            raise GrowthValidationError("rebuild_budget_mode_invalid")
+        if budget_mode == "CBO":
+            if not reuse_campaign_id:
+                raise GrowthValidationError("cbo_rebuild_requires_reused_campaign")
+            daily_budget_usd = float(campaign.get("daily_budget_usd") or 0)
+            if daily_budget_usd < 5 or daily_budget_usd > 100:
+                raise GrowthValidationError("campaign_daily_budget_out_of_range")
+        else:
+            daily_budget_usd = float(adset.get("daily_budget_usd") or adset.get("daily_budget") or 0)
+            if daily_budget_usd < 5 or daily_budget_usd > 100:
+                raise GrowthValidationError("adset_daily_budget_out_of_range")
 
-        steps["CAMPAIGN_CREATE"] = {
-            "name": str(campaign.get("name") or "").strip(),
-            "objective": "OUTCOME_APP_PROMOTION",
-            "buying_type": "AUCTION",
-            "special_ad_categories": [],
-            "status": "PAUSED",
-        }
+        if reuse_campaign_id:
+            steps.pop("CAMPAIGN_CREATE", None)
+        else:
+            steps["CAMPAIGN_CREATE"] = {
+                "name": str(campaign.get("name") or "").strip(),
+                "objective": "OUTCOME_APP_PROMOTION",
+                "buying_type": "AUCTION",
+                "special_ad_categories": [],
+                "status": "PAUSED",
+            }
         steps["ADSET_CREATE"] = {
             "name": str(adset.get("name") or "").strip(),
-            "daily_budget": int(round(daily_budget_usd * 100)),
             "optimization_goal": "APP_INSTALLS",
             "billing_event": "IMPRESSIONS",
             "bid_strategy": "COST_CAP",
@@ -942,8 +992,13 @@ class AdExperimentService:
                 {"event_type": "VIEW_THROUGH", "window_days": 1},
                 {"event_type": "ENGAGED_VIDEO_VIEW", "window_days": 1},
             ],
-            "status": "PAUSED",
+            "status": initial_status,
         }
+        if budget_mode == "ABO":
+            steps["ADSET_CREATE"]["daily_budget"] = int(round(daily_budget_usd * 100))
+        regional_identities = dict(adset.get("regional_regulation_identities") or {})
+        if regional_identities:
+            steps["ADSET_CREATE"]["regional_regulation_identities"] = regional_identities
         link_data = {
             "link": store_url,
             "message": str(ad.get("primary_text") or "").strip(),
@@ -960,14 +1015,13 @@ class AdExperimentService:
         }
         if image_id:
             steps["CREATIVE_CREATE"]["image_id"] = image_id
-        steps["AD_CREATE"] = {"name": str(ad.get("name") or "").strip(), "status": "PAUSED"}
-        if any(not str(dict(steps.get(name) or {}).get("name") or "").strip() for name in ("CAMPAIGN_CREATE", "ADSET_CREATE", "CREATIVE_CREATE", "AD_CREATE")):
+        steps["AD_CREATE"] = {"name": str(ad.get("name") or "").strip(), "status": initial_status}
+        named_steps = ("ADSET_CREATE", "CREATIVE_CREATE", "AD_CREATE") if reuse_campaign_id else ("CAMPAIGN_CREATE", "ADSET_CREATE", "CREATIVE_CREATE", "AD_CREATE")
+        if any(not str(dict(steps.get(name) or {}).get("name") or "").strip() for name in named_steps):
             raise GrowthValidationError("meta_object_names_required")
         resolved["steps"] = steps
-        resolved["asset_sha256"] = (
-            "" if verified_reuse_hash else hashlib.sha256(image_path.read_bytes()).hexdigest()
-        )
-        resolved["max_write_requests"] = 5
+        resolved["asset_sha256"] = "" if verified_reuse_hash else hashlib.sha256(image_path.read_bytes()).hexdigest()
+        resolved["max_write_requests"] = 4 if reuse_campaign_id else 5
         return resolved
 
     def _creative_linkage_tables_available(self) -> bool:
@@ -1112,7 +1166,9 @@ class AdExperimentService:
                         "before_status": "PAUSED", "status": "ACTIVE",
                     },
                 }
-        required_create = {"CAMPAIGN_CREATE", "ADSET_CREATE", "IMAGE_UPLOAD", "CREATIVE_CREATE", "AD_CREATE"}
+        required_create = {"ADSET_CREATE", "IMAGE_UPLOAD", "CREATIVE_CREATE", "AD_CREATE"}
+        if not str(after.get("reuse_campaign_id") or "").strip():
+            required_create.add("CAMPAIGN_CREATE")
         if action_type == "CREATE_PAUSED_AD" and not required_create.issubset(steps):
             raise GrowthValidationError("create_paused_ad_steps_required")
         if action_type == "REPLACE_CREATIVE" and not dict(after.get("creative") or request.get("creative") or {}):
@@ -1139,9 +1195,17 @@ class AdExperimentService:
             "reason": str(request.get("reason") or ""),
             "evidence_window": dict(request.get("evidence_window") or {}),
             "expected_effect": dict(request.get("expected_effect") or {}),
-            "evaluation_window": dict(request.get("evaluation_window") or {"checkpoints": ["D1", "D3", "D7"]}),
+            "evaluation_window": dict(request.get("evaluation_window") or {"checkpoints": ["D1", "D3", "D5"]}),
             "expires_at": expires_at,
         }
+        if action_type == "CREATE_PAUSED_AD":
+            reuse_campaign_id = str(after.get("reuse_campaign_id") or "").strip()
+            initial_status = str(after.get("initial_status") or after.get("status") or "PAUSED").upper()
+            if initial_status not in {"PAUSED", "ACTIVE"}:
+                raise GrowthValidationError("invalid_create_initial_status")
+            if reuse_campaign_id:
+                plan["reuse_campaign_id"] = reuse_campaign_id
+            plan["initial_status"] = initial_status
         if compiled_delivery_cells:
             plan.update({
                 "plan_version": "NEW_ACCOUNT_DELIVERY_BATCH_V1",

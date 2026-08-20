@@ -79,11 +79,15 @@ def configured_regional_regulation_identities(
     if "BR" not in countries:
         return {}
     normalized_account = str(account_id or "").strip().removeprefix("act_")
-    configured_account = str(configured_account_id or "").strip().removeprefix("act_")
+    configured_accounts = {
+        item.strip().removeprefix("act_")
+        for item in str(configured_account_id or "").split(",")
+        if item.strip()
+    }
     beneficiary = str(beneficiary_id or "").strip()
     payer = str(payer_id or "").strip()
     if (
-        normalized_account != configured_account
+        normalized_account not in configured_accounts
         or not beneficiary.isdigit()
         or not payer.isdigit()
     ):
@@ -149,9 +153,14 @@ class MetaGraphExecutionAdapter:
                 dict(item) for item in list(plan.get("cells") or [])
                 if str(dict(item).get("cell_key") or "").strip().upper() == cell_key
             ), {})
-            result = self._upload_image(
-                account_id, step_payload,
-                expected_sha256=str(plan_cell.get("asset_sha256") or "").strip().lower(),
+            reuse_image_hash = str(step_payload.get("reuse_image_hash") or "").strip()
+            result = (
+                self._read_existing_image_hash(account_id, reuse_image_hash)
+                if reuse_image_hash
+                else self._upload_image(
+                    account_id, step_payload,
+                    expected_sha256=str(plan_cell.get("asset_sha256") or "").strip().lower(),
+                )
             )
             return {"status": "SUCCESS", "meta_object_ids": {f"{prefix}image_hash": result["image_hash"]}}
         if base_step == "CAMPAIGN_CREATE":
@@ -182,7 +191,8 @@ class MetaGraphExecutionAdapter:
                 if identities:
                     step_payload["regional_regulation_identities"] = identities
             step_payload["campaign_id"] = self._required_object_id(object_ids, "campaign_id")
-            result = self._post_object(account_id, "adsets", step_payload, force_paused=True)
+            initial_status = str(plan.get("initial_status") or "PAUSED").upper()
+            result = self._post_object(account_id, "adsets", step_payload, force_paused=initial_status != "ACTIVE")
             return {"status": "SUCCESS", "meta_object_ids": {f"{prefix}adset_id": result["id"]}}
         if base_step == "AD_CREATE":
             step_payload["adset_id"] = self._required_object_id(object_ids, f"{prefix}adset_id")
@@ -191,7 +201,8 @@ class MetaGraphExecutionAdapter:
                 else prefix
             )
             step_payload["creative"] = {"creative_id": self._required_object_id(object_ids, f"{creative_prefix}creative_id")}
-            result = self._post_object(account_id, "ads", step_payload, force_paused=True)
+            initial_status = str(plan.get("initial_status") or "PAUSED").upper()
+            result = self._post_object(account_id, "ads", step_payload, force_paused=initial_status != "ACTIVE")
             return {"status": "SUCCESS", "meta_object_ids": {f"{prefix}ad_id": result["id"]}}
         if normalized_step == "STUDY_CREATE":
             study = dict(plan.get("study") or {})
@@ -385,6 +396,7 @@ class MetaGraphExecutionAdapter:
             result = self._verify_created_objects(
                 object_ids, cells=list(plan.get("cells") or []), strict_country=strict_country,
                 require_study=str(plan.get("test_variable") or "").lower() in {"audience_strategy", "copy_variant"},
+                plan=plan,
             )
             if result.get("status") != "SUCCESS":
                 return result
@@ -409,12 +421,15 @@ class MetaGraphExecutionAdapter:
         }.get(base_step if normalized_step != "VERIFY" else normalized_step, ())
         if normalized_step == "VERIFY" and str(payload.get("action_type") or "").upper() in {"CREATE_EXPERIMENT", "CREATE_PAUSED_AD"}:
             strict_country = str(dict(plan.get("invariants") or {}).get("base_conditions", {}).get("country") or "")
-            return self._verify_created_objects(object_ids, strict_country=strict_country)
+            return self._verify_created_objects(object_ids, strict_country=strict_country, plan=plan)
         object_key = next((key for key in keys if str(object_ids.get(key) or "").strip()), "")
         if not object_key:
             return {"status": "UNKNOWN", "error": "meta_object_id_missing"}
         if object_key.endswith("image_hash"):
-            return {"status": "SUCCESS", "meta_object_ids": {object_key: object_ids[object_key]}}
+            image_hash = str(object_ids[object_key] or "").strip()
+            if str(step_payload.get("reuse_image_hash") or "").strip():
+                self._read_existing_image_hash(self._validate_approved_payload(payload), image_hash)
+            return {"status": "SUCCESS", "meta_object_ids": {object_key: image_hash}}
         object_id = str(object_ids[object_key]).strip()
         fields = {
             "CAMPAIGN_CREATE": "id,status,effective_status",
@@ -453,9 +468,10 @@ class MetaGraphExecutionAdapter:
                 }
         if base_step in {"CAMPAIGN_CREATE", "ADSET_CREATE", "AD_CREATE"}:
             status = str(body.get("status") or body.get("effective_status") or "").upper()
-            if status != "PAUSED":
+            expected_status = str(plan.get("initial_status") or "PAUSED").upper() if base_step != "CAMPAIGN_CREATE" else "PAUSED"
+            if status != expected_status:
                 return {
-                    "status": "UNKNOWN", "error": "meta_object_not_paused",
+                    "status": "UNKNOWN", "error": "meta_object_status_mismatch",
                     "object_type": object_key, "actual": status,
                 }
         after = dict(plan.get("after_json") or {})
@@ -639,6 +655,23 @@ class MetaGraphExecutionAdapter:
             raise GrowthValidationError("meta_image_hash_missing")
         return {"image_hash": image_hash}
 
+    def _read_existing_image_hash(self, account_id: str, image_hash: str) -> Dict[str, Any]:
+        normalized = str(image_hash or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", normalized):
+            raise GrowthValidationError("meta_reused_image_hash_invalid")
+        response = self.session.get(
+            self._url(f"act_{account_id}/adimages"),
+            params={
+                "access_token": self.access_token, "fields": "hash",
+                "hashes": json.dumps([normalized], separators=(",", ":")),
+            },
+            timeout=self.timeout_seconds,
+        )
+        body = self._response_json(response)
+        if not any(str(item.get("hash") or "") == normalized for item in list(body.get("data") or [])):
+            raise GrowthValidationError("meta_reused_image_hash_not_found")
+        return {"image_hash": normalized, "reused": True, "meta_object_writes": 0}
+
     def _post_object(
         self, account_id: str, edge: str, step_payload: Dict[str, Any], *, force_paused: bool,
     ) -> Dict[str, Any]:
@@ -699,8 +732,11 @@ class MetaGraphExecutionAdapter:
 
     def _verify_created_objects(
         self, object_ids: Dict[str, Any], *, cells: list[Dict[str, Any]] | None = None,
-        strict_country: str = "", require_study: bool = False,
+        strict_country: str = "", require_study: bool = False, plan: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
+        plan = dict(plan or {})
+        initial_status = str(plan.get("initial_status") or "PAUSED").upper()
+        reused_campaign_id = str(plan.get("reuse_campaign_id") or "").strip()
         required = ["campaign_id"]
         if cells:
             for index, cell in enumerate(cells, start=1):
@@ -739,9 +775,10 @@ class MetaGraphExecutionAdapter:
             if not key.endswith("creative_id"):
                 status = str(body.get("status") or body.get("effective_status") or "").upper()
                 statuses[key] = status
-                if status != "PAUSED":
+                expected_status = "" if key == "campaign_id" and reused_campaign_id else initial_status
+                if expected_status and status != expected_status:
                     return {
-                        "status": "UNKNOWN", "error": "meta_object_not_paused",
+                        "status": "UNKNOWN", "error": "meta_object_status_mismatch",
                         "object_type": key, "actual": status,
                     }
             if key.endswith("adset_id") and strict_country:

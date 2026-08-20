@@ -167,6 +167,7 @@ def plan() -> dict:
             "required_readback": ["study_id", "cell_ids", "adset_ids", "ads", "strict_targeting"],
         },
         "evaluation_window": {"checkpoints": ["D1", "D3", "D7"]},
+        "market_profile": {},
         "expires_at": "2099-01-01T00:00:00+00:00",
     }
 
@@ -206,6 +207,7 @@ def test_receipt_is_stable_across_object_key_order() -> None:
         (lambda value: value.update(expires_at=""), "APPROVAL_TTL_REQUIRED"),
         (lambda value: (value["study"].update(start_time="not-a-time"), value["audience_preflight"].update(start_time="not-a-time")), "STUDY_TIME_INVALID"),
         (lambda value: value["audience_preflight"].update(delivery_estimates="bad"), "AUDIENCE_PREFLIGHT_SCHEMA_INVALID"),
+        (lambda value: value.update(market_profile={"country": "CO"}), "MARKET_PROFILE_SCHEMA_INVALID"),
         (lambda value: value.update(extra_field=True), "UNKNOWN_OR_MISSING_PLAN_FIELD"),
         (lambda value: value["cells"][0].update(extra_field=True), "UNKNOWN_OR_MISSING_CELL_FIELD"),
     ],
