@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sqlite3
 
@@ -210,8 +211,10 @@ def test_load_event_reads_failure_evidence_and_watermark_time_without_writing(tm
     })
     marker = tmp_path / 'started'
     marker.write_text('', encoding='utf-8')
+    marker_ns = marker.stat().st_mtime_ns
     status_path = tmp_path / 'status.json'
     status_path.write_text(json.dumps(_status()), encoding='utf-8')
+    os.utime(status_path, ns=(marker_ns + 1_000_000, marker_ns + 1_000_000))
 
     event = notifier.load_event(status_path, db_path, marker)
     assert event['dayStatus'] == 'PARTIAL'
