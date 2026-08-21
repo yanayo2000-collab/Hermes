@@ -30,6 +30,16 @@ The global `checksum` is SHA-256 of UTF-8 canonical JSON for the final `scopes` 
 - Day aggregates, reconciliation and dependent projections are published only after all expected scopes are complete.
 - A later complete scope revises only that scope, then upgrades the day from `PARTIAL` to `COMPLETE` and rebuilds dependent projections.
 
+The pull API keeps snake_case. `scope_manifests` exposes
+`guild_id`, `guild_name`, `guild_storage_name`, `country`, `country_code`,
+`stat_date_bj`, `data_status`, `quality_status`, `publication_ready`,
+`consumable`, `row_count`, `total_income`, `checksum`, `revision_version`,
+`last_success_sync_id`, `source_snapshot_at`, `last_success_time`,
+`observation_count`, `stability_age_seconds`, `integrity_errors`, and
+`failure_reason`. A failed scope has null `row_count`, `total_income`,
+`checksum`, `revision_version`, `last_success_sync_id`, `source_snapshot_at`,
+and `last_success_time`.
+
 ## Recovery
 
 The regular revision run publishes partial scope state. Source-readiness failures keep a persistent retry waterline. The incremental retry worker writes an atomic status artifact, and its systemd post-step invokes the same notifier after natural recovery. No manual event send or downstream recomputation is part of the contract.
