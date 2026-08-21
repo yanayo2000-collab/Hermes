@@ -18,6 +18,7 @@ os.environ.setdefault('MCN_PROCESS_ROLE', 'timo-incremental-retry')
 os.environ.setdefault('MCN_DISABLE_GLOBAL_APP_BOOTSTRAP', '1')
 
 from app.batch_runtime import assert_managed_batch_runtime  # noqa: E402
+from app.batch_terminal import source_quality_collection_exit_code  # noqa: E402
 from app.main import Database, Service  # noqa: E402
 from app.sqlite_job_lock import (  # noqa: E402
     JobLockBusy,
@@ -29,6 +30,10 @@ from app.sqlite_job_lock import (  # noqa: E402
 def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Run due Timo incremental sync retries.')
     parser.add_argument('--db-path', default=str(ROOT_DIR / 'data' / 'automation.db'))
+    parser.add_argument(
+        '--status-path',
+        default=str(ROOT_DIR / 'data' / 'timo_incremental_retry_status.json'),
+    )
     parser.add_argument('--max-dates', type=int, default=1)
     parser.add_argument('--fail-on-lock-busy', action='store_true')
     return parser.parse_args()
@@ -80,6 +85,21 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
     }
 
 
+def _write_status(path: str, result: Dict[str, Any]) -> None:
+    status_path = Path(path)
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = status_path.with_suffix(status_path.suffix + '.tmp')
+    temporary.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding='utf-8',
+    )
+    temporary.replace(status_path)
+
+
+def _result_exit_code(result: Dict[str, Any]) -> int:
+    return source_quality_collection_exit_code(result.get('results') or [])
+
+
 def main() -> int:
     args = _args()
     assert_managed_batch_runtime('timo_incremental_retry', required_slice='mcn-batch.slice')
@@ -90,8 +110,9 @@ def main() -> int:
         return 75 if args.fail_on_lock_busy else 0
     with lock:
         result = _run(args)
+    _write_status(args.status_path, result)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 0 if result['ok'] else 1
+    return _result_exit_code(result)
 
 
 if __name__ == '__main__':
