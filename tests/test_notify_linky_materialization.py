@@ -5,10 +5,19 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import sys
 
 import pytest
 
-from scripts.notify_linky_materialization import canonical_json, _read_state, _write_state, load_event
+from scripts.notify_linky_materialization import (
+    _acknowledgements,
+    _candidate_dates,
+    canonical_json,
+    _read_state,
+    _write_state,
+    load_event,
+    main,
+)
 
 
 def test_scope_checksum_matches_nova_node_canonical_contract() -> None:
@@ -90,6 +99,28 @@ def test_load_event_requires_ready_d1_and_builds_stable_scope_checksum(tmp_path:
     assert event['checksum'] == hashlib.sha256(
         canonical_json(event['scopes']).encode('utf-8')
     ).hexdigest()
+
+
+def test_load_event_accepts_history_covered_by_a_newer_ready_generation(tmp_path: Path) -> None:
+    analytics, source, latest_date = _databases(tmp_path)
+    historical_date = (date.fromisoformat(latest_date) - timedelta(days=1)).isoformat()
+    with sqlite3.connect(source) as conn:
+        conn.execute(
+            'INSERT INTO streamer_external_sync_runs VALUES(?,?,?,?,?,?,?)',
+            ('run-historical', 'linky', historical_date, historical_date, 'success', 'full',
+             '2026-08-16T02:05:00+00:00'),
+        )
+        conn.executemany('INSERT INTO streamer_external_revenue_daily VALUES(?,?,?,?,?,?)', [
+            ('linky', 'linky:nova', 'Nova', 'Indonesia', historical_date, 80.0),
+            ('linky', 'linky:carote', 'Carote', 'Indonesia', historical_date, 20.0),
+        ])
+        conn.executemany('INSERT INTO streamer_external_guild_revenue_daily VALUES(?,?,?,?,?,?,?,?)', [
+            ('linky', 'linky:nova', 'Nova', 'Indonesia', historical_date, 80.0, 39000,
+             '2026-08-16T02:00:00+00:00'),
+            ('linky', 'linky:carote', 'Carote', 'Indonesia', historical_date, 20.0, 32000,
+             '2026-08-16T02:01:00+00:00'),
+        ])
+    assert load_event(analytics, source, expected_date=historical_date)['dataDate'] == historical_date
 
 
 def test_load_event_fails_closed_for_stale_analytics(tmp_path: Path) -> None:
@@ -185,3 +216,56 @@ def test_ack_state_is_atomic_and_reusable(tmp_path: Path) -> None:
     assert _read_state(state) == {'acknowledged_at': 'now', 'event_id': 'linky:test'}
     assert json.loads(state.read_text())['event_id'] == 'linky:test'
     assert state.stat().st_mode & 0o777 == 0o600
+
+
+def test_ack_state_migrates_the_legacy_last_ack_without_assuming_contiguous_days() -> None:
+    acknowledgements = _acknowledgements({
+        'event_id': 'linky:2026-08-20:run',
+        'data_date': '2026-08-20',
+        'acknowledged_at': '2026-08-21T02:37:36+00:00',
+        'duplicate': False,
+    })
+    assert list(acknowledgements) == ['2026-08-20']
+    assert acknowledgements['2026-08-20']['event_id'] == 'linky:2026-08-20:run'
+    assert '2026-08-19' not in acknowledgements
+
+
+def test_candidate_dates_are_bounded_and_oldest_first() -> None:
+    assert _candidate_dates(date(2026, 8, 21), 3) == [
+        '2026-08-18', '2026-08-19', '2026-08-20',
+    ]
+    with pytest.raises(ValueError, match='invalid_catchup_window'):
+        _candidate_dates(date(2026, 8, 21), 0)
+    with pytest.raises(ValueError, match='invalid_catchup_window'):
+        _candidate_dates(date(2026, 8, 21), 32)
+
+
+def test_main_scans_missing_dates_and_persists_each_ack(monkeypatch: pytest.MonkeyPatch,
+                                                        tmp_path: Path) -> None:
+    analytics, source, data_date = _databases(tmp_path)
+    secret = tmp_path / 'secret'
+    secret.write_text('x' * 48)
+    state = tmp_path / 'state.json'
+    calls: list[str] = []
+
+    def fake_send(event: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        calls.append(str(event['dataDate']))
+        return {'ok': True, 'event_id': event['eventId'], 'duplicate': False}
+
+    monkeypatch.setattr('scripts.notify_linky_materialization.send_event', fake_send)
+    monkeypatch.setattr(sys, 'argv', [
+        'notify_linky_materialization.py',
+        '--analytics-path', str(analytics),
+        '--source-db-path', str(source),
+        '--secret-file', str(secret),
+        '--state-path', str(state),
+        '--lookback-days', '2',
+    ])
+    assert main() == 0
+    assert calls == [data_date]
+    stored = _read_state(state)
+    assert stored['schema_version'] == 2
+    assert list(stored['acknowledgements']) == [data_date]
+
+    assert main() == 0
+    assert calls == [data_date]

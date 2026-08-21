@@ -38,7 +38,12 @@ def _read_ready_state(analytics_path: Path, expected_date: str) -> sqlite3.Row:
         ).fetchone()
     if row is None or str(row['status'] or '') != 'ready':
         raise ValueError('materialization_not_ready')
-    if str(row['data_as_of'] or '') != expected_date:
+    try:
+        generation_date = date.fromisoformat(str(row['data_as_of'] or ''))
+        requested_date = date.fromisoformat(expected_date)
+    except ValueError as exc:
+        raise ValueError('materialization_date_not_ready') from exc
+    if generation_date < requested_date:
         raise ValueError('materialization_date_not_ready')
     if not str(row['materialized_at'] or '').strip():
         raise ValueError('materialization_timestamp_missing')
@@ -244,6 +249,32 @@ def _write_state(path: Path, value: dict[str, Any]) -> None:
             pass
 
 
+def _acknowledgements(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = state.get('acknowledgements')
+    acknowledgements = {
+        str(data_date): dict(value)
+        for data_date, value in raw.items()
+        if isinstance(raw, dict) and isinstance(data_date, str) and isinstance(value, dict)
+    } if isinstance(raw, dict) else {}
+    legacy_date = str(state.get('data_date') or '')
+    if legacy_date and state.get('event_id') and state.get('acknowledged_at'):
+        acknowledgements.setdefault(legacy_date, {
+            'event_id': state['event_id'],
+            'acknowledged_at': state['acknowledged_at'],
+            'duplicate': bool(state.get('duplicate')),
+        })
+    return acknowledgements
+
+
+def _candidate_dates(today: date, lookback_days: int) -> list[str]:
+    if lookback_days < 1 or lookback_days > 31:
+        raise ValueError('invalid_catchup_window')
+    return [
+        (today - timedelta(days=offset)).isoformat()
+        for offset in range(lookback_days, 0, -1)
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--analytics-path', default=os.getenv(
@@ -254,7 +285,11 @@ def main() -> int:
     parser.add_argument('--url', default=os.getenv(
         'LINKY_MATERIALIZATION_WEBHOOK_URL',
         'https://nova.hoyisr.com/api/internal/linky/materialization-complete'))
+    parser.add_argument('--lookback-days', type=int, default=int(os.getenv(
+        'LINKY_MATERIALIZATION_CATCHUP_DAYS', '7')))
     args = parser.parse_args()
+    candidate_dates = _candidate_dates(
+        datetime.now(timezone(timedelta(hours=8))).date(), args.lookback_days)
     state_path = Path(args.state_path)
     lock_path = state_path.with_suffix(f'{state_path.suffix}.lock')
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -264,26 +299,41 @@ def main() -> int:
         except BlockingIOError:
             print(json.dumps({'ok': True, 'skipped': 'notifier_already_running'}, sort_keys=True))
             return 0
-        try:
-            event = load_event(Path(args.analytics_path), Path(args.source_db_path))
-        except ValueError as exc:
-            print(json.dumps({'ok': True, 'skipped': str(exc)}, sort_keys=True))
-            return 0
         state = _read_state(state_path)
-        if state.get('event_id') == event['eventId'] and state.get('acknowledged_at'):
-            print(json.dumps({'ok': True, 'skipped': 'already_acknowledged', 'event_id': event['eventId']}, sort_keys=True))
-            return 0
+        acknowledgements = _acknowledgements(state)
         secret = Path(args.secret_file).read_text(encoding='utf-8').strip()
         if len(secret) < 32:
             raise RuntimeError('webhook_secret_invalid')
-        result = send_event(event, url=args.url, secret=secret)
-        _write_state(state_path, {
-            'event_id': event['eventId'],
-            'data_date': event['dataDate'],
-            'acknowledged_at': datetime.now(timezone.utc).isoformat(),
-            'duplicate': bool(result.get('duplicate')),
-        })
-        print(json.dumps(result, sort_keys=True))
+        results: list[dict[str, Any]] = []
+        for data_date in candidate_dates:
+            acknowledgement = acknowledgements.get(data_date, {})
+            if acknowledgement.get('acknowledged_at'):
+                results.append({'data_date': data_date, 'skipped': 'already_acknowledged'})
+                continue
+            try:
+                event = load_event(
+                    Path(args.analytics_path), Path(args.source_db_path), expected_date=data_date)
+            except ValueError as exc:
+                results.append({'data_date': data_date, 'skipped': str(exc)})
+                continue
+            result = send_event(event, url=args.url, secret=secret)
+            acknowledged_at = datetime.now(timezone.utc).isoformat()
+            acknowledgement = {
+                'event_id': event['eventId'],
+                'acknowledged_at': acknowledged_at,
+                'duplicate': bool(result.get('duplicate')),
+            }
+            acknowledgements[data_date] = acknowledgement
+            # Keep the legacy top-level fields during the state-schema migration.
+            _write_state(state_path, {
+                'schema_version': 2,
+                'acknowledgements': acknowledgements,
+                'event_id': event['eventId'],
+                'data_date': data_date,
+                **acknowledgement,
+            })
+            results.append({'data_date': data_date, **result})
+        print(json.dumps({'ok': True, 'results': results}, sort_keys=True))
         return 0
 
 
