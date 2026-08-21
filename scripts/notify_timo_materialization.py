@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from app.timo_guild_identity import TIMO_GUILD_IDENTITIES  # noqa: E402
 from app.timo_incremental_materialization import timo_external_feed_status  # noqa: E402
+from app.timo_partial_settlement import enrich_timo_scope_feed_status  # noqa: E402
 
 COUNTRY_BY_GUILD_ID = {'22000408': 'MX', '11003905': 'ID', '22000448': 'BR'}
 SOURCE_MISSING_MARKERS = (
@@ -226,6 +227,11 @@ def load_event(status_path: Path, db_path: Path, started_marker: Path) -> dict[s
         conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA query_only=ON')
         feed_status = timo_external_feed_status(conn, stat_date_bj=data_date)
+        feed_status = enrich_timo_scope_feed_status(
+            conn,
+            feed_status,
+            business_date=data_date,
+        )
         failures = _latest_failures(conn, data_date)
         last_success = {
             str(row['guild_name'] or ''): str(row['last_success_time'] or '')

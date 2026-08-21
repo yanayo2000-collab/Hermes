@@ -21,6 +21,7 @@ def _load_module(name: str, relative_path: str):
 
 notifier = _load_module('notify_timo_materialization_partial', 'scripts/notify_timo_materialization.py')
 retry_worker = _load_module('timo_incremental_retry_worker_partial', 'scripts/timo_incremental_retry_worker.py')
+scope_feed = _load_module('timo_partial_settlement_feed', 'app/timo_partial_settlement.py')
 
 
 def _status(*, state: str = 'partial') -> dict:
@@ -218,3 +219,90 @@ def test_load_event_reads_failure_evidence_and_watermark_time_without_writing(tm
     assert next(scope for scope in event['scopes'] if scope['country'] == 'MX')['failureReason'] == (
         'timo_revenue_export_not_ready'
     )
+
+
+def test_external_feed_v2_returns_all_expected_scopes_and_null_missing_facts(tmp_path):
+    db_path = tmp_path / 'automation.db'
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE timo_sync_run_log(
+                guild_name TEXT, status TEXT, error_code TEXT, error TEXT,
+                start_time TEXT, stat_date_bj TEXT
+            );
+            CREATE TABLE timo_sync_watermark(
+                guild_name TEXT, last_success_time TEXT, stat_date_bj TEXT
+            );
+            """
+        )
+        conn.execute(
+            'INSERT INTO timo_sync_run_log VALUES (?, ?, ?, ?, ?, ?)',
+            (
+                'Agency MX somente', 'failed', 'timo_revenue_export_not_ready',
+                'export_url_not_ready_attempt_3', '2026-08-21T08:43:00+00:00', '2026-08-20',
+            ),
+        )
+        for guild in ('TIMO001', 'agency of BR somente'):
+            conn.execute(
+                'INSERT INTO timo_sync_watermark VALUES (?, ?, ?)',
+                (guild, '2026-08-21T08:40:00+00:00', '2026-08-20'),
+            )
+        enriched = scope_feed.enrich_timo_scope_feed_status(
+            conn,
+            {'scope_manifests': [
+                _manifest('TIMO001', 'Indonesia', 'a'),
+                _manifest('agency of BR somente', 'Brazil', 'b'),
+            ]},
+            business_date='2026-08-20',
+        )
+
+    assert enriched['integrity_contract_version'] == 'timo_scope_manifest_v2'
+    assert enriched['day_status'] == 'PARTIAL'
+    assert enriched['publication_ready'] is False
+    assert enriched['consumable'] is False
+    assert enriched['expected_scope_count'] == 3
+    assert enriched['succeeded_scope_count'] == 2
+    assert enriched['failed_scope_count'] == 1
+    assert enriched['failed_scopes'] == ['MX']
+    assert len(enriched['scope_manifests']) == 3
+    mx = next(item for item in enriched['scope_manifests'] if item['country_code'] == 'MX')
+    assert mx['quality_status'] == 'SOURCE_MISSING'
+    assert mx['publication_ready'] is False
+    assert mx['consumable'] is False
+    for field in ('row_count', 'total_income', 'checksum', 'revision_version', 'last_success_sync_id'):
+        assert mx[field] is None
+
+
+def test_external_feed_country_filter_is_independently_consumable(tmp_path):
+    db_path = tmp_path / 'automation.db'
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE timo_sync_run_log(
+                guild_name TEXT, status TEXT, error_code TEXT, error TEXT,
+                start_time TEXT, stat_date_bj TEXT
+            );
+            CREATE TABLE timo_sync_watermark(
+                guild_name TEXT, last_success_time TEXT, stat_date_bj TEXT
+            );
+            """
+        )
+        conn.execute(
+            'INSERT INTO timo_sync_watermark VALUES (?, ?, ?)',
+            ('agency of BR somente', '2026-08-21T08:40:00+00:00', '2026-08-20'),
+        )
+        enriched = scope_feed.enrich_timo_scope_feed_status(
+            conn,
+            {'scope_manifests': [_manifest('agency of BR somente', 'Brazil', 'b')]},
+            business_date='2026-08-20',
+            country='Brazil',
+        )
+
+    assert enriched['day_status'] == 'COMPLETE'
+    assert enriched['publication_ready'] is True
+    assert enriched['consumable'] is True
+    assert enriched['expected_scope_count'] == 1
+    assert enriched['succeeded_scope_count'] == 1
+    assert enriched['failed_scope_count'] == 0

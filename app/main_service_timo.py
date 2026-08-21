@@ -23,6 +23,7 @@ from app.timo_incremental_materialization import (
     schedule_timo_sync_retry,
     timo_external_feed_status,
 )
+from app.timo_partial_settlement import enrich_timo_scope_feed_status
 from app.timo_bi_mart import (
     TimoBiMartError,
     TimoBiMartQueryTimeout,
@@ -1782,6 +1783,13 @@ class TimoServiceMixin:
             feed_status = timo_external_feed_status(
                 conn,
                 stat_date_bj=normalized_stat_date,
+                country=normalized_country,
+                guild_name=normalized_guild_name,
+            )
+            feed_status = enrich_timo_scope_feed_status(
+                conn,
+                feed_status,
+                business_date=normalized_stat_date,
                 country=normalized_country,
                 guild_name=normalized_guild_name,
             )
