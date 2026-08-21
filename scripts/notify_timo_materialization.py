@@ -180,7 +180,7 @@ def build_event(
     failed = len(scopes) - succeeded
     day_status = 'COMPLETE' if failed == 0 else 'PARTIAL'
     checksum = hashlib.sha256(canonical_json(scopes).encode('utf-8')).hexdigest()
-    event_id = f'timo:{data_date}:{run_id}:{checksum[:16]}'
+    event_id = f'timo:{data_date}:{checksum[:20]}'
     materialized_at = str(normalized.get('snapshot_at') or '')
     if not materialized_at:
         materialized_at = max(

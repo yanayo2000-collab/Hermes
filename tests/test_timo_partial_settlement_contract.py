@@ -129,6 +129,24 @@ def test_same_snapshot_has_stable_checksum_and_event_id():
     assert first == second
 
 
+def test_same_scope_content_keeps_event_id_across_source_retry_run_ids():
+    manifests = [
+        _manifest('Agency MX somente', 'Mexico', 'c'),
+        _manifest('TIMO001', 'Indonesia', 'a'),
+        _manifest('agency of BR somente', 'Brazil', 'b'),
+    ]
+    first_status = _status(state='success')
+    second_status = _status(state='success')
+    second_status['run_id'] = 'run-0820-retry'
+    second_status['scopes'][0]['run_id'] = 'run-0820-retry'
+    first = notifier.build_event(status=first_status, manifests=manifests, failures={})
+    second = notifier.build_event(status=second_status, manifests=manifests, failures={})
+
+    assert first['checksum'] == second['checksum']
+    assert first['eventId'] == second['eventId']
+    assert first['sourceGeneration'] != second['sourceGeneration']
+
+
 def test_non_source_failure_is_anomaly_not_zero():
     event = notifier.build_event(
         status=_status(),
