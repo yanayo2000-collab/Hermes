@@ -1,0 +1,10 @@
+[Unit]
+Description=One-shot governed re-observation for a deferred Timo weekly cache run
+
+[Timer]
+OnActiveSec=2min
+AccuracySec=10s
+Unit=mcn-timo-anchor-export-cache-weekly.service
+
+[Install]
+WantedBy=timers.target
