@@ -327,3 +327,16 @@ def test_external_feed_country_filter_is_independently_consumable(tmp_path):
     assert enriched['expected_scope_count'] == 1
     assert enriched['succeeded_scope_count'] == 1
     assert enriched['failed_scope_count'] == 0
+
+
+def test_external_feed_rows_only_expose_consumable_scope_guilds():
+    feed_status = {
+        'scope_manifests': [
+            {'guild_storage_name': 'TIMO001', 'consumable': True},
+            {'guild_storage_name': 'agency of BR somente', 'consumable': False},
+            {'guild_storage_name': 'Agency MX somente', 'consumable': False},
+        ],
+    }
+
+    assert scope_feed.consumable_timo_scope_guild_names(feed_status) == ['TIMO001']
+    assert scope_feed.consumable_timo_scope_guild_names({'scope_manifests': []}) == []

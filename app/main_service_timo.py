@@ -23,7 +23,10 @@ from app.timo_incremental_materialization import (
     schedule_timo_sync_retry,
     timo_external_feed_status,
 )
-from app.timo_partial_settlement import enrich_timo_scope_feed_status
+from app.timo_partial_settlement import (
+    consumable_timo_scope_guild_names,
+    enrich_timo_scope_feed_status,
+)
 from app.timo_bi_mart import (
     TimoBiMartError,
     TimoBiMartQueryTimeout,
@@ -1764,8 +1767,27 @@ class TimoServiceMixin:
             params.append(str(updated_since or '').strip())
         if not include_provisional:
             where.append('provisional = 0')
-        where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
         with self.db.connect() as conn:
+            feed_status = timo_external_feed_status(
+                conn,
+                stat_date_bj=normalized_stat_date,
+                country=normalized_country,
+                guild_name=normalized_guild_name,
+            )
+            feed_status = enrich_timo_scope_feed_status(
+                conn,
+                feed_status,
+                business_date=normalized_stat_date,
+                country=normalized_country,
+                guild_name=normalized_guild_name,
+            )
+            consumable_guilds = consumable_timo_scope_guild_names(feed_status)
+            if consumable_guilds:
+                where.append(f"guild_name IN ({','.join('?' for _ in consumable_guilds)})")
+                params.extend(consumable_guilds)
+            else:
+                where.append('1 = 0')
+            where_sql = ' WHERE ' + ' AND '.join(where)
             total = int(conn.execute(f'SELECT COUNT(*) AS n FROM timo_external_revenue_daily{where_sql}', tuple(params)).fetchone()['n'] or 0)
             rows = [dict(row) for row in conn.execute(
                 f"""
@@ -1780,19 +1802,6 @@ class TimoServiceMixin:
                 """,
                 tuple(params + [safe_limit, safe_offset]),
             ).fetchall()]
-            feed_status = timo_external_feed_status(
-                conn,
-                stat_date_bj=normalized_stat_date,
-                country=normalized_country,
-                guild_name=normalized_guild_name,
-            )
-            feed_status = enrich_timo_scope_feed_status(
-                conn,
-                feed_status,
-                business_date=normalized_stat_date,
-                country=normalized_country,
-                guild_name=normalized_guild_name,
-            )
         return externalize_timo_guild_names({
             'ok': True,
             'system_version': 'mcn_timo_external_feed_v2',

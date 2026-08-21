@@ -190,3 +190,14 @@ def enrich_timo_scope_feed_status(
         'scope_manifests': manifests,
         'integrity_contract_version': 'timo_scope_manifest_v2',
     }
+
+
+def consumable_timo_scope_guild_names(feed_status: Mapping[str, Any]) -> list[str]:
+    """Return only storage guilds whose published scope is safe to expose."""
+    return sorted({
+        str(item.get('guild_storage_name') or item.get('guild_name') or '').strip()
+        for item in feed_status.get('scope_manifests') or []
+        if isinstance(item, Mapping)
+        and item.get('consumable') is True
+        and str(item.get('guild_storage_name') or item.get('guild_name') or '').strip()
+    })
