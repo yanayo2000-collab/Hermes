@@ -69,11 +69,12 @@ def test_creation_incident_ui_has_one_confirmation_and_in_place_progress() -> No
     assert "function confirmRecoverableCreationIncident" in workspace
     assert "data-growth-order-auto-recover-plan" in workspace
     assert "data-launch-order-auto-recover" in workspace
-    assert "id=\"growthConfirmOrderRecovery\">确认自动修复" in workspace
-    assert "await resumeLaunchBatchSamePlan(planId,button)" in workspace
+    assert "id=\"growthConfirmOrderRecovery\">处理创建异常" in workspace
+    assert "await openLaunchIncidentResolution(planId,payload,plan)" in workspace
     assert "await loadList({silent:true});await openLaunchBatchWorkflow(resumedPlanId)" in workspace
     assert "confirmation:'CONTINUE_SAME_PLAN'" in workspace
-    assert "所有新对象保持暂停" in workspace
+    assert "仅重建未完成步骤" in workspace
+    assert "创建后状态" in workspace
     assert "20260816-gle-auto-recovery-loop-v1" in page
 
 

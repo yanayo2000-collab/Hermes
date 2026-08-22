@@ -8,6 +8,8 @@ Type=simple
 WorkingDirectory=/opt/mcn-ai-automation
 EnvironmentFile=-/opt/mcn-ai-automation/.env
 EnvironmentFile=-/etc/mcn-ai-automation/growth-meta.env
+EnvironmentFile=-/etc/mcn-ai-automation/growth-internal-api.env
+Environment=GROWTH_INTERNAL_API_BASE_URL=http://127.0.0.1:8011
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=/opt/mcn-ai-automation
 # The checked-in default is non-writing. A governed release may change this to

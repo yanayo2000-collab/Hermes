@@ -496,18 +496,20 @@ def test_dashboard_coverage_opens_the_existing_governed_task_flow() -> None:
     assert "function showEmbeddedQueue({scroll=true}={})" in workspace_js
     assert "async function openWorkspace(experimentId, options={})" in workspace_js
     assert "const loaded = await loadList({select:experimentId})" in workspace_js
-    assert "const requestedIds=new Set(state.coverageScope);" in workspace_js
-    assert "if(selectedId)requestedIds.add(selectedId);" in workspace_js
-    assert "Promise.allSettled([...requestedIds]" in workspace_js
+    assert "async function loadEmbeddedTaskIndex({force=false}={})" in workspace_js
+    assert "api(taskIndexUrl([...state.coverageScope]))" in workspace_js
+    assert "state.embeddedTaskIndexRequest" in workspace_js
+    assert "async function loadExperimentDetail(experimentId,{force=false}={})" in workspace_js
+    assert "state.experimentDetailRequests" in workspace_js
     assert "state.coverageScope.add(selectedId);" in workspace_js
     assert "mount.dataset.experimentIds=JSON.stringify([...state.coverageScope])" in workspace_js
-    assert "任务详情暂时无法读取，请重试；系统未执行任何 Meta 操作。" in workspace_js
-    assert "async function openExperiment(id) { return openWorkspace(id); }" in workspace_js
+    assert "服务更新期间暂时无法刷新，当前内容已保留。稍后点击刷新即可。" in workspace_js
+    assert "async function openExperiment(id,options={}) { return openWorkspace(id,options); }" in workspace_js
     assert "if (isEmbeddedWorkspace()) {\n      showEmbeddedQueue();\n      return;\n    }" in workspace_js
-    assert "if(isEmbeddedWorkspace())setWorkspaceReturn({kind:'embeddedQueue'});" in workspace_js
+    assert "if(isEmbeddedWorkspace()&&!state.workspaceReturn)setWorkspaceReturn({kind:'embeddedQueue'});" in workspace_js
     assert "event.stopPropagation();\n      backWorkspace();" in workspace_js
     assert "classList.toggle('is-task-detail',Boolean(active))" not in workspace_js
-    assert ".growth-layer-embedded .growth-task-list{grid-template-columns:repeat(2,minmax(0,1fr))" in workspace_js
+    assert ".growth-layer-embedded .growth-task-list{grid-template-columns:1fr;align-items:start" in workspace_js
     assert ".growth-layer-embedded .growth-task-group-row>span{display:block" in workspace_js
     assert ".growth-layer-embedded .growth-task-group-copy{display:grid!important}" in workspace_js
     assert ".growth-layer-embedded .growth-task-group-row>span:not(.growth-task-group-copy){display:none}" in workspace_js
@@ -525,7 +527,7 @@ def test_dashboard_coverage_opens_the_existing_governed_task_flow() -> None:
     assert "dialog?.removeAttribute('aria-modal')" in workspace_js
     assert "当前任务的下一步" in workspace_js
     assert "任务列表和当前上下文会保留" in workspace_js
-    assert "if(activeModal){closeModal();return;}" in workspace_js
+    assert "if(modal){closeModal();return;}" in workspace_js
     assert "button.addEventListener('click', () => { closeModal();state.workBucket" in workspace_js
     assert "document.getElementById('growthWorkspacePanel')?.classList.remove('has-inline-action')" in workspace_js
     assert 'id="growthTaskSearch"' not in workspace_js[

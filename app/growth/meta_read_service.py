@@ -132,67 +132,6 @@ class MetaGraphReadService:
             "rate_usage": self._rate_usage(response),
         }
 
-    def read_ad_rebuild_source(self, *, ad_id: str) -> Dict[str, Any]:
-        """Freeze the source objects needed to rebuild one ad without a Meta write."""
-        normalized_ad_id = str(ad_id or "").strip()
-        if not normalized_ad_id.isdigit():
-            raise GrowthValidationError("meta_ad_id_invalid")
-        ad, ad_response = self._get(
-            normalized_ad_id,
-            "id,name,account_id,campaign_id,adset_id,status,effective_status,"
-            "creative{id,name,object_story_spec,asset_feed_spec,image_hash,thumbnail_url}",
-        )
-        creative = dict(ad.get("creative") or {})
-        campaign_id = str(ad.get("campaign_id") or "").strip()
-        adset_id = str(ad.get("adset_id") or "").strip()
-        account_id = str(ad.get("account_id") or "").strip().removeprefix("act_")
-        creative_id = str(creative.get("id") or "").strip()
-        if not all((campaign_id, adset_id, account_id, creative_id)):
-            raise GrowthValidationError("meta_rebuild_source_identity_incomplete")
-        adset, adset_response = self._get(
-            adset_id,
-            "id,name,account_id,campaign_id,status,effective_status,daily_budget,lifetime_budget,"
-            "bid_strategy,bid_amount,billing_event,optimization_goal,targeting,promoted_object,"
-            "attribution_spec,destination_type",
-        )
-        campaign, campaign_response = self._get(
-            campaign_id,
-            "id,name,account_id,status,effective_status,objective,buying_type,special_ad_categories",
-        )
-        if (
-            str(adset.get("account_id") or "").removeprefix("act_") != account_id
-            or str(campaign.get("account_id") or "").removeprefix("act_") != account_id
-            or str(adset.get("campaign_id") or "") != campaign_id
-        ):
-            raise GrowthValidationError("meta_rebuild_source_hierarchy_mismatch")
-        story = dict(creative.get("object_story_spec") or {})
-        link_data = dict(story.get("link_data") or {})
-        image_hash = str(creative.get("image_hash") or link_data.get("image_hash") or "").strip()
-        page_id = str(story.get("page_id") or "").strip()
-        if not image_hash or not page_id or not link_data:
-            raise GrowthValidationError("meta_rebuild_source_creative_unsupported")
-        return {
-            "source": "meta_graph_read_only", "read_at": datetime.now().astimezone().isoformat(),
-            "meta_object_writes": 0, "account_id": account_id,
-            "ad": ad, "adset": adset, "campaign": campaign, "creative": creative,
-            "source_ids": {
-                "campaign_id": campaign_id, "adset_id": adset_id,
-                "ad_id": normalized_ad_id, "creative_id": creative_id,
-            },
-            "creative_contract": {
-                "page_id": page_id, "image_hash": image_hash,
-                "primary_text": str(link_data.get("message") or ""),
-                "headline": str(link_data.get("name") or ""),
-                "description": str(link_data.get("description") or ""),
-                "link": str(link_data.get("link") or ""),
-                "call_to_action": str(dict(link_data.get("call_to_action") or {}).get("type") or "INSTALL_MOBILE_APP"),
-            },
-            "rate_usage": {
-                "ad": self._rate_usage(ad_response), "adset": self._rate_usage(adset_response),
-                "campaign": self._rate_usage(campaign_response),
-            },
-        }
-
     def detect_activity_drift(
         self, *, activities: Iterable[Mapping[str, Any]], target_object_ids: Iterable[str],
         approved_actor_ids: Iterable[str], cutoff_at: str,
@@ -244,6 +183,93 @@ class MetaGraphReadService:
             "ad_id": str(ad_id), "ad_format": normalized_format,
             "previews": list(payload.get("data") or []), "meta_object_writes": 0,
             "rate_usage": self._rate_usage(response),
+        }
+
+    def read_ad_rebuild_source(self, *, ad_id: str) -> Dict[str, Any]:
+        """Freeze the source objects needed to rebuild one ad without a Meta write."""
+        normalized_ad_id = str(ad_id or "").strip()
+        if not normalized_ad_id.isdigit():
+            raise GrowthValidationError("meta_ad_id_invalid")
+        ad, ad_response = self._get(
+            normalized_ad_id,
+            "id,name,account_id,campaign_id,adset_id,status,effective_status,"
+            "creative{id,name,object_story_spec,asset_feed_spec,image_hash,thumbnail_url}",
+        )
+        creative = dict(ad.get("creative") or {})
+        campaign_id = str(ad.get("campaign_id") or "").strip()
+        adset_id = str(ad.get("adset_id") or "").strip()
+        account_id = str(ad.get("account_id") or "").strip().removeprefix("act_")
+        creative_id = str(creative.get("id") or "").strip()
+        if not all((campaign_id, adset_id, account_id, creative_id)):
+            raise GrowthValidationError("meta_rebuild_source_identity_incomplete")
+        adset, adset_response = self._get(
+            adset_id,
+            "id,name,account_id,campaign_id,status,effective_status,daily_budget,lifetime_budget,"
+            "bid_strategy,bid_amount,billing_event,optimization_goal,targeting,promoted_object,"
+            "attribution_spec,destination_type,regional_regulation_identities",
+        )
+        campaign, campaign_response = self._get(
+            campaign_id,
+            "id,name,account_id,status,effective_status,objective,buying_type,special_ad_categories,"
+            "daily_budget,lifetime_budget,is_adset_budget_sharing_enabled",
+        )
+        if (
+            str(adset.get("account_id") or "").removeprefix("act_") != account_id
+            or str(campaign.get("account_id") or "").removeprefix("act_") != account_id
+            or str(adset.get("campaign_id") or "") != campaign_id
+        ):
+            raise GrowthValidationError("meta_rebuild_source_hierarchy_mismatch")
+        story = dict(creative.get("object_story_spec") or {})
+        link_data = dict(story.get("link_data") or {})
+        asset_feed = dict(creative.get("asset_feed_spec") or {})
+        image_hash = str(creative.get("image_hash") or link_data.get("image_hash") or "").strip()
+        page_id = str(story.get("page_id") or "").strip()
+        creative_contract = {}
+        if image_hash and page_id and link_data:
+            creative_contract = {
+                "page_id": page_id, "image_hash": image_hash,
+                "primary_text": str(link_data.get("message") or ""),
+                "headline": str(link_data.get("name") or ""),
+                "description": str(link_data.get("description") or ""),
+                "link": str(link_data.get("link") or ""),
+                "call_to_action": str(dict(link_data.get("call_to_action") or {}).get("type") or "INSTALL_MOBILE_APP"),
+                "source_format": "LINK_DATA",
+            }
+        elif page_id and asset_feed:
+            def one_asset(name: str, field: str, *, required: bool = True) -> str:
+                values = list(asset_feed.get(name) or [])
+                if len(values) > 1 or (required and len(values) != 1):
+                    raise GrowthValidationError("meta_rebuild_source_creative_unsupported")
+                if not values:
+                    return ""
+                value = values[0]
+                return str(dict(value).get(field) if isinstance(value, dict) else value or "").strip()
+
+            image_hash = one_asset("images", "hash")
+            creative_contract = {
+                "page_id": page_id, "image_hash": image_hash,
+                "primary_text": one_asset("bodies", "text"),
+                "headline": one_asset("titles", "text"),
+                "description": one_asset("descriptions", "text", required=False),
+                "link": one_asset("link_urls", "website_url"),
+                "call_to_action": one_asset("call_to_action_types", "type") or "INSTALL_MOBILE_APP",
+                "source_format": "SINGLE_ASSET_FEED",
+            }
+        if not creative_contract or not image_hash or not page_id:
+            raise GrowthValidationError("meta_rebuild_source_creative_unsupported")
+        return {
+            "source": "meta_graph_read_only", "read_at": datetime.now().astimezone().isoformat(),
+            "meta_object_writes": 0, "account_id": account_id,
+            "ad": ad, "adset": adset, "campaign": campaign, "creative": creative,
+            "source_ids": {
+                "campaign_id": campaign_id, "adset_id": adset_id,
+                "ad_id": normalized_ad_id, "creative_id": creative_id,
+            },
+            "creative_contract": creative_contract,
+            "rate_usage": {
+                "ad": self._rate_usage(ad_response), "adset": self._rate_usage(adset_response),
+                "campaign": self._rate_usage(campaign_response),
+            },
         }
 
     def read_delivery_state(self, *, object_id: str, object_type: str) -> Dict[str, Any]:
