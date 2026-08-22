@@ -28,6 +28,13 @@ from app.sqlite_job_lock import (  # noqa: E402
 )
 
 
+PUBLICATION_STABILITY_SECONDS = 2700
+PUBLICATION_REOBSERVE_SECONDS = max(
+    60,
+    int(os.getenv('TIMO_PUBLICATION_REOBSERVE_SECONDS') or 300),
+)
+
+
 def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Run due Timo incremental sync retries.')
     parser.add_argument('--db-path', default=str(ROOT_DIR / 'data' / 'automation.db'))
@@ -68,6 +75,16 @@ def _acknowledged_scope_lineage(path: str | Path | None, stat_date_bj: str) -> D
     return lineage if isinstance(lineage, dict) else {}
 
 
+def _has_unacknowledged_lineage(
+    current_lineage: Dict[str, Any],
+    acknowledged_lineage: Dict[str, Any],
+) -> bool:
+    return any(
+        acknowledged_lineage.get(guild_name) != lineage
+        for guild_name, lineage in current_lineage.items()
+    )
+
+
 def _tracked_publication_dates(
     conn: Any,
     notification_ack_path: str | Path | None,
@@ -94,7 +111,9 @@ def _tracked_publication_dates(
 
 
 def _publication_lineage(conn: Any, stat_date_bj: str) -> Dict[str, Any]:
-    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=2700)).isoformat()
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(seconds=PUBLICATION_STABILITY_SECONDS)
+    ).isoformat()
     lineage: Dict[str, Any] = {}
     watermarks = conn.execute(
         """
@@ -144,6 +163,85 @@ def _publication_lineage(conn: Any, stat_date_bj: str) -> Dict[str, Any]:
     return lineage
 
 
+def _parse_utc(value: Any) -> datetime | None:
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _publication_reobservation_due(
+    conn: Any,
+    stat_date_bj: str,
+    notification_ack_path: str | Path | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Actively close a complete scope's missing second observation.
+
+    The 45-minute stability gate remains authoritative. This only stops a first
+    complete observation from waiting for the sparse revision timer to happen
+    to revisit the same business date.
+    """
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    acknowledged = _acknowledged_scope_lineage(notification_ack_path, stat_date_bj)
+    watermarks = conn.execute(
+        """
+        SELECT guild_executor_key, guild_name, checksum, revision_version,
+               last_success_sync_id
+        FROM timo_sync_watermark
+        WHERE stat_date_bj=? AND data_status='complete'
+        """,
+        (stat_date_bj,),
+    ).fetchall()
+    for watermark in watermarks:
+        guild_name = str(watermark['guild_name'] or '')
+        current_lineage = {
+            'checksum': str(watermark['checksum'] or ''),
+            'revision': int(watermark['revision_version'] or 0),
+            'source_generation': str(watermark['last_success_sync_id'] or ''),
+        }
+        if current_lineage == acknowledged.get(guild_name):
+            continue
+        latest = conn.execute(
+            """
+            SELECT status, start_time, end_time
+            FROM timo_sync_run_log
+            WHERE guild_executor_key=? AND stat_date_bj=?
+            ORDER BY start_time DESC
+            LIMIT 1
+            """,
+            (str(watermark['guild_executor_key']), stat_date_bj),
+        ).fetchone()
+        if latest is None or str(latest['status'] or '') not in {'success', 'no_op'}:
+            continue
+        observations = conn.execute(
+            """
+            SELECT COUNT(*) AS observation_count
+            FROM timo_sync_run_log
+            WHERE guild_executor_key=? AND stat_date_bj=? AND data_status='complete'
+              AND status IN ('success','no_op') AND checksum=?
+            """,
+            (
+                str(watermark['guild_executor_key']),
+                stat_date_bj,
+                str(watermark['checksum'] or ''),
+            ),
+        ).fetchone()
+        if int(observations['observation_count'] or 0) >= 2:
+            continue
+        observed_at = _parse_utc(latest['end_time'] or latest['start_time'])
+        if observed_at and (current - observed_at).total_seconds() >= PUBLICATION_REOBSERVE_SECONDS:
+            return True
+    return False
+
+
 def due_retry_dates(
     service: Service,
     *,
@@ -152,6 +250,24 @@ def due_retry_dates(
 ) -> List[str]:
     limit = max(1, min(10, int(max_dates or 1)))
     with service.db.connect() as conn:
+        dates: List[str] = []
+        if notification_ack_path:
+            for candidate in _tracked_publication_dates(conn, notification_ack_path):
+                current_lineage = _publication_lineage(conn, candidate)
+                if (
+                    current_lineage
+                    and _has_unacknowledged_lineage(
+                        current_lineage,
+                        _acknowledged_scope_lineage(notification_ack_path, candidate),
+                    )
+                ) or _publication_reobservation_due(
+                    conn,
+                    candidate,
+                    notification_ack_path,
+                ):
+                    dates.append(candidate)
+                    if len(dates) >= limit:
+                        return dates
         rows = conn.execute(
             """
             WITH latest AS (
@@ -172,22 +288,13 @@ def due_retry_dates(
             ORDER BY runs.next_retry_at ASC, runs.stat_date_bj ASC
             LIMIT ?
             """,
-            (datetime.now(timezone.utc).isoformat(), limit),
+            (datetime.now(timezone.utc).isoformat(), limit - len(dates)),
         ).fetchall()
-        dates = [str(row['stat_date_bj']) for row in rows]
-        if notification_ack_path and len(dates) < limit:
-            for candidate in _tracked_publication_dates(conn, notification_ack_path):
-                if candidate in dates:
-                    continue
-                current_lineage = _publication_lineage(conn, candidate)
-                if (
-                    current_lineage
-                    and current_lineage
-                    != _acknowledged_scope_lineage(notification_ack_path, candidate)
-                ):
-                    dates.append(candidate)
-                    if len(dates) >= limit:
-                        break
+        dates.extend(
+            str(row['stat_date_bj'])
+            for row in rows
+            if str(row['stat_date_bj']) not in dates
+        )
     return dates[:limit]
 
 

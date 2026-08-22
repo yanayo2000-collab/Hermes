@@ -881,6 +881,123 @@ def test_retry_worker_schedules_latest_unacknowledged_publication_once(tmp_path,
     ) == []
 
 
+def test_retry_worker_actively_reobserves_complete_scope_after_five_minutes(tmp_path, monkeypatch):
+    connect = _connect_factory(tmp_path)
+    current = datetime.now(timezone.utc)
+    stat_date = (current.astimezone(retry_worker.ZoneInfo('Asia/Shanghai')).date() - timedelta(days=1)).isoformat()
+    observed_at = (current - timedelta(minutes=6)).isoformat()
+    conn = connect()
+    conn.execute(
+        """
+        INSERT INTO timo_sync_watermark(
+            guild_executor_key, guild_name, country, stat_date_bj, data_status,
+            last_success_time, last_success_sync_id, row_count, total_income,
+            checksum, revision_version, source_snapshot_at
+        ) VALUES (?, ?, ?, ?, 'complete', ?, ?, 1, 10, ?, 1, ?)
+        """,
+        ('guild-id', 'TIMO001', 'Indonesia', stat_date, observed_at, 'sync-id', 'a' * 64, observed_at),
+    )
+    conn.execute(
+        """
+        INSERT INTO timo_sync_run_log(
+            sync_id, parent_run_id, idempotency_key, guild_executor_key, guild_name,
+            country, stat_date_bj, data_status, start_time, end_time, status,
+            row_count, checksum, created_at, updated_at
+        ) VALUES (?, '', ?, ?, ?, ?, ?, 'complete', ?, ?, 'success', 1, ?, ?, ?)
+        """,
+        ('sync-id', 'sync-id', 'guild-id', 'TIMO001', 'Indonesia', stat_date,
+         observed_at, observed_at, 'a' * 64, observed_at, observed_at),
+    )
+    conn.commit()
+    conn.close()
+    service = SimpleNamespace(db=SimpleNamespace(connect=connect))
+    ack_path = tmp_path / 'notification-ack.json'
+
+    monkeypatch.setattr(retry_worker, '_publication_lineage', lambda *_args: {})
+    assert due_retry_dates(
+        service,
+        max_dates=1,
+        notification_ack_path=ack_path,
+    ) == [stat_date]
+
+
+def test_retry_worker_does_not_treat_an_unready_scope_as_removed_from_acknowledged_lineage():
+    acknowledged = {
+        'agency of BR somente': {
+            'checksum': 'b' * 64,
+            'revision': 1,
+            'source_generation': 'sync-br',
+        },
+        'TIMO001': {
+            'checksum': 'old',
+            'revision': 1,
+            'source_generation': 'sync-id-old',
+        },
+    }
+    mature_subset = {
+        'agency of BR somente': acknowledged['agency of BR somente'],
+    }
+
+    assert retry_worker._has_unacknowledged_lineage(mature_subset, acknowledged) is False
+    assert retry_worker._has_unacknowledged_lineage({
+        **mature_subset,
+        'TIMO001': {
+            'checksum': 'new',
+            'revision': 2,
+            'source_generation': 'sync-id-new',
+        },
+    }, acknowledged) is True
+
+
+def test_retry_worker_does_not_spin_before_reobservation_delay_or_after_second_observation(tmp_path, monkeypatch):
+    connect = _connect_factory(tmp_path)
+    current = datetime.now(timezone.utc)
+    stat_date = (current.astimezone(retry_worker.ZoneInfo('Asia/Shanghai')).date() - timedelta(days=1)).isoformat()
+    observed_at = (current - timedelta(minutes=4)).isoformat()
+    conn = connect()
+    conn.execute(
+        """
+        INSERT INTO timo_sync_watermark(
+            guild_executor_key, guild_name, country, stat_date_bj, data_status,
+            last_success_time, last_success_sync_id, row_count, total_income,
+            checksum, revision_version, source_snapshot_at
+        ) VALUES (?, ?, ?, ?, 'complete', ?, ?, 1, 10, ?, 1, ?)
+        """,
+        ('guild-id', 'TIMO001', 'Indonesia', stat_date, observed_at, 'sync-id', 'a' * 64, observed_at),
+    )
+    for index in range(2):
+        conn.execute(
+            """
+            INSERT INTO timo_sync_run_log(
+                sync_id, parent_run_id, idempotency_key, guild_executor_key, guild_name,
+                country, stat_date_bj, data_status, start_time, end_time, status,
+                row_count, checksum, created_at, updated_at
+            ) VALUES (?, '', ?, ?, ?, ?, ?, 'complete', ?, ?, 'success', 1, ?, ?, ?)
+            """,
+            (f'sync-{index}', f'sync-{index}', 'guild-id', 'TIMO001', 'Indonesia', stat_date,
+             observed_at, observed_at, 'a' * 64, observed_at, observed_at),
+        )
+    conn.commit()
+    service = SimpleNamespace(db=SimpleNamespace(connect=connect))
+    ack_path = tmp_path / 'notification-ack.json'
+    monkeypatch.setattr(retry_worker, '_publication_lineage', lambda *_args: {})
+
+    assert retry_worker._publication_reobservation_due(
+        conn,
+        stat_date,
+        ack_path,
+        now=current,
+    ) is False
+    conn.execute("DELETE FROM timo_sync_run_log WHERE sync_id='sync-1'")
+    conn.commit()
+    assert due_retry_dates(
+        service,
+        max_dates=1,
+        notification_ack_path=ack_path,
+    ) == []
+    conn.close()
+
+
 def test_retry_worker_due_check_matches_batch_runner_contract(tmp_path, monkeypatch):
     monkeypatch.setattr(
         retry_worker,
