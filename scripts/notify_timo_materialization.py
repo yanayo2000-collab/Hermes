@@ -248,6 +248,66 @@ def load_event(status_path: Path, db_path: Path, started_marker: Path) -> dict[s
     return build_event(status=raw_status, manifests=manifests, failures=failures)
 
 
+def current_event_for_date(conn: sqlite3.Connection, data_date: str) -> dict[str, Any]:
+    """Build the currently publishable content identity without mutating source state."""
+    latest_run = conn.execute(
+        """
+        SELECT sync_id, COALESCE(end_time, start_time) AS snapshot_at
+        FROM timo_sync_run_log
+        WHERE stat_date_bj=? AND status IN ('success', 'no_op')
+        ORDER BY start_time DESC
+        LIMIT 1
+        """,
+        (data_date,),
+    ).fetchone()
+    if latest_run is None:
+        raise ValueError('materialization_identity_missing')
+    feed_status = enrich_timo_scope_feed_status(
+        conn,
+        timo_external_feed_status(conn, stat_date_bj=data_date),
+        business_date=data_date,
+    )
+    last_success = {
+        str(row['guild_name'] or ''): str(row['last_success_time'] or '')
+        for row in conn.execute(
+            'SELECT guild_name, last_success_time FROM timo_sync_watermark WHERE stat_date_bj=?',
+            (data_date,),
+        ).fetchall()
+    }
+    manifests = []
+    for item in feed_status.get('scope_manifests') or []:
+        manifest = dict(item)
+        manifest['last_success_time'] = last_success.get(str(item.get('guild_name') or ''), '')
+        manifests.append(manifest)
+    return build_event(
+        status={
+            'status': 'success',
+            'provisional': False,
+            'revenue_contract': 'complete_guild_and_streamer',
+            'data_date_bj': data_date,
+            'run_id': str(latest_run['sync_id'] or ''),
+            'snapshot_at': str(latest_run['snapshot_at'] or ''),
+        },
+        manifests=manifests,
+        failures=_latest_failures(conn, data_date),
+    )
+
+
+def write_ack(path: Path, event: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(
+        json.dumps({
+            'business_date': str(event.get('businessDate') or ''),
+            'event_id': str(event.get('eventId') or ''),
+            'checksum': str(event.get('checksum') or ''),
+            'acknowledged_at': datetime.now(timezone.utc).isoformat(),
+        }, ensure_ascii=False, sort_keys=True),
+        encoding='utf-8',
+    )
+    temporary.replace(path)
+
+
 def send_event(event: dict[str, Any], *, url: str, secret: str, attempts: int = 3) -> dict[str, Any]:
     body = canonical_json(event).encode('utf-8')
     last_error = ''
@@ -279,6 +339,7 @@ def main() -> int:
     parser.add_argument('--status-path', default=str(ROOT / 'data/timo_external_feed_status.json'))
     parser.add_argument('--db-path', default=str(ROOT / 'data/automation.db'))
     parser.add_argument('--started-marker', default='/run/mcn-ai-automation/timo-external-feed.started')
+    parser.add_argument('--ack-path', default=str(ROOT / 'data/timo_materialization_notification_ack.json'))
     parser.add_argument('--secret-file', default='/etc/mcn-ai-automation/timo-materialization-webhook.secret')
     parser.add_argument('--url', default=os.getenv(
         'TIMO_MATERIALIZATION_WEBHOOK_URL',
@@ -294,6 +355,7 @@ def main() -> int:
     if len(secret) < 32:
         raise RuntimeError('webhook_secret_invalid')
     result = send_event(event, url=args.url, secret=secret)
+    write_ack(Path(args.ack_path), event)
     print(json.dumps(result, sort_keys=True))
     return 0
 

@@ -22,6 +22,7 @@ from app.timo_incremental_materialization import (
     schedule_timo_sync_retry,
     timo_external_feed_status,
 )
+from scripts import timo_incremental_retry_worker as retry_worker
 from scripts.timo_incremental_retry_worker import due_retry_dates
 
 
@@ -818,6 +819,50 @@ def test_retry_worker_only_returns_latest_due_failed_scope(tmp_path):
     conn.commit()
     conn.close()
     assert due_retry_dates(service, max_dates=1) == []
+
+
+def test_retry_worker_schedules_latest_unacknowledged_publication_once(tmp_path, monkeypatch):
+    connect = _connect_factory(tmp_path)
+    conn = connect()
+    conn.execute(
+        """
+        INSERT INTO timo_sync_watermark(
+            guild_executor_key, guild_name, country, stat_date_bj, data_status,
+            last_success_time, last_success_sync_id, row_count, total_income,
+            checksum, revision_version, source_snapshot_at
+        ) VALUES (
+            'guild-id', 'TIMO001', 'Indonesia', '2026-07-24', 'complete',
+            '2026-07-24T08:00:00+00:00', 'sync-id', 1, 10,
+            ?, 1, '2026-07-24T08:00:00+00:00'
+        )
+        """,
+        ('a' * 64,),
+    )
+    conn.commit()
+    conn.close()
+    service = SimpleNamespace(db=SimpleNamespace(connect=connect))
+    monkeypatch.setattr(
+        retry_worker,
+        'current_event_for_date',
+        lambda conn, data_date: {'eventId': f'timo:{data_date}:content'},
+    )
+    ack_path = tmp_path / 'notification-ack.json'
+
+    assert due_retry_dates(
+        service,
+        max_dates=1,
+        notification_ack_path=ack_path,
+    ) == ['2026-07-24']
+
+    ack_path.write_text(
+        '{"event_id":"timo:2026-07-24:content"}',
+        encoding='utf-8',
+    )
+    assert due_retry_dates(
+        service,
+        max_dates=1,
+        notification_ack_path=ack_path,
+    ) == []
 
 
 def test_source_not_ready_keeps_cross_window_retry_after_normal_limit(tmp_path):

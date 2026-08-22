@@ -25,6 +25,7 @@ from app.sqlite_job_lock import (  # noqa: E402
     acquire_sqlite_job_lock,
     print_job_lock_skip,
 )
+from scripts.notify_timo_materialization import current_event_for_date  # noqa: E402
 
 
 def _args() -> argparse.Namespace:
@@ -35,11 +36,31 @@ def _args() -> argparse.Namespace:
         default=str(ROOT_DIR / 'data' / 'timo_incremental_retry_status.json'),
     )
     parser.add_argument('--max-dates', type=int, default=1)
+    parser.add_argument(
+        '--notification-ack-path',
+        default=str(ROOT_DIR / 'data' / 'timo_materialization_notification_ack.json'),
+    )
     parser.add_argument('--fail-on-lock-busy', action='store_true')
     return parser.parse_args()
 
 
-def due_retry_dates(service: Service, *, max_dates: int = 1) -> List[str]:
+def _acknowledged_event_id(path: str | Path | None) -> str:
+    if not path:
+        return ''
+    try:
+        payload = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return ''
+    return str(payload.get('event_id') or '') if isinstance(payload, dict) else ''
+
+
+def due_retry_dates(
+    service: Service,
+    *,
+    max_dates: int = 1,
+    notification_ack_path: str | Path | None = None,
+) -> List[str]:
+    limit = max(1, min(10, int(max_dates or 1)))
     with service.db.connect() as conn:
         rows = conn.execute(
             """
@@ -61,14 +82,35 @@ def due_retry_dates(service: Service, *, max_dates: int = 1) -> List[str]:
             ORDER BY runs.next_retry_at ASC, runs.stat_date_bj ASC
             LIMIT ?
             """,
-            (datetime.now(timezone.utc).isoformat(), max(1, min(10, int(max_dates or 1)))),
+            (datetime.now(timezone.utc).isoformat(), limit),
         ).fetchall()
-    return [str(row['stat_date_bj']) for row in rows]
+        dates = [str(row['stat_date_bj']) for row in rows]
+        if notification_ack_path and len(dates) < limit:
+            latest = conn.execute(
+                'SELECT MAX(stat_date_bj) AS stat_date_bj FROM timo_sync_watermark',
+            ).fetchone()
+            candidate = str(latest['stat_date_bj'] or '') if latest is not None else ''
+            if candidate and candidate not in dates:
+                try:
+                    event = current_event_for_date(conn, candidate)
+                except ValueError:
+                    event = {}
+                if (
+                    event
+                    and str(event.get('eventId') or '')
+                    != _acknowledged_event_id(notification_ack_path)
+                ):
+                    dates.append(candidate)
+    return dates[:limit]
 
 
 def _run(args: argparse.Namespace) -> Dict[str, Any]:
     service = Service(Database(args.db_path))
-    dates = due_retry_dates(service, max_dates=args.max_dates)
+    dates = due_retry_dates(
+        service,
+        max_dates=args.max_dates,
+        notification_ack_path=args.notification_ack_path,
+    )
     results: List[Dict[str, Any]] = []
     for stat_date_bj in dates:
         result = service.materialize_timo_external_feed_snapshot(
