@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 from typing import Any, Dict, List
+from zoneinfo import ZoneInfo
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -44,15 +45,52 @@ def _args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _acknowledged_scope_lineage(path: str | Path | None) -> Dict[str, Any]:
+def _ack_payload(path: str | Path | None) -> Dict[str, Any]:
     if not path:
         return {}
     try:
         payload = json.loads(Path(path).read_text(encoding='utf-8'))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return {}
-    lineage = payload.get('scope_lineage') if isinstance(payload, dict) else None
+    return payload if isinstance(payload, dict) else {}
+
+
+def _acknowledged_scope_lineage(path: str | Path | None, stat_date_bj: str) -> Dict[str, Any]:
+    payload = _ack_payload(path)
+    acknowledgements = payload.get('acknowledgements')
+    if isinstance(acknowledgements, dict):
+        item = acknowledgements.get(stat_date_bj)
+        lineage = item.get('scope_lineage') if isinstance(item, dict) else None
+        return lineage if isinstance(lineage, dict) else {}
+    if str(payload.get('business_date') or '') != stat_date_bj:
+        return {}
+    lineage = payload.get('scope_lineage')
     return lineage if isinstance(lineage, dict) else {}
+
+
+def _tracked_publication_dates(
+    conn: Any,
+    notification_ack_path: str | Path | None,
+) -> List[str]:
+    current_bj = datetime.now(timezone.utc).astimezone(ZoneInfo('Asia/Shanghai'))
+    lag_days = 1 if current_bj.hour >= 16 else 2
+    latest_eligible = (current_bj.date() - timedelta(days=lag_days)).isoformat()
+    latest = conn.execute(
+        """
+        SELECT MAX(stat_date_bj) AS stat_date_bj
+        FROM timo_sync_watermark
+        WHERE stat_date_bj<=?
+        """,
+        (latest_eligible,),
+    ).fetchone()
+    dates = {str(latest['stat_date_bj'] or '')} if latest is not None else set()
+    payload = _ack_payload(notification_ack_path)
+    acknowledgements = payload.get('acknowledgements')
+    if isinstance(acknowledgements, dict):
+        dates.update(str(value) for value in acknowledgements if str(value) <= latest_eligible)
+    elif str(payload.get('business_date') or '') <= latest_eligible:
+        dates.add(str(payload.get('business_date') or ''))
+    return sorted((value for value in dates if value), reverse=True)[:7]
 
 
 def _publication_lineage(conn: Any, stat_date_bj: str) -> Dict[str, Any]:
@@ -138,17 +176,18 @@ def due_retry_dates(
         ).fetchall()
         dates = [str(row['stat_date_bj']) for row in rows]
         if notification_ack_path and len(dates) < limit:
-            latest = conn.execute(
-                'SELECT MAX(stat_date_bj) AS stat_date_bj FROM timo_sync_watermark',
-            ).fetchone()
-            candidate = str(latest['stat_date_bj'] or '') if latest is not None else ''
-            if candidate and candidate not in dates:
+            for candidate in _tracked_publication_dates(conn, notification_ack_path):
+                if candidate in dates:
+                    continue
                 current_lineage = _publication_lineage(conn, candidate)
                 if (
                     current_lineage
-                    and current_lineage != _acknowledged_scope_lineage(notification_ack_path)
+                    and current_lineage
+                    != _acknowledged_scope_lineage(notification_ack_path, candidate)
                 ):
                     dates.append(candidate)
+                    if len(dates) >= limit:
+                        break
     return dates[:limit]
 
 

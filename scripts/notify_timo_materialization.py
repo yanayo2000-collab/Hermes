@@ -296,20 +296,34 @@ def current_event_for_date(conn: sqlite3.Connection, data_date: str) -> dict[str
 def write_ack(path: Path, event: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + '.tmp')
+    try:
+        existing = json.loads(path.read_text(encoding='utf-8'))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        existing = {}
+    acknowledgements = dict(existing.get('acknowledgements') or {}) if isinstance(existing, dict) else {}
+    scope_lineage = {
+        str(scope.get('guildStorageName') or ''): {
+            'checksum': str(scope.get('checksum') or ''),
+            'revision': int(scope.get('revision') or 0),
+            'source_generation': str(scope.get('sourceGeneration') or ''),
+        }
+        for scope in event.get('scopes') or []
+        if scope.get('consumable') is True
+    }
+    business_date = str(event.get('businessDate') or '')
+    acknowledgements[business_date] = {
+        'event_id': str(event.get('eventId') or ''),
+        'checksum': str(event.get('checksum') or ''),
+        'scope_lineage': scope_lineage,
+        'acknowledged_at': datetime.now(timezone.utc).isoformat(),
+    }
     temporary.write_text(
         json.dumps({
-            'business_date': str(event.get('businessDate') or ''),
+            'business_date': business_date,
             'event_id': str(event.get('eventId') or ''),
             'checksum': str(event.get('checksum') or ''),
-            'scope_lineage': {
-                str(scope.get('guildStorageName') or ''): {
-                    'checksum': str(scope.get('checksum') or ''),
-                    'revision': int(scope.get('revision') or 0),
-                    'source_generation': str(scope.get('sourceGeneration') or ''),
-                }
-                for scope in event.get('scopes') or []
-                if scope.get('consumable') is True
-            },
+            'scope_lineage': scope_lineage,
+            'acknowledgements': acknowledgements,
             'acknowledged_at': datetime.now(timezone.utc).isoformat(),
         }, ensure_ascii=False, sort_keys=True),
         encoding='utf-8',

@@ -862,13 +862,16 @@ def test_retry_worker_schedules_latest_unacknowledged_publication_once(tmp_path,
     ) == ['2026-07-24']
 
     ack_path.write_text(
-        json.dumps({'scope_lineage': {
-            'TIMO001': {
-                'checksum': 'a' * 64,
-                'revision': 1,
-                'source_generation': 'sync-id',
+        json.dumps({
+            'business_date': '2026-07-24',
+            'scope_lineage': {
+                'TIMO001': {
+                    'checksum': 'a' * 64,
+                    'revision': 1,
+                    'source_generation': 'sync-id',
+                },
             },
-        }}),
+        }),
         encoding='utf-8',
     )
     assert due_retry_dates(
