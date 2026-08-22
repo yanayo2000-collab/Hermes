@@ -41,6 +41,7 @@ def _args() -> argparse.Namespace:
         default=str(ROOT_DIR / 'data' / 'timo_materialization_notification_ack.json'),
     )
     parser.add_argument('--fail-on-lock-busy', action='store_true')
+    parser.add_argument('--check-due-only', action='store_true')
     return parser.parse_args()
 
 
@@ -127,6 +128,20 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
     }
 
 
+def _check_due(args: argparse.Namespace) -> Dict[str, Any]:
+    service = Service(Database(args.db_path))
+    dates = due_retry_dates(
+        service,
+        max_dates=args.max_dates,
+        notification_ack_path=args.notification_ack_path,
+    )
+    return {
+        'ok': True,
+        'status': 'due' if dates else 'idle',
+        'due_dates': dates,
+    }
+
+
 def _write_status(path: str, result: Dict[str, Any]) -> None:
     status_path = Path(path)
     status_path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,6 +160,10 @@ def _result_exit_code(result: Dict[str, Any]) -> int:
 def main() -> int:
     args = _args()
     assert_managed_batch_runtime('timo_incremental_retry', required_slice='mcn-batch.slice')
+    if args.check_due_only:
+        result = _check_due(args)
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
     try:
         lock = acquire_sqlite_job_lock('sqlite-etl')
     except JobLockBusy as exc:

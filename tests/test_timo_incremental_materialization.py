@@ -865,6 +865,35 @@ def test_retry_worker_schedules_latest_unacknowledged_publication_once(tmp_path,
     ) == []
 
 
+def test_retry_worker_due_check_matches_batch_runner_contract(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        retry_worker,
+        'due_retry_dates',
+        lambda service, max_dates, notification_ack_path: ['2026-07-24'],
+    )
+    args = SimpleNamespace(
+        db_path=str(tmp_path / 'automation.db'),
+        max_dates=1,
+        notification_ack_path=tmp_path / 'ack.json',
+    )
+    assert retry_worker._check_due(args) == {
+        'ok': True,
+        'status': 'due',
+        'due_dates': ['2026-07-24'],
+    }
+
+    monkeypatch.setattr(
+        retry_worker,
+        'due_retry_dates',
+        lambda service, max_dates, notification_ack_path: [],
+    )
+    assert retry_worker._check_due(args) == {
+        'ok': True,
+        'status': 'idle',
+        'due_dates': [],
+    }
+
+
 def test_source_not_ready_keeps_cross_window_retry_after_normal_limit(tmp_path):
     connect = _connect_factory(tmp_path)
     conn = connect()
