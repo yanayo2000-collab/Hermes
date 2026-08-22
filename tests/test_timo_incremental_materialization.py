@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 import sqlite3
 from types import SimpleNamespace
 
@@ -843,8 +844,14 @@ def test_retry_worker_schedules_latest_unacknowledged_publication_once(tmp_path,
     service = SimpleNamespace(db=SimpleNamespace(connect=connect))
     monkeypatch.setattr(
         retry_worker,
-        'current_event_for_date',
-        lambda conn, data_date: {'eventId': f'timo:{data_date}:content'},
+        '_publication_lineage',
+        lambda conn, data_date: {
+            'TIMO001': {
+                'checksum': 'a' * 64,
+                'revision': 1,
+                'source_generation': 'sync-id',
+            },
+        },
     )
     ack_path = tmp_path / 'notification-ack.json'
 
@@ -855,7 +862,13 @@ def test_retry_worker_schedules_latest_unacknowledged_publication_once(tmp_path,
     ) == ['2026-07-24']
 
     ack_path.write_text(
-        '{"event_id":"timo:2026-07-24:content"}',
+        json.dumps({'scope_lineage': {
+            'TIMO001': {
+                'checksum': 'a' * 64,
+                'revision': 1,
+                'source_generation': 'sync-id',
+            },
+        }}),
         encoding='utf-8',
     )
     assert due_retry_dates(

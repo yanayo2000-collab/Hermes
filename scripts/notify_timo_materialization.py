@@ -301,6 +301,15 @@ def write_ack(path: Path, event: dict[str, Any]) -> None:
             'business_date': str(event.get('businessDate') or ''),
             'event_id': str(event.get('eventId') or ''),
             'checksum': str(event.get('checksum') or ''),
+            'scope_lineage': {
+                str(scope.get('guildStorageName') or ''): {
+                    'checksum': str(scope.get('checksum') or ''),
+                    'revision': int(scope.get('revision') or 0),
+                    'source_generation': str(scope.get('sourceGeneration') or ''),
+                }
+                for scope in event.get('scopes') or []
+                if scope.get('consumable') is True
+            },
             'acknowledged_at': datetime.now(timezone.utc).isoformat(),
         }, ensure_ascii=False, sort_keys=True),
         encoding='utf-8',

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -25,7 +25,6 @@ from app.sqlite_job_lock import (  # noqa: E402
     acquire_sqlite_job_lock,
     print_job_lock_skip,
 )
-from scripts.notify_timo_materialization import current_event_for_date  # noqa: E402
 
 
 def _args() -> argparse.Namespace:
@@ -45,14 +44,66 @@ def _args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _acknowledged_event_id(path: str | Path | None) -> str:
+def _acknowledged_scope_lineage(path: str | Path | None) -> Dict[str, Any]:
     if not path:
-        return ''
+        return {}
     try:
         payload = json.loads(Path(path).read_text(encoding='utf-8'))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return ''
-    return str(payload.get('event_id') or '') if isinstance(payload, dict) else ''
+        return {}
+    lineage = payload.get('scope_lineage') if isinstance(payload, dict) else None
+    return lineage if isinstance(lineage, dict) else {}
+
+
+def _publication_lineage(conn: Any, stat_date_bj: str) -> Dict[str, Any]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=2700)).isoformat()
+    lineage: Dict[str, Any] = {}
+    watermarks = conn.execute(
+        """
+        SELECT guild_executor_key, guild_name, checksum, revision_version,
+               last_success_sync_id, last_success_time
+        FROM timo_sync_watermark
+        WHERE stat_date_bj=? AND data_status='complete'
+        """,
+        (stat_date_bj,),
+    ).fetchall()
+    for watermark in watermarks:
+        latest = conn.execute(
+            """
+            SELECT status
+            FROM timo_sync_run_log
+            WHERE guild_executor_key=? AND stat_date_bj=?
+            ORDER BY start_time DESC
+            LIMIT 1
+            """,
+            (str(watermark['guild_executor_key']), stat_date_bj),
+        ).fetchone()
+        observations = conn.execute(
+            """
+            SELECT COUNT(*) AS observation_count
+            FROM timo_sync_run_log
+            WHERE guild_executor_key=? AND stat_date_bj=? AND data_status='complete'
+              AND status IN ('success','no_op') AND checksum=?
+            """,
+            (
+                str(watermark['guild_executor_key']),
+                stat_date_bj,
+                str(watermark['checksum'] or ''),
+            ),
+        ).fetchone()
+        if (
+            latest is None
+            or str(latest['status'] or '') not in {'success', 'no_op'}
+            or int(observations['observation_count'] or 0) < 2
+            or str(watermark['last_success_time'] or '') > cutoff
+        ):
+            continue
+        lineage[str(watermark['guild_name'] or '')] = {
+            'checksum': str(watermark['checksum'] or ''),
+            'revision': int(watermark['revision_version'] or 0),
+            'source_generation': str(watermark['last_success_sync_id'] or ''),
+        }
+    return lineage
 
 
 def due_retry_dates(
@@ -92,14 +143,10 @@ def due_retry_dates(
             ).fetchone()
             candidate = str(latest['stat_date_bj'] or '') if latest is not None else ''
             if candidate and candidate not in dates:
-                try:
-                    event = current_event_for_date(conn, candidate)
-                except ValueError:
-                    event = {}
+                current_lineage = _publication_lineage(conn, candidate)
                 if (
-                    event
-                    and str(event.get('eventId') or '')
-                    != _acknowledged_event_id(notification_ack_path)
+                    current_lineage
+                    and current_lineage != _acknowledged_scope_lineage(notification_ack_path)
                 ):
                     dates.append(candidate)
     return dates[:limit]
