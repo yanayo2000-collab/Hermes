@@ -949,6 +949,25 @@ def test_retry_worker_does_not_treat_an_unready_scope_as_removed_from_acknowledg
     }, acknowledged) is True
 
 
+def test_retry_worker_ignores_generation_only_churn_after_content_acknowledgement():
+    acknowledged = {
+        'agency of BR somente': {
+            'checksum': 'b' * 64,
+            'revision': 3,
+            'source_generation': 'sync-before',
+        },
+    }
+    current = {
+        'agency of BR somente': {
+            'checksum': 'b' * 64,
+            'revision': 3,
+            'source_generation': 'sync-after-no-op',
+        },
+    }
+
+    assert retry_worker._has_unacknowledged_lineage(current, acknowledged) is False
+
+
 def test_retry_worker_does_not_spin_before_reobservation_delay_or_after_second_observation(tmp_path, monkeypatch):
     connect = _connect_factory(tmp_path)
     current = datetime.now(timezone.utc)

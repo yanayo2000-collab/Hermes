@@ -79,8 +79,15 @@ def _has_unacknowledged_lineage(
     current_lineage: Dict[str, Any],
     acknowledged_lineage: Dict[str, Any],
 ) -> bool:
+    def content_identity(value: Any) -> tuple[str, int]:
+        item = value if isinstance(value, dict) else {}
+        return (
+            str(item.get('checksum') or ''),
+            int(item.get('revision') or 0),
+        )
+
     return any(
-        acknowledged_lineage.get(guild_name) != lineage
+        content_identity(acknowledged_lineage.get(guild_name)) != content_identity(lineage)
         for guild_name, lineage in current_lineage.items()
     )
 
