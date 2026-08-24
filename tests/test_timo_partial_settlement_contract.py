@@ -162,6 +162,59 @@ def test_non_source_failure_is_anomaly_not_zero():
     assert mx['totalIncome'] is None
 
 
+def test_controlled_defer_contract_publishes_only_available_scopes():
+    status = _status(state='success')['scopes'][0]
+    status['revenue_contract'] = 'complete_available_guild_and_streamer'
+    status['deferred_revenue_guilds'] = [{
+        'guild_id': '22000408',
+        'guild_name': 'Agency MX somente',
+        'reason': 'awaiting_source_recovery_notification',
+    }]
+    event = notifier.build_event(
+        status=status,
+        manifests=[
+            _manifest('TIMO001', 'Indonesia', 'a'),
+            _manifest('agency of BR somente', 'Brazil', 'b'),
+        ],
+        failures={},
+    )
+
+    assert event['dayStatus'] == 'PARTIAL'
+    assert event['failedScopes'] == ['MX']
+    mx = next(scope for scope in event['scopes'] if scope['country'] == 'MX')
+    assert mx['qualityStatus'] == 'SOURCE_MISSING'
+    assert mx['failureReason'] == 'awaiting_source_recovery_notification'
+
+
+def test_controlled_defer_contract_rejects_unlisted_failure():
+    status = _status(state='success')['scopes'][0]
+    status['revenue_contract'] = 'complete_available_guild_and_streamer'
+    status['deferred_revenue_guilds'] = [{
+        'guild_id': '22000408',
+        'reason': 'awaiting_source_recovery_notification',
+    }]
+    with pytest.raises(ValueError, match='materialization_deferred_scope_mismatch'):
+        notifier.build_event(
+            status=status,
+            manifests=[_manifest('agency of BR somente', 'Brazil', 'b')],
+            failures={},
+        )
+
+
+def test_controlled_defer_contract_requires_explicit_scope():
+    status = _status(state='success')['scopes'][0]
+    status['revenue_contract'] = 'complete_available_guild_and_streamer'
+    with pytest.raises(ValueError, match='materialization_deferred_scope_missing'):
+        notifier.build_event(
+            status=status,
+            manifests=[
+                _manifest('TIMO001', 'Indonesia', 'a'),
+                _manifest('agency of BR somente', 'Brazil', 'b'),
+            ],
+            failures={},
+        )
+
+
 def test_zero_ready_scope_fails_closed():
     with pytest.raises(ValueError, match='no_publication_ready_scope'):
         notifier.build_event(

@@ -30,7 +30,13 @@ SOURCE_MISSING_MARKERS = (
     'export_url_not_ready',
     'circuit open until',
     'ticket',
+    'awaiting_source_recovery_notification',
 )
+
+FINAL_REVENUE_CONTRACTS = {
+    'complete_guild_and_streamer',
+    'complete_available_guild_and_streamer',
+}
 
 
 def canonical_json(value: Any) -> str:
@@ -112,8 +118,26 @@ def build_event(
     normalized = _materialization_identity(status)
     if normalized.get('provisional') is not False:
         raise ValueError('materialization_not_final_contract')
-    if normalized.get('revenue_contract') != 'complete_guild_and_streamer':
+    revenue_contract = str(normalized.get('revenue_contract') or '')
+    if revenue_contract not in FINAL_REVENUE_CONTRACTS:
         raise ValueError('materialization_not_final_contract')
+    deferred_by_id: dict[str, str] = {}
+    for item in normalized.get('deferred_revenue_guilds') or []:
+        if not isinstance(item, dict):
+            raise ValueError('materialization_deferred_scope_invalid')
+        guild_id = str(item.get('guild_id') or '').strip()
+        reason = str(item.get('reason') or '').strip()
+        if (
+            guild_id not in COUNTRY_BY_GUILD_ID
+            or guild_id in deferred_by_id
+            or not reason
+        ):
+            raise ValueError('materialization_deferred_scope_invalid')
+        deferred_by_id[guild_id] = reason
+    if revenue_contract == 'complete_available_guild_and_streamer' and not deferred_by_id:
+        raise ValueError('materialization_deferred_scope_missing')
+    if revenue_contract == 'complete_guild_and_streamer' and deferred_by_id:
+        raise ValueError('materialization_deferred_scope_unexpected')
     data_date = str(normalized.get('data_date_bj') or '')
     run_id = str(normalized.get('run_id') or '')
     if not data_date or not run_id:
@@ -162,6 +186,12 @@ def build_event(
             })
             continue
         failure = failures.get(identity.storage_name) or {}
+        if identity.guild_id in deferred_by_id:
+            failure = {
+                **failure,
+                'errorCode': deferred_by_id[identity.guild_id],
+                'error': deferred_by_id[identity.guild_id],
+            }
         scopes.append({
             **common,
             'qualityStatus': _quality_status(failure),
@@ -178,6 +208,16 @@ def build_event(
         raise ValueError('no_publication_ready_scope')
 
     failed = len(scopes) - succeeded
+    failed_ids = {
+        str(scope.get('guildId') or '')
+        for scope in scopes
+        if scope.get('consumable') is not True
+    }
+    if (
+        revenue_contract == 'complete_available_guild_and_streamer'
+        and failed_ids != set(deferred_by_id)
+    ):
+        raise ValueError('materialization_deferred_scope_mismatch')
     day_status = 'COMPLETE' if failed == 0 else 'PARTIAL'
     checksum = hashlib.sha256(canonical_json(scopes).encode('utf-8')).hexdigest()
     event_id = f'timo:{data_date}:{checksum[:20]}'
