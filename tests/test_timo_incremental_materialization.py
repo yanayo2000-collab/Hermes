@@ -884,7 +884,9 @@ def test_retry_worker_schedules_latest_unacknowledged_publication_once(tmp_path,
 def test_retry_worker_actively_reobserves_complete_scope_after_five_minutes(tmp_path, monkeypatch):
     connect = _connect_factory(tmp_path)
     current = datetime.now(timezone.utc)
-    stat_date = (current.astimezone(retry_worker.ZoneInfo('Asia/Shanghai')).date() - timedelta(days=1)).isoformat()
+    current_bj = current.astimezone(retry_worker.ZoneInfo('Asia/Shanghai'))
+    lag_days = 1 if current_bj.hour >= 16 else 2
+    stat_date = (current_bj.date() - timedelta(days=lag_days)).isoformat()
     observed_at = (current - timedelta(minutes=6)).isoformat()
     conn = connect()
     conn.execute(

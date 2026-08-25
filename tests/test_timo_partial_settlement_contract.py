@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 
 import pytest
 
@@ -98,6 +99,42 @@ def test_partial_day_publishes_complete_scopes_and_never_encodes_missing_as_zero
     )
 
 
+def test_partial_event_is_diagnostic_only_and_cannot_be_sent(monkeypatch):
+    event = notifier.build_event(
+        status=_status(),
+        manifests=[
+            _manifest('agency of BR somente', 'Brazil', 'b'),
+            _manifest('TIMO001', 'Indonesia', 'a'),
+        ],
+        failures={'Agency MX somente': {'errorCode': 'source_not_ready', 'error': ''}},
+    )
+    assert notifier.complete_event_ready_for_downstream(event) is False
+    assert notifier.notification_skip_result(event)['notification_state'] == 'PENDING_REOBSERVE'
+    monkeypatch.setattr(notifier.request, 'urlopen', lambda *args, **kwargs: pytest.fail('network called'))
+    with pytest.raises(ValueError, match='downstream_notification_requires_complete'):
+        notifier.send_event(event, url='https://example.invalid', secret='x' * 32)
+
+
+def test_notifier_main_skips_partial_before_secret_and_ack(monkeypatch, capsys):
+    event = notifier.build_event(
+        status=_status(),
+        manifests=[
+            _manifest('agency of BR somente', 'Brazil', 'b'),
+            _manifest('TIMO001', 'Indonesia', 'a'),
+        ],
+        failures={'Agency MX somente': {'errorCode': 'source_not_ready', 'error': ''}},
+    )
+    monkeypatch.setattr(notifier, 'load_event', lambda *args, **kwargs: event)
+    monkeypatch.setattr(notifier.Path, 'read_text', lambda *args, **kwargs: pytest.fail('secret read'))
+    monkeypatch.setattr(notifier, 'write_ack', lambda *args, **kwargs: pytest.fail('ack written'))
+    monkeypatch.setattr(notifier.request, 'urlopen', lambda *args, **kwargs: pytest.fail('network called'))
+    monkeypatch.setattr(sys, 'argv', ['notify_timo_materialization.py'])
+    assert notifier.main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['notification_state'] == 'PENDING_REOBSERVE'
+    assert result['skipped'] == 'downstream_notification_requires_complete'
+
+
 def test_complete_recovery_upgrades_day_and_revision_is_part_of_scope_lineage():
     manifests = [
         _manifest('Agency MX somente', 'Mexico', 'c', revision=3),
@@ -114,6 +151,7 @@ def test_complete_recovery_upgrades_day_and_revision_is_part_of_scope_lineage():
     assert event['scopeFailed'] == 0
     assert event['failedScopes'] == []
     assert next(scope for scope in event['scopes'] if scope['country'] == 'MX')['revision'] == 3
+    assert notifier.complete_event_ready_for_downstream(event) is True
 
 
 def test_same_snapshot_has_stable_checksum_and_event_id():

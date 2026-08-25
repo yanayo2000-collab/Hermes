@@ -43,6 +43,54 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
 
+def complete_event_ready_for_downstream(event: dict[str, Any]) -> bool:
+    """Accept only a fully consumable three-scope day for Nova delivery."""
+    scopes = event.get('scopes')
+    expected = int(event.get('expectedScopeCount') or 0)
+    total = int(event.get('scopeTotal') or 0)
+    succeeded = int(event.get('scopeSucceeded') or 0)
+    failed = int(event.get('scopeFailed') or 0)
+    return bool(
+        event.get('schemaVersion') == 2
+        and event.get('dayStatus') == 'COMPLETE'
+        and event.get('ready') is True
+        and event.get('consumable') is True
+        and expected == len(TIMO_GUILD_IDENTITIES)
+        and total == expected
+        and succeeded == expected
+        and failed == 0
+        and event.get('failedScopes') == []
+        and isinstance(scopes, list)
+        and len(scopes) == expected
+        and all(
+            isinstance(scope, dict)
+            and scope.get('qualityStatus') == 'COMPLETE'
+            and scope.get('consumable') is True
+            and int(scope.get('rowCount') or 0) > 0
+            and float(scope.get('totalIncome') or 0) > 0
+            and len(str(scope.get('checksum') or '')) == 64
+            and int(scope.get('revision') or 0) > 0
+            and bool(str(scope.get('sourceGeneration') or ''))
+            and bool(str(scope.get('materializedAt') or ''))
+            for scope in scopes
+        )
+    )
+
+
+def notification_skip_result(event: dict[str, Any]) -> dict[str, Any]:
+    """Keep PARTIAL as internal evidence without creating a Nova pull signal."""
+    return {
+        'ok': True,
+        'skipped': 'downstream_notification_requires_complete',
+        'notification_state': 'PENDING_REOBSERVE',
+        'event_id': str(event.get('eventId') or ''),
+        'checksum': str(event.get('checksum') or ''),
+        'day_status': str(event.get('dayStatus') or ''),
+        'scope_succeeded': int(event.get('scopeSucceeded') or 0),
+        'scope_failed': int(event.get('scopeFailed') or 0),
+    }
+
+
 def _materialization_identity(status: dict[str, Any]) -> dict[str, Any]:
     """Normalize feed, revision and persistent-retry result envelopes."""
     if status.get('status') == 'idle':
@@ -372,6 +420,8 @@ def write_ack(path: Path, event: dict[str, Any]) -> None:
 
 
 def send_event(event: dict[str, Any], *, url: str, secret: str, attempts: int = 3) -> dict[str, Any]:
+    if not complete_event_ready_for_downstream(event):
+        raise ValueError('downstream_notification_requires_complete')
     body = canonical_json(event).encode('utf-8')
     last_error = ''
     for attempt in range(1, attempts + 1):
@@ -413,6 +463,9 @@ def main() -> int:
         event = load_event(Path(args.status_path), Path(args.db_path), Path(args.started_marker))
     except ValueError as exc:
         print(json.dumps({'ok': True, 'skipped': str(exc)}, sort_keys=True))
+        return 0
+    if not complete_event_ready_for_downstream(event):
+        print(json.dumps(notification_skip_result(event), sort_keys=True))
         return 0
     secret = Path(args.secret_file).read_text(encoding='utf-8').strip()
     if len(secret) < 32:
