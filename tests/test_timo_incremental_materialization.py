@@ -162,6 +162,80 @@ def test_external_feed_requires_reobservation_and_exact_fact_manifest(tmp_path):
     conn.close()
 
 
+def test_exact_official_manual_scope_bypasses_only_observation_gates(tmp_path):
+    connect = _connect_factory(tmp_path)
+    source_sha = '2f76c9ac028d97a539d81f9b9dff774a0d1fd0401c58a37da1fef90de5e92fae'
+    sync_id = 'timo_manual_official_20260819_22000408_' + source_sha[:12]
+    rows = [
+        {'timo_id': str(index), 'total_income': 1}
+        for index in range(1, 407)
+    ] + [{'timo_id': '407', 'total_income': 6385079.35}]
+    materialize_timo_revenue_snapshot(
+        connect,
+        sync_id=sync_id,
+        parent_run_id=sync_id,
+        guild_executor_key='timo:cms_guild_sid:22000408',
+        guild_name='Agency MX somente',
+        country='Mexico',
+        stat_date_bj='2026-08-19',
+        provisional=False,
+        revenue_rows=rows,
+        snapshot_at='2026-08-25T06:00:00+00:00',
+        source_provenance={
+            'source_kind': 'official_android_manual_export',
+            'raw_response_sha256': source_sha,
+            'source_row_count': 5271,
+            'effective_row_count': 407,
+            'source_total_income': '6385485.350000',
+            'official_verification': {
+                'mode': 'manual_official_verified',
+                'authorization_ref': 'codex-thread:019fd525-d473-7c60-84ce-e28bec016a30:2026-08-25',
+                'business_date': '2026-08-19',
+                'guild_id': '22000408',
+                'source_sha256': source_sha,
+                'source_row_count': 5271,
+                'effective_row_count': 407,
+                'total_income': '6385485.350000',
+                'observation_policy': 'explicit_user_verified_no_reobserve',
+            },
+        },
+    )
+    conn = connect()
+    watermark_time = datetime.fromisoformat(conn.execute(
+        "SELECT last_success_time FROM timo_sync_watermark WHERE guild_executor_key=?",
+        ('timo:cms_guild_sid:22000408',),
+    ).fetchone()[0])
+    status = timo_external_feed_status(
+        conn,
+        stat_date_bj='2026-08-19',
+        country='Mexico',
+        now=watermark_time + timedelta(seconds=1),
+    )
+    manifest = status['scope_manifests'][0]
+    assert manifest['publication_ready'] is True
+    assert manifest['official_verification_override'] is True
+    assert manifest['observation_count'] == 1
+    assert manifest['stability_age_seconds'] < 2700
+
+    conn.execute(
+        "UPDATE timo_sync_run_log SET gate_evidence_json='{}' WHERE sync_id=?",
+        (sync_id,),
+    )
+    conn.commit()
+    rejected = timo_external_feed_status(
+        conn,
+        stat_date_bj='2026-08-19',
+        country='Mexico',
+        now=watermark_time + timedelta(seconds=1),
+    )
+    assert rejected['publication_ready'] is False
+    assert rejected['scope_manifests'][0]['official_verification_override'] is False
+    assert set(rejected['scope_manifests'][0]['integrity_errors']) == {
+        'scope_not_reobserved', 'scope_not_stable_45m',
+    }
+    conn.close()
+
+
 def test_incremental_materialization_is_idempotent_and_uses_sql_diff(tmp_path):
     connect = _connect_factory(tmp_path)
     first = _materialize(connect, sync_id='sync-1', rows=_rows())

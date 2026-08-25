@@ -11,6 +11,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
+from app.timo_official_verification import scope_has_official_verification_override
+
 
 TIMO_REVENUE_COLUMNS: tuple[str, ...] = (
     'guild_executor_key',
@@ -2253,9 +2255,18 @@ def timo_external_feed_status(
             int((current - _parse_utc(str(watermark['last_success_time']))).total_seconds()),
         )
         observation_count = int(observations['observation_count'] or 0)
-        if observation_count < 2:
+        official_verification_override = scope_has_official_verification_override(
+            conn,
+            guild_executor_key=str(watermark['guild_executor_key']),
+            stat_date_bj=stat_date_bj,
+            checksum=str(watermark['checksum'] or ''),
+            last_success_sync_id=last_sync_id,
+            row_count=expected_rows,
+            total_income=expected_total,
+        )
+        if observation_count < 2 and not official_verification_override:
             errors.append('scope_not_reobserved')
-        if stability_age_seconds < 2700:
+        if stability_age_seconds < 2700 and not official_verification_override:
             errors.append('scope_not_stable_45m')
         scope_manifests.append({
             'guild_executor_key': str(watermark['guild_executor_key']),
@@ -2271,6 +2282,7 @@ def timo_external_feed_status(
             'source_snapshot_at': str(watermark['source_snapshot_at'] or ''),
             'observation_count': observation_count,
             'stability_age_seconds': stability_age_seconds,
+            'official_verification_override': official_verification_override,
             'publication_ready': not errors,
             'integrity_errors': errors,
         })
