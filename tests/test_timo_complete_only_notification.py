@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sqlite3
 import sys
 
 import pytest
@@ -16,6 +18,8 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 NOTIFIER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(NOTIFIER)
+
+from scripts import timo_incremental_retry_worker as RETRY_WORKER
 
 
 def _status() -> dict:
@@ -102,3 +106,80 @@ def test_complete_three_scope_event_remains_publishable():
         failures={},
     )
     assert NOTIFIER.complete_event_ready_for_downstream(event) is True
+
+
+def _publication_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(':memory:')
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE timo_sync_watermark(
+          guild_executor_key TEXT, guild_name TEXT, stat_date_bj TEXT,
+          data_status TEXT, checksum TEXT, revision_version INTEGER,
+          last_success_sync_id TEXT, last_success_time TEXT
+        );
+        CREATE TABLE timo_sync_run_log(
+          sync_id TEXT, guild_executor_key TEXT, stat_date_bj TEXT,
+          data_status TEXT, status TEXT, checksum TEXT,
+          start_time TEXT, end_time TEXT
+        );
+        """
+    )
+    return conn
+
+
+def test_first_complete_observation_is_automatically_due_for_reobserve():
+    current = datetime.now(timezone.utc)
+    observed_at = (current - timedelta(minutes=6)).isoformat()
+    conn = _publication_db()
+    conn.execute(
+        'INSERT INTO timo_sync_watermark VALUES(?,?,?,?,?,?,?,?)',
+        ('guild-id', 'TIMO001', '2026-08-23', 'complete', 'a' * 64, 1, 'sync-1', observed_at),
+    )
+    conn.execute(
+        'INSERT INTO timo_sync_run_log VALUES(?,?,?,?,?,?,?,?)',
+        ('sync-1', 'guild-id', '2026-08-23', 'complete', 'success', 'a' * 64, observed_at, observed_at),
+    )
+    assert RETRY_WORKER._publication_reobservation_due(
+        conn,
+        '2026-08-23',
+        None,
+        now=current,
+    ) is True
+    conn.execute(
+        'INSERT INTO timo_sync_run_log VALUES(?,?,?,?,?,?,?,?)',
+        ('sync-2', 'guild-id', '2026-08-23', 'complete', 'no_op', 'a' * 64, current.isoformat(), current.isoformat()),
+    )
+    assert RETRY_WORKER._publication_reobservation_due(
+        conn,
+        '2026-08-23',
+        None,
+        now=current,
+    ) is False
+
+
+def test_publication_lineage_requires_two_observations_and_45_minutes():
+    current = datetime.now(timezone.utc)
+    stable_at = (current - timedelta(minutes=46)).isoformat()
+    conn = _publication_db()
+    conn.execute(
+        'INSERT INTO timo_sync_watermark VALUES(?,?,?,?,?,?,?,?)',
+        ('guild-id', 'TIMO001', '2026-08-23', 'complete', 'a' * 64, 1, 'sync-1', stable_at),
+    )
+    for index, status in enumerate(('success', 'no_op'), start=1):
+        conn.execute(
+            'INSERT INTO timo_sync_run_log VALUES(?,?,?,?,?,?,?,?)',
+            (f'sync-{index}', 'guild-id', '2026-08-23', 'complete', status, 'a' * 64, stable_at, stable_at),
+        )
+    assert RETRY_WORKER._publication_lineage(conn, '2026-08-23') == {
+        'TIMO001': {
+            'checksum': 'a' * 64,
+            'revision': 1,
+            'source_generation': 'sync-1',
+        },
+    }
+    conn.execute(
+        'UPDATE timo_sync_watermark SET last_success_time=?',
+        ((current - timedelta(minutes=44)).isoformat(),),
+    )
+    assert RETRY_WORKER._publication_lineage(conn, '2026-08-23') == {}
