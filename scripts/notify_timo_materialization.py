@@ -77,12 +77,16 @@ def complete_event_ready_for_downstream(event: dict[str, Any]) -> bool:
     )
 
 
-def notification_skip_result(event: dict[str, Any]) -> dict[str, Any]:
+def notification_skip_result(
+    event: dict[str, Any],
+    *,
+    state: str = 'PENDING_REOBSERVE',
+) -> dict[str, Any]:
     """Keep PARTIAL as internal evidence without creating a Nova pull signal."""
     return {
         'ok': True,
         'skipped': 'downstream_notification_requires_complete',
-        'notification_state': 'PENDING_REOBSERVE',
+        'notification_state': state,
         'event_id': str(event.get('eventId') or ''),
         'checksum': str(event.get('checksum') or ''),
         'day_status': str(event.get('dayStatus') or ''),
