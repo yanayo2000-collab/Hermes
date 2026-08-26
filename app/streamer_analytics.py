@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -86,8 +87,10 @@ LINKY_OFFLINE_PUBLISH_BATCH_SIZE = 2048
 LINKY_PRODUCTION_BATCH_SLICE = 'mcn-batch-linky.slice'
 PRODUCTION_PROJECT_ROOT = Path('/opt/mcn-ai-automation')
 STREAMER_ANALYTICS_SUPPORT_COPY_BATCH_SIZE = 2048
-STREAMER_ANALYTICS_PAYLOAD_CACHE_TTL_SECONDS = 60.0
+STREAMER_ANALYTICS_PUBLISH_WRITE_WINDOW_SECONDS = 300.0
+STREAMER_ANALYTICS_PAYLOAD_CACHE_TTL_SECONDS = 3600.0
 STREAMER_ANALYTICS_PAYLOAD_CACHE_MAX_ENTRIES = 96
+STREAMER_SYNC_RUNNING_STALE_SECONDS = 2 * 60 * 60
 STREAMER_ANALYTICS_INHERITED_QUEUE_LOCK_PATHS = (
     '/tmp/mcn-ai-automation-sqlite-job-locks/sqlite-etl.lock',
     '/tmp/mcn-ai-automation-sqlite-job-locks/sqlite-writer.lock',
@@ -112,6 +115,13 @@ STREAMER_ANALYTICS_STORE_SUPPORT_TABLES = (
     'streamer_external_guild_revenue_daily',
     'timo_external_revenue_daily',
     'timo_external_sync_runs',
+)
+LINKY_STREAMER_ANALYTICS_SUPPORT_TABLES = (
+    'guild_executors',
+    'guild_anchor_daily_stats',
+    'streamer_external_sync_runs',
+    'streamer_external_revenue_daily',
+    'streamer_external_guild_revenue_daily',
 )
 STREAMER_ANALYTICS_STORE_SUPPORT_SELECTS = {
     # The standalone read store needs freshness coverage, not every raw detail row.
@@ -935,6 +945,226 @@ def _timo_joined_guild_at_expression(conn: sqlite3.Connection) -> str:
     return 'registered_at_bj'
 
 
+def _timo_materialization_profiles(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Read Timo profiles without expanding the cross-platform UNION view."""
+    joined_at = _timo_joined_guild_at_expression(conn)
+    return _rows(
+        conn,
+        f"""
+        SELECT
+            'timo' AS app_name,
+            profile.guild_executor_key,
+            profile.guild_name,
+            COALESCE(NULLIF(profile.country, ''), NULLIF(executor.country, ''), '') AS country,
+            profile.timo_id AS streamer_id,
+            profile.nickname AS display_name,
+            CASE WHEN length({joined_at}) >= 10 THEN substr({joined_at}, 1, 10) ELSE '' END
+                AS registered_date,
+            CASE WHEN length(profile.last_active_at_bj) >= 10
+                 THEN substr(profile.last_active_at_bj, 1, 10) ELSE '' END AS last_active_date,
+            profile.is_real_person,
+            profile.source_payload,
+            profile.updated_at AS source_updated_at
+        FROM timo_external_streamers AS profile
+        LEFT JOIN guild_executors AS executor
+          ON executor.guild_name = profile.guild_name
+         AND lower(executor.app_name) = 'timo'
+        """,
+    )
+
+
+def _timo_legacy_materialization_daily_facts(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Preserve the pre-watermark all-market gate for legacy fixtures only."""
+    joined_at = _timo_joined_guild_at_expression(conn)
+    return _rows(
+        conn,
+        f"""
+        WITH latest_sync AS (
+            SELECT data_date_bj, MAX(created_at) AS created_at
+            FROM timo_external_sync_runs
+            GROUP BY data_date_bj
+        ), latest_sync_status AS (
+            SELECT run.data_date_bj,
+                   MAX(CASE WHEN run.status = 'success' THEN 1 ELSE 0 END) AS succeeded
+            FROM timo_external_sync_runs AS run
+            JOIN latest_sync AS latest
+              ON latest.data_date_bj = run.data_date_bj
+             AND latest.created_at = run.created_at
+            GROUP BY run.data_date_bj
+        )
+        SELECT
+            'timo' AS app_name,
+            revenue.guild_executor_key,
+            revenue.guild_name,
+            COALESCE(NULLIF(profile.country, ''), NULLIF(executor.country, ''), '') AS country,
+            revenue.timo_id AS streamer_id,
+            revenue.stat_date_bj AS stat_date,
+            CASE WHEN substr({joined_at}, 1, 10) = revenue.stat_date_bj THEN 1 ELSE 0 END
+                AS is_new,
+            CASE WHEN COALESCE(revenue.total_income, 0) > 0 THEN 1 ELSE 0 END AS is_active,
+            revenue.total_income
+        FROM timo_external_revenue_daily AS revenue
+        LEFT JOIN timo_external_streamers AS profile
+          ON profile.guild_executor_key = revenue.guild_executor_key
+         AND profile.timo_id = revenue.timo_id
+        LEFT JOIN guild_executors AS executor
+          ON executor.guild_name = revenue.guild_name
+         AND lower(executor.app_name) = 'timo'
+        LEFT JOIN latest_sync_status AS sync
+          ON sync.data_date_bj = revenue.stat_date_bj
+        WHERE revenue.provisional = 0
+          AND COALESCE(sync.succeeded, 1) = 1
+        """,
+    )
+
+
+def _timo_snapshot_checksum(rows: Iterable[Dict[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    for row in sorted(rows, key=lambda item: (str(item['timo_id']), str(item['row_hash']))):
+        digest.update(str(row['timo_id']).encode('utf-8'))
+        digest.update(b'\x1f')
+        digest.update(str(row['row_hash']).encode('ascii'))
+        digest.update(b'\n')
+    return digest.hexdigest()
+
+
+def _timo_materialization_scope_snapshot(
+    conn: sqlite3.Connection,
+) -> tuple[List[Dict[str, Any]], set[tuple[str, date]]]:
+    """Return only guild-day facts that match a complete scope watermark.
+
+    A Timo sync run is a three-market orchestration result.  It may be partial
+    while an individual guild has already published a complete, immutable
+    scope.  Analytics therefore consumes the guild-day watermark and validates
+    its full fact lineage instead of using the day-level run status.
+    """
+    watermark_columns = {
+        str(row[1]) for row in conn.execute('PRAGMA table_info(timo_sync_watermark)').fetchall()
+    }
+    revenue_columns = {
+        str(row[1]) for row in conn.execute('PRAGMA table_info(timo_external_revenue_daily)').fetchall()
+    }
+    required_watermark_columns = {
+        'guild_executor_key', 'stat_date_bj', 'checksum', 'last_success_sync_id',
+        'row_count', 'total_income', 'data_status', 'revision_version',
+    }
+    required_revenue_columns = {'revision_version', 'last_sync_id', 'row_hash'}
+    if not required_watermark_columns.issubset(watermark_columns) or not required_revenue_columns.issubset(revenue_columns):
+        legacy_facts = _timo_legacy_materialization_daily_facts(conn)
+        return legacy_facts, {
+            (str(row.get('guild_executor_key') or ''), parsed_date)
+            for row in legacy_facts
+            if (parsed_date := _iso_date(row.get('stat_date')))
+        }
+
+    watermarks = _rows(
+        conn,
+        """
+        SELECT guild_executor_key, stat_date_bj, checksum, last_success_sync_id,
+               row_count, total_income, revision_version
+        FROM timo_sync_watermark
+        WHERE lower(COALESCE(data_status, '')) = 'complete'
+        ORDER BY stat_date_bj, guild_executor_key
+        """,
+    )
+    if not watermarks:
+        legacy_facts = _timo_legacy_materialization_daily_facts(conn)
+        return legacy_facts, {
+            (str(row.get('guild_executor_key') or ''), parsed_date)
+            for row in legacy_facts
+            if (parsed_date := _iso_date(row.get('stat_date')))
+        }
+
+    joined_at = _timo_joined_guild_at_expression(conn)
+    fact_rows = _rows(
+        conn,
+        f"""
+        SELECT
+            'timo' AS app_name,
+            revenue.guild_executor_key,
+            revenue.guild_name,
+            COALESCE(NULLIF(profile.country, ''), NULLIF(executor.country, ''), '') AS country,
+            revenue.timo_id AS streamer_id,
+            revenue.timo_id,
+            revenue.stat_date_bj AS stat_date,
+            CASE WHEN substr({joined_at}, 1, 10) = revenue.stat_date_bj THEN 1 ELSE 0 END
+                AS is_new,
+            CASE WHEN COALESCE(revenue.total_income, 0) > 0 THEN 1 ELSE 0 END AS is_active,
+            revenue.total_income,
+            revenue.revision_version,
+            revenue.last_sync_id,
+            revenue.row_hash
+        FROM timo_external_revenue_daily AS revenue
+        JOIN timo_sync_watermark AS watermark
+          ON watermark.guild_executor_key = revenue.guild_executor_key
+         AND watermark.stat_date_bj = revenue.stat_date_bj
+         AND lower(COALESCE(watermark.data_status, '')) = 'complete'
+        LEFT JOIN timo_external_streamers AS profile
+          ON profile.guild_executor_key = revenue.guild_executor_key
+         AND profile.timo_id = revenue.timo_id
+        LEFT JOIN guild_executors AS executor
+          ON executor.guild_name = revenue.guild_name
+         AND lower(executor.app_name) = 'timo'
+        WHERE revenue.provisional = 0
+        ORDER BY revenue.stat_date_bj, revenue.guild_executor_key, revenue.timo_id
+        """,
+    )
+    facts_by_scope: Dict[tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    for row in fact_rows:
+        facts_by_scope[(str(row['guild_executor_key']), str(row['stat_date']))].append(row)
+
+    accepted: List[Dict[str, Any]] = []
+    covered_scopes: set[tuple[str, date]] = set()
+    integrity_errors: List[str] = []
+    for watermark in watermarks:
+        guild_key = str(watermark['guild_executor_key'])
+        stat_date_text = str(watermark['stat_date_bj'])
+        scope_rows = facts_by_scope.get((guild_key, stat_date_text), [])
+        expected_rows = int(watermark['row_count'] or 0)
+        expected_total = float(watermark['total_income'] or 0)
+        expected_revision = int(watermark['revision_version'] or 0)
+        expected_sync_id = str(watermark['last_success_sync_id'] or '')
+        expected_checksum = str(watermark['checksum'] or '')
+        actual_total = sum(float(row.get('total_income') or 0) for row in scope_rows)
+        revisions = {int(row.get('revision_version') or 0) for row in scope_rows}
+        sync_ids = {str(row.get('last_sync_id') or '') for row in scope_rows}
+        valid_row_hashes = all(len(str(row.get('row_hash') or '')) == 64 for row in scope_rows)
+        actual_checksum = _timo_snapshot_checksum(scope_rows)
+        mismatches = []
+        if len(scope_rows) != expected_rows:
+            mismatches.append('row_count')
+        if abs(actual_total - expected_total) > 0.000001:
+            mismatches.append('total_income')
+        if expected_rows and revisions != {expected_revision}:
+            mismatches.append('revision')
+        if expected_rows and sync_ids != {expected_sync_id}:
+            mismatches.append('sync_id')
+        if not valid_row_hashes:
+            mismatches.append('row_hash')
+        if actual_checksum != expected_checksum:
+            mismatches.append('checksum')
+        parsed_date = _iso_date(stat_date_text)
+        if not parsed_date:
+            mismatches.append('stat_date')
+        if mismatches:
+            integrity_errors.append(f'{guild_key}:{stat_date_text}:{",".join(mismatches)}')
+            continue
+        accepted.extend({
+            key: value for key, value in row.items()
+            if key not in {'timo_id', 'revision_version', 'last_sync_id', 'row_hash'}
+        } for row in scope_rows)
+        covered_scopes.add((guild_key, parsed_date))
+
+    if integrity_errors:
+        raise RuntimeError('timo_analytics_scope_integrity_mismatch:' + ';'.join(integrity_errors[:20]))
+    return accepted, covered_scopes
+
+
+def _timo_materialization_daily_facts(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    facts, _covered_scopes = _timo_materialization_scope_snapshot(conn)
+    return facts
+
+
 def _ratio(numerator: int, denominator: int) -> Optional[float]:
     return round(numerator / denominator, 4) if denominator else None
 
@@ -979,21 +1209,22 @@ def _build_timo_weekly_cohorts_live(
     end: date,
     guild_name: str = '',
     country: str = '',
+    _profiles: Optional[Iterable[Dict[str, Any]]] = None,
+    _facts: Optional[Iterable[Dict[str, Any]]] = None,
+    _covered_scopes: Optional[set[tuple[str, date]]] = None,
+    _data_as_of: Optional[date] = None,
 ) -> Dict[str, Any]:
     cohort_start, cohort_end = _timo_cohort_display_window(start, end)
-    filter_clause = ''
-    filter_params: List[object] = []
-    if guild_name:
-        filter_clause += ' AND guild_name = ?'
-        filter_params.append(guild_name)
-    if country:
-        filter_clause += ' AND country = ?'
-        filter_params.append(country)
-    max_row = conn.execute(
-        f"SELECT MAX(stat_date_bj) FROM timo_external_revenue_daily WHERE provisional = 0{filter_clause}",
-        filter_params,
-    ).fetchone()
-    data_as_of = _iso_date(max_row[0] if max_row else None)
+    strict_daily_scope = _facts is not None or _covered_scopes is not None
+    if _facts is None or _covered_scopes is None:
+        source_facts, covered_scopes = _timo_materialization_scope_snapshot(conn)
+    else:
+        source_facts = [dict(row) for row in _facts]
+        covered_scopes = set(_covered_scopes)
+    data_as_of = _data_as_of or max(
+        (scope_date for _guild_key, scope_date in covered_scopes),
+        default=None,
+    )
     if cohort_start > cohort_end:
         return {
             'available': True,
@@ -1001,20 +1232,25 @@ def _build_timo_weekly_cohorts_live(
             'diamonds_per_usd': int(TIMO_DIAMONDS_PER_USD),
             'rows': [],
         }
-    joined_at_expression = _timo_joined_guild_at_expression(conn)
-    profiles = _rows(
-        conn,
-        f"""
-        SELECT guild_executor_key, guild_name, country, timo_id,
-               {joined_at_expression} AS registered_at_bj,
-               is_real_person, source_payload
-        FROM timo_external_streamers
-        WHERE length({joined_at_expression}) >= 10
-          AND substr({joined_at_expression}, 1, 10)
-              BETWEEN ? AND ?{filter_clause}
-        """,
-        [cohort_start.isoformat(), cohort_end.isoformat(), *filter_params],
+    source_profiles = (
+        [dict(row) for row in _profiles]
+        if _profiles is not None else _timo_materialization_profiles(conn)
     )
+    profiles = []
+    for source_profile in source_profiles:
+        profile = dict(source_profile)
+        profile['timo_id'] = str(profile.get('timo_id') or profile.get('streamer_id') or '')
+        profile['registered_at_bj'] = str(
+            profile.get('registered_at_bj') or profile.get('registered_date') or ''
+        )
+        registered = _iso_date(profile['registered_at_bj'])
+        if not registered or not cohort_start <= registered <= cohort_end:
+            continue
+        if guild_name and str(profile.get('guild_name') or '') != guild_name:
+            continue
+        if country and str(profile.get('country') or '') != country:
+            continue
+        profiles.append(profile)
     if not profiles:
         return {
             'available': True,
@@ -1024,20 +1260,30 @@ def _build_timo_weekly_cohorts_live(
         }
 
     facts: List[Dict[str, Any]] = []
-    if data_as_of:
-        facts = _rows(
-            conn,
-            f"""
-            SELECT guild_executor_key, guild_name, country, stat_date_bj, timo_id, total_income
-            FROM timo_external_revenue_daily
-            WHERE provisional = 0 AND stat_date_bj BETWEEN ? AND ?{filter_clause}
-            """,
-            [cohort_start.isoformat(), data_as_of.isoformat(), *filter_params],
-        )
+    for source_fact in source_facts:
+        fact = dict(source_fact)
+        fact['timo_id'] = str(fact.get('timo_id') or fact.get('streamer_id') or '')
+        fact['stat_date_bj'] = str(fact.get('stat_date_bj') or fact.get('stat_date') or '')
+        stat_date = _iso_date(fact['stat_date_bj'])
+        if not stat_date or not data_as_of or not cohort_start <= stat_date <= data_as_of:
+            continue
+        if guild_name and str(fact.get('guild_name') or '') != guild_name:
+            continue
+        if country and str(fact.get('country') or '') != country:
+            continue
+        facts.append(fact)
 
     weekly_facts: List[Dict[str, Any]] = []
     weekly_coverage: List[Dict[str, Any]] = []
-    if data_as_of:
+    if data_as_of and not strict_daily_scope:
+        filter_clause = ''
+        filter_params: List[object] = []
+        if guild_name:
+            filter_clause += ' AND guild_name = ?'
+            filter_params.append(guild_name)
+        if country:
+            filter_clause += ' AND country = ?'
+            filter_params.append(country)
         weekly_facts = _rows(
             conn,
             f"""
@@ -1122,7 +1368,15 @@ def _build_timo_weekly_cohorts_live(
             daily_complete = bool(
                 data_as_of
                 and period_end <= data_as_of
-                and all(day in covered_dates[country] for day in expected_dates)
+                and (
+                    all(
+                        (guild_key, day) in covered_scopes
+                        for guild_key in member_guild_keys
+                        for day in expected_dates
+                    )
+                    if strict_daily_scope else
+                    all(day in covered_dates[country] for day in expected_dates)
+                )
             )
             weekly_complete = bool(
                 data_as_of
@@ -1191,7 +1445,14 @@ def _build_timo_weekly_cohorts_live(
                 if not data_as_of or expected_dates[-1] > data_as_of:
                     continue
                 matured += 1
-                if not all(day in covered_dates[country] for day in expected_dates):
+                if not (
+                    all(
+                        (str(member['guild_executor_key']), day) in covered_scopes
+                        for day in expected_dates
+                    )
+                    if strict_daily_scope else
+                    all(day in covered_dates[country] for day in expected_dates)
+                ):
                     continue
                 observed += 1
                 income = sum(
@@ -1949,11 +2210,27 @@ def _build_streamer_analytics_payload_live(
         })
     ranking.sort(key=lambda row: (row['total_income'] or 0, row['registered_date'] or ''), reverse=True)
 
+    newcomer_data_as_of = revenue_data_as_of or end
+    if app == 'linky' and revenue_data_as_of is not None:
+        newcomer_data_as_of = _linky_newcomer_complete_data_as_of(
+            conn,
+            requested_data_as_of=revenue_data_as_of,
+            observation_start=newcomer_start,
+            guild_name=guild,
+            country=country_name,
+        )
+        if newcomer_data_as_of < revenue_data_as_of:
+            capabilities['newcomer_source_status'] = 'fallback'
+            capabilities['newcomer_source_note'] = (
+                f'新人指标已回退到最近连续完整日 '
+                f'{newcomer_data_as_of.isoformat()}；平台总收益仍使用 '
+                f'{revenue_data_as_of.isoformat()}。'
+            )
     newcomer_revenue = []
     retention = []
     newcomer_metric_ranges: Dict[str, Dict[str, str]] = {}
     if revenue_available:
-        data_as_of = revenue_data_as_of or end
+        data_as_of = newcomer_data_as_of
         cohort = [
             row for row in profiles
             if (d := _iso_date(row.get('registered_date'))) and newcomer_start <= d <= min(end, data_as_of)
@@ -2129,6 +2406,14 @@ def _build_streamer_analytics_payload_live(
                 'rate': _ratio(retained, retention_cohort_count) if retained is not None else None,
             })
 
+    if app == 'linky' and revenue_data_as_of is not None and newcomer_data_as_of < revenue_data_as_of:
+        capabilities['newcomer_source_status'] = 'fallback'
+        capabilities['newcomer_source_note'] = (
+            f'新人指标已回退到最近连续完整日 '
+            f'{newcomer_data_as_of.isoformat()}；平台总收益仍使用 '
+            f'{revenue_data_as_of.isoformat()}。'
+        )
+
     new_streamers = sum(new_count_by_guild.values())
     if app == 'timo':
         weekly_cohorts = build_timo_weekly_cohorts(
@@ -2159,6 +2444,7 @@ def _build_streamer_analytics_payload_live(
         'newcomer_revenue': newcomer_revenue,
         'retention': retention,
         'newcomer_metric_ranges': newcomer_metric_ranges,
+        'newcomer_data_as_of': newcomer_data_as_of.isoformat(),
         'newcomer_cohort_date_from': newcomer_start.isoformat(),
         'newcomer_cohort_date_to': newcomer_end.isoformat(),
         'weekly_cohorts': weekly_cohorts,
@@ -2272,34 +2558,39 @@ def _revenue_observed_dates(
     guild_name: str = '',
     country: str = '',
 ) -> set[str]:
-    scope, params = _revenue_source_scope(guild_name, country)
     if app == 'linky':
-        exclusion_scope, exclusion_params = _linky_exclusion_scope()
-        scope = exclusion_scope + scope
-        params = [*exclusion_params, *params]
-        expected_row = conn.execute(
-            f"""
-            SELECT COUNT(DISTINCT guild_name)
-            FROM guild_executors
-            WHERE enabled = 1 AND lower(COALESCE(app_name, '')) = 'linky'{scope}
-            """,
-            params,
-        ).fetchone()
-        expected_guilds = int(expected_row[0] or 0) if expected_row else 0
-        if not expected_guilds:
-            return set()
+        executor_scope, params = _linky_exclusion_scope(alias='executors')
+        if guild_name:
+            executor_scope += ' AND executors.guild_name = ?'
+            params.append(guild_name)
+        if country:
+            executor_scope += ' AND executors.country = ?'
+            params.append(country)
         rows = conn.execute(
             f"""
-            SELECT stat_date_bj
-            FROM streamer_external_guild_revenue_daily
-            WHERE app_name = 'linky'{scope} AND stat_date_bj BETWEEN ? AND ?
-            GROUP BY stat_date_bj
-            HAVING COUNT(DISTINCT guild_name) >= ?
+            WITH expected_guilds AS (
+                SELECT DISTINCT executors.guild_name
+                FROM guild_executors AS executors
+                WHERE executors.enabled = 1
+                  AND lower(COALESCE(executors.app_name, '')) = 'linky'
+                  {executor_scope}
+            )
+            SELECT revenue.stat_date_bj
+            FROM streamer_external_guild_revenue_daily AS revenue
+            JOIN expected_guilds AS expected
+              ON expected.guild_name = revenue.guild_name
+            WHERE revenue.app_name = 'linky'
+              AND revenue.stat_date_bj BETWEEN ? AND ?
+            GROUP BY revenue.stat_date_bj
+            HAVING COUNT(DISTINCT revenue.guild_name) = (
+                SELECT COUNT(*) FROM expected_guilds
+            )
             """,
-            [*params, start.isoformat(), end.isoformat(), expected_guilds],
+            [*params, start.isoformat(), end.isoformat()],
         ).fetchall()
         return {str(row[0]) for row in rows if row[0]}
-    elif app == 'sugo':
+    scope, params = _revenue_source_scope(guild_name, country)
+    if app == 'sugo':
         table = 'streamer_external_revenue_daily'
         date_column = 'stat_date_bj'
         base = "app_name = 'sugo'"
@@ -2405,6 +2696,33 @@ def _revenue_data_as_of(
     return None if run_count else observed_max
 
 
+def _materialized_revenue_data_as_of(
+    conn: sqlite3.Connection,
+    *,
+    app: str,
+    guild_name: str = '',
+    country: str = '',
+) -> Optional[date]:
+    """Keep materialized reads inside the currently published generation."""
+    source_data_as_of = _revenue_data_as_of(
+        conn,
+        app=app,
+        guild_name=guild_name,
+        country=country,
+    )
+    state = conn.execute(
+        "SELECT data_as_of FROM streamer_analytics_materialization_state "
+        "WHERE app_name = ? AND status = 'ready'",
+        (app,),
+    ).fetchone()
+    published_data_as_of = _iso_date(state[0]) if state else None
+    if published_data_as_of is None:
+        return source_data_as_of
+    if source_data_as_of is None:
+        return published_data_as_of
+    return min(source_data_as_of, published_data_as_of)
+
+
 def _assert_linky_support_coverage(
     conn: sqlite3.Connection,
     *,
@@ -2451,34 +2769,111 @@ def _apply_revenue_freshness(
         capabilities['source_note'] = f'收益数据截至 {data_as_of.isoformat()}。'
 
 
-def _streamer_sync_running(conn: sqlite3.Connection, app: str) -> bool:
+def _parse_sync_timestamp(value: object) -> Optional[datetime]:
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _streamer_sync_running(
+    conn: sqlite3.Connection,
+    app: str,
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
     try:
         if app == 'timo':
-            row = conn.execute(
-                "SELECT 1 FROM timo_external_sync_runs WHERE status = 'running' LIMIT 1"
-            ).fetchone()
+            rows = conn.execute(
+                "SELECT COALESCE(NULLIF(updated_at, ''), created_at) "
+                "FROM timo_external_sync_runs WHERE status = 'running'"
+            ).fetchall()
         else:
-            row = conn.execute(
-                "SELECT 1 FROM streamer_external_sync_runs "
-                "WHERE app_name = ? AND status = 'running' LIMIT 1",
+            rows = conn.execute(
+                "SELECT COALESCE(NULLIF(updated_at, ''), created_at) "
+                "FROM streamer_external_sync_runs "
+                "WHERE app_name = ? AND status = 'running'",
                 (app,),
-            ).fetchone()
+            ).fetchall()
     except sqlite3.OperationalError:
         return False
-    return bool(row)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    return any(
+        timestamp is not None
+        and timedelta(0) <= current - timestamp <= timedelta(seconds=STREAMER_SYNC_RUNNING_STALE_SECONDS)
+        for row in rows
+        if (timestamp := _parse_sync_timestamp(row[0])) is not None
+    )
+
+
+def _linky_newcomer_complete_data_as_of(
+    conn: sqlite3.Connection,
+    *,
+    requested_data_as_of: date,
+    observation_start: date,
+    guild_name: str = '',
+    country: str = '',
+) -> date:
+    """Pin newcomer metrics before the first missing or unreconciled Linky scope."""
+    if observation_start > requested_data_as_of:
+        return requested_data_as_of
+    observed_dates = _revenue_observed_dates(
+        conn,
+        app='linky',
+        start=observation_start,
+        end=requested_data_as_of,
+        guild_name=guild_name,
+        country=country,
+    )
+    first_incomplete = next(
+        (
+            day for day in _date_span(observation_start, requested_data_as_of)
+            if day.isoformat() not in observed_dates
+        ),
+        None,
+    )
+    scope, params = _linky_exclusion_scope(alias='revenue')
+    if guild_name:
+        scope += ' AND revenue.guild_name = ?'
+        params.append(guild_name)
+    if country:
+        scope += ' AND revenue.country = ?'
+        params.append(country)
+    delta_row = conn.execute(
+        "SELECT MIN(revenue.stat_date_bj) "
+        "FROM streamer_external_guild_revenue_daily AS revenue "
+        "WHERE revenue.app_name = 'linky' "
+        "AND revenue.stat_date_bj BETWEEN ? AND ? "
+        "AND ABS(COALESCE(revenue.reconciliation_delta, 0)) > 0.000001"
+        f"{scope}",
+        [observation_start.isoformat(), requested_data_as_of.isoformat(), *params],
+    ).fetchone()
+    delta_date = _iso_date(delta_row[0] if delta_row else None)
+    if delta_date is not None and (first_incomplete is None or delta_date < first_incomplete):
+        first_incomplete = delta_date
+    return min(requested_data_as_of, first_incomplete - timedelta(days=1)) if first_incomplete else requested_data_as_of
 
 
 def _latest_authoritative_external_sync(
     conn: sqlite3.Connection,
     app: str,
 ) -> Optional[sqlite3.Row]:
-    """Return the latest full run; scoped repair runs must never publish source readiness."""
+    """Return the latest full/composite run; a guild repair alone is never authoritative."""
     try:
         row = conn.execute(
             """
             SELECT status, error_code, run_scope
             FROM streamer_external_sync_runs
-            WHERE app_name = ? AND run_scope = 'full'
+            WHERE app_name = ? AND run_scope IN ('full', 'composite')
             ORDER BY created_at DESC, rowid DESC
             LIMIT 1
             """,
@@ -3102,7 +3497,7 @@ def _connect_streamer_analytics_store(path: Path) -> sqlite3.Connection:
         path,
         source='streamer-analytics-store',
         timeout=60.0,
-        write_window_timeout_seconds=30.0,
+        write_window_timeout_seconds=STREAMER_ANALYTICS_PUBLISH_WRITE_WINDOW_SECONDS,
     )
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA synchronous=NORMAL')
@@ -3297,10 +3692,18 @@ def _drop_linky_temp_tables(
     had_transaction = conn.in_transaction
     cleanup_error: Optional[Exception] = None
     for temp_table in temp_tables:
-        try:
-            conn.execute(f'DROP TABLE IF EXISTS temp.{temp_table}')
-        except Exception as exc:
-            cleanup_error = cleanup_error or exc
+        for attempt in range(3):
+            try:
+                conn.execute(f'DROP TABLE IF EXISTS temp.{temp_table}')
+                break
+            except sqlite3.OperationalError as exc:
+                if 'database schema has changed' in str(exc).lower() and attempt < 2:
+                    continue
+                cleanup_error = cleanup_error or exc
+                break
+            except Exception as exc:
+                cleanup_error = cleanup_error or exc
+                break
     if not had_transaction and conn.in_transaction:
         try:
             if cleanup_error is None:
@@ -3551,7 +3954,9 @@ def _materialize_linky_streamed(
                 is_direct_canonical
             )
             SELECT profile.app_name, profile.guild_executor_key,
-                   profile.guild_name, profile.country, profile.streamer_id,
+                   profile.guild_name,
+                   COALESCE(NULLIF(executor.country, ''), profile.country, '') AS country,
+                   profile.streamer_id,
                    profile.display_name, profile.registered_date,
                    profile.last_active_date, profile.is_real_person,
                    CASE WHEN fan.streamer_id IS NOT NULL THEN 1
@@ -3563,6 +3968,8 @@ def _materialize_linky_streamed(
                    CASE WHEN fan.streamer_id IS NOT NULL THEN 'tugao_app' ELSE '' END,
                    profile.source_updated_at, ?, profile.streamer_id, 1
             FROM streamer_analytics_profiles_v5 AS profile
+            LEFT JOIN _source_linky_enabled_guild AS executor
+              ON executor.guild_name = profile.guild_name
             LEFT JOIN streamer_app_fan_identities AS fan
               ON fan.app_name = 'linky'
              AND fan.streamer_id = profile.streamer_id
@@ -3676,18 +4083,18 @@ def _materialize_linky_streamed(
                    revenue.guild_executor_key,
                    revenue.guild_name,
                    COALESCE(
-                       NULLIF(profile.country, ''),
                        NULLIF(profile_executor.country, ''),
                        NULLIF(revenue_executor.country, ''),
+                       NULLIF(profile.country, ''),
                        ''
                    ) AS country,
                    substr(revenue.stat_date_bj, 1, 10) AS stat_date,
                    profile.platform_character_id AS streamer_id,
                    CASE
                        WHEN lower(trim(COALESCE(
-                           NULLIF(profile.country, ''),
                            NULLIF(profile_executor.country, ''),
                            NULLIF(revenue_executor.country, ''),
+                           NULLIF(profile.country, ''),
                            ''
                        ))) = 'indonesia'
                        THEN revenue.total_income
@@ -3700,9 +4107,9 @@ def _materialize_linky_streamed(
                        WHEN (
                            CASE
                                WHEN lower(trim(COALESCE(
-                                   NULLIF(profile.country, ''),
                                    NULLIF(profile_executor.country, ''),
                                    NULLIF(revenue_executor.country, ''),
+                                   NULLIF(profile.country, ''),
                                    ''
                                ))) = 'indonesia'
                                THEN revenue.total_income
@@ -3775,8 +4182,8 @@ def _materialize_linky_streamed(
                    profile.guild_executor_key,
                    profile.guild_name,
                    COALESCE(
-                       NULLIF(profile.country, ''),
                        NULLIF(executor.country, ''),
+                       NULLIF(profile.country, ''),
                        ''
                    ) AS country,
                    substr(profile.registered_at_bj, 1, 10) AS stat_date,
@@ -3822,21 +4229,56 @@ def _materialize_linky_streamed(
         conn.execute(
             """
             CREATE TEMP TABLE _source_linky_official_daily AS
-            SELECT guild_executor_key,
-                   MAX(COALESCE(guild_name, '')) AS guild_name,
-                   MAX(COALESCE(country, '')) AS country,
-                   stat_date_bj AS stat_date,
+            SELECT official.guild_executor_key,
+                   MAX(COALESCE(official.guild_name, '')) AS guild_name,
+                   COALESCE(
+                       NULLIF(MAX(executor.country), ''),
+                       NULLIF(MAX(official.country), ''),
+                       ''
+                   ) AS country,
+                   official.stat_date_bj AS stat_date,
                    SUM(CASE
-                       WHEN lower(trim(COALESCE(country, ''))) = 'indonesia'
-                       THEN COALESCE(total_income, 0)
-                       ELSE COALESCE(chat_income, 0)
+                       WHEN lower(trim(COALESCE(
+                           NULLIF(executor.country, ''),
+                           NULLIF(official.country, ''),
+                           ''
+                       ))) = 'indonesia'
+                       THEN COALESCE(official.total_income, 0)
+                       ELSE COALESCE(official.chat_income, 0)
                    END) AS total_income
-            FROM streamer_external_guild_revenue_daily
-            WHERE app_name = 'linky'
-            GROUP BY guild_executor_key, stat_date_bj
+            FROM streamer_external_guild_revenue_daily AS official
+            LEFT JOIN guild_executors AS executor
+              ON executor.guild_name = official.guild_name
+             AND lower(COALESCE(executor.app_name, '')) = 'linky'
+             AND executor.enabled = 1
+            WHERE official.app_name = 'linky'
+            GROUP BY official.guild_executor_key, official.stat_date_bj
             """
         )
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.source_official_daily.done')
+        country_mismatch = conn.execute(
+            """
+            WITH fact_country AS (
+                SELECT guild_name, country FROM _source_linky_profile
+                UNION
+                SELECT guild_name, country FROM _source_linky_daily
+                UNION
+                SELECT guild_name, country FROM _source_linky_official_daily
+            )
+            SELECT fact.guild_name, fact.country, enabled.country
+            FROM fact_country AS fact
+            JOIN _source_linky_enabled_guild AS enabled
+              ON enabled.guild_name = fact.guild_name
+            WHERE NULLIF(trim(enabled.country), '') IS NOT NULL
+              AND lower(trim(fact.country)) <> lower(trim(enabled.country))
+            LIMIT 1
+            """
+        ).fetchone()
+        if country_mismatch is not None:
+            raise RuntimeError(
+                'linky_guild_country_dimension_mismatch:'
+                f'{country_mismatch[0]}:{country_mismatch[1]}:{country_mismatch[2]}'
+            )
         _emit_streamer_analytics_phase(phase_logger, 'app.linky.source_observed_date.start')
         conn.execute(
             """
@@ -4462,20 +4904,24 @@ def _materialize_streamer_analytics_tables(
         materialized_at = datetime.now().astimezone().isoformat(timespec='seconds')
         # Pin every source SELECT for this app to one SQLite read snapshot.
         conn.execute('BEGIN')
-        profiles = _rows(
-            conn,
-            f"SELECT * FROM {PROFILE_VIEW} WHERE app_name = ?",
-            (app,),
+        profiles = (
+            _timo_materialization_profiles(conn)
+            if app == 'timo'
+            else _rows(
+                conn,
+                f"SELECT * FROM {PROFILE_VIEW} WHERE app_name = ?",
+                (app,),
+            )
         )
         app_fan_ids = confirmed_app_fan_ids(
             conn,
             app_name=app,
-            ensure_schema=not validate_source_schema_only,
+            ensure_schema=False,
         )
         app_fan_complete = app_fan_history_complete(
             conn,
             app_name=app,
-            ensure_schema=not validate_source_schema_only,
+            ensure_schema=False,
         )
         for profile in profiles:
             profile['app_fan_status'] = classify_app_fan_status(
@@ -4493,16 +4939,20 @@ def _materialize_streamer_analytics_tables(
             profile['app_fan_source'] = (
                 'tugao_app' if profile['app_fan_status'] == 'app_fan' else ''
             )
-        raw_facts = _rows(
-            conn,
-            f"""
-            SELECT app_name, guild_executor_key, guild_name, country, streamer_id,
-                   stat_date, is_new, is_active, total_income
-            FROM {DAILY_FACT_VIEW}
-            WHERE app_name = ?
-            """,
-            (app,),
-        )
+        timo_covered_scopes: set[tuple[str, date]] = set()
+        if app == 'timo':
+            raw_facts, timo_covered_scopes = _timo_materialization_scope_snapshot(conn)
+        else:
+            raw_facts = _rows(
+                conn,
+                f"""
+                SELECT app_name, guild_executor_key, guild_name, country, streamer_id,
+                       stat_date, is_new, is_active, total_income
+                FROM {DAILY_FACT_VIEW}
+                WHERE app_name = ?
+                """,
+                (app,),
+            )
         profile_by_key = {
             (str(row['guild_executor_key']), str(row['streamer_id'])): row
             for row in profiles
@@ -4528,7 +4978,11 @@ def _materialize_streamer_analytics_tables(
             current['total_income'] += float(row.get('total_income') or 0)
             current['is_new'] = max(current['is_new'], int(row.get('is_new') or 0))
             current['is_active'] = max(current['is_active'], int(row.get('is_active') or 0))
-        data_as_of_date = _revenue_data_as_of(conn, app=app)
+        data_as_of_date = (
+            max((scope_date for _guild_key, scope_date in timo_covered_scopes), default=None)
+            if app == 'timo' and timo_covered_scopes else
+            _revenue_data_as_of(conn, app=app)
+        )
         data_as_of = data_as_of_date.isoformat() if data_as_of_date else ''
 
         linky_observed_dates_by_guild: Dict[str, set[str]] = defaultdict(set)
@@ -4635,11 +5089,19 @@ def _materialize_streamer_analytics_tables(
                     _build_timo_weekly_cohorts_live
                     if app == 'timo' else _build_linky_weekly_cohorts_live
                 )
-                builder_kwargs = ({
-                    '_profiles': profiles,
-                    '_facts': list(daily_by_key.values()),
-                    '_platform_facts': official_daily_rows,
-                } if app == 'linky' else {})
+                if app == 'linky':
+                    builder_kwargs = {
+                        '_profiles': profiles,
+                        '_facts': list(daily_by_key.values()),
+                        '_platform_facts': official_daily_rows,
+                    }
+                else:
+                    builder_kwargs = {
+                        '_profiles': profiles,
+                        '_facts': list(daily_by_key.values()),
+                        '_covered_scopes': timo_covered_scopes,
+                        '_data_as_of': data_as_of_date,
+                    }
                 all_payload = cohort_builder(
                     conn, start=cohort_start, end=data_as_of_date, **builder_kwargs,
                 )
@@ -4947,17 +5409,18 @@ def _build_streamer_analytics_payload_materialized(
         if str(row.get('country') or '').strip()
     })
     capabilities, revenue_available = _materialized_capabilities(conn, app)
+    revenue_data_as_of = _materialized_revenue_data_as_of(
+        conn,
+        app=app,
+        guild_name=guild,
+        country=country_name,
+    )
+    observed_end = min(end, revenue_data_as_of) if revenue_data_as_of else end
     revenue_observed_dates = _revenue_observed_dates(
         conn,
         app=app,
         start=start,
-        end=end,
-        guild_name=guild,
-        country=country_name,
-    )
-    revenue_data_as_of = _revenue_data_as_of(
-        conn,
-        app=app,
+        end=observed_end,
         guild_name=guild,
         country=country_name,
     )
@@ -5119,6 +5582,22 @@ def _build_streamer_analytics_payload_materialized(
         row['active_streamers'] = int(row.get('active_streamers') or 0)
         row['total_income'] = round(float(row.get('total_income') or 0), 2)
 
+    newcomer_data_as_of = revenue_data_as_of or end
+    if app == 'linky' and revenue_data_as_of is not None:
+        newcomer_data_as_of = _linky_newcomer_complete_data_as_of(
+            conn,
+            requested_data_as_of=revenue_data_as_of,
+            observation_start=newcomer_start,
+            guild_name=guild,
+            country=country_name,
+        )
+        if newcomer_data_as_of < revenue_data_as_of:
+            capabilities['newcomer_source_status'] = 'fallback'
+            capabilities['newcomer_source_note'] = (
+                f'新人指标已回退到最近连续完整日 '
+                f'{newcomer_data_as_of.isoformat()}；平台总收益仍使用 '
+                f'{revenue_data_as_of.isoformat()}。'
+            )
     newcomer_revenue: List[Dict[str, Any]] = []
     retention: List[Dict[str, Any]] = []
     newcomer_metric_ranges: Dict[str, Dict[str, str]] = {}
@@ -5128,49 +5607,57 @@ def _build_streamer_analytics_payload_materialized(
             newcomer_exclusion, newcomer_exclusion_params = _linky_exclusion_scope()
             newcomer_scope = newcomer_exclusion + newcomer_scope
             newcomer_params = [*newcomer_exclusion_params, *newcomer_params]
-        data_as_of = revenue_data_as_of or end
+        data_as_of = newcomer_data_as_of
         for days in (1, 7, 30):
             metric_end = min(
                 end,
                 data_as_of - timedelta(days=days - 1),
             )
-            row = conn.execute(
-                f"""
-                SELECT COUNT(*) AS cohort_count, COALESCE(SUM(income_d{days}), 0) AS total_income
-                FROM streamer_analytics_newcomer_summary
-                WHERE app_name = ?{newcomer_scope}
-                  AND registered_date BETWEEN ? AND ? AND mature_income_d{days} = 1
-                """,
-                [app, *newcomer_params, newcomer_start.isoformat(), metric_end.isoformat()],
-            ).fetchone()
-            newcomer_profile_count = int(row[0] or 0)
-            total = float(row[1] or 0)
-            if app == 'linky' and metric_end >= newcomer_start:
-                newcomer_count_by_guild, _ = _linky_new_streamer_counts(
+            while True:
+                row = conn.execute(
+                    f"""
+                    SELECT COUNT(*) AS cohort_count, COALESCE(SUM(income_d{days}), 0) AS total_income
+                    FROM streamer_analytics_newcomer_summary
+                    WHERE app_name = ?{newcomer_scope}
+                      AND registered_date BETWEEN ? AND ? AND mature_income_d{days} = 1
+                    """,
+                    [app, *newcomer_params, newcomer_start.isoformat(), metric_end.isoformat()],
+                ).fetchone()
+                newcomer_profile_count = int(row[0] or 0)
+                total = float(row[1] or 0)
+                if app == 'linky' and metric_end >= newcomer_start:
+                    newcomer_count_by_guild, _ = _linky_new_streamer_counts(
+                        conn,
+                        start=newcomer_start,
+                        end=metric_end,
+                        guild_name=guild,
+                        country=country_name,
+                    )
+                    official_cohort_count = sum(newcomer_count_by_guild.values())
+                else:
+                    official_cohort_count = newcomer_profile_count
+                metric_complete = app != 'linky' or _linky_newcomer_metric_is_complete(
                     conn,
-                    start=newcomer_start,
-                    end=metric_end,
+                    newcomer_start=newcomer_start,
+                    newcomer_end=metric_end,
+                    observation_start_offset=0,
+                    observation_end_offset=days - 1,
+                    profile_count=newcomer_profile_count,
+                    official_count=official_cohort_count,
                     guild_name=guild,
                     country=country_name,
+                ) if metric_end >= newcomer_start else False
+                if app != 'linky' or metric_complete or metric_end < newcomer_start:
+                    break
+                metric_end -= timedelta(days=1)
+            # Keep numerator and denominator on the exact same immutable
+            # ledger identities. Aggregate counts only prove completeness.
+            count = newcomer_profile_count
+            if app == 'linky' and metric_complete:
+                newcomer_data_as_of = min(
+                    newcomer_data_as_of,
+                    metric_end + timedelta(days=days - 1),
                 )
-                official_cohort_count = sum(newcomer_count_by_guild.values())
-                # Keep numerator and denominator on the exact same immutable
-                # ledger identities.  Aggregate counts only prove completeness.
-                count = newcomer_profile_count
-            else:
-                official_cohort_count = newcomer_profile_count
-                count = newcomer_profile_count
-            metric_complete = app != 'linky' or _linky_newcomer_metric_is_complete(
-                conn,
-                newcomer_start=newcomer_start,
-                newcomer_end=metric_end,
-                observation_start_offset=0,
-                observation_end_offset=days - 1,
-                profile_count=newcomer_profile_count,
-                official_count=official_cohort_count,
-                guild_name=guild,
-                country=country_name,
-            ) if metric_end >= newcomer_start else False
             newcomer_metric_ranges[f'income_d{days}'] = {
                 'date_from': newcomer_start.isoformat(),
                 'date_to': metric_end.isoformat(),
@@ -5185,46 +5672,54 @@ def _build_streamer_analytics_payload_materialized(
                 data_as_of - timedelta(days=RETENTION_DAY_OFFSETS[days]),
                 newcomer_end if days == 30 else end,
             )
-            retained_row = conn.execute(
-                f"""
-                SELECT COUNT(*) AS mature_count, COALESCE(SUM(retained_d{days}), 0) AS retained
-                FROM streamer_analytics_newcomer_summary
-                WHERE app_name = ?{newcomer_scope}
-                  AND registered_date BETWEEN ? AND ? AND mature_retention_d{days} = 1
-                """,
-                [
-                    app,
-                    *newcomer_params,
-                    newcomer_start.isoformat(),
-                    retention_end.isoformat(),
-                ],
-            ).fetchone()
-            newcomer_profile_count = int(retained_row[0] or 0)
             day_offset = RETENTION_DAY_OFFSETS[days]
-            if app == 'linky' and retention_end >= newcomer_start:
-                newcomer_count_by_guild, _ = _linky_new_streamer_counts(
+            while True:
+                retained_row = conn.execute(
+                    f"""
+                    SELECT COUNT(*) AS mature_count, COALESCE(SUM(retained_d{days}), 0) AS retained
+                    FROM streamer_analytics_newcomer_summary
+                    WHERE app_name = ?{newcomer_scope}
+                      AND registered_date BETWEEN ? AND ? AND mature_retention_d{days} = 1
+                    """,
+                    [
+                        app,
+                        *newcomer_params,
+                        newcomer_start.isoformat(),
+                        retention_end.isoformat(),
+                    ],
+                ).fetchone()
+                newcomer_profile_count = int(retained_row[0] or 0)
+                if app == 'linky' and retention_end >= newcomer_start:
+                    newcomer_count_by_guild, _ = _linky_new_streamer_counts(
+                        conn,
+                        start=newcomer_start,
+                        end=retention_end,
+                        guild_name=guild,
+                        country=country_name,
+                    )
+                    official_cohort_count = sum(newcomer_count_by_guild.values())
+                else:
+                    official_cohort_count = newcomer_profile_count
+                metric_complete = app != 'linky' or _linky_newcomer_metric_is_complete(
                     conn,
-                    start=newcomer_start,
-                    end=retention_end,
+                    newcomer_start=newcomer_start,
+                    newcomer_end=retention_end,
+                    observation_start_offset=day_offset,
+                    observation_end_offset=day_offset,
+                    profile_count=newcomer_profile_count,
+                    official_count=official_cohort_count,
                     guild_name=guild,
                     country=country_name,
+                ) if retention_end >= newcomer_start else False
+                if app != 'linky' or metric_complete or retention_end < newcomer_start:
+                    break
+                retention_end -= timedelta(days=1)
+            retention_cohort_count = newcomer_profile_count
+            if app == 'linky' and metric_complete:
+                newcomer_data_as_of = min(
+                    newcomer_data_as_of,
+                    retention_end + timedelta(days=day_offset),
                 )
-                official_cohort_count = sum(newcomer_count_by_guild.values())
-                retention_cohort_count = newcomer_profile_count
-            else:
-                official_cohort_count = newcomer_profile_count
-                retention_cohort_count = newcomer_profile_count
-            metric_complete = app != 'linky' or _linky_newcomer_metric_is_complete(
-                conn,
-                newcomer_start=newcomer_start,
-                newcomer_end=retention_end,
-                observation_start_offset=day_offset,
-                observation_end_offset=day_offset,
-                profile_count=newcomer_profile_count,
-                official_count=official_cohort_count,
-                guild_name=guild,
-                country=country_name,
-            ) if retention_end >= newcomer_start else False
             measurable = retention_cohort_count > 0 and newcomer_profile_count > 0 and metric_complete
             retained = int(retained_row[1] or 0) if measurable else None
             newcomer_metric_ranges[f'retention_d{days}'] = {
@@ -5235,6 +5730,14 @@ def _build_streamer_analytics_payload_materialized(
                 'day': days, 'eligible': retention_cohort_count, 'retained': retained,
                 'rate': _ratio(retained, retention_cohort_count) if retained is not None else None,
             })
+
+    if app == 'linky' and revenue_data_as_of is not None and newcomer_data_as_of < revenue_data_as_of:
+        capabilities['newcomer_source_status'] = 'fallback'
+        capabilities['newcomer_source_note'] = (
+            f'新人指标已回退到最近连续完整日 '
+            f'{newcomer_data_as_of.isoformat()}；平台总收益仍使用 '
+            f'{revenue_data_as_of.isoformat()}。'
+        )
 
     state = conn.execute(
         "SELECT data_as_of, materialized_at FROM streamer_analytics_materialization_state WHERE app_name = ? AND status = 'ready'",
@@ -5269,6 +5772,7 @@ def _build_streamer_analytics_payload_materialized(
         'newcomer_revenue': newcomer_revenue,
         'retention': retention,
         'newcomer_metric_ranges': newcomer_metric_ranges,
+        'newcomer_data_as_of': newcomer_data_as_of.isoformat(),
         'newcomer_cohort_date_from': newcomer_start.isoformat(),
         'newcomer_cohort_date_to': newcomer_end.isoformat(),
         'weekly_cohorts': weekly_cohorts,
