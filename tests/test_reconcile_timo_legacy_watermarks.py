@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import sqlite3
+from pathlib import Path
 
 import pytest
 
-from scripts.reconcile_timo_legacy_watermarks import reconcile_legacy_watermarks
+MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "reconcile_timo_legacy_watermarks.py"
+SPEC = importlib.util.spec_from_file_location("reconcile_timo_legacy_watermarks", MODULE_PATH)
+assert SPEC and SPEC.loader
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+reconcile_legacy_watermarks = MODULE.reconcile_legacy_watermarks
 
 
 def _db() -> sqlite3.Connection:
