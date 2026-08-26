@@ -212,7 +212,10 @@ def main() -> int:
     lock = None
     try:
         if args.apply:
-            lock = acquire_sqlite_job_lock("sqlite-etl", timeout_seconds=0)
+            # The deploy dispatcher and the minute-level Timo retry timer can
+            # become runnable on the same clock edge.  Wait for that bounded,
+            # legitimate writer instead of turning the race into starvation.
+            lock = acquire_sqlite_job_lock("sqlite-etl", timeout_seconds=60)
             lock.__enter__()
         conn = sqlite3.connect(args.db)
         try:
