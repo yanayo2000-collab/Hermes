@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -20,6 +21,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.sqlite_job_lock import JobLockBusy, acquire_sqlite_job_lock  # noqa: E402
+
+
+def _deploy_queue_owns_sqlite_lock() -> bool:
+    lock_paths = {
+        value for value in str(os.getenv("MCN_DEPLOY_EXTRA_LOCK_PATHS") or "").split(":")
+        if value
+    }
+    return bool(
+        os.getenv("MCN_DEPLOY_QUEUE_ACTIVE") == "1"
+        and os.getenv("MCN_DEPLOY_QUEUE_ID")
+        and os.getenv("MCN_DEPLOY_QUEUE_JOB_DIR")
+        and "/tmp/mcn-ai-automation-sqlite-job-locks/sqlite-etl.lock" in lock_paths
+    )
 
 
 def _checksum(rows: Iterable[sqlite3.Row]) -> str:
@@ -208,15 +222,18 @@ def main() -> int:
     parser.add_argument("--guild-key", required=True)
     parser.add_argument("--date", action="append", dest="dates", required=True)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--lock-already-held-by-deploy-queue", action="store_true")
     args = parser.parse_args()
     lock = None
     try:
         if args.apply:
-            # The deploy dispatcher and the minute-level Timo retry timer can
-            # become runnable on the same clock edge.  Wait for that bounded,
-            # legitimate writer instead of turning the race into starvation.
-            lock = acquire_sqlite_job_lock("sqlite-etl", timeout_seconds=60)
-            lock.__enter__()
+            if args.lock_already_held_by_deploy_queue:
+                if not _deploy_queue_owns_sqlite_lock():
+                    raise ValueError("deploy_queue_sqlite_lock_not_proven")
+            else:
+                # Non-queue callers still acquire the canonical writer lock.
+                lock = acquire_sqlite_job_lock("sqlite-etl", timeout_seconds=60)
+                lock.__enter__()
         conn = sqlite3.connect(args.db)
         try:
             result = reconcile_legacy_watermarks(

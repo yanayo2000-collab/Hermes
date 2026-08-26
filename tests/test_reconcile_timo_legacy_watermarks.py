@@ -131,3 +131,20 @@ def test_reconcile_legacy_provisional_receipt_requires_full_official_generation(
     conn.commit()
     with pytest.raises(ValueError, match="legacy_official_generation_missing"):
         reconcile_legacy_watermarks(conn, guild_key="mx", dates=["2026-07-09"], apply=True)
+
+
+def test_deploy_queue_lock_proof_requires_exact_inherited_contract(monkeypatch) -> None:
+    monkeypatch.delenv("MCN_DEPLOY_QUEUE_ACTIVE", raising=False)
+    monkeypatch.delenv("MCN_DEPLOY_QUEUE_ID", raising=False)
+    monkeypatch.delenv("MCN_DEPLOY_QUEUE_JOB_DIR", raising=False)
+    monkeypatch.delenv("MCN_DEPLOY_EXTRA_LOCK_PATHS", raising=False)
+    assert MODULE._deploy_queue_owns_sqlite_lock() is False
+
+    monkeypatch.setenv("MCN_DEPLOY_QUEUE_ACTIVE", "1")
+    monkeypatch.setenv("MCN_DEPLOY_QUEUE_ID", "queue-1")
+    monkeypatch.setenv("MCN_DEPLOY_QUEUE_JOB_DIR", "/var/lib/mcn-ai-automation/deploy-queue/running/queue-1")
+    monkeypatch.setenv(
+        "MCN_DEPLOY_EXTRA_LOCK_PATHS",
+        "/tmp/mcn-ai-automation-sqlite-job-locks/sqlite-etl.lock:/var/lock/mcn-db-writer.lock",
+    )
+    assert MODULE._deploy_queue_owns_sqlite_lock() is True
