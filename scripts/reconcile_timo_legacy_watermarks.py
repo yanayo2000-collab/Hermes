@@ -76,10 +76,22 @@ def _candidate(conn: sqlite3.Connection, guild_key: str, stat_date: str) -> dict
         raise ValueError(f"success_receipt_missing:{stat_date}")
     if str(receipt["status"] or "") not in {"success", "no_op"}:
         raise ValueError(f"success_receipt_invalid:{stat_date}")
-    if str(receipt["data_status"] or "") != "complete":
-        raise ValueError(f"success_receipt_not_complete:{stat_date}")
     if int(receipt["row_count"] or 0) != len(facts) or str(receipt["checksum"] or "") != checksum:
         raise ValueError(f"success_receipt_mismatch:{stat_date}")
+    source_snapshot_at = max(str(row["snapshot_at"] or "") for row in facts)
+    if str(receipt["data_status"] or "") != "complete":
+        if not sync_id.startswith("timo_legacy_bootstrap_"):
+            raise ValueError(f"success_receipt_not_complete:{stat_date}")
+        official_generation = conn.execute(
+            """
+            SELECT run_id FROM timo_external_sync_runs
+            WHERE data_date_bj=? AND status='success' AND guild_count>=3
+              AND snapshot_at=? AND error=''
+            """,
+            (stat_date, source_snapshot_at),
+        ).fetchone()
+        if official_generation is None:
+            raise ValueError(f"legacy_official_generation_missing:{stat_date}")
     candidate = {
         "guild_executor_key": guild_key,
         "guild_name": next(iter(guild_names)),
@@ -92,7 +104,7 @@ def _candidate(conn: sqlite3.Connection, guild_key: str, stat_date: str) -> dict
         "total_income": float(sum(float(row["total_income"] or 0) for row in facts)),
         "data_status": "complete",
         "revision_version": revision,
-        "source_snapshot_at": max(str(row["snapshot_at"] or "") for row in facts),
+        "source_snapshot_at": source_snapshot_at,
     }
     if existing is not None:
         exact_existing = bool(

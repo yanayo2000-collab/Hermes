@@ -28,6 +28,10 @@ def _db() -> sqlite3.Connection:
           sync_id TEXT, guild_executor_key TEXT, stat_date_bj TEXT, status TEXT,
           data_status TEXT, row_count INTEGER, checksum TEXT, start_time TEXT, end_time TEXT
         );
+        CREATE TABLE timo_external_sync_runs(
+          run_id TEXT, snapshot_at TEXT, data_date_bj TEXT, status TEXT,
+          guild_count INTEGER, error TEXT
+        );
         CREATE TABLE timo_sync_watermark(
           guild_executor_key TEXT, guild_name TEXT, country TEXT, stat_date_bj TEXT,
           checksum TEXT, last_success_sync_id TEXT, last_success_time TEXT,
@@ -50,6 +54,10 @@ def _db() -> sqlite3.Connection:
         "INSERT INTO timo_sync_run_log VALUES(?,?,?,?,?,?,?,?,?)",
         ("legacy-1", "mx", "2026-07-09", "success", "complete", 2, digest.hexdigest(),
          "2026-07-23T09:00:00+00:00", "2026-07-23T09:00:01+00:00"),
+    )
+    conn.execute(
+        "INSERT INTO timo_external_sync_runs VALUES(?,?,?,?,?,?)",
+        ("official-1", "2026-07-15T08:00:00+00:00", "2026-07-09", "success", 3, ""),
     )
     conn.commit()
     return conn
@@ -100,4 +108,15 @@ def test_reconcile_refuses_conflicting_existing_watermark() -> None:
     conn = _db()
     reconcile_legacy_watermarks(conn, guild_key="mx", dates=["2026-07-09"], apply=True)
     with pytest.raises(ValueError, match="existing_watermark_mismatch"):
+        reconcile_legacy_watermarks(conn, guild_key="mx", dates=["2026-07-09"], apply=True)
+
+
+def test_reconcile_legacy_provisional_receipt_requires_full_official_generation() -> None:
+    conn = _db()
+    conn.execute("UPDATE timo_sync_run_log SET data_status='provisional'")
+    conn.execute("UPDATE timo_external_revenue_daily SET last_sync_id='timo_legacy_bootstrap_20260709_x'")
+    conn.execute("UPDATE timo_sync_run_log SET sync_id='timo_legacy_bootstrap_20260709_x'")
+    conn.execute("DELETE FROM timo_external_sync_runs")
+    conn.commit()
+    with pytest.raises(ValueError, match="legacy_official_generation_missing"):
         reconcile_legacy_watermarks(conn, guild_key="mx", dates=["2026-07-09"], apply=True)
