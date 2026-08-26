@@ -945,10 +945,64 @@ def _timo_joined_guild_at_expression(conn: sqlite3.Connection) -> str:
     return 'registered_at_bj'
 
 
+def _timo_materialization_guild_aliases(
+    conn: sqlite3.Connection,
+) -> Dict[str, tuple[str, str, str]]:
+    """Map provider-facing guild IDs back to the stable CMS SID scope.
+
+    Official Android exports identify a guild by ``cms_guild_id`` while the
+    normal Timo pipeline and profile roster use ``cms_guild_sid``.  Both are
+    valid provider identifiers for the same guild, but they must never become
+    two analytics dimensions.
+    """
+    executor_columns = {
+        str(row[1]) for row in conn.execute('PRAGMA table_info(guild_executors)').fetchall()
+    }
+    if not {'cms_guild_id', 'cms_guild_sid'}.issubset(executor_columns):
+        return {}
+    aliases: Dict[str, tuple[str, str, str]] = {}
+    for row in _rows(
+        conn,
+        """
+        SELECT guild_name, country, cms_guild_id, cms_guild_sid
+        FROM guild_executors
+        WHERE lower(COALESCE(app_name, '')) = 'timo'
+          AND COALESCE(enabled, 1) = 1
+        """,
+    ):
+        guild_id = str(row.get('cms_guild_id') or '').strip()
+        guild_sid = str(row.get('cms_guild_sid') or '').strip() or guild_id
+        if not guild_sid:
+            continue
+        canonical = f'timo:cms_guild_sid:{guild_sid}'
+        contract = (canonical, str(row.get('guild_name') or ''), str(row.get('country') or ''))
+        for value in {guild_id, guild_sid} - {''}:
+            aliases[f'timo:cms_guild_sid:{value}'] = contract
+            aliases[f'timo:cms_guild_id:{value}'] = contract
+    return aliases
+
+
+def _timo_canonical_materialization_scope(
+    aliases: Dict[str, tuple[str, str, str]],
+    guild_executor_key: object,
+    guild_name: object = '',
+    country: object = '',
+) -> tuple[str, str, str]:
+    raw_key = str(guild_executor_key or '')
+    canonical = aliases.get(raw_key)
+    if canonical is None:
+        return raw_key, str(guild_name or ''), str(country or '')
+    return (
+        canonical[0],
+        canonical[1] or str(guild_name or ''),
+        canonical[2] or str(country or ''),
+    )
+
+
 def _timo_materialization_profiles(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Read Timo profiles without expanding the cross-platform UNION view."""
     joined_at = _timo_joined_guild_at_expression(conn)
-    return _rows(
+    profiles = _rows(
         conn,
         f"""
         SELECT
@@ -971,6 +1025,18 @@ def _timo_materialization_profiles(conn: sqlite3.Connection) -> List[Dict[str, A
          AND lower(executor.app_name) = 'timo'
         """,
     )
+    aliases = _timo_materialization_guild_aliases(conn)
+    for profile in profiles:
+        guild_key, guild_name, country = _timo_canonical_materialization_scope(
+            aliases,
+            profile.get('guild_executor_key'),
+            profile.get('guild_name'),
+            profile.get('country'),
+        )
+        profile['guild_executor_key'] = guild_key
+        profile['guild_name'] = guild_name
+        profile['country'] = country
+    return profiles
 
 
 def _timo_legacy_materialization_daily_facts(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
@@ -1060,8 +1126,8 @@ def _timo_materialization_scope_snapshot(
     watermarks = _rows(
         conn,
         """
-        SELECT guild_executor_key, stat_date_bj, checksum, last_success_sync_id,
-               row_count, total_income, revision_version
+        SELECT guild_executor_key, guild_name, country, stat_date_bj, checksum,
+               last_success_sync_id, row_count, total_income, revision_version
         FROM timo_sync_watermark
         WHERE lower(COALESCE(data_status, '')) = 'complete'
         ORDER BY stat_date_bj, guild_executor_key
@@ -1113,6 +1179,14 @@ def _timo_materialization_scope_snapshot(
     for row in fact_rows:
         facts_by_scope[(str(row['guild_executor_key']), str(row['stat_date']))].append(row)
 
+    aliases = _timo_materialization_guild_aliases(conn)
+    profile_by_identity = {
+        (str(profile.get('guild_executor_key') or ''), str(profile.get('streamer_id') or '')): profile
+        for profile in _timo_materialization_profiles(conn)
+    }
+    candidates_by_scope: Dict[
+        tuple[str, str], List[tuple[Dict[str, Any], List[Dict[str, Any]], str, str, str]]
+    ] = defaultdict(list)
     accepted: List[Dict[str, Any]] = []
     covered_scopes: set[tuple[str, date]] = set()
     integrity_errors: List[str] = []
@@ -1149,11 +1223,70 @@ def _timo_materialization_scope_snapshot(
         if mismatches:
             integrity_errors.append(f'{guild_key}:{stat_date_text}:{",".join(mismatches)}')
             continue
-        accepted.extend({
-            key: value for key, value in row.items()
-            if key not in {'timo_id', 'revision_version', 'last_sync_id', 'row_hash'}
-        } for row in scope_rows)
-        covered_scopes.add((guild_key, parsed_date))
+        canonical_key, canonical_name, canonical_country = _timo_canonical_materialization_scope(
+            aliases,
+            guild_key,
+            watermark.get('guild_name'),
+            watermark.get('country'),
+        )
+        candidates_by_scope[(canonical_key, stat_date_text)].append(
+            (watermark, scope_rows, canonical_key, canonical_name, canonical_country)
+        )
+
+    for (canonical_key, stat_date_text), candidates in sorted(candidates_by_scope.items()):
+        canonical_candidates = [
+            candidate for candidate in candidates
+            if str(candidate[0].get('guild_executor_key') or '') == canonical_key
+        ]
+        if canonical_candidates:
+            # A manual Android export is an incident-only fallback.  Once the
+            # normal official interface has a complete canonical scope again,
+            # that scope is authoritative even if an older manual alias remains.
+            selected = min(
+                canonical_candidates,
+                key=lambda candidate: str(candidate[0].get('last_success_sync_id') or ''),
+            )
+        else:
+            fingerprints = {
+                (
+                    int(candidate[0].get('row_count') or 0),
+                    round(float(candidate[0].get('total_income') or 0), 6),
+                    str(candidate[0].get('checksum') or ''),
+                )
+                for candidate in candidates
+            }
+            if len(fingerprints) > 1:
+                integrity_errors.append(
+                    f'{canonical_key}:{stat_date_text}:fallback_scope_conflict'
+                )
+                continue
+            selected = min(
+                candidates,
+                key=lambda candidate: str(candidate[0].get('last_success_sync_id') or ''),
+            )
+        _watermark, scope_rows, _canonical_key, canonical_name, canonical_country = selected
+        parsed_date = _iso_date(stat_date_text)
+        if not parsed_date:
+            integrity_errors.append(f'{canonical_key}:{stat_date_text}:stat_date')
+            continue
+        for row in scope_rows:
+            normalized = {
+                key: value for key, value in row.items()
+                if key not in {'timo_id', 'revision_version', 'last_sync_id', 'row_hash'}
+            }
+            profile = profile_by_identity.get((canonical_key, str(row.get('timo_id') or '')), {})
+            normalized['guild_executor_key'] = canonical_key
+            normalized['guild_name'] = canonical_name or str(row.get('guild_name') or '')
+            normalized['country'] = (
+                str(profile.get('country') or '')
+                or canonical_country
+                or str(row.get('country') or '')
+            )
+            normalized['is_new'] = int(
+                str(profile.get('registered_date') or '')[:10] == stat_date_text
+            )
+            accepted.append(normalized)
+        covered_scopes.add((canonical_key, parsed_date))
 
     if integrity_errors:
         raise RuntimeError('timo_analytics_scope_integrity_mismatch:' + ';'.join(integrity_errors[:20]))

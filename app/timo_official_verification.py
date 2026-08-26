@@ -5,6 +5,8 @@ from decimal import Decimal
 import json
 from typing import Any
 
+from app.timo_guild_identity import resolve_timo_guild_identity
+
 
 VERIFICATION_MODE = 'manual_official_verified'
 AUTHORIZATION_REF = 'codex-thread:019fd525-d473-7c60-84ce-e28bec016a30:2026-08-25'
@@ -69,7 +71,8 @@ def scope_has_official_verification_override(
     conn: Any, *, guild_executor_key: str, stat_date_bj: str, checksum: str,
     last_success_sync_id: str, row_count: int, total_income: Any,
 ) -> bool:
-    guild_id = str(guild_executor_key).rsplit(':', 1)[-1]
+    identity = resolve_timo_guild_identity(str(guild_executor_key).rsplit(':', 1)[-1])
+    guild_id = identity.guild_id if identity is not None else str(guild_executor_key).rsplit(':', 1)[-1]
     expected = OFFICIAL_MANUAL_VERIFIED_SCOPES.get((stat_date_bj, guild_id))
     if expected is None:
         return False

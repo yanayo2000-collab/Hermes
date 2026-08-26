@@ -185,13 +185,13 @@ def test_exact_same_official_lineage_can_be_reobserved_without_replacing_facts(t
     conn.executemany(
         'INSERT INTO timo_external_revenue_daily VALUES(?,?,?,?,?)',
         [
-            ('timo:cms_guild_sid:22000408', '2026-08-23', 0.1, base, 1),
-            ('timo:cms_guild_sid:22000408', '2026-08-23', 0.2, base, 1),
+            ('timo:cms_guild_sid:lvmy210446316420ie3d', '2026-08-23', 0.1, base, 1),
+            ('timo:cms_guild_sid:lvmy210446316420ie3d', '2026-08-23', 0.2, base, 1),
         ],
     )
     conn.execute(
         'INSERT INTO timo_sync_watermark VALUES(?,?,?,?,?,?,?,?)',
-        ('timo:cms_guild_sid:22000408', '2026-08-23', 'a' * 64, base, 2, 0.3, 'complete', 1),
+        ('timo:cms_guild_sid:lvmy210446316420ie3d', '2026-08-23', 'a' * 64, base, 2, 0.3, 'complete', 1),
     )
     conn.execute(
         'INSERT INTO timo_sync_run_log VALUES(?,?,?)',
@@ -217,6 +217,7 @@ def test_exact_same_official_lineage_can_be_reobserved_without_replacing_facts(t
     })
     assert result['observation_id'] == 2
     assert observed['sync_id'] == base + '_obs2'
+    assert observed['guild_executor_key'] == 'timo:cms_guild_sid:lvmy210446316420ie3d'
     assert observed['idempotency_key'].endswith(':obs2')
     assert (tmp_path / 'preimage-obs2.json').is_file()
 

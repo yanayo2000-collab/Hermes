@@ -201,6 +201,7 @@ def run(job: dict[str, Any]) -> dict[str, Any]:
     business_date = str(job['business_date'])
     guild_id = str(job['guild_id'])
     identity = require_timo_guild_identity(guild_id=guild_id)
+    guild_executor_key = f'timo:cms_guild_sid:{identity.guild_sid}'
     if _filename_date(source_path) != business_date:
         raise ValueError('source_filename_business_date_mismatch')
     content = source_path.read_bytes()
@@ -239,14 +240,14 @@ def run(job: dict[str, Any]) -> dict[str, Any]:
             FROM timo_external_revenue_daily
             WHERE guild_executor_key=? AND stat_date_bj=?
             """,
-            (f'timo:cms_guild_sid:{guild_id}', business_date),
+            (guild_executor_key, business_date),
         ).fetchone()
         watermark = preflight.execute(
             """
             SELECT checksum,last_success_sync_id,row_count,total_income,data_status,revision_version
             FROM timo_sync_watermark WHERE guild_executor_key=? AND stat_date_bj=?
             """,
-            (f'timo:cms_guild_sid:{guild_id}', business_date),
+            (guild_executor_key, business_date),
         ).fetchone()
         fact_lineage = preflight.execute(
             """
@@ -255,7 +256,7 @@ def run(job: dict[str, Any]) -> dict[str, Any]:
             FROM timo_external_revenue_daily
             WHERE guild_executor_key=? AND stat_date_bj=?
             """,
-            (f'timo:cms_guild_sid:{guild_id}', business_date),
+            (guild_executor_key, business_date),
         ).fetchone()
         provenance = preflight.execute(
             "SELECT gate_evidence_json FROM timo_sync_run_log WHERE sync_id=? AND status IN ('success','no_op')",
@@ -316,7 +317,7 @@ def run(job: dict[str, Any]) -> dict[str, Any]:
             content=content,
             media_type='text/csv; charset=utf-8',
             extension='.csv',
-            guild_executor_key=f'timo:cms_guild_sid:{guild_id}',
+            guild_executor_key=guild_executor_key,
             guild_name=identity.storage_name,
             business_date=business_date,
             source_timezone='Asia/Shanghai',
@@ -334,7 +335,7 @@ def run(job: dict[str, Any]) -> dict[str, Any]:
         connect,
         sync_id=sync_id,
         parent_run_id=sync_id,
-        guild_executor_key=f'timo:cms_guild_sid:{guild_id}',
+        guild_executor_key=guild_executor_key,
         guild_name=identity.storage_name,
         country='Mexico',
         stat_date_bj=business_date,
