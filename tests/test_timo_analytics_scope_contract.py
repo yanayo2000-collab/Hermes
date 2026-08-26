@@ -97,9 +97,10 @@ def test_partial_day_consumes_complete_guilds_and_cohort_uses_same_snapshot():
             _data_as_of=date(2026, 7, 19),
         )
         assert {row['country'] for row in facts} == {'Brazil'}
-        assert {(row['country'], row['periods'][0]['income_diamonds']) for row in cohort['rows']} == {
-            ('Brazil', 700.0),
-        }
+        rows_by_country = {row['country']: row for row in cohort['rows']}
+        assert rows_by_country['Brazil']['periods'][0]['income_diamonds'] == 700.0
+        assert rows_by_country['Mexico']['periods'][0]['status'] == 'incomplete'
+        assert rows_by_country['Mexico']['periods'][0]['income_diamonds'] is None
 
         conn.execute(
             "UPDATE timo_sync_watermark SET data_status='complete' WHERE guild_executor_key='mx'"
@@ -207,3 +208,79 @@ def test_guild_id_alias_is_canonicalized_and_normal_official_scope_wins_conflict
         )
         assert cohort['rows'][0]['country'] == 'Mexico'
         assert cohort['rows'][0]['periods'][0]['income_diamonds'] == 609.0
+
+
+def test_strict_daily_gap_uses_complete_weekly_fallback_without_hiding_cohort():
+    with sqlite3.connect(':memory:') as conn:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE guild_executors (
+                guild_name TEXT, app_name TEXT, country TEXT
+            );
+            CREATE TABLE timo_external_streamers (
+                guild_executor_key TEXT, guild_name TEXT, country TEXT,
+                timo_id TEXT, nickname TEXT, registered_at_bj TEXT,
+                joined_guild_at_bj TEXT, last_active_at_bj TEXT,
+                is_real_person INTEGER, source_payload TEXT, updated_at TEXT
+            );
+            CREATE TABLE timo_external_revenue_weekly (
+                guild_executor_key TEXT, guild_name TEXT, country TEXT,
+                week_start_bj TEXT, timo_id TEXT, total_income REAL
+            );
+            CREATE TABLE timo_external_revenue_weekly_coverage (
+                guild_executor_key TEXT, guild_name TEXT, country TEXT,
+                week_start_bj TEXT, status TEXT, row_count INTEGER
+            );
+            INSERT INTO guild_executors VALUES ('Mexico Guild','timo','Mexico');
+            INSERT INTO timo_external_streamers VALUES (
+                'mx','Mexico Guild','Mexico','mx-new','MX','2026-07-06','',
+                '2026-07-12',1,'{"gender":2}','now'
+            );
+            INSERT INTO timo_external_revenue_weekly VALUES
+                ('mx','Mexico Guild','Mexico','2026-07-06','mx-new',700),
+                ('mx','Mexico Guild','Mexico','2026-07-13','mx-new',350);
+            INSERT INTO timo_external_revenue_weekly_coverage VALUES
+                ('mx','Mexico Guild','Mexico','2026-07-06','success',1),
+                ('mx','Mexico Guild','Mexico','2026-07-13','success',1);
+            """
+        )
+        profiles = [dict(row) for row in conn.execute(
+            "SELECT guild_executor_key,guild_name,country,timo_id,registered_at_bj,"
+            "is_real_person,source_payload FROM timo_external_streamers"
+        )]
+        cohort = _build_timo_weekly_cohorts_live(
+            conn,
+            start=date(2026, 7, 6),
+            end=date(2026, 7, 19),
+            _profiles=profiles,
+            _facts=[],
+            _covered_scopes=set(),
+            _data_as_of=date(2026, 7, 19),
+        )
+
+        assert len(cohort['rows']) == 1
+        row = cohort['rows'][0]
+        assert row['week_start'] == '2026-07-06'
+        assert row['periods'][0]['status'] == 'complete'
+        assert row['periods'][0]['source'] == 'weekly'
+        assert row['periods'][0]['income_diamonds'] == 700.0
+        assert row['periods'][1]['status'] == 'complete'
+        assert row['periods'][1]['income_diamonds'] == 350.0
+        assert row['settlement']['bonus_7d']['status'] == 'incomplete'
+
+        conn.execute(
+            "UPDATE timo_external_revenue_weekly_coverage "
+            "SET row_count=2 WHERE week_start_bj='2026-07-06'"
+        )
+        invalid = _build_timo_weekly_cohorts_live(
+            conn,
+            start=date(2026, 7, 6),
+            end=date(2026, 7, 19),
+            _profiles=profiles,
+            _facts=[],
+            _covered_scopes=set(),
+            _data_as_of=date(2026, 7, 19),
+        )
+        assert invalid['rows'][0]['periods'][0]['status'] == 'incomplete'
+        assert invalid['rows'][0]['periods'][0]['income_diamonds'] is None

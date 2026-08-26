@@ -1408,7 +1408,15 @@ def _build_timo_weekly_cohorts_live(
 
     weekly_facts: List[Dict[str, Any]] = []
     weekly_coverage: List[Dict[str, Any]] = []
-    if data_as_of and not strict_daily_scope:
+    if data_as_of:
+        weekly_coverage_columns = {
+            str(row[1]) for row in conn.execute(
+                'PRAGMA table_info(timo_external_revenue_weekly_coverage)'
+            ).fetchall()
+        }
+        weekly_coverage_row_count = (
+            'row_count' if 'row_count' in weekly_coverage_columns else 'NULL AS row_count'
+        )
         filter_clause = ''
         filter_params: List[object] = []
         if guild_name:
@@ -1429,7 +1437,8 @@ def _build_timo_weekly_cohorts_live(
         weekly_coverage = _rows(
             conn,
             f"""
-            SELECT guild_executor_key, guild_name, country, week_start_bj
+            SELECT guild_executor_key, guild_name, country, week_start_bj,
+                   {weekly_coverage_row_count}
             FROM timo_external_revenue_weekly_coverage
             WHERE status = 'success' AND week_start_bj BETWEEN ? AND ?{filter_clause}
             """,
@@ -1442,8 +1451,10 @@ def _build_timo_weekly_cohorts_live(
     covered_dates: Dict[str, set[date]] = defaultdict(set)
     platform_income: Dict[tuple[str, date], float] = defaultdict(float)
     weekly_income_by_streamer: Dict[tuple[str, str, date], float] = defaultdict(float)
+    weekly_fact_counts: Dict[tuple[str, date], int] = defaultdict(int)
     weekly_covered_guilds: set[tuple[str, date]] = set()
     weekly_platform_income: Dict[tuple[str, date], float] = defaultdict(float)
+    weekly_aliases = _timo_materialization_guild_aliases(conn)
     for profile in profiles:
         registered = _iso_date(profile.get('registered_at_bj'))
         if not registered:
@@ -1470,16 +1481,32 @@ def _build_timo_weekly_cohorts_live(
         week_start = _iso_date(fact.get('week_start_bj'))
         if not week_start:
             continue
-        executor_key = str(fact.get('guild_executor_key') or '')
+        executor_key, _guild_name, _country = _timo_canonical_materialization_scope(
+            weekly_aliases,
+            fact.get('guild_executor_key'),
+            fact.get('guild_name'),
+            fact.get('country'),
+        )
         timo_id = str(fact.get('timo_id') or '')
         fact_country = str(fact.get('country') or '未标注').strip() or '未标注'
         income = float(fact.get('total_income') or 0)
         weekly_income_by_streamer[(executor_key, timo_id, week_start)] += income
+        weekly_fact_counts[(executor_key, week_start)] += 1
         weekly_platform_income[(fact_country, week_start)] += income
     for coverage in weekly_coverage:
         week_start = _iso_date(coverage.get('week_start_bj'))
-        if week_start:
-            weekly_covered_guilds.add((str(coverage.get('guild_executor_key') or ''), week_start))
+        if not week_start:
+            continue
+        executor_key, _guild_name, _country = _timo_canonical_materialization_scope(
+            weekly_aliases,
+            coverage.get('guild_executor_key'),
+            coverage.get('guild_name'),
+            coverage.get('country'),
+        )
+        expected_rows = coverage.get('row_count')
+        if expected_rows is not None and weekly_fact_counts[(executor_key, week_start)] != int(expected_rows):
+            continue
+        weekly_covered_guilds.add((executor_key, week_start))
 
     rows: List[Dict[str, Any]] = []
     for (week, country), members in sorted(
@@ -1624,13 +1651,6 @@ def _build_timo_weekly_cohorts_live(
         bonus_7d = bonus(7, 0.5, 0.5)
         bonus_10d = bonus(10, 1.0, 1.0)
         settlement_complete = bonus_7d['status'] == 'complete' and bonus_10d['status'] == 'complete'
-        historical_coverage_incomplete = (
-            any(period['status_reason'] == 'data_coverage_incomplete' for period in periods)
-            or bonus_7d['status_reason'] == 'data_coverage_incomplete'
-            or bonus_10d['status_reason'] == 'data_coverage_incomplete'
-        )
-        if historical_coverage_incomplete:
-            continue
         rows.append({
             'week_start': week.isoformat(),
             'week_end': week_end.isoformat(),
