@@ -24,7 +24,7 @@ from app.timo_incremental_materialization import (
     timo_external_feed_status,
 )
 from app.timo_partial_settlement import (
-    consumable_timo_scope_guild_names,
+    consumable_timo_scope_lineages,
     enrich_timo_scope_feed_status,
 )
 from app.timo_bi_mart import (
@@ -1781,10 +1781,13 @@ class TimoServiceMixin:
                 country=normalized_country,
                 guild_name=normalized_guild_name,
             )
-            consumable_guilds = consumable_timo_scope_guild_names(feed_status)
-            if consumable_guilds:
-                where.append(f"guild_name IN ({','.join('?' for _ in consumable_guilds)})")
-                params.extend(consumable_guilds)
+            consumable_lineages = consumable_timo_scope_lineages(feed_status)
+            if consumable_lineages:
+                lineage_predicates: List[str] = []
+                for scope_guild_name, last_success_sync_id in consumable_lineages.items():
+                    lineage_predicates.append('(guild_name = ? AND last_sync_id = ?)')
+                    params.extend([scope_guild_name, last_success_sync_id])
+                where.append(f"({' OR '.join(lineage_predicates)})")
             else:
                 where.append('1 = 0')
             where_sql = ' WHERE ' + ' AND '.join(where)

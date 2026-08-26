@@ -431,3 +431,38 @@ def test_external_feed_rows_only_expose_consumable_scope_guilds():
 
     assert scope_feed.consumable_timo_scope_guild_names(feed_status) == ['TIMO001']
     assert scope_feed.consumable_timo_scope_guild_names({'scope_manifests': []}) == []
+
+
+def test_external_feed_rows_only_expose_the_manifest_published_lineage():
+    feed_status = {
+        'scope_manifests': [
+            {
+                'guild_storage_name': 'Agency MX somente',
+                'consumable': True,
+                'last_success_sync_id': 'timo_revenue_sync_current',
+            },
+            {
+                'guild_storage_name': 'TIMO001',
+                'consumable': True,
+                'last_success_sync_id': 'timo_revenue_sync_id',
+            },
+            {
+                'guild_storage_name': 'agency of BR somente',
+                'consumable': False,
+                'last_success_sync_id': 'must-not-be-exposed',
+            },
+        ],
+    }
+
+    assert scope_feed.consumable_timo_scope_lineages(feed_status) == {
+        'Agency MX somente': 'timo_revenue_sync_current',
+        'TIMO001': 'timo_revenue_sync_id',
+    }
+
+
+def test_external_feed_pins_rows_to_manifest_lineage_contract():
+    source = (ROOT / 'app/main_service_timo.py').read_text(encoding='utf-8')
+
+    assert 'consumable_timo_scope_lineages(feed_status)' in source
+    assert "(guild_name = ? AND last_sync_id = ?)" in source
+    assert "guild_name IN ({','.join('?' for _ in consumable_guilds)})" not in source

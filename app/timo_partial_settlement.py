@@ -201,3 +201,25 @@ def consumable_timo_scope_guild_names(feed_status: Mapping[str, Any]) -> list[st
         and item.get('consumable') is True
         and str(item.get('guild_storage_name') or item.get('guild_name') or '').strip()
     })
+
+
+def consumable_timo_scope_lineages(feed_status: Mapping[str, Any]) -> dict[str, str]:
+    """Return the one published sync lineage allowed for each consumable guild.
+
+    A logical guild/date can temporarily contain rows from both an official
+    correction and a later automated observation.  The scope manifest is the
+    authority that names the revision currently published by MCN; downstream
+    readers must never receive every historical executor lineage at once.
+    """
+    lineages: dict[str, str] = {}
+    for item in feed_status.get('scope_manifests') or []:
+        if not isinstance(item, Mapping) or item.get('consumable') is not True:
+            continue
+        guild_name = str(
+            item.get('guild_storage_name') or item.get('guild_name') or ''
+        ).strip()
+        sync_id = str(item.get('last_success_sync_id') or '').strip()
+        if not guild_name or not sync_id:
+            continue
+        lineages[guild_name] = sync_id
+    return dict(sorted(lineages.items()))
