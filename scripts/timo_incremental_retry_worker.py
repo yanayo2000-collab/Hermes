@@ -198,6 +198,7 @@ def _publication_reobservation_due(
     """
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     acknowledged = _acknowledged_scope_lineage(notification_ack_path, stat_date_bj)
+    published = _publication_lineage(conn, stat_date_bj)
     watermarks = conn.execute(
         """
         SELECT guild_executor_key, guild_name, checksum, revision_version,
@@ -214,6 +215,13 @@ def _publication_reobservation_due(
             'revision': int(watermark['revision_version'] or 0),
             'source_generation': str(watermark['last_success_sync_id'] or ''),
         }
+        # A corrected/manual import can leave an older executor watermark for
+        # the same logical guild/date.  Only the lineage selected by the
+        # publication contract may request another observation; otherwise the
+        # historical executor keeps the minute retry worker permanently due.
+        published_lineage = published.get(guild_name)
+        if published_lineage is not None and current_lineage != published_lineage:
+            continue
         if current_lineage == acknowledged.get(guild_name):
             continue
         latest = conn.execute(

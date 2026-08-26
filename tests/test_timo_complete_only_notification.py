@@ -158,6 +158,46 @@ def test_first_complete_observation_is_automatically_due_for_reobserve():
     ) is False
 
 
+def test_historical_executor_lineage_cannot_keep_acknowledged_date_due():
+    current = datetime.now(timezone.utc)
+    observed_at = (current - timedelta(minutes=6)).isoformat()
+    conn = _publication_db()
+    conn.executemany(
+        'INSERT INTO timo_sync_watermark VALUES(?,?,?,?,?,?,?,?)',
+        [
+            ('guild-auto', 'TIMO001', '2026-08-23', 'complete', 'a' * 64, 2, 'sync-auto', observed_at),
+            ('guild-manual', 'TIMO001', '2026-08-23', 'complete', 'b' * 64, 1, 'sync-manual', observed_at),
+        ],
+    )
+    conn.execute(
+        'INSERT INTO timo_sync_run_log VALUES(?,?,?,?,?,?,?,?)',
+        ('sync-manual', 'guild-manual', '2026-08-23', 'complete', 'success', 'b' * 64, observed_at, observed_at),
+    )
+    published = {
+        'TIMO001': {
+            'checksum': 'a' * 64,
+            'revision': 2,
+            'source_generation': 'sync-auto',
+        },
+    }
+    acknowledged = {'TIMO001': dict(published['TIMO001'])}
+
+    original_publication = RETRY_WORKER._publication_lineage
+    original_acknowledged = RETRY_WORKER._acknowledged_scope_lineage
+    try:
+        RETRY_WORKER._publication_lineage = lambda *_args: published
+        RETRY_WORKER._acknowledged_scope_lineage = lambda *_args: acknowledged
+        assert RETRY_WORKER._publication_reobservation_due(
+            conn,
+            '2026-08-23',
+            None,
+            now=current,
+        ) is False
+    finally:
+        RETRY_WORKER._publication_lineage = original_publication
+        RETRY_WORKER._acknowledged_scope_lineage = original_acknowledged
+
+
 def test_publication_lineage_requires_two_observations_and_45_minutes():
     current = datetime.now(timezone.utc)
     stable_at = (current - timedelta(minutes=46)).isoformat()
