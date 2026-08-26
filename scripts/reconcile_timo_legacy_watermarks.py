@@ -76,12 +76,22 @@ def _candidate(conn: sqlite3.Connection, guild_key: str, stat_date: str) -> dict
         raise ValueError(f"success_receipt_missing:{stat_date}")
     if str(receipt["status"] or "") not in {"success", "no_op"}:
         raise ValueError(f"success_receipt_invalid:{stat_date}")
-    if int(receipt["row_count"] or 0) != len(facts) or str(receipt["checksum"] or "") != checksum:
-        raise ValueError(f"success_receipt_mismatch:{stat_date}")
     source_snapshot_at = max(str(row["snapshot_at"] or "") for row in facts)
-    if str(receipt["data_status"] or "") != "complete":
+    receipt_complete = str(receipt["data_status"] or "") == "complete"
+    if receipt_complete:
+        if int(receipt["row_count"] or 0) != len(facts) or str(receipt["checksum"] or "") != checksum:
+            raise ValueError(f"success_receipt_mismatch:{stat_date}")
+    else:
         if not sync_id.startswith("timo_legacy_bootstrap_"):
             raise ValueError(f"success_receipt_not_complete:{stat_date}")
+        if (
+            existing is None
+            or int(existing["row_count"] or 0) != int(receipt["row_count"] or 0)
+            or str(existing["checksum"] or "") != str(receipt["checksum"] or "")
+            or str(existing["last_success_sync_id"] or "") != sync_id
+            or str(existing["data_status"] or "") != "provisional"
+        ):
+            raise ValueError(f"legacy_provisional_receipt_mismatch:{stat_date}")
         official_generation = conn.execute(
             """
             SELECT run_id FROM timo_external_sync_runs
@@ -110,16 +120,16 @@ def _candidate(conn: sqlite3.Connection, guild_key: str, stat_date: str) -> dict
         exact_existing = bool(
             str(existing["guild_name"] or "") == candidate["guild_name"]
             and str(existing["country"] or "") == candidate["country"]
-            and str(existing["checksum"] or "") == candidate["checksum"]
             and str(existing["last_success_sync_id"] or "") == candidate["last_success_sync_id"]
-            and int(existing["row_count"] or 0) == candidate["row_count"]
-            and abs(float(existing["total_income"] or 0) - candidate["total_income"]) <= 0.000001
             and int(existing["revision_version"] or 0) == candidate["revision_version"]
             and str(existing["data_status"] or "") == "provisional"
         )
         if not exact_existing:
             raise ValueError(f"existing_watermark_mismatch:{stat_date}")
         candidate["existing_provisional"] = True
+        candidate["preimage_checksum"] = str(existing["checksum"] or "")
+        candidate["preimage_row_count"] = int(existing["row_count"] or 0)
+        candidate["preimage_revision_version"] = int(existing["revision_version"] or 0)
     else:
         candidate["existing_provisional"] = False
     return candidate
@@ -156,14 +166,15 @@ def reconcile_legacy_watermarks(
             conn.executemany(
                 """
                 UPDATE timo_sync_watermark
-                SET data_status='complete', source_snapshot_at=:source_snapshot_at
+                SET data_status='complete', source_snapshot_at=:source_snapshot_at,
+                    checksum=:checksum, row_count=:row_count, total_income=:total_income
                 WHERE guild_executor_key=:guild_executor_key
                   AND stat_date_bj=:stat_date_bj
                   AND data_status='provisional'
-                  AND checksum=:checksum
+                  AND checksum=:preimage_checksum
                   AND last_success_sync_id=:last_success_sync_id
-                  AND row_count=:row_count
-                  AND revision_version=:revision_version
+                  AND row_count=:preimage_row_count
+                  AND revision_version=:preimage_revision_version
                 """,
                 provisional_candidates,
             )

@@ -113,6 +113,17 @@ def test_reconcile_refuses_conflicting_existing_watermark() -> None:
 
 def test_reconcile_legacy_provisional_receipt_requires_full_official_generation() -> None:
     conn = _db()
+    candidate = reconcile_legacy_watermarks(
+        conn, guild_key="mx", dates=["2026-07-09"]
+    )[0]
+    candidate.pop("existing_provisional")
+    candidate["data_status"] = "provisional"
+    candidate["last_success_sync_id"] = "timo_legacy_bootstrap_20260709_x"
+    columns = ",".join(candidate)
+    placeholders = ",".join(f":{column}" for column in candidate)
+    conn.execute(
+        f"INSERT INTO timo_sync_watermark({columns}) VALUES({placeholders})", candidate
+    )
     conn.execute("UPDATE timo_sync_run_log SET data_status='provisional'")
     conn.execute("UPDATE timo_external_revenue_daily SET last_sync_id='timo_legacy_bootstrap_20260709_x'")
     conn.execute("UPDATE timo_sync_run_log SET sync_id='timo_legacy_bootstrap_20260709_x'")
