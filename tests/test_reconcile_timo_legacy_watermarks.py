@@ -69,8 +69,28 @@ def test_reconcile_fails_closed_on_receipt_mismatch() -> None:
     assert conn.execute("SELECT COUNT(*) FROM timo_sync_watermark").fetchone()[0] == 0
 
 
-def test_reconcile_refuses_existing_watermark() -> None:
+def test_reconcile_promotes_exact_existing_provisional_watermark() -> None:
+    conn = _db()
+    candidate = reconcile_legacy_watermarks(
+        conn, guild_key="mx", dates=["2026-07-09"]
+    )[0]
+    candidate.pop("existing_provisional")
+    candidate["data_status"] = "provisional"
+    columns = ",".join(candidate)
+    placeholders = ",".join(f":{column}" for column in candidate)
+    conn.execute(
+        f"INSERT INTO timo_sync_watermark({columns}) VALUES({placeholders})", candidate
+    )
+    conn.commit()
+    result = reconcile_legacy_watermarks(
+        conn, guild_key="mx", dates=["2026-07-09"], apply=True
+    )
+    assert result[0]["existing_provisional"] is True
+    assert conn.execute("SELECT data_status FROM timo_sync_watermark").fetchone()[0] == "complete"
+
+
+def test_reconcile_refuses_conflicting_existing_watermark() -> None:
     conn = _db()
     reconcile_legacy_watermarks(conn, guild_key="mx", dates=["2026-07-09"], apply=True)
-    with pytest.raises(ValueError, match="watermark_already_exists"):
+    with pytest.raises(ValueError, match="existing_watermark_mismatch"):
         reconcile_legacy_watermarks(conn, guild_key="mx", dates=["2026-07-09"], apply=True)

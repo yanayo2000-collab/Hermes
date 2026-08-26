@@ -39,9 +39,6 @@ def _candidate(conn: sqlite3.Connection, guild_key: str, stat_date: str) -> dict
         "SELECT * FROM timo_sync_watermark WHERE guild_executor_key=? AND stat_date_bj=?",
         (guild_key, stat_date),
     ).fetchone()
-    if existing is not None:
-        raise ValueError(f"watermark_already_exists:{stat_date}")
-
     facts = conn.execute(
         """
         SELECT guild_name,country,timo_id,total_income,revision_version,last_sync_id,
@@ -83,7 +80,7 @@ def _candidate(conn: sqlite3.Connection, guild_key: str, stat_date: str) -> dict
         raise ValueError(f"success_receipt_not_complete:{stat_date}")
     if int(receipt["row_count"] or 0) != len(facts) or str(receipt["checksum"] or "") != checksum:
         raise ValueError(f"success_receipt_mismatch:{stat_date}")
-    return {
+    candidate = {
         "guild_executor_key": guild_key,
         "guild_name": next(iter(guild_names)),
         "country": next(iter(countries)),
@@ -97,6 +94,23 @@ def _candidate(conn: sqlite3.Connection, guild_key: str, stat_date: str) -> dict
         "revision_version": revision,
         "source_snapshot_at": max(str(row["snapshot_at"] or "") for row in facts),
     }
+    if existing is not None:
+        exact_existing = bool(
+            str(existing["guild_name"] or "") == candidate["guild_name"]
+            and str(existing["country"] or "") == candidate["country"]
+            and str(existing["checksum"] or "") == candidate["checksum"]
+            and str(existing["last_success_sync_id"] or "") == candidate["last_success_sync_id"]
+            and int(existing["row_count"] or 0) == candidate["row_count"]
+            and abs(float(existing["total_income"] or 0) - candidate["total_income"]) <= 0.000001
+            and int(existing["revision_version"] or 0) == candidate["revision_version"]
+            and str(existing["data_status"] or "") == "provisional"
+        )
+        if not exact_existing:
+            raise ValueError(f"existing_watermark_mismatch:{stat_date}")
+        candidate["existing_provisional"] = True
+    else:
+        candidate["existing_provisional"] = False
+    return candidate
 
 
 def reconcile_legacy_watermarks(
@@ -111,6 +125,8 @@ def reconcile_legacy_watermarks(
     if apply:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            new_candidates = [row for row in candidates if not row["existing_provisional"]]
+            provisional_candidates = [row for row in candidates if row["existing_provisional"]]
             conn.executemany(
                 """
                 INSERT INTO timo_sync_watermark(
@@ -123,7 +139,21 @@ def reconcile_legacy_watermarks(
                     :data_status,:revision_version,:source_snapshot_at
                 )
                 """,
-                candidates,
+                new_candidates,
+            )
+            conn.executemany(
+                """
+                UPDATE timo_sync_watermark
+                SET data_status='complete', source_snapshot_at=:source_snapshot_at
+                WHERE guild_executor_key=:guild_executor_key
+                  AND stat_date_bj=:stat_date_bj
+                  AND data_status='provisional'
+                  AND checksum=:checksum
+                  AND last_success_sync_id=:last_success_sync_id
+                  AND row_count=:row_count
+                  AND revision_version=:revision_version
+                """,
+                provisional_candidates,
             )
             for candidate in candidates:
                 verified = conn.execute(
