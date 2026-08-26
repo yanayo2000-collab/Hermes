@@ -11,8 +11,15 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any, Iterable
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.sqlite_job_lock import JobLockBusy, acquire_sqlite_job_lock  # noqa: E402
 
 
 def _checksum(rows: Iterable[sqlite3.Row]) -> str:
@@ -149,13 +156,24 @@ def main() -> int:
     parser.add_argument("--date", action="append", dest="dates", required=True)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
-    conn = sqlite3.connect(args.db)
+    lock = None
     try:
-        result = reconcile_legacy_watermarks(
-            conn, guild_key=args.guild_key, dates=list(args.dates), apply=args.apply
-        )
+        if args.apply:
+            lock = acquire_sqlite_job_lock("sqlite-etl", timeout_seconds=0)
+            lock.__enter__()
+        conn = sqlite3.connect(args.db)
+        try:
+            result = reconcile_legacy_watermarks(
+                conn, guild_key=args.guild_key, dates=list(args.dates), apply=args.apply
+            )
+        finally:
+            conn.close()
+    except JobLockBusy:
+        print(json.dumps({"ok": False, "error": "sqlite_etl_busy"}, sort_keys=True))
+        return 75
     finally:
-        conn.close()
+        if lock is not None:
+            lock.__exit__(None, None, None)
     print(json.dumps({"ok": True, "applied": args.apply, "scopes": result}, sort_keys=True))
     return 0
 
